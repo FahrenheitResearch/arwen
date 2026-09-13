@@ -891,6 +891,61 @@ def test_direct_readers_still_refuse_the_transition(transition):
         ra.bound_manifest(c.record, state, job_directory=c.directory)
 
 
+def test_a_backward_wall_clock_correction_does_not_unmake_a_running_job(transition):
+    """A manifest stamped seconds before its job record is clock noise.
+
+    bound_manifest ordered two CLOCK_REALTIME stamps written by two processes
+    on one host: the job record's created_at and the runner's own
+    started_at_utc. A host that corrects its wall clock backward between them
+    reversed that order and turned a live job into a terminal refusal, which
+    names neither a real breakage nor a way out. A desktop that resynchronises
+    its clock does exactly this: a run of this file measured time.time()
+    reading about 1.8 seconds earlier than a record written before it. Outside
+    the correction window the ordering is still evidence and still refuses.
+    """
+    from datetime import datetime, timedelta
+    c = transition.launch()
+    state = rw._status(c.directory)
+    manifest_path = Path(c.record["outdir"]) / "run-manifest.json"
+    manifest = rw._json(manifest_path)
+    created = datetime.fromisoformat(c.record["created_at"])
+
+    def restamp(delta):
+        rw._write(manifest_path, {**manifest, "started_at_utc": (created + delta).isoformat()})
+
+    # Inside the window: this is the job's own live manifest, and the reader is
+    # sent to the transition's way out rather than told its identity is wrong.
+    # The offsets stay clear of the window's edge because created_at is not the
+    # only stamp read: the wrapper's own started_at, a little later still, is
+    # ordered against this manifest too.
+    for seconds in (-0.5, -2.0, -3.5):
+        restamp(timedelta(seconds=seconds))
+        with pytest.raises(ValueError, match="belongs") as refusal:
+            ra.bound_manifest(c.record, state)
+        assert not isinstance(refusal.value, ra.ProducerCompletionPending)
+        with pytest.raises(ra.ProducerCompletionPending):
+            ra.bound_manifest(c.record, state, job_directory=c.directory)
+    # Outside it, a manifest older than its own job is still not this job's.
+    for seconds in (-10.0, -600.0):
+        restamp(timedelta(seconds=seconds))
+        for arguments in ({}, {"job_directory": c.directory}):
+            with pytest.raises(ValueError, match="does not match this job") as refusal:
+                ra.bound_manifest(c.record, state, **arguments)
+            assert not isinstance(refusal.value, ra.ProducerCompletionPending)
+    # The window bounds the other end of the job as well: a wrapper that records
+    # the end just after a correction stamps an ended_at behind the runner's own
+    # manifest, and that is not a manifest published after the job ended.
+    rw._write(manifest_path, manifest)
+    started = datetime.fromisoformat(manifest["started_at_utc"])
+    inside = {**state, "ended_at": (started - timedelta(seconds=3.5)).isoformat()}
+    with pytest.raises(ra.ProducerCompletionPending):
+        ra.bound_manifest(c.record, inside, job_directory=c.directory)
+    outside = {**state, "ended_at": (started - timedelta(seconds=600)).isoformat()}
+    with pytest.raises(ValueError, match="published after this job ended") as refusal:
+        ra.bound_manifest(c.record, outside, job_directory=c.directory)
+    assert not isinstance(refusal.value, ra.ProducerCompletionPending)
+
+
 def test_permission_failure_is_not_missing_process_proof(transition, monkeypatch):
     c = transition.launch()
     def denied(_pid, _flags):
@@ -1000,7 +1055,9 @@ if sys.argv[2] == "descendants":
     # the whole escalation ladder after this runner is already gone.
     subprocess.Popen([sys.executable, "-c", sys.argv[3]], stdin=subprocess.DEVNULL)
     time.sleep(1)
-(root / "runner-exit.json").write_text(json.dumps({"exit_unix_ns": time.time_ns()}))
+# CLOCK_MONOTONIC, not the wall clock: this stamp is one end of a measured
+# interval, and it is read by another process on this same host and boot.
+(root / "runner-exit.json").write_text(json.dumps({"exit_monotonic_ns": time.monotonic_ns()}))
 raise SystemExit(0)
 '''
 
@@ -1016,17 +1073,28 @@ raise SystemExit(rw.run_worker(Path(sys.argv[1]), os.environ[rw.TOKEN_ENV]))
 def test_measured_wrapper_settlement_fits_the_completion_budget(tmp_path, mode, floor):
     """Observe the interval COMPLETION_SECONDS budgets, on the real clock.
 
-    Measures the wall interval between the runner's last instruction and the
-    wrapper's publication of result.json: the receipt's st_mtime_ns minus a
-    CLOCK_REALTIME stamp the runner writes immediately before SystemExit. Both
-    stamps come from one host's CLOCK_REALTIME, so the difference is the window
-    a reader waits through plus the runner's own last write. Nothing here is
-    faked: this is the one case in this file that runs on the real clock, so
-    the budget's margin is observed rather than asserted.
+    Measures the interval between the runner's last instruction and the
+    wrapper's settlement: a CLOCK_MONOTONIC stamp read here once the wrapper
+    has exited, minus the CLOCK_MONOTONIC stamp the runner writes immediately
+    before SystemExit. Nothing here is faked: this is the one case in this file
+    that runs on the real clock, so the budget's margin is observed rather than
+    asserted.
+
+    Both stamps are monotonic, which is the same rule the code under test
+    keeps (remote_artifacts.CompletionWindow: "Every deadline is monotonic: a
+    wall-clock jump can neither extend nor expire the budget"). A duration
+    subtracted from two CLOCK_REALTIME readings does not keep it. A desktop
+    that resynchronises steps CLOCK_REALTIME backward by about two seconds,
+    which used to land under the full-ladder floor and fail a run whose cleanup
+    had in fact taken its whole six seconds. CLOCK_MONOTONIC is comparable
+    across processes on one Linux machine and boot, so the runner's stamp and
+    this one measure the same interval.
 
     The full-ladder case leaves an owned descendant that ignores SIGINT and
     SIGTERM, which is the worst case the budget exists for: three cleanup
-    stages of three seconds plus a one second child wait.
+    stages of three seconds plus a one second child wait. The floor proves that
+    worst case was really paid, so it may only be compared against a clock that
+    cannot step.
     """
     directory, output, config, plan = job_inputs(tmp_path, "settle-fixture")
     record = job_record(tmp_path, directory, output, config, plan,
@@ -1041,14 +1109,15 @@ def test_measured_wrapper_settlement_fits_the_completion_budget(tmp_path, mode, 
         log.close()
     try:
         assert wrapper.wait(timeout=6 * WATCHDOG) == 0, (directory / "test-wrapper.log").read_text()
+        settled = time.monotonic_ns()
     finally:
         if wrapper.poll() is None:
             wrapper.kill()
             wrapper.wait(timeout=WATCHDOG)
     result = directory / "result.json"
     assert rw._json(result)["state"] == "completed"
-    exited = json.loads((output / "runner-exit.json").read_text())["exit_unix_ns"]
-    settle = (result.stat().st_mtime_ns - exited) / 1e9
-    print(f"measured runner-exit to result.json [{mode}]: {settle:.3f} s "
+    exited = json.loads((output / "runner-exit.json").read_text())["exit_monotonic_ns"]
+    settle = (settled - exited) / 1e9
+    print(f"measured runner-exit to wrapper settlement [{mode}]: {settle:.3f} s "
           f"(budget {preparation.COMPLETION_SECONDS} s)")
     assert floor < settle < preparation.COMPLETION_SECONDS

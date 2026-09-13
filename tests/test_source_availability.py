@@ -57,6 +57,17 @@ def test_analysis_latest_keeps_the_whole_period_behind_publication_lag(source, c
 
 
 def test_explicit_hourly_analysis_start_matches_the_actual_native_request():
+    """An off-synoptic start is retrieved as the exact times it asks for.
+
+    This used to assert one request carrying
+    ``["00:00", "01:00", "14:00" ... "23:00"]``: the CDS cross product of
+    every date with every clock time, which for a window starting at 14Z
+    retrieves 00Z and 01Z of the FIRST day and 14Z through 23Z of the
+    second, neither of which was asked for.  The request is now written
+    one day at a time, so the assertion here is the one that survives the
+    change: the union over the requests is exactly the series.
+    """
+
     from gpuwm import fetch
     cycle = fetch.parse_cycle("2013-05-31T14", "era5")
     document = availability("era5", 11, now=NOW)
@@ -66,9 +77,14 @@ def test_explicit_hourly_analysis_start_matches_the_actual_native_request():
     times = fetch._era5_times(cycle, 11, 1)
     assert times[0] == cycle and times[-1] == datetime(2013, 6, 1, 1)
     assert len(times) == 12
-    assert request["requests"][0]["request"]["time"] == [
-        "00:00", "01:00", "14:00", "15:00", "16:00", "17:00",
-        "18:00", "19:00", "20:00", "21:00", "22:00", "23:00"]
+    for dataset in ("reanalysis-era5-pressure-levels",
+                    "reanalysis-era5-single-levels"):
+        retrieved = tuple(
+            datetime.strptime(day + "T" + clock, "%Y-%m-%dT%H:%M")
+            for row in request["requests"] if row["dataset"] == dataset
+            for day in row["request"]["date"]
+            for clock in row["request"]["time"])
+        assert retrieved == times
 
 
 def test_undeclared_retention_never_becomes_an_unlimited_archive():
@@ -99,6 +115,28 @@ def test_latest_uses_the_real_resolver_and_checks_the_required_forecast_hour():
     assert len(checked) >= 2
     assert all("f006" in url for url in checked)
     assert result["resolution"]["objects"][-1]["available"]
+
+
+@pytest.mark.parametrize("hours", [1, 6, 24, 120, 240])
+def test_the_analysis_window_back_off_is_applied_once(hours):
+    """The date the calendar publishes and the date it resolves are one date.
+
+    An analysis window is covered by successive analyses, so its newest
+    start is the newest published analysis minus the window.  Both the
+    calendar and the acquisition resolver used to subtract it, and the
+    second subtraction was silent: a 240-hour era5 request selected a
+    cycle ten days before the SAME document's ``latest_candidate``, with
+    ``validate_cycle`` accepting it and the terminal's Latest button
+    running it.  The two doors now call one function
+    (``gpuwm.fetch.analysis_window_reference``), so the only way to
+    subtract twice is to write the subtraction twice again.
+    """
+
+    result = resolve_latest("era5", hours, now=NOW,
+                            probe=lambda _url: pytest.fail("CDS exposes no object HEAD probe"))
+    assert result["selected_cycle"] == result["latest_candidate"]
+    end = parse_cycle(result["selected_cycle"]) + timedelta(hours=hours)
+    assert end <= NOW - timedelta(hours=120)
 
 
 def test_analysis_estimate_does_not_masquerade_as_a_provider_probe():

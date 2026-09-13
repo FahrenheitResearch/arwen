@@ -1,8 +1,18 @@
-"""Author a GFS 12/3 km moving-nest setup from an explicitly selected center.
+"""Author a source-selected 12/3 km moving-nest setup from an explicit center.
 
-The map request reads only published f000 MSLP and wind fields. Configuration
-creation reuses the ordinary domain author, physics suite and vortex tracker;
-neither entry point starts a forecast or computes a new tracking algorithm.
+The map request reads only the named source's published f000 MSLP and wind
+fields. Configuration creation reuses the ordinary domain author, physics
+suite and vortex tracker; neither entry point starts a forecast or computes a
+new tracking algorithm.
+
+WHICH SOURCE IS TABLE WORK, NOT A BRANCH HERE.  Every source-derived fact on
+the emitted document -- the cycle grid, the forcing interval that prices the
+tree road and stamps the WPS namelist, the coverage window, the member
+grammar, the physics profile, the preparation recipe -- is read from that
+source's own registry row through :mod:`gpuwm.cyclone_sources`, which is the
+one place the planable rows and the acquisition routes are intersected.
+Adding a model to this door is adding its row, and this file has no name of
+any model in it.
 """
 from __future__ import annotations
 
@@ -10,9 +20,9 @@ import contextlib
 from datetime import datetime
 import hashlib
 import json
-import math
 from pathlib import Path
 import sys
+import textwrap
 import tomllib
 
 #: v2, and the bump is the point.  v1 documents were a map or a
@@ -23,7 +33,22 @@ import tomllib
 #: file is there" is correct under v1 and wrong under v2, and the
 #: version string is the only part of the document such a caller is
 #: guaranteed to look at.  Left at v1 the change would have been silent.
+#:
+#: `kind` gained a THIRD value, "sources", and that one is additive: it is
+#: the source menu ``--list-sources`` emits, it moves no existing key and
+#: changes no existing meaning, so it is a kind a v2 reader may not know
+#: rather than a document a v2 reader would misread.  The same is true of
+#: `member`, `forcing_interval_seconds` and `seed` on a map or a
+#: configuration: new keys beside the old ones, with the old ones meaning
+#: exactly what they meant.  That is why the version does not move again.
 SCHEMA = "arwen.cyclone-setup.v2"
+#: The forcing source ``--source`` binds when none is named.  ONE
+#: constant, read by the flag, by every keyword default in this module and
+#: by the door's help, because a default spelled at each site is a default
+#: that drifts.  It names the source this door shipped with, so a caller
+#: that never learned the flag reads the document it already read; every
+#: other source is the same registry row reached by naming it.
+DEFAULT_SOURCE = "gfs"
 ROOT_DIMS = (200, 160)
 CHILD_DIMS = (160, 160)
 ROOT_DX_M = 12000.0
@@ -33,74 +58,150 @@ RATIO = 4
 FIT_SCALE_STEPS = 20
 
 
-def _cycle(raw: str, *, latest: bool = False) -> datetime:
-    from gpuwm import domain_wizard as dw
-    text = raw.strip()
-    if text.lower() == "latest" and not latest:
-        raise ValueError("Select a center on a resolved GFS map first; creation requires that map's exact cycle")
-    if len(text) == 10 and text.isdecimal():
-        text = datetime.strptime(text, "%Y%m%d%H").strftime("%Y-%m-%dT%H")
-    result = dw._resolve_cycle(text, source="gfs", hours=0)
-    if result.hour not in (0, 6, 12, 18) or result.minute or result.second:
-        raise ValueError("GFS initialization must name a published 00/06/12/18 UTC cycle")
-    return result
+def _config_name(adapter, name: str | None) -> str:
+    """The configuration name, resolved ONCE for both authoring seams.
+
+    ``configuration_text`` resolved it and the fit ladder was handed the
+    raw ``None`` beside it.  That is harmless only while this door always
+    supplies ``candidate_builder``, because that is the branch which keeps
+    ``fit_ladder`` from rendering a configuration of its own; a caller
+    that dropped the builder would have written ``name = None`` into a
+    configuration.  One resolver, both call sites.
+    """
+    return name or f"{adapter.display_title} cyclone 12 km to 3 km"
 
 
-def latest_map(cycle: str = "latest") -> dict:
-    moment = _cycle(cycle, latest=True)
+def _cycle(raw: str, *, latest: bool = False,
+           forcing_source: str = DEFAULT_SOURCE) -> datetime:
+    """The named source's own cycle grid, never a hardcoded 00/06/12/18."""
+    from gpuwm.cyclone_sources import resolve_cycle
+    return resolve_cycle(raw, source=forcing_source, latest=latest)
+
+
+def latest_map(cycle: str = "latest", *, source: str = DEFAULT_SOURCE,
+               member: str | None = None) -> dict:
+    from gpuwm.cyclone_sources import selected_member, source_adapter
+    adapter = source_adapter(source)
+    source = adapter.source_id
+    selection = selected_member(source, member)
+    map_member = 0
+    if selection is not None:
+        from gpuwm.forcing_member import member_contract
+        contract = member_contract(source, selection)
+        if contract is not None:
+            map_member = contract[1].member(selection).ordinal
+    moment = _cycle(cycle, latest=True, forcing_source=source)
+    # A regional source's map is its own grid, clipped to the drawable
+    # band: showing a global frame for a window that stops at 60 N invites
+    # a click the configuration door then has to refuse.
+    bounds = [-85., -180., 85., 180.]
+    if adapter.coverage_window is not None:
+        south, west, north, east = adapter.coverage_window.envelope()
+        bounds = [max(-85., south), west, min(85., north), east]
     return {
         "schema": SCHEMA, "kind": "map", "cycle": moment.strftime("%Y%m%d%H"),
-        "map_request": {"source": "gfs", "date": moment.strftime("%Y-%m-%d"),
-                        "hour": moment.hour, "forecast_hour": 0, "member": 0,
-                        "product": "mslp_10m_winds", "bounds": [-85., -180., 85., 180.]},
+        "source": source, "member": selection,
+        "map_request": {"source": source, "date": moment.strftime("%Y-%m-%d"),
+                        "hour": moment.hour, "forecast_hour": 0,
+                        "member": map_member,
+                        "product": "mslp_10m_winds", "bounds": bounds},
         "forecast_started": False,
-        "selection": "Click the circulation center on this exact GFS f000 pressure-and-wind map.",
+        "selection": ("Click the circulation center on this exact "
+                      f"{adapter.display_title} f000 pressure-and-wind map."),
     }
 
 
 def configuration_text(*, cycle: str, point: tuple[float, float], hours: int = 6,
-                       name: str = "GFS cyclone 12 km to 3 km", tiles: str = "auto",
+                       name: str | None = None, tiles: str = "auto",
                        source: str = "cyclone-setup.toml",
+                       forcing_source: str = DEFAULT_SOURCE,
+                       member: str | None = None,
                        dimensions=None) -> tuple[str, object]:
     from gpuwm import domain_wizard as dw
     from gpuwm.companion_domains import VORTEX_PRESET, VORTEX_PRESET_SOURCE
+    from gpuwm.cyclone_sources import (declared_case_data, fetch_hints,
+                                       moving_nest_note, source_adapter,
+                                       validate_center)
     from gpuwm.starter_template import render_tables
 
-    moment = _cycle(cycle)
-    if type(hours) is not int or not 1 <= hours <= 384:
-        raise ValueError("Cyclone duration must be an integer from 1 to 384 hours")
+    adapter = source_adapter(forcing_source)
+    forcing_source = adapter.source_id
+    moment = _cycle(cycle, forcing_source=forcing_source)
     if tiles not in ("off", "auto", "on"):
         raise ValueError("Tile mode must be off, auto or on")
     lat, lon = point
-    if not all(math.isfinite(v) for v in point) or not -85 <= lat <= 85 or not -180 <= lon <= 180:
-        raise ValueError("Select a finite center on the displayed GFS map")
+    # The finiteness bound and the source's own coverage window in ONE
+    # call, so this door and the seeder cannot disagree about whether a
+    # center is on the grid.  Out of coverage is the one genuine refusal
+    # on this path and it names the sources that do cover the point.
+    validate_center(forcing_source, point)
     dims = [ROOT_DIMS, CHILD_DIMS] if dimensions is None else list(dimensions)
     if (len(dims) != 2 or any(len(pair) != 2 for pair in dims)
             or any(type(n) is not int or n <= 0 for pair in dims for n in pair)):
         raise ValueError("Cyclone dimensions must be two positive integer axis pairs")
     projection = dw._projection_entries(lat, lon, "auto")
-    area = dw.fetch_area_hint(projection, *dims[0], source="gfs", root_dx_m=ROOT_DX_M)
-    profile = dw.resolved_physics_profile("gfs", None)
+    # The fetch block the SOURCE declares: its cadence, its rounding to
+    # its own forcing interval, its lead horizon, its member vocabulary
+    # and whether its transport takes an area window.  The wizard's own
+    # validator runs over the result, so a row that cannot state a
+    # fetchable request is refused here and not at acquisition.  The
+    # duration bound comes from the source's published horizon rather
+    # than from one model's 384-hour ceiling written down here.
+    hints = fetch_hints(source=forcing_source, moment=moment, hours=hours,
+                        projection=projection, dims=tuple(dims[0]),
+                        dx_m=ROOT_DX_M, member=member)
+    profile = dw.resolved_physics_profile(forcing_source, None)
     text = dw.render_config(
-        name=name, start_time=moment, hours=hours, projection=projection,
+        name=_config_name(adapter, name),
+        start_time=moment, hours=hours, projection=projection,
         dims=dims, ratios=(RATIO,), root_dx_m=ROOT_DX_M,
         profile=profile, cumulus_requested=False, tiles=tiles,
-        fetch_hints={"source": "gfs", "cycle": moment.strftime("%Y-%m-%dT%H"),
-                     "hours": max(3, math.ceil(hours / 3) * 3), "cadence": 3,
-                     "area": area, "out": f"data/gfs-cyclone-{moment:%Y%m%d%H}"},
-        case_data=None, history_interval_s=3600., nest_history_interval_s=900.)
+        fetch_hints=hints,
+        case_data=declared_case_data(forcing_source, hints, source),
+        history_interval_s=3600., nest_history_interval_s=900.)
     raw = tomllib.loads(text)
     child = next(row for row in raw["domain"] if row["grid_id"] == 2)
-    child["follow"] = dict(VORTEX_PRESET)
+    child["follow"] = {**VORTEX_PRESET, "track": {"path": "storm-track.d02.csv"}}
     # This is one immediate following nest. Spawn/retire decisions are not part
     # of this quick-start; the chosen center is its initial registration.
-    text = ("# GFS cyclone quick-start: 12 km parent and 3 km following nest.\n"
-            "# Center and cycle were selected explicitly on a GFS f000 map.\n"
+    # The run door's own verdict on the nest this file declares, written
+    # into the file that carries it: a configuration whose following nest
+    # its source's chain cannot feed says so where it is read, instead of
+    # leaving that sentence to the launch.
+    moving = moving_nest_note(forcing_source)
+    # The heading says which question the sentence answers.  A row that
+    # reaches no launch chain is not answering about the nest at all, and
+    # heading it as if it were would point the reader at the wrong knob.
+    heading = ("Launch route for this source: "
+               if moving["launch_refusal"] is not None
+               else "Moving nest on this source's chain: ")
+    limit = "" if moving["integrates_moving_nest"] else "".join(
+        "# " + line + "\n" for line in textwrap.wrap(
+            heading + moving["note"], 76))
+    text = (f"# {adapter.display_title} cyclone quick-start: 12 km parent and "
+            "3 km following nest.\n"
+            "# Center and cycle were selected explicitly on that source's "
+            "f000 analysis.\n"
             f"# Existing vortex-lock preset: {VORTEX_PRESET_SOURCE}\n"
             "# Following uses the 850 hPa circulation; the selection map uses MSLP.\n"
+            + limit
             + render_tables(raw))
     experiment = dw.experiment_from_text(text, source=source)
     return text, experiment
+
+
+def _forcing_interval(forcing_source: str) -> float:
+    """The selected source's own boundary cadence, in seconds.
+
+    An INGEST OPERAND, not a label: it sets the lateral-boundary store
+    every phase estimate carries, so it reaches the flat budget AND the
+    tree road's admission through the same ``operands`` dict every
+    candidate on this door is priced with.  Read from the registry row
+    rather than written down here, which is why a six-hourly source is
+    priced as six-hourly without a line of its own.
+    """
+    from gpuwm.cyclone_sources import source_adapter
+    return float(source_adapter(forcing_source).forcing_interval_seconds)
 
 
 def _fit_dimensions(scale):
@@ -243,7 +344,29 @@ def _unreduced_resident_admission(intent, budget_of, price_mode):
         return None
     return {"tiles": mode, "dimensions": [list(ROOT_DIMS), list(CHILD_DIMS)],
             "peak_envelope_bytes": phases.peak_envelope_bytes,
-            "budget_bytes": budget}
+            "budget_bytes": _admitting_budget_bytes(phases, mode, budget)}
+
+
+def _admitting_budget_bytes(phases, mode: str, budget: int) -> int:
+    """The budget the admission this door NAMES was actually judged against.
+
+    ``budget_of`` is the whole-process allowance, undiminished.  Under
+    ``auto`` the tree walk does not judge against that number: it
+    withholds a moving nest's rebuild transient from it first
+    (``streaming._resident_admission``, ``withheld_bytes``) and every
+    comparison downstream spends the reduced allowance.  So the sentence
+    quoted an allowance 0.5 GiB larger than the one that admitted the
+    tree, and a reader checking the arithmetic against `gpuwm check`'s
+    own streaming block -- which prints the withheld figure -- found two
+    budgets for one decision.  ``off`` withholds nothing and is
+    unchanged; a walk that could not be priced has no budget of its own
+    to quote and keeps the caller's.
+    """
+    if mode != "auto":
+        return budget
+    road = getattr(phases, "tree_road", None)
+    walked = int(getattr(road, "total_budget_bytes", 0) or 0)
+    return walked if walked else budget
 
 
 #: What `--tiles off` actually authors when the resident route cannot
@@ -268,23 +391,33 @@ def _unreduced_resident_admission(intent, budget_of, price_mode):
 #: is the second, and does not license a claim about the card.
 def _resident_alternative(intent, sizing, dims_of, scales_of):
     """``(measured, found)``: the largest resident rung `--tiles off`
-    admits, and whether the resident route was priced to find out."""
+    admits, and whether the resident route was priced to find out.
+
+    Priced on the SELECTED source, like every other candidate on this
+    door: the forcing interval is an ingest operand, so a six-hourly
+    source's resident ladder is not the three-hourly one's, and a probe
+    that quoted one source's numbers inside another's refusal would be
+    offering a layout nobody measured.
+    """
     from gpuwm import domain_wizard as dw
 
     if intent["tiles"] == "off":
         return False, None
     resident = dict(intent, tiles="off")
+    forcing_source = intent["forcing_source"]
     try:
         _text, exp = configuration_text(**resident)
         dims, _fitted = dw.fit_ladder(
             ratios=(RATIO,), free_bytes=sizing.free_bytes,
             vram_gib=sizing.vram_gib, device_profile=sizing.device_profile,
             target_machine=None, hours=intent["hours"],
-            start_time=_cycle(intent["cycle"]),
-            projection=tomllib.loads(_text)["projection"], source="gfs",
+            start_time=_cycle(intent["cycle"], forcing_source=forcing_source),
+            projection=tomllib.loads(_text)["projection"],
+            source=forcing_source,
             name=intent["name"], root_dx_m=ROOT_DX_M,
-            profile=dw.resolved_physics_profile("gfs", None), tiles="off",
-            forcing_interval_seconds=10800.,
+            profile=dw.resolved_physics_profile(forcing_source, None),
+            tiles="off",
+            forcing_interval_seconds=_forcing_interval(forcing_source),
             candidate_builder=lambda proposed: configuration_text(
                 **resident, dimensions=proposed)[1],
             dimensions_builder=dims_of, candidate_scales=scales_of(exp),
@@ -445,16 +578,28 @@ def _streaming_entry(phases, tiles: str, budget: int) -> dict:
 
 
 def plan_cyclone(*, cycle: str, point: tuple[float, float], sizing, target_machine=None,
-                 hours: int = 6, name: str = "GFS cyclone 12 km to 3 km",
+                 hours: int = 6, name: str | None = None,
                  tiles: str = "auto", source: str = "cyclone-setup.toml",
+                 forcing_source: str = DEFAULT_SOURCE, member: str | None = None,
                  cancelled=None) -> dict:
     from gpuwm import domain_wizard as dw
     from gpuwm.companion_domains import VORTEX_PRESET, VORTEX_PRESET_SOURCE
     from gpuwm.configuration_recovery import MemoryAdmissionError
+    from gpuwm.cyclone_sources import (moving_nest_note, selected_member,
+                                       source_adapter)
     from gpuwm.starter_template import changes
 
     dw.check_fit_cancelled(cancelled)
-    intent = dict(cycle=cycle, point=point, hours=hours, name=name, tiles=tiles, source=source)
+    adapter = source_adapter(forcing_source)
+    forcing_source = adapter.source_id
+    interval_s = _forcing_interval(forcing_source)
+    # ONE intent, carried by every re-price on this door -- the requested
+    # layout, each rung of the ladder, the unreduced admission probe and
+    # the resident probe.  The source and member live in it for the same
+    # reason the point and the hours do: a probe that dropped them would
+    # be pricing a different configuration from the one being proposed.
+    intent = dict(cycle=cycle, point=point, hours=hours, name=name, tiles=tiles,
+                  source=source, forcing_source=forcing_source, member=member)
     original_text, experiment = configuration_text(**intent)
     text = original_text
     # One hardware snapshot for the whole search. Never redetect/inflate VRAM
@@ -509,12 +654,14 @@ def plan_cyclone(*, cycle: str, point: tuple[float, float], sizing, target_machi
         # and from nowhere else, so a machine built without it is a
         # different envelope from the run door's on the same card.
     operands = dict(free_bytes=sizing.free_bytes, vram_gib=sizing.vram_gib,
-                    profile=sizing.device_profile, forcing_interval_seconds=10800.)
+                    profile=sizing.device_profile,
+                    forcing_interval_seconds=interval_s)
     budget = dw.sizing_budget_bytes(experiment, **operands)
 
     def price(exp):
         dw.check_fit_cancelled(cancelled)
-        phases = dw._sizing_phases(exp, source="gfs", machine=target_machine, **operands)
+        phases = dw._sizing_phases(exp, source=forcing_source,
+                                   machine=target_machine, **operands)
         dw.check_fit_cancelled(cancelled)
         return phases
 
@@ -591,7 +738,7 @@ def plan_cyclone(*, cycle: str, point: tuple[float, float], sizing, target_machi
         keeps_coverage = _unreduced_resident_admission(
             intent,
             lambda exp: dw.sizing_budget_bytes(exp, **operands),
-            lambda exp: dw._sizing_phases(exp, source="gfs",
+            lambda exp: dw._sizing_phases(exp, source=forcing_source,
                                           machine=target_machine, **operands)
         ) if memory_bound and request_bound is None else None
         # Measured once, on the refusal path only, and memoised: a refusal
@@ -652,10 +799,12 @@ def plan_cyclone(*, cycle: str, point: tuple[float, float], sizing, target_machi
             dims, experiment = dw.fit_ladder(
                 ratios=(RATIO,), free_bytes=sizing.free_bytes, vram_gib=sizing.vram_gib,
                 device_profile=sizing.device_profile, target_machine=target_machine,
-                hours=hours, start_time=_cycle(cycle),
-                projection=tomllib.loads(original_text)["projection"], source="gfs", name=name,
-                root_dx_m=ROOT_DX_M, profile=dw.resolved_physics_profile("gfs", None),
-                tiles=tiles, forcing_interval_seconds=10800.,
+                hours=hours, start_time=_cycle(cycle, forcing_source=forcing_source),
+                projection=tomllib.loads(original_text)["projection"],
+                source=forcing_source, name=_config_name(adapter, name),
+                root_dx_m=ROOT_DX_M,
+                profile=dw.resolved_physics_profile(forcing_source, None),
+                tiles=tiles, forcing_interval_seconds=interval_s,
                 candidate_builder=build, dimensions_builder=_fit_dimensions,
                 candidate_scales=_fit_scales(experiment),
                 layout_label="cyclone 12/3 km", cancelled=cancelled,
@@ -747,14 +896,20 @@ def plan_cyclone(*, cycle: str, point: tuple[float, float], sizing, target_machi
                                                         tomllib.loads(text))]
     return {
         "schema": SCHEMA, "kind": "proposal" if reduced else "configuration",
-        "cycle": _cycle(cycle).strftime("%Y%m%d%H"),
-        "source": "gfs", "hours": hours, "point": list(point), "tiles": tiles,
+        "cycle": _cycle(cycle, forcing_source=forcing_source).strftime("%Y%m%d%H"),
+        "source": forcing_source, "member": selected_member(forcing_source, member),
+        "forcing_interval_seconds": interval_s,
+        "hours": hours, "point": list(point), "tiles": tiles,
         "domains": [{"grid_id": d.grid_id, "parent_id": d.parent_id,
                      "nx": d.run.nx, "ny": d.run.ny, "nz": d.run.nz,
                      "dx_m": d.run.dx, "dy_m": d.run.dy,
                      "following": d.grid_id == 2} for d in experiment.domains],
         "follow": dict(VORTEX_PRESET), "follow_preset_source": VORTEX_PRESET_SOURCE,
-        "profile": dw.resolved_physics_profile("gfs", None),
+        # Asked of the same table the run door resolves against, so this
+        # document and the launch cannot disagree about whether the nest
+        # this setup authors can be integrated on the selected chain.
+        "follow_statics": moving_nest_note(forcing_source),
+        "profile": dw.resolved_physics_profile(forcing_source, None),
         "streaming": _streaming_entry(phases, tiles, budget),
         "memory": {"peak_envelope_bytes": phases.peak_envelope_bytes, "budget_bytes": budget,
                    "binding_phase": phases.binding_phase, "free_bytes": sizing.free_bytes,
@@ -796,21 +951,60 @@ def _cancelled(error) -> bool:
 def main(args) -> int:
     try:
         with contextlib.redirect_stdout(sys.stderr):
-            if args.latest_map:
-                result = latest_map(args.cycle)
+            forcing_source = getattr(args, "source", None) or DEFAULT_SOURCE
+            member = getattr(args, "member", None)
+            if getattr(args, "list_sources", False):
+                # A THIRD KIND, not a third schema.  `kind` already tells a
+                # reader which document this is; a menu is one more value of
+                # it, and every existing key on a map or a configuration is
+                # untouched, so a v2 reader that does not know "sources"
+                # skips it the way it skips any kind it did not ask for.
+                from gpuwm.cyclone_sources import source_options
+                result = {"schema": SCHEMA, "kind": "sources",
+                          "sources": source_options(),
+                          "created": False, "forecast_started": False}
+            elif args.latest_map:
+                result = latest_map(args.cycle, source=forcing_source, member=member)
             else:
                 from gpuwm import domain_wizard as dw
                 from gpuwm.companion_query import inspect_configuration
+                from gpuwm.cyclone_seed import load_seed_fields, seed_cyclone
+                from gpuwm.cyclone_sources import companion_input_files
                 from gpuwm.hrrr_prepared_bundle import render_wps_namelist
                 from gpuwm.starter_template import _publish_new_files
-                if args.point is None:
-                    raise ValueError("Select the cyclone center on the resolved GFS map first")
-                _cycle(args.cycle)
+                _cycle(args.cycle, forcing_source=forcing_source)
+                seed_path = getattr(args, "seed_fields", None)
+                fields = (load_seed_fields(seed_path, source=forcing_source,
+                                           cycle=args.cycle, member=member)
+                          if seed_path else None)
+                advisory = getattr(args, "advisory_position", None)
+                # WHERE THE CENTER COMES FROM is one function with a stated
+                # fallback chain -- an explicit point, then the source's own
+                # declared fields, then the advisory -- and it reports which
+                # rung answered.  A missing center is the only outcome that
+                # stops here, and it names both flags that supply one.
+                seed = seed_cyclone(
+                    source=forcing_source, fields=fields,
+                    point=dw._parse_point(args.point) if args.point is not None else None,
+                    advisory=(dw._parse_point(advisory) if advisory is not None
+                              else None),
+                    search_radius_km=getattr(args, "seed_radius_km", 500.))
+                if seed.point is None:
+                    raise ValueError("; ".join(seed.messages))
                 sizing, machine, _ = dw._domain_target_hardware(args)
                 out = args.out.expanduser().resolve() if args.out else None
-                result = plan_cyclone(cycle=args.cycle, point=dw._parse_point(args.point),
+                result = plan_cyclone(cycle=args.cycle, point=seed.point,
                     hours=args.hours, name=args.name, tiles=args.tiles, sizing=sizing,
-                    target_machine=machine, source=str(out or "cyclone-setup.toml"))
+                    target_machine=machine, source=str(out or "cyclone-setup.toml"),
+                    forcing_source=forcing_source, member=member)
+                result["seed"] = seed.to_dict()
+                # ONCE, on the human channel, where the reader who chose
+                # the source can still change it.  The document carries
+                # the same sentence for a machine, and the run door
+                # raises it as its refusal; nothing here is a second
+                # derivation of the fact.
+                if not result["follow_statics"]["integrates_moving_nest"]:
+                    print("warning: " + result["follow_statics"]["note"])
                 acceptance = getattr(args, "accept_fit", None)
                 if acceptance is not None and acceptance != result["fitting"]["fit_id"]:
                     raise ValueError("The reviewed fit does not match this proposal; review the new proposal before saving")
@@ -824,15 +1018,24 @@ def main(args) -> int:
                     experiment = dw.experiment_from_text(text, source=str(out))
                     wps = out.with_suffix(".namelist.wps")
                     receipt = out.with_suffix(".cyclone.json")
-                    if any(path.exists() for path in (out, wps, receipt)):
+                    # A source whose preparation recipe names a companion
+                    # table writes it beside the configuration, so the
+                    # never-overwrite rule has to cover that file too.
+                    inputs = companion_input_files(forcing_source, out)
+                    if any(path.exists()
+                           for path in (out, wps, receipt, *(p for p, _ in inputs))):
                         raise ValueError("Choose a new output path; cyclone setup never overwrites an existing configuration")
-                    wps_text = render_wps_namelist(experiment).replace(
-                        " interval_seconds = 3600,", " interval_seconds = 10800,")
+                    # The namelist carries the SELECTED source's interval,
+                    # passed as the number it is rather than patched into
+                    # the rendered string afterwards.
+                    wps_text = render_wps_namelist(
+                        experiment,
+                        interval_seconds=result["forcing_interval_seconds"])
                     proof = {key: value for key, value in result.items() if key != "config_text"}
                     proof.update(created=True, output=str(out), output_sha256=hashlib.sha256(text.encode()).hexdigest(),
                                  wps_sha256=hashlib.sha256(wps_text.encode()).hexdigest())
                     out.parent.mkdir(parents=True, exist_ok=True)
-                    _publish_new_files(((wps, wps_text),
+                    _publish_new_files((*inputs, (wps, wps_text),
                         (receipt, json.dumps(proof, indent=2, allow_nan=False) + "\n"), (out, text)))
                     result["configuration"] = inspect_configuration(out)
                     result.update(created=True, config_path=str(out), receipt_path=str(receipt))
@@ -863,12 +1066,33 @@ def main(args) -> int:
 
 def register_cli(subparsers):
     from gpuwm.domain_wizard import CARD_VRAM_GIB
-    parser = subparsers.add_parser("cyclone-setup", help="select a GFS f000 cyclone and author a 12/3 km following nest")
+    parser = subparsers.add_parser("cyclone-setup", help="select a cyclone on any planable source's f000 analysis and author a 12/3 km following nest")
+    # NO `choices=`, deliberately, and for the same reason the domain
+    # wizard's --source carries none: the admissible set is the registry
+    # intersected with the fetch routes, it grows by a table row, and an
+    # argparse list would answer a valid source with "invalid choice"
+    # while the door itself could plan it.  A source with no route is
+    # refused by cyclone_sources, with the menu flag named.
+    parser.add_argument("--source", default=DEFAULT_SOURCE, metavar="SOURCE",
+                        help=f"forcing source to initialize from (default {DEFAULT_SOURCE}); "
+                             "--list-sources prints the planable set")
+    parser.add_argument("--member", metavar="MEMBER",
+                        help="ensemble member, in the selected source's own route grammar")
+    parser.add_argument("--list-sources", action="store_true",
+                        help="emit the planable sources with their members, cycle hours, "
+                             "forcing interval and coverage envelope")
     parser.add_argument("--latest-map", action="store_true")
     parser.add_argument("--cycle", default="latest")
     parser.add_argument("--point")
+    parser.add_argument("--seed-fields", type=Path, metavar="NPZ",
+                        help="canonical source-analysis arrays carrying that source's own "
+                             "cycle and member identity, to locate the center from")
+    parser.add_argument("--advisory-position", metavar="LAT,LON",
+                        help="advisory center; bounds the field search and is the last fallback")
+    parser.add_argument("--seed-radius-km", type=float, default=500.,
+                        help="how far from the advisory position the field search may look")
     parser.add_argument("--hours", type=int, default=6)
-    parser.add_argument("--name", default="GFS cyclone 12 km to 3 km")
+    parser.add_argument("--name", help="configuration name (default: the selected source's own title)")
     parser.add_argument("--tiles", choices=("off", "auto", "on"), default="auto")
     parser.add_argument("--hardware-json", type=Path)
     parser.add_argument("--target-host-memory-json", type=Path)

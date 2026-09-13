@@ -1,43 +1,11 @@
-"""W4 Stage-C residue pin: the runtime mixscalars GPU-vs-CPU qn residue,
-root-caused and bounded.
+"""Keep scalar-mixing arithmetic and whole-driver residuals separate.
 
-The Stage-B key-on probe (``tools/mynn_pbl_wrf461_oracle/
-probe_mynn_mixscalars_runtime.py``) measured a GPU-vs-CPU residue on the
-five ``rqn*blten`` outputs of the full driver at ``bl_mynn_mixscalars=1``
-(worst measured: ``rqnwfablten`` 21,846 ULP / rel ~1.4e-3, ``rqnifablten``
-5,461, ``rqncblten`` 247 at subnormal magnitude, ``rqniblten`` and
-``rqnbcablten`` exactly 0).  This lane (mf-close3, Stage 1) bisected it:
-
-1. **Not the plume terms.** On the final PBL call of a 20-step coupled
-   run, every ``s_awqn*`` interface exported by the sibling device DMP
-   unit is BIT-EQUAL to the CPU ``_dmp_mf_column`` replay on the sampled
-   columns, and replaying the CPU flux chain with the GPU's exported
-   ``s_awqn*`` forced into the solve leaves the residue byte-for-byte
-   unchanged.
-
-2. **Not the qn solve consumption either.** ``mynn_tendencies_default``
-   (CPU) evaluated on the GPU tendencies unit's EXACT captured inputs
-   reproduces every compared device output at ULP 0 -- including all five
-   ``dqn*``.  The mixscalars lane's own code (the qn solves, the flux
-   arm, the sibling DMP chain) is bitwise.
-
-3. **The residue enters through the solve's consumed inputs** -- dfh/dfm
-   (hence khdz) from ``mynn_turbulence_default_interfaces`` and vt/vq/
-   cldfra/sgm from ``mynn_condensation_default_columns`` (first upstream
-   divergence: ``psig_shcu`` 1 ULP from ``mynn_pblh_scale_columns``).
-   Those are three of the four pre-discipline kernels already recorded in
-   ``tests/test_mynn_pbl_driver_gpu.py``: plain C operators, so NVRTC
-   contracts ``a*b+c`` into FMAs and CuPy's ``-ftz=true`` flushes
-   subnormals -- a device-order difference inside the byte-frozen
-   ``gpuwm/core/kernels/mynn_pbl.cu`` (pin ``b53ab90e...``), not editable
-   without breaking the freeze.  The residue is NOT qn-specific: the same
-   replay shows ``rqvblten``/``rthblten``/``rvblten`` moving too
-   (cancellation residues, same mechanism, same fixture).
-
-So this file pins all three facts.  The envelope in (3) is a measured
-bound on a mechanism proven by (1)+(2), not an unexplained tolerance:
-if either exactness assertion ever fails, the envelope no longer has its
-attribution and this test must not be widened to hide that.
+The qn tendency solver and DMP exports must match the CPU routines on their
+actual consumed arrays. A whole-driver replay has upstream cloud and
+PBL-height rounding differences, so it cannot establish a same-input DMP
+claim. The historical whole-driver envelope remains unchanged and separate.
+Ordinary mixing length now shares initialization's rounded helper; remaining
+upstream residuals are not a scalar-specific error allowance.
 """
 
 from __future__ import annotations
@@ -119,6 +87,9 @@ def _run_capture():
     orig_drv = runtime_mod.mynn_bl_driver_cuda
 
     def dmp_wrap(values, **kw):
+        capture["dmp_in"] = {k: cp.asnumpy(cp.asarray(v)).copy()
+                             for k, v in values.items()}
+        capture["dmp_kw"] = {k: v for k, v in kw.items() if k != "scratch"}
         result = orig_dmp(values, **kw)
         capture["gpu_dmp"] = {
             f.name: cp.asnumpy(getattr(result, f.name))
@@ -217,19 +188,13 @@ def test_qn_flux_exports_are_bitwise_and_residue_is_bounded(runtime_capture):
                    flag_qs=capture["kwargs"].get("flag_qs", False),
                    **kwargs)
 
-    cpu_plumes: dict[str, np.ndarray] = {}
-    orig_cpu_dmp = cpu_mod.mynn_dmp_mf
-
-    def cpu_dmp_capture(v, **kw):
-        out = orig_cpu_dmp(v, **kw)
-        cpu_plumes.update({k: np.array(val) for k, val in out.items()})
-        return out
-
-    cpu_mod.mynn_dmp_mf = cpu_dmp_capture
-    try:
-        cpu0 = mynn_bl_driver(dict(values), **base_kw)
-    finally:
-        cpu_mod.mynn_dmp_mf = orig_cpu_dmp
+    cpu0 = mynn_bl_driver(dict(values), **base_kw)
+    # Whole-driver replay can change cloud/PBL-height inputs before DMP.
+    # Isolate the DMP arithmetic on its actual consumed arrays instead.
+    dmp_inputs = {k: (v[rows] if getattr(v, "ndim", 0) >= 1
+                      and v.shape[0] == ncol else v)
+                  for k, v in capture["dmp_in"].items()}
+    cpu_plumes = cpu_mod.mynn_dmp_mf(dmp_inputs, **capture["dmp_kw"])
 
     # Fact (1): every s_awqn* interface bit-equal on the sampled columns.
     for name in QN_SPECIES:

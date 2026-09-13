@@ -18,7 +18,7 @@ from gpuwm.da import obsop
 from gpuwm.da.letkf import Localization
 from gpuwm.da.radar_assimilation import (
     FALL_SPEED_POLICIES, RadarAssimilationConfig, RadarAssimilationError,
-    assimilate_radar_grid, grid_rotation, innovation_summary,
+    analysis_sources, assimilate_radar_grid, grid_rotation, innovation_summary,
     make_assimilate, mass_to_u_faces, mass_to_v_faces, mass_to_w_faces,
     member_background_checkpoint, read_checkpoint_state,
     scheme_reflectivity_provider)
@@ -306,8 +306,62 @@ def test_read_checkpoint_state_refuses_missing_field(tmp_path):
 
 
 def test_config_refuses_assimilating_nothing():
+    # extra_observations=False is the caller STATING that no attributed
+    # extra batch will arrive, which is the only thing construction can
+    # know.  Left unset the batch list decides, and the analysis call
+    # carries the refusal instead; see
+    # test_analysis_refuses_when_no_source_and_no_extra_batch_arrives.
     with pytest.raises(RadarAssimilationError, match="assimilate nothing"):
-        _config(velocity=False, reflectivity=False)
+        _config(velocity=False, reflectivity=False, extra_observations=False)
+
+
+def test_analysis_refuses_when_no_source_and_no_extra_batch_arrives():
+    cfg = _config(velocity=False, reflectivity=False)
+    with pytest.raises(RadarAssimilationError,
+                       match="no extra observation batch arrived"):
+        assimilate_radar_grid({0: "unread"}, None, object(), cfg)
+
+
+def test_analysis_admits_attributed_extra_batches_without_a_declaration(
+        grid, tmp_path):
+    # The point-only analysis a declaration-gated config refused: no radar
+    # source, one attributed extra batch, nothing declared in advance.
+    from gpuwm.da.letkf import GriddedObs
+
+    members = 3
+    rng = np.random.default_rng(SEED)
+    center = _mass_truth(rng)
+    paths = {}
+    for index in range(members):
+        member_dir = tmp_path / f"member_{index:03d}"
+        member_dir.mkdir()
+        path = member_dir / "gpuwmrst_d01_000600.npz"
+        _write_checkpoint(path, _member_fields(center, rng))
+        paths[index] = path
+
+    mask = np.zeros((NZ, NY, NX), bool)
+    mask[1, NY // 2, NX // 2] = True
+    simulated = np.zeros((members, NZ, NY, NX))
+    simulated[:, 1, NY // 2, NX // 2] = np.arange(members, dtype=float)
+    batch = GriddedObs(
+        name="point:temperature", values=np.full((NZ, NY, NX), 1.5),
+        errors=np.full((NZ, NY, NX), 1.0), simulated=simulated, mask=mask,
+        localization=Localization(horizontal_m=H_LOC_M, vertical_m=V_LOC_M))
+    cfg = _config(velocity=False, reflectivity=False,
+                  analysis_fields=("thp",))
+    increments, provenance = assimilate_radar_grid(
+        paths, None, grid, cfg, extra_obs=[batch],
+        extra_obs_provenance=[{"source": "fixture"}])
+    assert provenance["analysis_sources"] == ["extra_observations"]
+    assert provenance["extra_observation_batches"] == 1
+    assert set(increments) == set(paths)
+
+
+def test_config_with_no_radar_source_waits_for_the_batch_list():
+    cfg = _config(velocity=False, reflectivity=False)
+    assert analysis_sources(cfg, extra_batches=None) == ("extra_observations",)
+    assert analysis_sources(cfg, extra_batches=2) == ("extra_observations",)
+    assert analysis_sources(cfg, extra_batches=0) == ()
 
 
 def test_config_refuses_unknown_z_source():
@@ -1590,3 +1644,37 @@ def test_a_multiplicative_ensemble_cannot_break_a_pair_even_mass_only(
     assert applied["moments"]["consistent"] is True
     state = read_checkpoint_state(tmp_path / "no-repair.npz")
     assert moment_consistency_report(state, mp_physics=10)["consistent"]
+
+
+@pytest.mark.parametrize("bounded", [True, False])
+def test_default_cuda_residency_and_custom_callback_contract(world, grid, monkeypatch, bounded):
+    import sys
+    from gpuwm.da import radar_assimilation as owner
+    calls = []
+    class Namespace:
+        @staticmethod
+        def asarray(values):
+            array = np.asarray(values)
+            calls.append(array.shape)
+            return array
+        asnumpy = staticmethod(np.asarray)
+    namespace = Namespace()
+    monkeypatch.setitem(sys.modules, "cupy", namespace)
+    monkeypatch.setattr(owner, "resolve_solve_device", lambda mode: ("cuda", "selected"))
+    def solver(prior, batches, geometry, config, diagnostics, **options):
+        assert all(isinstance(v, np.ndarray) for v in prior.values())
+        if bounded:
+            assert 'solve_namespace' not in options
+            assert callable(options['progress'])
+            assert any(len(shape) == 4 for shape in calls)
+        else:
+            assert not options
+            assert any(len(shape) == 4 for shape in calls)
+        return {name: np.zeros_like(v) for name, v in prior.items()}
+    solver.supports_host_staging = bounded
+    if bounded:
+        monkeypatch.setattr(owner, "analyze", solver)
+    paths = {member: member_background_checkpoint(state['member_dir'])
+             for member, state in world.member_states.items()}
+    owner.assimilate_radar_grid(paths, world.obs_path, grid, _config(),
+                               analysis_runner=None if bounded else solver)

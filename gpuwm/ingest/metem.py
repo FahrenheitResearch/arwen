@@ -641,7 +641,14 @@ def _unit_transform(variable, name: str) -> tuple[float, float]:
     """Quantity units are metadata, never guessed from a field's range."""
     units = str(variable.attributes.get("units", "")).strip().lower()
     if name in METGRID_NUMBER_FIELDS:
-        allowed = ("# kg-1", "# kg^-1", "#/kg", "kg-1", "1/kg")
+        # WRF's own Registry spelling for these is "# kg(-1)"
+        # (Registry/registry.new3d_wif:88), and the string a built WRF
+        # actually writes into a file is the same one with the "#"
+        # resolved away, "  kg(-1)".  Both are number per kilogram and
+        # both reach this reader from a real metgrid WIF stream, so a
+        # real met_em is not turned away on a units string.
+        allowed = ("# kg-1", "# kg^-1", "#/kg", "kg-1", "1/kg",
+                   "# kg(-1)", "kg(-1)")
         if units not in allowed:
             raise MetgridRefusal(f"met_em {name}: units {units!r} do not establish number per kilogram; supply {allowed}")
         return 1.0, 0.0
@@ -714,6 +721,35 @@ def met_em_series_identity(case):
         terrain=np.empty(0), source_orography=np.empty(0),
         statics={name:np.frombuffer(hashlib.sha256(np.ascontiguousarray(case.statics[name]).tobytes()).digest(),dtype=np.uint8)
                  for name in _SERIES_STATIC_FIELDS if name in case.statics})
+
+
+def met_em_source_top_pressure_pa(path: Path | str) -> float:
+    """The smallest analyzed pressure in one met_em file, in pascals.
+
+    Read at plan review for exactly one purpose: a requested model top
+    above the source atmosphere is a ladder the source cannot support,
+    and :func:`gpuwm.vertical_contract.validate_explicit_eta_grid`
+    refuses it by name given this number.  Only ``PRES`` is decoded, and
+    only from the first root file, so the answer costs one variable and
+    is available before a GPU is selected or an output directory made.
+    """
+    path = Path(path)
+    with open_dataset(path) as dataset:
+        variable = _variable(dataset, "PRES",
+            why="the source atmosphere's top pressure bounds the model top")
+        scale, offset = _unit_transform(variable, "PRES")
+        values = np.asarray(
+            variable.read_transformed(scale=scale, offset=offset, cache=False),
+            dtype=np.float64)
+    finite = values[np.isfinite(values) & (values > 0.0)]
+    if finite.size == 0:
+        raise MetgridRefusal(
+            f"{path.name}: PRES carries no finite positive pressure, so this "
+            "file declares no source atmosphere and the model top has "
+            "nothing to be checked against. Re-run metgrid for this valid "
+            "time so PRES holds the analyzed pressures, or point --met-em at "
+            "a directory whose files carry them")
+    return float(finite.min())
 
 
 def check_met_em_series(cases: Sequence[MetgridCase], *, interval_seconds: float,

@@ -92,6 +92,11 @@ CADENCE_MODES = ("fixed", "per-volume")
 #: What to do when volumes arrive faster than a cycle can be computed.
 #: There is no fourth option that drops one quietly.
 OVERRUN_POLICIES = ("refuse", "skip", "queue")
+#: Where the cycle cost this check is given came from.  The check itself
+#: is the same arithmetic either way; what differs is what a reader may
+#: conclude from the verdict, so the caller states it and the record
+#: carries it rather than a reader assuming the stronger of the two.
+COST_BASES = ("measured", "estimated")
 
 #: How the 15-minute tuning is carried to another cadence.
 SCALING_MODES = ("none", "documented")
@@ -516,13 +521,20 @@ def scaled_settings(*, cycle_interval_s: float,
 
 
 def check_overrun(plan: CadencePlan, *, cycle_cost_seconds: float,
-                  policy: str = "refuse") -> tuple[CadencePlan, dict]:
+                  policy: str = "refuse",
+                  cost_basis: str = "measured") -> tuple[CadencePlan, dict]:
     """Decide what happens when volumes outrun the cost of using them.
 
-    ``cycle_cost_seconds`` is a MEASURED wall time for one assimilation
-    cycle on the hardware that will run it, not an estimate: the whole
-    point of this check is that a plan which cannot keep up is caught
-    before it runs rather than discovered as a growing lag.
+    ``cycle_cost_seconds`` is a wall time for one assimilation cycle on
+    the hardware that will run it, and ``cost_basis`` says where it came
+    from.  The default, ``measured``, is the case this check was written
+    for: a plan that cannot keep up is caught before it runs rather than
+    discovered as a growing lag.  A caller holding a PRICE rather than a
+    stopwatch reading passes ``estimated`` and the record carries that
+    word, because a refusal resting on a projection is still worth
+    raising and nobody reading the record should have to guess which of
+    the two they are looking at.  This is the whole of the difference:
+    the arithmetic, the policies and the wording are identical.
 
     Three policies, and there is deliberately no fourth that drops a
     volume quietly:
@@ -535,22 +547,26 @@ def check_overrun(plan: CadencePlan, *, cycle_cost_seconds: float,
         cycle before the previous one finished.  Every dropped volume is
         recorded with its reason, so a thinner analysis always says so.
     ``queue``
-        Assimilate every volume and let the analysis lag.  Honest for a
-        replay, where there is no real time to fall behind; for a live
-        feed the lag grows without bound and the returned record says by
-        how much per cycle.
+        Assimilate every volume and let the analysis lag.  The right
+        choice for a replay, where there is no real time to fall behind;
+        for a live feed the lag grows without bound and the returned
+        record says by how much per cycle.
     """
 
     if policy not in OVERRUN_POLICIES:
         raise CadenceError(
             f"unknown overrun policy {policy!r}; expected one of "
             f"{', '.join(OVERRUN_POLICIES)}")
+    if cost_basis not in COST_BASES:
+        raise CadenceError(
+            f"unknown cost basis {cost_basis!r}; expected one of "
+            f"{', '.join(COST_BASES)}")
     cost = float(cycle_cost_seconds)
     if not math.isfinite(cost) or cost <= 0.0:
         raise CadenceError(
             f"cycle_cost_seconds is {cycle_cost_seconds!r}; the check "
-            "compares a measured wall time against the cadence and needs "
-            "a positive one")
+            "compares a wall time against the cadence and needs a "
+            "positive one")
 
     legs = plan.intervals
     tight = [(index, leg) for index, leg in enumerate(legs) if leg < cost]
@@ -558,6 +574,7 @@ def check_overrun(plan: CadencePlan, *, cycle_cost_seconds: float,
         "schema": "gpuwm-da.cadence-overrun.v1",
         "policy": policy,
         "cycle_cost_seconds": cost,
+        "cost_basis": cost_basis,
         "shortest_interval_seconds": min(legs) if legs else None,
         "duty_cycle_at_mean_interval": (
             round(cost / plan.mean_interval_seconds, 4)
@@ -579,7 +596,7 @@ def check_overrun(plan: CadencePlan, *, cycle_cost_seconds: float,
         record["detail"] = detail
         raise CadenceError(
             f"{len(tight)} of {len(legs)} cycles are shorter than the "
-            f"measured {cost:.0f} s cost of one cycle ({detail}). The "
+            f"{cost_basis} {cost:.0f} s cost of one cycle ({detail}). The "
             "overrun policy is 'refuse', so nothing was planned. Choose "
             "'skip' to hold real time and drop the volumes that will not "
             "fit -- recorded, never silent -- or 'queue' to assimilate "

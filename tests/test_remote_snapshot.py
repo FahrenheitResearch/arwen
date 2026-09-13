@@ -47,6 +47,7 @@ def test_dry_run_creates_nothing_and_binds_all_existing_companions(tmp_path):
     assert review["wps_sha256"] == hashlib.sha256(wps.read_bytes()).hexdigest()
     assert set(review["inputs"]) == {str(source), str(wps), str(companion)}
     assert review["argv"][4:7] == ["gpuwm.cli", "go", str(source)]
+    assert "--no-memory-gate" in review["argv"]
     assert review["argv"][-2:] == ["--products", "none"]
     assert review["cwd"] == str(tmp_path)
     assert {p.name: p.read_bytes() for p in tmp_path.iterdir()} == before
@@ -192,6 +193,7 @@ def test_resume_review_resolves_exact_checkpoint_and_preserves_old_output(tmp_pa
     monkeypatch.setattr(rw, "_record", lambda directory: old)
     monkeypatch.setattr(rw, "_status", lambda directory: {"state": "stopped"})
     wanted = request(tmp_path, source, action="resume", job="old-job", dry_run=True)
+    wanted.pop("products")  # Omission inherits the saved run's products.
     review = rw._launch(wanted, tmp_path)["review"]
     assert review["checkpoint"] == str(checkpoint)
     assert review["parent_job"] == "old-job" and review["products"] == "t2"
@@ -251,3 +253,47 @@ def test_explicit_wps_requires_prepared_bundle(tmp_path):
     source = config(tmp_path)
     with pytest.raises(ValueError, match="wps_namelist requires prepared_root"):
         rw._launch(request(tmp_path, source, wps_namelist=str(tmp_path / "namelist.wps"), dry_run=True), tmp_path)
+
+
+@pytest.mark.parametrize("override", [False, True])
+def test_resume_uses_explicit_inputs_or_saved_defaults(tmp_path, monkeypatch, override):
+    source = config(tmp_path)
+    output = tmp_path / "old-output"
+    output.mkdir()
+    checkpoint = _restart(output / "gpuwmrst_d01_2026-09-05_01_00_00.npz")
+    old = {"id": "old-job", "snapshot_config": str(source),
+           "outdir": str(output), "cwd": str(tmp_path), "products": "t2"}
+    selected = {"products": "none"}
+    for key in ("geog_root", "prepared_root"):
+        before, after = tmp_path / ("old-" + key), tmp_path / ("new-" + key)
+        before.mkdir()
+        after.mkdir()
+        old[key], selected[key] = str(before), str(after)
+    old_wps, new_wps = tmp_path / "old.wps", tmp_path / "new.wps"
+    old_wps.write_text("&share\n max_dom=1,\n/\n", encoding="utf-8")
+    new_wps.write_text("&share\n max_dom=1,\n/\n! revised authority\n", encoding="utf-8")
+    old["snapshot_wps_namelist"] = str(old_wps)
+    selected["wps_namelist"] = str(new_wps)
+    original = json.loads(json.dumps(old))
+    checked = []
+    monkeypatch.setattr(rw, "_directory", lambda workspace, job: tmp_path)
+    monkeypatch.setattr(rw, "_record", lambda directory: old)
+    monkeypatch.setattr(rw, "_status", lambda directory: {"state": "stopped"})
+    def prepared_binding(prepared, config, wps, outdir):
+        checked.append((str(prepared), str(wps)))
+        return {"prepared_sha256": "a" * 64}
+    monkeypatch.setattr(rw, "_prepared_binding", prepared_binding)
+    wanted = request(tmp_path, source, action="resume", job="old-job", dry_run=True)
+    wanted.pop("products")
+    if override:
+        wanted.update(selected)
+    review = rw._launch(wanted, tmp_path)["review"]
+    expected = selected if override else {**old, "wps_namelist": str(old_wps)}
+    for name in selected:
+        assert review[name] == expected[name]
+        flag = "--" + name.replace("_", "-")
+        assert review["argv"][review["argv"].index(flag) + 1] == expected[name]
+    assert checked == [(expected["prepared_root"], expected["wps_namelist"])]
+    assert review["checkpoint"] == str(checkpoint)
+    assert old == original and list(output.iterdir()) == [checkpoint]
+    assert not (tmp_path / "new output").exists()

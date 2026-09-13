@@ -1270,6 +1270,40 @@ def radiation_scheme_ids(cfg: RunConfig) -> tuple[int, int]:
     return lw, sw
 
 
+def radiation_scheme_ids_from_settings(settings) -> tuple[int, int]:
+    """:func:`radiation_scheme_ids`, asked of a settings MAP.
+
+    The rule above is the engine's: ``ra_lw_physics`` and
+    ``ra_sw_physics`` of -1 mean "not stated here", and the resolved pair
+    lives in the combined ``ra_physics``.  Three readers outside this
+    module re-implemented it against a switch map and all three copied
+    it wrong in the same way -- they fell back to the combined value only
+    when a split key was ABSENT, so a suite on the aggregate radiation
+    option, which states -1 explicitly, was read as scheme -1 on both
+    streams.  One of those readers then attached the acknowledgement for
+    "nothing computes downward longwave" to a suite running full
+    RTE+RRTMGP longwave.
+
+    So the map-shaped question gets an answer HERE, beside the rule it
+    is asking about, and the menu reader and both runners call it.
+
+    Deliberately tolerant where :func:`radiation_scheme_ids` refuses: a
+    picker classifies whatever it is handed, including a map with one
+    half stated, and a display path must not raise.  A materialized
+    RunConfig still meets the strict form before step 0.
+    """
+
+    def _value(name, default):
+        value = settings.get(name, default)
+        return default if value is None else int(value)
+
+    combined = _value("ra_physics", 0)
+    longwave = _value("ra_lw_physics", -1)
+    shortwave = _value("ra_sw_physics", -1)
+    return (combined if longwave < 0 else longwave,
+            combined if shortwave < 0 else shortwave)
+
+
 def radiation_enabled(cfg: RunConfig) -> bool:
     """Whether either resolved radiation component is active."""
     return any(radiation_scheme_ids(cfg))

@@ -497,8 +497,32 @@ def test_no_existing_profile_changed_its_microphysics():
         assert profile in SINGLE_DOMAIN_PHYSICS_PROFILES, profile
         assert single_domain_runtime_switches(
             profile)["mp_physics"] == mp_physics, profile
+    # The menu gained the six COMPOSITION suites with audit R-067 -- each
+    # an implemented option's first named front door -- so the equality
+    # names them rather than refusing the addition.  Naming them is the
+    # point: a seventh row appearing without a line here still fails.
+    from gpuwm.physics_compat import COMPOSITION_SUITE_PROFILE_IDS
+    from gpuwm.physics_registry import template_ids_with_components
+
+    # And the menu gained one more row when it stopped being one route's
+    # declared list and became every fixed-template route's: the WSM6 + KF
+    # template on the aggregate RTE+RRTMGP option, which the prepared
+    # single-domain route has always declared and whose runtime product
+    # that route used to hand-type in its own module.  Named here through
+    # its composition rather than its id, because its id carries the
+    # forcing source it was registered on.
+    aggregate_kf = template_ids_with_components(
+        microphysics="wsm6-mp6", cumulus="kain-fritsch",
+        radiation="rte-rrtmgp-legacy-aggregate")
+    assert len(aggregate_kf) == 1
+    assert single_domain_runtime_switches(aggregate_kf[0])["mp_physics"] == 6
+
     assert (set(SINGLE_DOMAIN_PHYSICS_PROFILES)
-            == set(before) | {P3_LEGACY_RRTMG_PROFILE_ID})
+            == set(before) | {P3_LEGACY_RRTMG_PROFILE_ID}
+            | set(COMPOSITION_SUITE_PROFILE_IDS) | set(aggregate_kf))
+    # ...and none of those six moved an EXISTING profile's microphysics,
+    # which is what this test is named for: each is its own row.
+    assert not set(COMPOSITION_SUITE_PROFILE_IDS) & set(before)
 
 
 def test_the_p3_profile_switches_are_admissible_to_the_shipped_validator():

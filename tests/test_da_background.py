@@ -35,12 +35,15 @@ WIND = [{"name": "u", "amplitude": 1.5, "length_scale_km": 150.0},
 
 def test_the_registry_is_the_roster_and_gfs_is_the_default():
     assert background.DEFAULT_BACKGROUND_SOURCE == "gfs"
-    assert set(background.BACKGROUND_SOURCES) == {"gfs", "hrrr"}
+    from gpuwm.source_adapters import source_adapters
+    assert set(background.BACKGROUND_SOURCES) == {row.source_id for row in source_adapters() if row.runnable}
 
 
 def test_an_unknown_source_refuses_by_naming_the_roster():
-    with pytest.raises(background.BackgroundError, match="gfs, hrrr"):
+    from gpuwm.source_adapters import source_adapters
+    with pytest.raises(background.BackgroundError, match="available sources") as caught:
         background.resolve_background_source("hrrre")
+    assert str(caught.value).split('available sources: ', 1)[1].split(', ') == [row.source_id for row in source_adapters()]
 
 
 def test_hrrr_carries_condensate_and_gfs_does_not():
@@ -131,10 +134,14 @@ def test_a_window_past_the_cycle_horizon_refuses_rather_than_truncates():
     """HRRR's 18 h (48 h at the synoptic hours) is the source's ceiling."""
 
     init = datetime(2026, 8, 5, 5)          # a 05Z cycle stops at f018
-    with pytest.raises(background.BackgroundError, match="publishes only"):
+    selected = background.plan_background_cycle(
+        "hrrr", init=init, now=init + timedelta(hours=2), run_seconds=30 * 3600.0)
+    assert selected.cycle == datetime(2026, 8, 5, 0)
+    assert selected.forecast_start_hour == 5 and selected.forecast_end_hour == 35
+    with pytest.raises(background.BackgroundError, match="No complete"):
         background.plan_background_cycle(
             "hrrr", init=init, now=init + timedelta(hours=2),
-            run_seconds=30 * 3600.0)
+            run_seconds=49 * 3600.0)
 
 
 def test_the_extended_synoptic_hrrr_cycle_carries_a_longer_window():

@@ -60,7 +60,8 @@ from __future__ import annotations
 
 from typing import Any, Callable, Mapping
 
-from gpuwm.physics_compat import (MORRISON_PROFILE_ID, MYNN_PROFILE_ID,
+from gpuwm.physics_compat import (SINGLE_DOMAIN_PHYSICS_PROFILES,
+                                  MORRISON_PROFILE_ID, MYNN_PROFILE_ID,
                                   MYNN_RTE_RRTMGP_PROFILE_ID,
                                   MYNN_RUC_PROFILE_ID,
                                   MYNN_RUC_RTE_RRTMGP_PROFILE_ID,
@@ -116,7 +117,11 @@ _BOUND_PROBE_LEVELS = 40
 #: ``tools/build_rw_wps_release.py`` refused to stage rather than ship it.
 #: The wizard imports both names from here and re-exports them under the
 #: spellings every reader in the tree already uses.
-WIZARD_PHYSICS_PROFILES = (
+#: The RANKING, not the membership (audit R-067).  Membership is derived
+#: from the registry below, so a registered template can never be left
+#: without a wizard row; this tuple says which suites lead, and the
+#: paragraph above says why that order is the thing being compared.
+_WIZARD_PROFILE_RANKING = (
     MORRISON_PROFILE_ID,
     NSSL2_PROFILE_ID,
     NSSL2_LEGACY_RRTMG_PROFILE_ID,
@@ -224,18 +229,25 @@ def _switches(profile: str) -> dict[str, Any]:
 
 
 def radiation_scheme_ids(switches: Mapping[str, Any]) -> tuple[int, int]:
-    """``(longwave, shortwave)`` selectors, split or legacy spelling.
+    """``(longwave, shortwave)`` selectors, in every spelling.
 
-    The registry writes the split pair and v1.0.0 wrote the combined
-    ``ra_physics``; both mean the same thing and a reader that knew only
-    one of them would classify half the shipped suites wrong.
+    One line of delegation, on purpose.  The registry writes the split
+    pair, v1.0.0 wrote the combined ``ra_physics``, and the aggregate
+    radiation option writes -1 in both split keys with the resolved pair
+    in the combined one.  This reader knew the first two and read the
+    third literally, so the suite on that option reported scheme -1 on
+    both streams -- which a picker prints as an id and a premise check
+    reads as "runs no radiation at all".  It went unseen while no menu
+    offered that suite and surfaced the moment one did.
+
+    :func:`gpuwm.config.radiation_scheme_ids` is the engine's rule and
+    :func:`gpuwm.config.radiation_scheme_ids_from_settings` is that rule
+    asked of a switch map, so there is now one place to get it wrong.
     """
 
-    combined = int(switches.get("ra_physics", 0) or 0)
-    longwave = switches.get("ra_lw_physics")
-    shortwave = switches.get("ra_sw_physics")
-    return (combined if longwave is None else int(longwave),
-            combined if shortwave is None else int(shortwave))
+    from gpuwm.config import radiation_scheme_ids_from_settings
+
+    return radiation_scheme_ids_from_settings(switches)
 
 
 def day_only(profile: str) -> bool:
@@ -652,47 +664,112 @@ __all__ = [
 # AGREEMENT WITH THE REGISTRY, AT IMPORT.  The wizard menu is a hand-kept
 # list of template ids; an implemented composition it omits has no front
 # door through the wizard.  Every omission is cited so the sweep is a grep:
-# the Kessler probe is an HRRR-only ratification product, the three Noah-MP
-# expert templates sit behind their acknowledgement, and two templates were
-# never given a runtime-switch row at all (audit R-068).
+# the Kessler probe is an HRRR-only ratification product, and audit R-068
+# covers templates with no single-domain runtime product. The three
+# Noah-MP expert templates remain selectable with advisory metadata.
 _TEMPLATES_OUTSIDE_THE_WIZARD_MENU = {
     "kessler-mp1-ysu-mm5-noah-dudhia-v1": (
         "native-HRRR Kessler ratification probe; its evidence is bound to "
         "the HRRR route and it is deliberately not offered as a wizard suite"),
-    "wsm6-mynn-mynn-noahmp-no-radiation-expert-only-v1": (
-        "expert-only Noah-MP template behind noahmp-host-column-throughput-v1"),
-    "wsm6-mynn-mynn-noahmp-rte-rrtmgp-expert-only-v1": (
-        "expert-only Noah-MP template behind noahmp-host-column-throughput-v1"),
-    "wsm6-ysu-mm5-noahmp-no-radiation-expert-only-v1": (
-        "expert-only Noah-MP template behind noahmp-host-column-throughput-v1"),
 }
-# The two audit R-068 templates are named through the registry's own
-# records (their composition and the default-template constant) rather
-# than as id literals, the same way gpuwm/physics_compat.py cites them:
-# one id carries the forcing source it was registered on, and a citation
-# keyed on a spelling stops being a citation when the template is renamed.
+# The remaining omissions are named through the registry's own records --
+# a composition, or the set difference against the door's own menu --
+# rather than as id literals, the same way gpuwm/physics_compat.py cites
+# them: one id carries the forcing source it was registered on, and a
+# citation keyed on a spelling stops being a citation when the template
+# is renamed.
 
 
 def _templates_without_a_runtime_switch_row() -> dict[str, str]:
-    from gpuwm.physics_registry import (
-        DEFAULT_TEMPLATE_ID, template_ids_with_components)
+    """The omissions that remain, each one MEASURED rather than asserted.
 
-    reason = ("audit R-068: no _SINGLE_DOMAIN_RUNTIME_SWITCHES row, so no "
-              "runner accepts it")
-    aggregate_kf = template_ids_with_components(
-        microphysics="wsm6-mp6", cumulus="kain-fritsch",
-        radiation="rte-rrtmgp-legacy-aggregate")
-    if len(aggregate_kf) != 1:
+    RETIRED here, against the measurement that retired it: the audit
+    R-068 citation for the one WSM6 + Kain-Fritsch template on the
+    aggregate RTE+RRTMGP radiation option, which read "no
+    _SINGLE_DOMAIN_RUNTIME_SWITCHES row, so no runner accepts it".  Since
+    the single-domain menu became every fixed-template route's own
+    declaration, one of those routes declares that template and
+    :func:`gpuwm.physics_compat.single_domain_runtime_switches` resolves a
+    complete twenty-three-value product for it, so the reason had stopped
+    being true while the wizard still excluded the template on it.
+    gpuwm/physics_compat.py retired its sibling citation; this one was not
+    swept with it.
+
+    The replacement cannot go stale the same way, because R-068 is no
+    longer a list of ids with a sentence attached.  It is the QUESTION
+    "does the single-domain door resolve a runtime product for this
+    template", asked of the door itself: a template that gains one leaves
+    this map by arithmetic, and :func:`_wizard_menu` then offers it in the
+    same import.  A template that loses one is cited automatically instead
+    of failing the agreement check with no reason to give.
+    """
+
+    import os
+
+    from gpuwm.physics_registry import (
+        REGISTRY_REBUILD_ENV, physics_registry, template_ids_with_components)
+
+    if os.environ.get(REGISTRY_REBUILD_ENV) == "1":
+        # Skipped while the registry is being regenerated, exactly as the
+        # agreement check these citations feed is: the templates they name
+        # may not exist on disk until the rebuild finishes.
+        return {}
+    aerosol = template_ids_with_components(
+        microphysics="thompson-aerosol-mp28")
+    if len(aerosol) != 1:
         raise RuntimeError(
-            "the audit R-068 citation names THE ONE WSM6 + KF template on "
-            "the aggregate RTE+RRTMGP radiation option and the registry now "
-            f"has {len(aggregate_kf)}: {list(aggregate_kf)}; give each its "
-            "wizard row or cite each omission")
-    return {aggregate_kf[0]: reason, DEFAULT_TEMPLATE_ID: reason}
+            "the audit R-067 citation names THE ONE aerosol-aware Thompson "
+            f"template and the registry now has {len(aerosol)}: "
+            f"{list(aerosol)}; give each its wizard row or cite each omission")
+    cited = {aerosol[0]: (
+        "audit R-067 with R-044 as the named blocker: the fixed-template "
+        "runner has no cold-start arm for the aerosol-aware boundary "
+        "species, so this suite is offered on the experiment-per-domain "
+        "route only")}
+    reason = (
+        "audit R-068: no fixed-template runner route declares it, so the "
+        "single-domain door resolves no runtime product for it and no "
+        "runner accepts it; declaring it on a fixed-template route is what "
+        "retires this citation")
+    offered = set(SINGLE_DOMAIN_PHYSICS_PROFILES)
+    for template_id in sorted(physics_registry()["templates"]):
+        if (template_id in offered or template_id in cited
+                or template_id in _TEMPLATES_OUTSIDE_THE_WIZARD_MENU):
+            continue
+        cited[template_id] = reason
+    return cited
 
 
 _TEMPLATES_OUTSIDE_THE_WIZARD_MENU.update(
     _templates_without_a_runtime_switch_row())
+
+
+def _wizard_menu() -> tuple[str, ...]:
+    """The wizard menu: ranking above, membership from the registry.
+
+    AUDIT R-067.  A hand-kept tuple of template ids is a scheme table, and
+    an implemented composition with no menu row has no front door -- which
+    is how eleven implemented schemes came to be registered, selectable in
+    principle, and offered by nothing.  Every template the single-domain
+    door validates now earns a wizard row unless its absence is CITED
+    above, and the citations are what the retirement sweep greps for.
+
+    The ranking stays declared because its order carries meaning that no
+    registry row states: the nocturnally valid suites lead, so
+    :func:`default_profile_for` taking the head of an admissible set gets
+    both radiation streams without knowing what nocturnal means.  A suite
+    the ranking does not name follows it, in the order the route declares.
+    """
+
+    ordered = list(_WIZARD_PROFILE_RANKING)
+    for profile in SINGLE_DOMAIN_PHYSICS_PROFILES:
+        if profile in _TEMPLATES_OUTSIDE_THE_WIZARD_MENU or profile in ordered:
+            continue
+        ordered.append(profile)
+    return tuple(ordered)
+
+
+WIZARD_PHYSICS_PROFILES = _wizard_menu()
 
 
 def _require_agreement_with_the_registry() -> None:

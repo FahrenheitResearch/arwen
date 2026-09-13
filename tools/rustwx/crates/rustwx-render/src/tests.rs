@@ -13,6 +13,57 @@ fn sample_field(product: &str) -> Field2D {
 }
 
 #[test]
+fn colorbar_units_reach_the_image_without_changing_the_map() {
+    for style in [StaticPlotStyle::OperationalBudget30s, StaticPlotStyle::CleanAtlas] {
+        for units in ["degF", "dBZ", "kt", "kg m-2 s-1"] {
+            let mut request = MapRenderRequest::for_weather_product(
+                sample_field("sbecape"), WeatherProduct::Sbecape);
+            request.width = 600;
+            request.height = 450;
+            request.field.units.clear();
+            let render = |request: &MapRenderRequest| {
+                with_render_state_with_style(request, style, |data, ny, nx, opts| {
+                    Ok(render_to_image_profile(data, ny, nx, opts))
+                }).unwrap()
+            };
+            let (bare, before) = render(&request);
+            request.field.units = units.into();
+            let (labelled, after) = render(&request);
+            assert!(bare != labelled, "colorbar omitted {units} in {style:?}");
+            let canvas = RenderPresentation::for_mode_with_style(
+                request.visual_mode, style).canvas_background.to_image_rgba();
+            for (old, new) in bare.pixels().zip(labelled.pixels()) {
+                if old != new {
+                    assert!(old == &canvas || old[3] == 0,
+                            "unit label overwrote existing legend or header ink");
+                }
+            }
+            assert_eq!((before.map_x, before.map_y, before.map_w, before.map_h),
+                       (after.map_x, after.map_y, after.map_w, after.map_h));
+            for y in before.map_y..before.map_y + before.map_h {
+                for x in before.map_x..before.map_x + before.map_w {
+                    assert_eq!(bare.get_pixel(x, y), labelled.get_pixel(x, y),
+                               "unit annotation changed a map pixel");
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn disabled_colorbar_does_not_draw_units() {
+    let mut request = MapRenderRequest::for_weather_product(
+        sample_field("sbecape"), WeatherProduct::Sbecape);
+    request.width = 300;
+    request.height = 240;
+    request.colorbar = false;
+    let before = render_image_with_style(&request, StaticPlotStyle::CleanAtlas).unwrap();
+    request.field.units = "different units".into();
+    let after = render_image_with_style(&request, StaticPlotStyle::CleanAtlas).unwrap();
+    assert_eq!(before, after);
+}
+
+#[test]
 fn weather_product_mapping_covers_ecape_and_severe_aliases() {
     assert_eq!(
         WeatherProduct::from_product_name("sbecape"),

@@ -35,11 +35,15 @@ def manifest():
     names = [f"gpuwm-{VERSION}-py3-none-any.whl", f"gpuwm-{VERSION}-py3-none-manylinux_2_28_x86_64.whl",
              f"gpuwm-{VERSION}-py3-none-win_amd64.whl", f"gpuwm-{VERSION}.tar.gz",
              f"gpuwm_data-{VERSION}-py3-none-any.whl", f"gpuwm_data-{VERSION}.tar.gz"]
+    carried = [row("gpuwm-carried-physics-v9.8.6-v9.8.7.json"),
+               row("gpuwm-carried-physics-v9.8.6-v9.8.7.verification.json")]
     return {"schema": "arwen.publication-assets.v1", "engine_source_revision": COMMIT,
             "desktop_source_revision": "d" * 40,
+            "carried_physics": {"schema": "arwen.carried-release-asset.v1", "release_id": "e" * 64,
+                                "release": carried[0], "verification": carried[1]},
             "github": {"repository": REPOSITORY, "target_version": TAG, "assets": [
                 row(f"gpuwm-bridges-{TAG}-linux-x86_64.zip"), row(f"gpuwm-bridges-{TAG}-win-x86_64.zip"),
-                row("bridge-bundle-manifest.json")]}, "pypi": {"artifacts": [row(name) for name in names]}}
+                row("bridge-bundle-manifest.json"), *carried]}, "pypi": {"artifacts": [row(name) for name in names]}}
 
 
 def test_one_manifest_defines_the_engine_four_and_companion_pair(publication, manifest):

@@ -25,6 +25,7 @@ from gpuwm.static.highres_fetch import (
     SourceAbsent,
     TERRAIN_SOURCES,
     copernicus_dem_tile_ids,
+    domain_footprint,
     fetch_copernicus_dem_tiles,
     fetch_srtm_gl1_tiles,
     one_degree_tile_bbox,
@@ -132,9 +133,21 @@ def test_srtm_tile_ids_use_the_compact_naming():
         == ("N39W105",)
 
 
-def test_antimeridian_span_refuses_at_enumeration():
-    with pytest.raises(CoverageError, match="antimeridian"):
-        copernicus_dem_tile_ids(FootprintBBox(30.0, 31.0, -179.9, 179.9))
+def test_a_continued_longitude_range_enumerates_across_the_line():
+    """RETIRES test_antimeridian_span_refuses_at_enumeration.
+
+    That gate refused any bbox wider than 180 degrees of longitude as "an
+    antimeridian wrap, not a domain".  A dateline footprint no longer
+    arrives wrapped: :func:`domain_footprint` reports it as a CONTINUED
+    range, and the integer-degree loop names each tile through
+    ``((lon_sw + 180) % 360) - 180``, so the two sides of the line are
+    adjacent tiles and nothing special happens.
+    """
+    tiles = copernicus_dem_tile_ids(FootprintBBox(30.0, 31.0, 179.4, 180.6))
+    assert tiles == ("N30_00_E179_00", "N30_00_W180_00")
+    for tile in tiles:
+        box = one_degree_tile_bbox(tile)
+        assert box.lat_min == 30.0 and box.lat_max == 31.0
 
 
 # ---------------------------------------------------------------------------
@@ -371,11 +384,158 @@ def test_build_terrain_override_returns_terrain_alone(monkeypatch):
 # Antimeridian
 # ---------------------------------------------------------------------------
 
-def test_antimeridian_domain_refuses_before_any_fetch(tmp_path):
-    from gpuwm.static.highres_production import _require_single_lobe
+def _dateline_grid(dx: float = 3000.0, n: int = 41) -> LambertGrid:
+    """A small domain sitting on 180 degrees."""
+    return LambertGrid(
+        ref_lat=30.0, ref_lon=180.0, truelat1=30.0, truelat2=60.0,
+        stand_lon=180.0, dx=dx, dy=dx, e_we=n, e_sn=n)
+
+
+def test_a_dateline_domain_enumerates_its_own_tiles():
+    """RETIRES test_antimeridian_domain_refuses_before_any_fetch.
+
+    A domain on 180 degrees is a domain.  Its footprint must describe the
+    degree and a half it occupies, not the whole planet, and the
+    one-degree enumerator must return the handful of tiles either side of
+    the line.
+    """
+    grid = _dateline_grid()
+    bbox = domain_footprint(grid, 3)
+
+    assert bbox.lat_max - bbox.lat_min == pytest.approx(1.30, abs=0.2)
+    # The wrap is gone: a continued range, not a 360-degree bounding box.
+    assert bbox.lon_max - bbox.lon_min < 2.0
+    assert bbox.lon_max > 180.0 > bbox.lon_min
+
+    tiles = copernicus_dem_tile_ids(bbox)
+    assert len(tiles) < 20
+    assert "N29_00_E179_00" in tiles
+    assert "N29_00_W180_00" in tiles
+    for tile in tiles:
+        box = one_degree_tile_bbox(tile)
+        assert box.lat_max - box.lat_min == 1.0
+        assert box.lon_max - box.lon_min == 1.0
+
+
+def test_copernicus_coverage_accepts_a_continued_longitude_range():
+    """A source published for every longitude cannot be left east or west.
+
+    Without the ``global_lon`` marker a continued footprint overshoots the
+    -180..180 envelope by a fraction of a degree and the coverage gate
+    reports an east overshoot, which is an artefact of the frame rather
+    than a fact about the product.
+    """
+    coverage = terrain_source_coverage("copernicus-dem-glo30")
+    assert coverage.global_lon is True
+    continued = FootprintBBox(lat_min=29.3, lat_max=30.7,
+                              lon_min=179.2, lon_max=180.8)
+    assert coverage.outside(continued) == {}
+    coverage.check(continued)
+    # The latitude legs are untouched: GLO-30 still stops at 84 N.
+    assert "north_by_deg" in coverage.outside(
+        FootprintBBox(83.0, 86.0, 179.2, 180.8))
+
+
+def test_no_shape_gate_refuses_a_dateline_domain(tmp_path):
+    """RETIRES test_no_gate_refuses_a_dateline_domain_before_coverage.
+
+    Being on 180 degrees is not itself an objection any more: there is no
+    surviving gate that judges the SHAPE of a footprint or the projection
+    it came from.  What can still stop a dateline domain is one named
+    capability gap -- the mosaic window is written in the cut -180..180
+    frame -- or a per-source coverage fact.  Both name a way out.  The
+    earlier name promised the stop came after coverage, which is no longer
+    true and was never the point.
+    """
+    config = HighresStaticConfig(enabled=True, cache_root=tmp_path,
+                                 fields="all")
     with pytest.raises(HighresRefusal) as failure:
-        _require_single_lobe(FootprintBBox(30.0, 31.0, -179.9, 179.9))
-    assert failure.value.reason == "antimeridian-footprint"
+        apply_highres_statics(
+            _baseline(40, 40), _dateline_grid(), config=config, domain_id=1,
+            case_date=date(2021, 5, 15), landuse_attrs=MODIS21_ATTRS)
+    assert failure.value.reason not in {"antimeridian-footprint",
+                                        "unsupported-projection",
+                                        "coastal-footprint"}
+    assert failure.value.reason in {"outside-source-coverage",
+                                    "landcover-source-missing",
+                                    "dateline-window-unbuilt"}
+
+
+# ---------------------------------------------------------------------------
+# Every projection this tree builds reaches the overlay
+# ---------------------------------------------------------------------------
+
+def test_mercator_and_polar_domains_reach_the_overlay(tmp_path):
+    """The overlay's gate is a grid TYPE, not a projection allow-list.
+
+    ``projection_class`` already refuses every map_proj this tree cannot
+    build, at grid construction, i.e. at configuration load.  What reaches
+    static production is therefore always lambert, mercator or polar, and
+    the overlay resamples all three through the grid's own PROJ CRS.  So
+    whatever comes back here must be a coverage fact about the source that
+    was selected, never "unsupported-projection".
+    """
+    from gpuwm.static.projection import MercatorGrid, PolarStereoGrid
+
+    mercator = MercatorGrid(
+        ref_lat=40.0, ref_lon=-100.0, truelat1=30.0, truelat2=60.0,
+        stand_lon=-100.0, dx=3000.0, dy=3000.0, e_we=41, e_sn=41)
+    polar = PolarStereoGrid(
+        ref_lat=70.0, ref_lon=-40.0, truelat1=60.0, truelat2=60.0,
+        stand_lon=-40.0, dx=3000.0, dy=3000.0, e_we=41, e_sn=41)
+
+    # 3DEP over the Mercator domain and Copernicus over the polar one are
+    # both reported absent, so each run refuses on a COVERAGE fact about
+    # the source it chose and no byte is requested from the network.
+    def absent(request, timeout=None):
+        raise SourceAbsent(getattr(request, "full_url", str(request)))
+
+    for grid in (mercator, polar):
+        config = HighresStaticConfig(enabled=True, cache_root=tmp_path,
+                                     fields="all")
+        with pytest.raises(HighresRefusal) as failure:
+            apply_highres_statics(
+                _baseline(40, 40), grid, config=config, domain_id=1,
+                case_date=date(2021, 5, 15), landuse_attrs=MODIS21_ATTRS,
+                urlopen=absent)
+        assert failure.value.reason != "unsupported-projection"
+        assert failure.value.reason in {
+            "outside-source-coverage", "landcover-source-missing",
+            "missing-source-coverage"}
+
+
+def test_require_projected_grid_accepts_every_built_projection():
+    """The surviving refusal is a type fact and nothing more."""
+    from gpuwm.static.highres_production import (HighresRefusal as _Refusal,
+                                                 _require_projected_grid)
+    from gpuwm.static.projection import MercatorGrid, PolarStereoGrid
+
+    _require_projected_grid(_us_grid())
+    _require_projected_grid(MercatorGrid(
+        ref_lat=40.0, ref_lon=-100.0, truelat1=30.0, truelat2=60.0,
+        stand_lon=-100.0, dx=3000.0, dy=3000.0, e_we=41, e_sn=41))
+    _require_projected_grid(PolarStereoGrid(
+        ref_lat=70.0, ref_lon=-40.0, truelat1=60.0, truelat2=60.0,
+        stand_lon=-40.0, dx=3000.0, dy=3000.0, e_we=41, e_sn=41))
+    with pytest.raises(_Refusal) as failure:
+        _require_projected_grid(object())
+    assert failure.value.reason == "unsupported-projection"
+
+
+def test_grid_crs_is_general_across_projections():
+    """The layer under the gate really is parameterised by map_proj."""
+    pytest.importorskip("pyproj")
+    from gpuwm.static.highres import _grid_crs
+    from gpuwm.static.projection import MercatorGrid, PolarStereoGrid
+
+    mercator = MercatorGrid(
+        ref_lat=40.0, ref_lon=-100.0, truelat1=30.0, truelat2=60.0,
+        stand_lon=-100.0, dx=3000.0, dy=3000.0, e_we=41, e_sn=41)
+    polar = PolarStereoGrid(
+        ref_lat=70.0, ref_lon=-40.0, truelat1=60.0, truelat2=60.0,
+        stand_lon=-40.0, dx=3000.0, dy=3000.0, e_we=41, e_sn=41)
+    assert "merc" in _grid_crs(mercator).to_proj4()
+    assert "stere" in _grid_crs(polar).to_proj4()
 
 
 # ---------------------------------------------------------------------------
@@ -420,3 +580,225 @@ def test_two_terrain_sources_on_one_domain_write_two_receipts(tmp_path):
         assert path.is_file(), path
         payload = json.loads(path.read_text(encoding="utf-8"))
         assert payload["config"]["terrain_source"] == source
+
+
+# ---------------------------------------------------------------------------
+# The continued-frame refusal fires at plan review, before any fetch
+# ---------------------------------------------------------------------------
+
+def _count_requests():
+    """A urlopen that records every request and never returns a byte."""
+    seen = []
+
+    def urlopen(url, offset):
+        seen.append(url)
+        raise SourceAbsent(f"{url} -> HTTP 404")
+
+    return seen, urlopen
+
+
+def test_a_dateline_terrain_domain_refuses_before_any_network_request(
+        tmp_path):
+    """The frame refusal is plan review, not a late discovery.
+
+    ``domain_footprint`` continues a dateline domain past 180 degrees and
+    the tile enumerators read it in that frame, but the mosaic window is
+    still written in the cut -180..180 frame.  The run must therefore stop
+    on the footprint it just computed, with the network untouched: a
+    silently enormous fetch that ends in "no" is exactly the failure this
+    program refuses.
+    """
+    seen, urlopen = _count_requests()
+    config = HighresStaticConfig(enabled=True, cache_root=tmp_path,
+                                 fields="terrain",
+                                 terrain_source="copernicus-dem-glo30")
+    grid = _dateline_grid()
+    # The footprint really is continued, and really does enumerate tiles:
+    # without the refusal this run has somewhere to go.
+    bbox = domain_footprint(grid, 3)
+    assert bbox.lon_max > 180.0
+    assert len(copernicus_dem_tile_ids(bbox)) > 0
+
+    with pytest.raises(HighresRefusal) as failure:
+        apply_highres_statics(
+            _baseline(40, 40), grid, config=config, domain_id=1,
+            case_date=date(2021, 5, 15), landuse_attrs=MODIS21_ATTRS,
+            urlopen=urlopen)
+
+    assert failure.value.reason == "dateline-window-unbuilt"
+    assert seen == [], (
+        f"{len(seen)} network request(s) were made before the refusal; "
+        "the frame check must run on the footprint, not after the fetch")
+    # Names the breakage and both ways out.
+    detail = failure.value.detail
+    assert "shifted" in detail
+    assert "Move the domain off 180 degrees" in detail
+    assert "30-arc-second baseline" in detail
+
+
+def test_a_pole_enclosing_domain_refuses_before_enumerating_its_tiles(
+        tmp_path):
+    """The worst case is the one that must never reach the fetch loop.
+
+    A polar-stereographic domain that encloses the south pole occupies
+    every longitude, so its footprint is the full band and its one-degree
+    enumeration is thousands of tiles -- all of them inside Copernicus
+    GLO-30's published envelope, so coverage says yes.  The only thing
+    between that configuration and a multi-thousand-tile download is this
+    refusal, and it has to fire first.
+    """
+    from gpuwm.static.projection import PolarStereoGrid
+
+    grid = PolarStereoGrid(
+        ref_lat=-89.5, ref_lon=0.0, truelat1=-60.0, truelat2=-60.0,
+        stand_lon=0.0, dx=40000.0, dy=40000.0, e_we=41, e_sn=41)
+    bbox = domain_footprint(grid, 3)
+    assert len(copernicus_dem_tile_ids(bbox)) > 1000
+    # This footprint really is the whole band, not a crossing of a line.
+    assert bbox.lon_max - bbox.lon_min >= 360.0
+
+    seen, urlopen = _count_requests()
+    config = HighresStaticConfig(enabled=True, cache_root=tmp_path,
+                                 fields="terrain",
+                                 terrain_source="copernicus-dem-glo30")
+    with pytest.raises(HighresRefusal) as failure:
+        apply_highres_statics(
+            _baseline(40, 40), grid, config=config, domain_id=1,
+            case_date=date(2021, 5, 15), landuse_attrs=MODIS21_ATTRS,
+            urlopen=urlopen)
+
+    assert failure.value.reason == "dateline-window-unbuilt"
+    assert seen == [], (
+        f"{len(seen)} network request(s) were made before the refusal")
+    # And coverage really would have said yes: GLO-30 reaches 90 S and is
+    # published for every longitude, so nothing downstream objects to this
+    # footprint.  The refusal above is the only thing between it and a
+    # multi-thousand-tile download.
+    terrain_source_coverage("copernicus-dem-glo30").check(bbox)
+
+
+def test_the_pole_enclosing_refusal_names_the_pole_not_the_dateline(
+        tmp_path):
+    """A refusal that misnames the fact sends the reader nowhere.
+
+    A domain wrapped around a projection pole is not sitting on 180
+    degrees: its footprint occupies every longitude, there is no line
+    with tiles either side of it, and "move the domain off 180 degrees"
+    is a remedy that cannot be taken -- move it where you like and the
+    footprint is still the whole band.  The refusal must state what is
+    true of THIS footprint and offer a way out that builds, which is a
+    smaller domain or one further from the projection pole.  The second
+    way out, the 30-arc-second baseline, is valid for both footprints
+    and stays.
+    """
+    from gpuwm.static.projection import PolarStereoGrid
+
+    polar = PolarStereoGrid(
+        ref_lat=-89.5, ref_lon=0.0, truelat1=-60.0, truelat2=-60.0,
+        stand_lon=0.0, dx=40000.0, dy=40000.0, e_we=41, e_sn=41)
+    # An ordinary large Lambert whose lat/lon envelope wraps the north
+    # pole reaches the same branch, with stand_lon nowhere near 180.
+    lambert = LambertGrid(
+        ref_lat=45.0, ref_lon=-100.0, truelat1=30.0, truelat2=60.0,
+        stand_lon=-100.0, dx=90000.0, dy=90000.0, e_we=121, e_sn=101)
+
+    for grid in (polar, lambert):
+        bbox = domain_footprint(grid, 3)
+        assert bbox.lon_max - bbox.lon_min >= 360.0
+        seen, urlopen = _count_requests()
+        config = HighresStaticConfig(enabled=True, cache_root=tmp_path,
+                                     fields="terrain",
+                                     terrain_source="copernicus-dem-glo30")
+        with pytest.raises(HighresRefusal) as failure:
+            apply_highres_statics(
+                _baseline(40, 40), grid, config=config, domain_id=1,
+                case_date=date(2021, 5, 15), landuse_attrs=MODIS21_ATTRS,
+                urlopen=urlopen)
+        detail = failure.value.detail
+        assert failure.value.reason == "dateline-window-unbuilt"
+        assert seen == []
+        # The fact this footprint actually has.
+        assert "occupies every longitude" in detail
+        assert "corners span 180 degrees or more" in detail
+        assert "projection pole" in detail
+        # Not the dateline story, and not the remedy that cannot be taken.
+        assert "Move the domain off 180 degrees" not in detail
+        assert "either side of the line" not in detail
+        # The way out that builds, and the one that is valid for both.
+        assert "Shrink the domain" in detail
+        assert "span less than 180 degrees of longitude" in detail
+        assert "30-arc-second baseline" in detail
+
+
+def test_a_domain_on_the_line_still_gets_the_dateline_wording(tmp_path):
+    """The branch did not cost the on-the-line domain its own statement.
+
+    A domain straddling 180 degrees has a narrow continued range, really
+    does have tiles either side of a line, and really can be moved off
+    it.  That footprint must keep the dateline wording and must not be
+    told to shrink away from a pole it is nowhere near.
+    """
+    seen, urlopen = _count_requests()
+    config = HighresStaticConfig(enabled=True, cache_root=tmp_path,
+                                 fields="terrain",
+                                 terrain_source="copernicus-dem-glo30")
+    grid = _dateline_grid()
+    bbox = domain_footprint(grid, 3)
+    assert bbox.lon_max - bbox.lon_min < 180.0
+
+    with pytest.raises(HighresRefusal) as failure:
+        apply_highres_statics(
+            _baseline(40, 40), grid, config=config, domain_id=1,
+            case_date=date(2021, 5, 15), landuse_attrs=MODIS21_ATTRS,
+            urlopen=urlopen)
+    detail = failure.value.detail
+    assert failure.value.reason == "dateline-window-unbuilt"
+    assert seen == []
+    assert "either side of the line" in detail
+    assert "Move the domain off 180 degrees" in detail
+    assert "occupies every longitude" not in detail
+    assert "Shrink the domain" not in detail
+    assert "30-arc-second baseline" in detail
+
+
+def test_the_full_mode_takes_the_same_frame_refusal(tmp_path):
+    """One function, both modes.
+
+    ``fields = "all"`` computes the same footprint and must stop on the
+    same fact, ahead of the land-cover coverage refusal that would
+    otherwise be reported first.
+    """
+    seen, urlopen = _count_requests()
+    config = HighresStaticConfig(enabled=True, cache_root=tmp_path,
+                                 fields="all")
+    with pytest.raises(HighresRefusal) as failure:
+        apply_highres_statics(
+            _baseline(40, 40), _dateline_grid(), config=config, domain_id=1,
+            case_date=date(2021, 5, 15), landuse_attrs=MODIS21_ATTRS,
+            urlopen=urlopen)
+    assert failure.value.reason == "dateline-window-unbuilt"
+    assert seen == []
+
+
+def test_both_window_writers_keep_the_frame_refusal_as_a_backstop(tmp_path):
+    """Plan review is the door; the two writers are still the backstop.
+
+    A caller that reaches a window writer directly, without going through
+    production's plan review, must get the same named refusal from the
+    same function rather than a silently shifted mosaic.
+    """
+    from gpuwm.static.highres_fetch import (FetchedFile,
+                                            derive_global_terrain_window,
+                                            derive_terrain_window)
+
+    continued = FootprintBBox(lat_min=29.3, lat_max=30.7,
+                              lon_min=179.2, lon_max=180.8)
+    tile = FetchedFile(path=tmp_path / "absent.tif", url="derived:test",
+                       sha256="0" * 64, bytes=1, fetched_utc="",
+                       cache_hit=False)
+
+    for writer in (derive_terrain_window, derive_global_terrain_window):
+        with pytest.raises(HighresRefusal) as failure:
+            writer([tile], continued, tmp_path)
+        assert failure.value.reason == "dateline-window-unbuilt"
+        assert "cut -180..180 frame" in failure.value.detail

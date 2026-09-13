@@ -232,16 +232,26 @@ class _Sentinel(Exception):
 
 
 def _stub_cupy(monkeypatch) -> None:
-    """A ``cupy`` the runner can import where none is installed.
+    """A ``cupy`` the runner can import, INSTALLED WITHOUT IMPORTING ONE.
 
     The ordering test never reaches the device: it stops at the first
-    parent-frame read.  Where CuPy is installed the real one is used.
+    parent-frame read.
+
+    THE IMPORT THAT USED TO GUARD THIS RETIRED THE WHOLE MODULE.  It read
+    ``try: import cupy ... except ImportError``, and tests/conftest.py
+    marks a module ``gpu`` for any ``import cupy`` its AST can see outside
+    a test function -- deliberately, because a helper's device use belongs
+    to callers the AST cannot enumerate.  This helper is such a caller, so
+    all eleven tests in this file were deselected from every
+    ``-m "not gpu"`` leg: the one suite that pins "the plan review and the
+    run door price the offline child from one function" ran nowhere on
+    CPU.  Nothing here needs a real CuPy, so none is asked for; a real one
+    already imported by something else is left alone, because replacing a
+    live module under a process that is using it is worse than the stub.
     """
-    try:
-        import cupy  # noqa: F401
+    live = sys.modules.get("cupy")
+    if live is not None and getattr(live, "__file__", None) is not None:
         return
-    except ImportError:
-        pass
     fake = types.ModuleType("cupy")
     fake.__dict__.update({name: value for name, value in vars(np).items()
                           if not name.startswith("__")})

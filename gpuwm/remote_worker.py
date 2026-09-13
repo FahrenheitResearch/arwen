@@ -366,6 +366,11 @@ def _prepared_binding(prepared, config, wps, outdir):
             "prepared_layout": bundle["layout"], "prepared_validation": "receipt and digest relay; full content preflight at launch"}
 
 
+def _requested(request, old, key, saved_key=None):
+    """Explicit restart overrides win; omitted values inherit the saved job."""
+    return request.get(key, None if old is None else old.get(saved_key or key))
+
+
 def _review(request, workspace):
     action = request["action"]
     old = None
@@ -386,8 +391,8 @@ def _review(request, workspace):
         raise ValueError("outdir's parent must already exist on the remote node")
     if old and (outdir.is_relative_to(Path(old["outdir"])) or outdir == Path(old["outdir"])):
         raise ValueError("resume output must be outside the source job's output tree")
-    prepared = request.get("prepared_root") if old is None else old.get("prepared_root")
-    wps = request.get("wps_namelist") if old is None else old.get("snapshot_wps_namelist")
+    prepared = _requested(request, old, "prepared_root")
+    wps = _requested(request, old, "wps_namelist", "snapshot_wps_namelist")
     if old and prepared is None and "case_data" not in tomllib.loads(_read(source).decode("utf-8")):
         from gpuwm.stage_cli import BUNDLE_DOCUMENTS
         candidates = [Path(old["outdir"]) / "prepared", Path(old["outdir"]) / "chain" / "hrrr-root-prep",
@@ -398,7 +403,8 @@ def _review(request, workspace):
             _checkpoint(old, request.get("from_checkpoint", "latest"))
             raise ValueError("source job has no recorded reusable prepared bundle; resume cannot rebuild one implicitly")
         candidate = source.with_suffix(".namelist.wps")
-        wps = str(candidate) if candidate.is_file() else None
+        if wps is None:
+            wps = str(candidate) if candidate.is_file() else None
     if prepared is not None:
         prepared = _absolute(prepared, "prepared_root")
     if wps is not None:
@@ -414,15 +420,19 @@ def _review(request, workspace):
         expected = request.get(f"expected_{name}_sha256")
         if expected is not None and expected != binding.get(f"{name}_sha256"):
             raise ValueError(f"{name} inputs changed since review; review again before starting")
-    geog = request.get("geog_root") if old is None else old.get("geog_root")
+    geog = _requested(request, old, "geog_root")
     if geog is not None:
         geog = str(_absolute(geog, "geog_root"))
         if not Path(geog).is_dir():
             raise ValueError("geog_root must already exist on the remote node")
-    products = request.get("products") if old is None else old.get("products")
+    products = _requested(request, old, "products")
     if products is not None and (not isinstance(products, str) or len(products) > 16384 or "\x00" in products):
         raise ValueError("products must be a catalog selector string of at most 16384 characters")
-    argv = [sys.executable, "-I", "-u", "-m", "gpuwm.cli", "go", str(source), "--outdir", str(outdir), "--run-stamp", "off"]
+    # The remote review already carries sizing advice. Do not turn the same
+    # estimate into a refusal again inside go; its input and device checks
+    # and the runner's real allocation errors still apply.
+    argv = [sys.executable, "-I", "-u", "-m", "gpuwm.cli", "go", str(source),
+            "--outdir", str(outdir), "--run-stamp", "off", "--no-memory-gate"]
     if geog:
         argv += ["--geog-root", geog]
     if products is not None:

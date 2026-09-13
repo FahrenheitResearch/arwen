@@ -61,10 +61,42 @@ WRF_MAP_PROJ_CODES = {"lambert": 1, "polar": 2, "mercator": 3}
 #: WRF header integer -> WPS map_proj string.
 WPS_MAP_PROJ_NAMES = {code: name for name, code
                       in WRF_MAP_PROJ_CODES.items()}
+#: The index a WPS/WRF domain's own grid starts at: &geogrid s_we/s_sn
+#: declare it and every such grid runs WPS_WINDOW_START..e_we, which is
+#: why a declared start is normalized rather than folded into the nest
+#: layout (i_parent_start is the offset into the PARENT; folding s_we
+#: into it would translate the domain and build a different grid).
+WPS_WINDOW_START = 1
+
 #: wrfout MAP_PROJ_CHAR values, keyed by WPS map_proj string.
 MAP_PROJ_CHARS = {"lambert": "Lambert Conformal",
                   "polar": "Polar Stereographic",
                   "mercator": "Mercator"}
+
+# The WPS names of the projections that are implemented, in one place.
+# Every door that enumerates them -- this module's own dispatch and the
+# namelist support report -- reads this, and reads it ON CALL, so a
+# projection added to WRF_MAP_PROJ_CODES is admitted everywhere at once
+# instead of everywhere the same tuple was typed again.
+def implemented_projections() -> tuple[str, ...]:
+    """The implemented WPS ``map_proj`` names, from the code table."""
+
+    return tuple(sorted(WRF_MAP_PROJ_CODES))
+
+
+def latlon_blocker() -> str:
+    """What regular/rotated latitude-longitude needs and does not have.
+
+    ONE sentence, published here because the projection module is what
+    would have to grow it.  The refusal itself is unchanged; it was
+    typed out separately in three places, so this is what keeps them
+    from drifting apart while it stands.
+    """
+
+    return ("regular/rotated latitude-longitude needs angular dx/dy "
+            "rather than metre spacing and WRF's global/pole polar "
+            "filter; rotated grids also need pole_lat/pole_lon state and "
+            "the map_proj == 6 curvature branch")
 
 
 def _free_rust_grid_handle(handle: int) -> None:
@@ -646,15 +678,11 @@ def projection_class(map_proj: str) -> type[ProjectedGrid]:
             "lat-lon", "latlon", "regular_ll", "rotated-lat-lon",
             "rotated_ll",
         }
-        blocker = (
-            "; regular/rotated latitude-longitude needs angular dx/dy "
-            "rather than metre spacing and WRF's global/pole polar filter; "
-            "rotated grids also need pole_lat/pole_lon state and the "
-            "map_proj == 6 curvature branch"
-            if latlon else "")
+        blocker = f"; {latlon_blocker()}" if latlon else ""
+        named = ", ".join(repr(name) for name in implemented_projections())
         raise NotImplementedError(
             f"map_proj {map_proj!r} not supported (implemented: "
-            f"'lambert', 'mercator', 'polar'){blocker}")
+            f"{named}){blocker}")
     return classes[key]
 
 
@@ -807,12 +835,26 @@ def grids_from_wps_namelist(path) -> list[ProjectedGrid]:
     root_dx = Fraction(_finite_spacing(v["dx"][0], "dx", path))
     root_dy = Fraction(_finite_spacing(v["dy"][0], "dy", path))
     spacing_by_grid_id = {1: (root_dx, root_dy)}
+    # &geogrid ref_x/ref_y name the CELL the reference lat/lon sits on,
+    # and WPS defaults them to (e_we/2, e_sn/2) -- which is what the
+    # constructor's known_x/known_y already default to.  Reading them was
+    # the missing half: a namelist that moved the reference point off the
+    # centre used to build the CENTRED grid here, silently, while the two
+    # other doors refused it, so this reader was the one door that gave a
+    # wrong answer instead of no answer.
+    known_x = float(v["ref_x"][0]) if v.get("ref_x") else None
+    known_y = float(v["ref_y"][0]) if v.get("ref_y") else None
+    # &geogrid s_we/s_sn declare the domain's own start index, which is
+    # WPS_WINDOW_START for every grid WPS and WRF describe, so a declared
+    # start never translates a grid here.  The namelist importer books
+    # that normalization for the user from the same declaration.
     grids: list[ProjectedGrid] = [
         cls(ref_lat=float(v["ref_lat"][0]),
             ref_lon=float(v["ref_lon"][0]),
             truelat1=truelat1, truelat2=truelat2, stand_lon=stand_lon,
             dx=float(v["dx"][0]), dy=float(v["dy"][0]),
-            e_we=int(e_we[0]), e_sn=int(e_sn[0]))]
+            e_we=int(e_we[0]), e_sn=int(e_sn[0]),
+            known_x=known_x, known_y=known_y)]
     for n in range(1, max_dom):
         parent_id = int(v["parent_id"][n])
         if not 1 <= parent_id <= n:

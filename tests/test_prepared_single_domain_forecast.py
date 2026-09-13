@@ -2410,88 +2410,19 @@ def test_materializer_unnamed_publishes_the_base_suite_unchanged(tmp_path):
         == "gpuwm-physics-verification-status-v1"
 
 
-def test_matched_expert_suite_demands_the_registry_ack_at_the_runner(
-        capsys):
-    """The governance bypass the 2026-07-31 review found, now closed.
-
-    A Noah-MP tuple that MATCHES the expert template is governed on the
-    prepared ERA5 lane by the registry-owned acknowledgement -- exactly
-    the consent the GFS front door records for the identical tuple --
-    delivered by either published spelling.
-
-    Unacknowledged, the tuple STILL RUNS and says so in one line naming
-    both spellings, and the receipt carries ``acknowledged=False``: the
-    warn-not-block ruling owns the severity of this site (an expert
-    tuple is implemented and individually verified; what is missing is
-    the registry's end-to-end blessing, which is a thing to state, not
-    a thing to stop for).  What suite freedom owns, and what this test
-    exists for, is that the governance is APPLIED here at all -- on the
-    unnamed and matched paths, on every prepared source -- and that
-    both delivery channels flip it, with provenance.  An explicitly
-    NAMED expert profile is a gate the caller asked for and still
-    refuses at the front door
-    (``test_gfs_direct.py``); that is a different site with a different
-    posture on purpose.
-    """
-
+def test_matched_noah_tuple_is_reachable_without_throughput_acknowledgement(capsys):
+    """The same reachable tuple has no extra cost-based permission at the runner."""
     text = _asking_for_no_physics(
-        (ROOT / "configs" / "gfs_wrf_direct_proof.toml").read_text(
-            encoding="utf-8"))
+        (ROOT / "configs" / "gfs_wrf_direct_proof.toml").read_text(encoding="utf-8"))
     _rendered, exp, _receipt = runner._render_materialized_experiment(
         text, source="era5", profile=runner.NOAHMP_PHYSICS_PROFILE)
-
-    unacked = runner._validate_physics(
-        exp, None, exp.run_seconds, 3600, source="era5")
-    message = capsys.readouterr().err
-    warnings = [line for line in message.splitlines()
-                if line.startswith("warning:")]
-    # One line, not a paragraph, and it names the tuple's state and both
-    # published ways to acknowledge it -- the same three facts the
-    # refusal used to carry.
-    assert len(warnings) == 1, warnings
-    assert "registry-expert-template" in warnings[0]
-    assert "--ack noahmp-host-column-throughput-v1" in warnings[0]
-    assert 'acknowledgements = ["noahmp-host-column-throughput-v1"]' \
-        in warnings[0]
-    # Warning, not silence: the receipt states the unblessed truth.
-    unacked_governance = unacked["registry_governance"]
-    assert unacked_governance["state"] == "registry-expert-template"
-    assert unacked_governance["acknowledged"] is False
-
-    # TOML delivery (the hash-bound experiment's own array).
-    acked = replace(
-        exp, acknowledgements=("noahmp-host-column-throughput-v1",))
-    receipt = runner._validate_physics(
-        acked, None, acked.run_seconds, 3600, source="era5")
-    assert receipt["profile_binding"] == "matched"
-    governance = receipt["registry_governance"]
-    assert governance["state"] == "registry-expert-template"
-    assert governance["acknowledged"] is True
-    assert governance["acknowledgement_provenance"] == {
-        "noahmp-host-column-throughput-v1": [
-            "[experiment].acknowledgements"]}
-    # Acknowledging it is what silences the line.
-    assert "registry-expert-template" not in capsys.readouterr().err
-
-    # Flag delivery (the runner's own --ack).  The shipped proof config
-    # this experiment materializes from also declares its nocturnal
-    # asymmetric-radiation run (1.7.1), and the receipt records every
-    # delivered declaration with its own provenance.
-    receipt = runner._validate_physics(
-        exp, None, exp.run_seconds, 3600, source="era5",
-        expert_acknowledgements=("noahmp-host-column-throughput-v1",))
-    assert receipt["registry_governance"]["acknowledged"] is True
-    assert receipt["registry_governance"]["acknowledgement_provenance"] == {
-        # Both radiation declarations ride the materialized experiment
-        # since the constant-GLW guard: the profile runs Noah with lw 0
-        # across a window with night in it, which is two separate claims
-        # (the window, and the fabricated flux) and therefore two tokens.
-        "asymmetric-radiation-nocturnal-window-v1": [
-            "[experiment].acknowledgements"],
-        "constant-downward-longwave-v1": [
-            "[experiment].acknowledgements"],
-        "noahmp-host-column-throughput-v1": ["--ack"]}
-    assert "registry-expert-template" not in capsys.readouterr().err
+    for acknowledged in (False, True):
+        configured = replace(exp, acknowledgements=("noahmp-host-column-throughput-v1",)) if acknowledged else exp
+        receipt = runner._validate_physics(configured, None, configured.run_seconds, 3600, source="era5")
+        assert receipt["profile_binding"] == "matched"
+        assert receipt["registry_governance"]["state"] == "registry-reachable"
+        assert receipt["registry_governance"]["required_acknowledgement"] is None
+        assert "noahmp-host-column-throughput-v1" not in capsys.readouterr().err
 
 
 def test_shipped_ruc_profile_is_not_governed_as_an_outside_tuple():
@@ -2873,27 +2804,8 @@ def test_gfs_new_front_door_families_reach_prepared_v3_preflight(
         tmp_path, "gfs", physics_profile=profile)
     _bind_synthetic_preflight_geometry(monkeypatch, hierarchy=False)
 
-    expert = profile == runner.NOAHMP_PHYSICS_PROFILE
-    acknowledgements = (
-        ("noahmp-host-column-throughput-v1",) if expert else ())
-    if expert:
-        # The registry-owned expert acknowledgement is applied AT THE
-        # RUNNER too (its governance is source-neutral tuple
-        # governance, the same one the front doors apply), and it names
-        # both delivery spellings.  Severity here is warn-not-block's:
-        # the tuple runs unblessed and says so in one line.
-        _preflight_fixture(fixture, physics_profile=profile)
-        unacked = [line for line in capsys.readouterr().err.splitlines()
-                   if line.startswith("warning:")
-                   and "registry-expert-template" in line]
-        assert len(unacked) == 1, unacked
-        assert "--ack noahmp-host-column-throughput-v1" in unacked[0]
-        assert 'acknowledgements = ["noahmp-host-column-throughput-v1"]' \
-            in unacked[0]
-
     inputs = _preflight_fixture(
-        fixture, physics_profile=profile,
-        expert_acknowledgements=acknowledgements)
+        fixture, physics_profile=profile)
 
     assert inputs.proof["schema"] == "gpuwm-gfs-direct-wrf-proof-v3"
     assert inputs.proof["physics"]["profile"] == profile
@@ -2902,8 +2814,7 @@ def test_gfs_new_front_door_families_reach_prepared_v3_preflight(
     assert inputs.proof["export"]["physics"] == inputs.proof["physics"]
     governance = inputs.physics_receipt["registry_governance"]
     assert governance["acknowledged"] is True
-    assert governance["state"] == (
-        "registry-expert-template" if expert else "registry-reachable")
+    assert governance["state"] == "registry-reachable"
     resolved = inputs.physics_receipt["resolved"]
     assert resolved["sf_sfclay_physics"] == sfclay
     assert resolved["sf_surface_physics"] == surface

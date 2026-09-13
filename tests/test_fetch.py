@@ -324,8 +324,9 @@ def test_latest_resolves_a_reanalysis_to_its_newest_published_analysis():
         "era5", 6, now=datetime(2026, 7, 28, 5, 30),
         probe=lambda url: probed.append(url) or False)
 
-    # Five days back, snapped onto the 6-hourly analysis grid.
-    assert cycle == datetime(2026, 7, 23, 0)
+    # The endpoint is five days back on the analysis grid; the start must
+    # precede it by the requested six-hour window.
+    assert cycle == datetime(2026, 7, 22, 18)
     # A job API has nothing to probe, so nothing was probed.
     assert probed == []
 
@@ -706,8 +707,13 @@ def test_fetch_gfs_fullfile_takes_whole_objects_and_records_the_route(
         cycle=datetime(2026, 7, 28, 6), hours=(0, 3), area=None,
         out=out, progress=lambda line: None)
 
-    assert urls == [fetch.gfs_object_url(datetime(2026, 7, 28, 6), hour)
-                    for hour in (0, 3)]
+    # The pool decides which transfer finishes first, so the ORDER of
+    # these is not a contract and asserting it failed about one run in
+    # five.  What is a contract: each whole object is requested exactly
+    # once, and nothing else is.
+    assert sorted(urls) == sorted(
+        fetch.gfs_object_url(datetime(2026, 7, 28, 6), hour)
+        for hour in (0, 3))
     series = (out / "gfs-series.tsv").read_text().splitlines()
     assert series == [
         "0\tgfs.t06z.pgrb2.0p25.f000\t81",
@@ -823,13 +829,19 @@ def test_fetch_gfs_fullfile_rust_engine_uses_the_backbone(
         out=tmp_path / "gfs-full", engine="rust",
         engine_bin=tmp_path / "rw_fetch", progress=lambda line: None)
 
-    assert [call["hours"] for call in calls] == [(0,), (3,)]
+    # The pool decides which transfer finishes first, so the ORDER these
+    # leads were dispatched in belongs to the pool and not to this
+    # contract; pinning it failed about one run in four.  What is a
+    # contract: every requested lead is handed to the backbone exactly
+    # once, and the manifest below carries the ordering the fetch does fix.
+    assert sorted(call["hours"] for call in calls) == [(0,), (3,)]
     for call in calls:
         assert call["model"] == "gfs"
         assert call["product"] == "pgrb2.0p25"
         assert call["source"] == "aws"
         assert call["mode"] == "full-file"
     manifest = json.loads(manifest_path.read_text())
+    assert manifest["forecast_hours"] == [0, 3]
     assert manifest["engine"] == "rust"
     assert manifest["mode"] == "full-file"
 
@@ -1562,10 +1574,12 @@ def test_cli_fetch_argument_contracts(tmp_path, capsys):
     refused("requires --cycle",
             ["fetch", "--source", "hrrr", "--hours", "2",
              "--out", str(tmp_path)])
-    refused("not meaningful for ERA5",
-            ["fetch", "--source", "era5", "--cycle", "latest",
-             "--hours", "6", "--area", "30,-100,40,-90",
-             "--out", str(tmp_path)])
+    # ERA5 latest resolves an analysis window and emits a request document;
+    # it does not probe or retrieve anything from the keyed job API.
+    assert cli.main(["fetch", "--source", "era5", "--cycle", "latest",
+                     "--hours", "6", "--area", "30,-100,40,-90",
+                     "--out", str(tmp_path / "era5-latest")]) == 0
+    assert (tmp_path / "era5-latest" / "era5-cds-request.json").is_file()
 
 
 def test_cli_fetch_gfs_end_to_end_with_mocked_transport(tmp_path,
@@ -2179,8 +2193,16 @@ def test_fetch_hrrr_nomads_transport_keeps_the_contracts(tmp_path,
         transport="nomads", progress=lambda line: None)
 
     prefix = fetch.HRRR_NOMADS_BASE + "/hrrr.20260728/conus/"
-    assert [request.kind for request in seen] == [
-        "atmosphere", "soil", "atmosphere", "soil"]
+    # Both products of both leads are requested, each exactly once.  The
+    # order they are DISPATCHED in belongs to the download pool, not to
+    # this contract, and pinning it failed about one run in five; the
+    # manifest order below is the ordering this fetch does promise.
+    assert sorted((request.kind, request.url) for request in seen) == sorted(
+        (item["role"], item["url"])
+        for item in json.loads(manifest_path.read_text())["files"]
+        if item["role"] in ("atmosphere", "soil"))
+    assert sorted(request.kind for request in seen) == [
+        "atmosphere", "atmosphere", "soil", "soil"]
     assert all(request.url.startswith(prefix) for request in seen)
     assert all(request.index_url == request.url + ".idx"
                for request in seen)

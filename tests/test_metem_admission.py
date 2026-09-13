@@ -48,6 +48,66 @@ def test_analyzed_active_number_fields_are_not_silently_zeroed(tmp_path):
     with pytest.raises(ValueError,match='FLAG_QNI must be 0 or 1'):
         check_analyzed_scalar_capability({'FLAG_QNI':2},replace(cfg,mp_physics=8))
     check_analyzed_scalar_capability({'FLAG_QNI':0},replace(cfg,mp_physics=8))
+    # The water/ice-friendly pair is a TABLE ROW now, not a refusal: the
+    # generic metgrid number route carries it onto nwfa/nifa for a package
+    # that transports them, and discards it for one that does not, so this
+    # door has nothing left to say about either name.
+    check_analyzed_scalar_capability({'FLAG_QNWFA':1,'FLAG_QNIFA':1},
+                                     replace(cfg,mp_physics=28))
+    check_analyzed_scalar_capability({'FLAG_QNWFA':1,'FLAG_QNIFA':1},
+                                     replace(cfg,mp_physics=8))
+    for name in ('QNWFA','QNIFA','QNBCA'):
+        with pytest.raises(ValueError,match=f'FLAG_{name} must be 0 or 1'):
+            check_analyzed_scalar_capability({'FLAG_'+name:2},replace(cfg,mp_physics=28))
+
+
+def test_analyzed_black_carbon_number_is_refused_by_name_at_plan_review(tmp_path):
+    """The one real gap, and it used to be the one that never fired.
+
+    The old arm intersected the alias ``nbca`` with ``nest_field_kinds``,
+    and no package in this build declares an ``nbca`` species, so the
+    intersection was always empty and FLAG_QNBCA=1 walked straight past a
+    check written to stop it.  It is tested directly now.
+    """
+    from dataclasses import replace
+    from gpuwm.metem_door import check_analyzed_scalar_capability
+    cfg=experiment(tmp_path).root.run
+    with pytest.raises(ValueError,match='qnbca') as refused:
+        check_analyzed_scalar_capability({'FLAG_QNBCA':1},replace(cfg,mp_physics=28))
+    message=str(refused.value)
+    assert 'silently dropped' in message and 'Regenerate met_em without QNBCA' in message
+    # A package with no aerosol at all loses nothing, so it is not refused.
+    check_analyzed_scalar_capability({'FLAG_QNBCA':1},replace(cfg,mp_physics=8))
+
+
+def test_metgrid_number_units_accept_the_registry_spelling():
+    """A real met_em must not be turned away on a units string.
+
+    ``Registry/registry.new3d_wif:88`` spells QNWFA's units ``"# kg(-1)"``
+    and a built WRF resolves the ``#`` away to ``"  kg(-1)"``.  Neither
+    was accepted, so the WIF stream this ingest now reads would have been
+    refused at the reader.
+    """
+    from types import SimpleNamespace
+    from gpuwm.ingest.metem import _unit_transform, MetgridRefusal
+    for spelling in ('# kg(-1)', '  kg(-1)', '# kg-1', '#/kg', '1/kg'):
+        variable=SimpleNamespace(attributes={'units':spelling})
+        assert _unit_transform(variable,'QNWFA')==(1.0,0.0)
+    with pytest.raises(MetgridRefusal,match='number per kilogram'):
+        _unit_transform(SimpleNamespace(attributes={'units':'kg kg-1'}),'QNWFA')
+
+
+def test_analyzed_aerosol_is_an_input_in_the_run_report():
+    """``metgrid-analyzed`` is an aerosol INPUT, exactly as the file is."""
+    from gpuwm.aerosol_source_receipt import (AEROSOL_SOURCE_KEY,
+        AEROSOL_SOURCES_FROM_INPUT, aerosol_source_report_entry)
+    assert 'metgrid-analyzed' in AEROSOL_SOURCES_FROM_INPUT
+    entry=aerosol_source_report_entry({'aerosol_source':'metgrid-analyzed',
+        'mp28_aerosol_source':'auto'},mp_physics=28,
+        when_unrecorded='not reached')[AEROSOL_SOURCE_KEY]
+    assert entry['aerosol_source']=='metgrid-analyzed'
+    assert entry['dataset_used'] is True
+    assert entry['synthetic_fallback_in_use'] is False
 
 
 def test_external_wrf_default_preserves_radiation_and_omitted_levels(tmp_path, monkeypatch, capsys):

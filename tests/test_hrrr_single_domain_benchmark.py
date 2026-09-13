@@ -29,7 +29,7 @@ from gpuwm.physics_compat import (
     NSSL2_PROFILE_ID,
     P3_LEGACY_RRTMG_PROFILE_ID,
     RUC_PROFILE_ID,
-    SINGLE_DOMAIN_PHYSICS_PROFILES,
+    route_physics_profiles,
     THOMPSON_LEGACY_RRTMG_PROFILE_ID,
     THOMPSON_PROFILE_ID,
     THOMPSON_SHINHONG_LEGACY_RRTMG_PROFILE_ID,
@@ -1041,13 +1041,26 @@ def _profile_experiment(profile: str, **kwargs):
         physics_profile=profile, **kwargs)
 
 
+#: The profiles THIS runner offers, which is its own route's declared
+#: template list.  It used to be the menu shared with the other
+#: fixed-template route; when that route declared six composition suites
+#: this one cannot replay, every walk in this file demanded a native
+#: namelist contract, a switch home and an initialization contract for
+#: suites this runner never offers.  The walks below are about THIS
+#: runner's per-profile tables, so they enumerate what THIS route
+#: declares -- and the two facts are held equal by
+#: ``test_the_route_declaration_is_the_namelist_contract_table``.
+_ROUTE_PHYSICS_PROFILES = route_physics_profiles(
+    "tools.hrrr_single_domain_benchmark")
+
+
 #: Every shipped profile whose downward longwave is fabricated: no
 #: longwave scheme, and a land-surface scheme that reads GLW every step.
 #: Derived from the product's own classifier rather than listed by hand,
 #: so a ninth profile joining the class arrives as coverage rather than
 #: as a field report.
 _FABRICATED_GLW_PROFILES = sorted(
-    profile for profile in SINGLE_DOMAIN_PHYSICS_PROFILES
+    profile for profile in _ROUTE_PHYSICS_PROFILES
     if downward_longwave_disposition(
         ra_lw_physics=int(single_domain_runtime_switches(profile).get(
             "ra_lw_physics", 0)),
@@ -1123,7 +1136,7 @@ def test_a_symmetric_profile_declares_nothing_on_either_window():
         assert tuple(experiment.acknowledgements or ()) == ()
 
 
-@pytest.mark.parametrize("profile", sorted(SINGLE_DOMAIN_PHYSICS_PROFILES))
+@pytest.mark.parametrize("profile", sorted(_ROUTE_PHYSICS_PROFILES))
 def test_the_hrrr_experiment_forwards_every_switch_its_profile_declares(
         profile):
     """The forwarded set covers the profile's whole declared switch set.
@@ -1863,12 +1876,61 @@ def test_the_printed_summary_carries_both_rates(tmp_path, monkeypatch, capsys):
             > summary["simulated_seconds_per_wall_second"])
 
 
-@pytest.mark.parametrize("profile", sorted(SINGLE_DOMAIN_PHYSICS_PROFILES))
+def test_the_route_declaration_is_the_namelist_contract_table():
+    """The reverse leg: this route offers exactly what it can replay.
+
+    The walk below proves every DECLARED profile resolves this runner's
+    per-profile tables.  It cannot see the other direction, and the other
+    direction is what went wrong: six composition suites were declared on
+    this route by a registry pass, the runner refused all six with
+    ``unsupported native HRRR physics profile``, and plan review had said
+    launchable.  A contract row for a profile the route no longer
+    declares is the mirror defect -- dead replay state nobody retires.
+
+    So the two sets are held EQUAL here.  Growing the route is now a
+    two-part edit by construction: declare the template and transcribe
+    the native namelist it is replayed against, or do neither.
+    """
+
+    served = {
+        profile: hrrr_runner._initialization_contract_profile(profile)
+        for profile in _ROUTE_PHYSICS_PROFILES
+    }
+    missing = sorted(
+        profile for profile, contract in served.items()
+        if contract not in hrrr_runner._NATIVE_HRRR_NAMELIST_CONTRACTS
+        and profile not in hrrr_runner._NATIVE_HRRR_NAMELIST_CONTRACTS)
+    assert missing == [], (
+        "declared on this route with no native namelist contract to "
+        f"replay against: {missing}")
+
+    reachable = set(_ROUTE_PHYSICS_PROFILES) | {
+        hrrr_runner._initialization_contract_profile(profile)
+        for profile in _ROUTE_PHYSICS_PROFILES
+    }
+    stale = sorted(set(hrrr_runner._NATIVE_HRRR_NAMELIST_CONTRACTS)
+                   - reachable)
+    assert stale == [], (
+        "namelist contract rows for profiles this route no longer "
+        f"declares: {stale}")
+
+    unmapped = sorted({
+        name
+        for profile in _ROUTE_PHYSICS_PROFILES
+        for name in hrrr_runner._native_hrrr_runtime_switches(profile)
+    } - set(hrrr_runner._PROFILE_SWITCH_HOMES))
+    assert unmapped == [], (
+        "declared on this route with no home in _PROFILE_SWITCH_HOMES, "
+        f"so the switch would silently take the RunConfig default: "
+        f"{unmapped}")
+
+
+@pytest.mark.parametrize("profile", sorted(_ROUTE_PHYSICS_PROFILES))
 def test_every_shipped_profile_resolves_every_per_profile_table(profile):
     """B-04's refusal class, closed for the 13th profile too.
 
     The battery's first case run passed every static gate and every prior
-    stage, then refused at root preparation: SINGLE_DOMAIN_PHYSICS_PROFILES
+    stage, then refused at root preparation: the offered menu
     had grown to 12 entries while _NATIVE_HRRR_NAMELIST_CONTRACTS held 10,
     and only the NSSL-2 legacy twin had an alias -- at three separate
     inline sites the Thompson twin missed.  This walk resolves EVERY

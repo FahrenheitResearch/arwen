@@ -1144,7 +1144,7 @@ def test_fetch_hints_validation():
         validate_fetch_hints({"hours": 6}, source="unit")
     with pytest.raises(ValueError, match="not one of"):
         validate_fetch_hints({"source": "cfs"}, source="unit")
-    with pytest.raises(ValueError, match="scalar"):
+    with pytest.raises(ValueError, match="hours.*whole number"):
         validate_fetch_hints({"source": "era5", "hours": [1, 2]},
                              source="unit")
 
@@ -3371,12 +3371,21 @@ def test_the_cadence_advisory_fires_for_every_offered_suite(profile):
     wizard offers runs at least shortwave (the ``*-no-radiation-*``
     names mean longwave OFF with Dudhia shortwave still on, radt = 1),
     so radt paces real work in all of them.
+
+    RETIRED, with the reader it duplicated: the premise used to be
+    checked by a local two-line read of the switch map that fell back to
+    ``ra_physics`` only when a split key was ABSENT.  The aggregate
+    radiation option states the split keys as -1 and the pair in the
+    combined key, so that read called a fully RTE+RRTMGP suite
+    "radiation off" the first time the wizard offered one.  The premise
+    is now asked of ``radiation_scheme_ids``, which is the reader every
+    door uses, so the two cannot disagree again.
     """
     from gpuwm.domain_wizard import radiation_cadence_advisory
+    from gpuwm.physics_menu import radiation_scheme_ids
 
     switches = profile_switches(profile)
-    lw = int(switches.get("ra_lw_physics", switches.get("ra_physics", 0)))
-    sw = int(switches.get("ra_sw_physics", switches.get("ra_physics", 0)))
+    lw, sw = radiation_scheme_ids(switches)
     assert lw > 0 or sw > 0  # the premise above, pinned
     notes = radiation_cadence_advisory(profile, 4)
     assert len(notes) == 1

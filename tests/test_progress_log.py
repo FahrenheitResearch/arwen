@@ -1503,3 +1503,129 @@ def test_the_nest_free_stream_carries_no_word_of_the_new_vocabulary(tmp_path):
     text = (tmp_path / STEP_LOG_FILENAME).read_text(encoding="utf-8")
     for tag in NEST_EVENTS:
         assert tag not in text, tag
+
+
+# ---------------------------------------------------------------------------
+# The two WRF-input doors
+# ---------------------------------------------------------------------------
+#
+# Both of them already PUBLISH markers -- they call ``run_prepared_tree``
+# with ``progress_options`` omitted, and it resolves ``None`` to the
+# defaults, which are on.  What they had was no way to say otherwise:
+# not a format, not a cadence, not an output, not ``--no-frame-markers``,
+# on either parser, and nothing carried through the ``--_worker``
+# re-launch that does the actual run.  A behaviour with no control is
+# not the same defect as a behaviour that is missing, and this pins both
+# halves: the flags exist, and the default stays on.
+
+
+def test_the_worker_doors_carry_the_progress_flags(tmp_path, monkeypatch):
+    """The four flags reach both parsers, the runner and the worker argv."""
+
+    import subprocess
+    from types import SimpleNamespace
+
+    from gpuwm import go_cli, metem_door, metem_forecast, supervisor
+    from gpuwm import prepared_domain_tree_forecast, wrfinput_forecast
+    from gpuwm.progress_log import ProgressOptions
+
+    four = ("--progress-format", "--progress-output", "--progress-every",
+            "--no-frame-markers")
+
+    def spelled(parser):
+        return {flag for action in parser._actions
+                for flag in action.option_strings}
+
+    for flag in four:
+        assert flag in spelled(wrfinput_forecast.build_parser()), flag
+    for flag in four:
+        assert flag in spelled(metem_forecast.build_parser()), flag
+
+    recorded = {}
+    monkeypatch.setattr(go_cli, "render_extra_missing", lambda: None)
+    monkeypatch.setattr(
+        metem_door, "resolve_metem_run",
+        lambda directory, **kwargs: SimpleNamespace(
+            substitution_report=SimpleNamespace(substitutions=())))
+    inputs = SimpleNamespace(experiment=SimpleNamespace(
+        start_time=datetime(2026, 5, 17, 18)))
+    monkeypatch.setattr(metem_forecast, "prepare_metem_run",
+                        lambda run, directory, **kwargs: inputs)
+    monkeypatch.setattr(metem_forecast, "MetemInitialization", lambda inputs: object())
+
+    def run_prepared_tree(inputs, *, output_directory, **kwargs):
+        recorded["options"] = kwargs.get("progress_options")
+        return {"status": "ok"}
+
+    monkeypatch.setattr(prepared_domain_tree_forecast, "run_prepared_tree",
+                        run_prepared_tree)
+    assert metem_forecast.run_metem_forecast(
+        tmp_path / "met", tmp_path / "out", exclusive_gpu=False,
+        render_products="none",
+        progress_options=ProgressOptions(frame_markers=False)) == 0
+    assert recorded["options"] == ProgressOptions(frame_markers=False)
+
+    # ... and the supervised launch, which is where the run happens by
+    # default, hands the child the same answer.
+    class _Lock:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    monkeypatch.setattr(supervisor, "select_gpu",
+                        lambda uuid=None: SimpleNamespace(uuid="GPU-0"))
+    monkeypatch.setattr(supervisor, "GPUFileLock", _Lock)
+    monkeypatch.setattr(supervisor, "preflight_exclusive_gpu", lambda *a, **k: None)
+    monkeypatch.setattr(subprocess, "run", lambda command, **kwargs: (
+        recorded.__setitem__("argv", list(command)) or SimpleNamespace(returncode=0)))
+    assert metem_forecast.run_metem_forecast(
+        tmp_path / "met", tmp_path / "supervised",
+        progress_options=ProgressOptions(frame_markers=False,
+                                         progress_format="jsonl",
+                                         progress_every=5)) == 0
+    argv = recorded["argv"]
+    assert "--no-frame-markers" in argv
+    assert argv[argv.index("--progress-format") + 1] == "jsonl"
+    assert argv[argv.index("--progress-every") + 1] == "5"
+
+
+def test_the_worker_doors_publish_markers_with_no_flags_at_all(tmp_path, monkeypatch):
+    """Default-on, pinned: absent flags are the defaults, and they are on."""
+
+    from types import SimpleNamespace
+
+    from gpuwm import go_cli, metem_door, metem_forecast
+    from gpuwm import prepared_domain_tree_forecast, wrfinput_forecast
+    from gpuwm.progress_log import ProgressOptions
+
+    parsed = wrfinput_forecast.build_parser().parse_args(
+        ["--wrfinput", "w", "--outdir", str(tmp_path / "o")])
+    assert ProgressOptions.from_args(parsed) == ProgressOptions()
+    assert ProgressOptions.worker_flags(ProgressOptions.from_args(parsed)) == []
+
+    recorded = {}
+    monkeypatch.setattr(go_cli, "render_extra_missing", lambda: None)
+    monkeypatch.setattr(
+        metem_door, "resolve_metem_run",
+        lambda directory, **kwargs: SimpleNamespace(
+            substitution_report=SimpleNamespace(substitutions=())))
+    inputs = SimpleNamespace(experiment=SimpleNamespace(
+        start_time=datetime(2026, 5, 17, 18)))
+    monkeypatch.setattr(metem_forecast, "prepare_metem_run",
+                        lambda run, directory, **kwargs: inputs)
+    monkeypatch.setattr(metem_forecast, "MetemInitialization", lambda inputs: object())
+    monkeypatch.setattr(
+        prepared_domain_tree_forecast, "run_prepared_tree",
+        lambda inputs, *, output_directory, **kwargs: recorded.__setitem__(
+            "options", kwargs.get("progress_options")) or {"status": "ok"})
+    assert metem_forecast.run_metem_forecast(
+        tmp_path / "met", tmp_path / "bare", exclusive_gpu=False,
+        render_products="none") == 0
+    # None is the runner's own spelling of "the defaults", which are on.
+    assert recorded["options"] is None
+    assert ProgressOptions().frame_markers is True

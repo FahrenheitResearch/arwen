@@ -550,11 +550,15 @@ def _apply_thompson(
     launch_cloud_saturation_adjust(
         temperature, state.p, state.qv, state.qc,
         reference_density=frozen_reference_density,
-        reference_temperature=frozen_reference_temperature)
+        reference_temperature=frozen_reference_temperature,
+        # Full theta was saved before the source call. This scratch is not
+        # read again until the final temperature-to-theta conversion.
+        condensation_marker=th)
     launch_rain_evaporation(
         state.qr, state.nr, temperature, state.p, state.qv, dt,
         reference_density=rain_reference_density,
-        graupel_melt_marker=graupel_melt_marker)
+        graupel_melt_marker=graupel_melt_marker,
+        source_density=frozen_reference_density, condensation_marker=th)
     # WRF solve_em passes the physical, full-level grid%w_2 field unchanged
     # through microphysics_driver; Thompson copies w(i,k,j) directly into
     # w1d(k).  gpuwm's matching kts:kte view is the lower full-level slice,

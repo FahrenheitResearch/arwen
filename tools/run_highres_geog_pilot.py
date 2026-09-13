@@ -15,6 +15,7 @@ import numpy as np
 from gpuwm.static.build import GeogSelection, build_static
 from gpuwm.static.highres import (
     BoundRaster,
+    baseline_ocean_mask,
     build_highres_overrides,
     merge_highres_overrides,
     sha256_file,
@@ -195,10 +196,16 @@ def main() -> None:
         baseline = build_static(grid, args.geog_root, selection=selection)
         baseline_seconds = time.perf_counter() - baseline_started
         highres_started = time.perf_counter()
+        # The same discriminator the production door uses, from the same
+        # function: the crosswalk puts every open-water pixel in the
+        # inland lake category, and the domain's own 30-arc-second water
+        # field is what moves the sea back to ocean.  Two doors, one
+        # configuration, one answer.
         overrides, source_audit = build_highres_overrides(
             grid, terrain=terrain, landcover=landcover,
             soil_sources=soil_sources, soil_fallback=baseline,
             landcover_mapping=landcover_mapping,
+            baseline_ocean=baseline_ocean_mask(baseline),
         )
         highres_seconds = time.perf_counter() - highres_started
         merge_started = time.perf_counter()

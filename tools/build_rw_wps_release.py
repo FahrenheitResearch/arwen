@@ -199,11 +199,18 @@ _TOP_LEVEL_EXCLUDES = {
     # keep the renderer and its receipt owner together in full ArWen, rather
     # than staging a renderer whose result publication cannot be imported.
     "render.py", "render_receipts.py",
+    # Analysis-cycle orchestration and cyclone setup are full ArWen entry
+    # points. Their shared source facts remain in source_drivability; the
+    # standalone source_cli never invokes an analysis or a tracking setup.
+    "background_contract.py", "regional_preparation.py",
+    "local_da.py", "local_da_fetch.py", "local_da_observations.py",
+    "local_da_runtime.py", "cyclone_seed.py", "cyclone_sources.py",
 }
 _CORE_MODULES = {
     "__init__.py",
     "constants.py",
     "diagnostics.py",
+    "track_boundary.py",  # NumPy-only boundary diagnostic used by storm_tracking.
     "grid.py",
     "landuse.py",
     "microphysics_transition.py",
@@ -347,7 +354,9 @@ _INGEST_EXCLUDES = {"preflight.py", "nest_spawn_init.py",
 #: module that crosses it stays behind.  Nothing else in `gpuwm/obs` imports
 #: it -- `__init__` pulls radar_grid, superob, sweeps and target_grid -- so
 #: the radar front door `gpuwm doctor` checks for is unaffected.
-_OBS_EXCLUDES = {"sources.py"}
+# GOES window acquisition publishes cycle/ensemble manifests. The lower-level
+# observation decoders remain available to standalone preprocessing.
+_OBS_EXCLUDES = {"sources.py", "goes_window.py"}
 #: The only two files of ``gpuwm/io`` this wheel stages -- named
 #: individually rather than by excluding the rest of the package,
 #: because the package is the forecast executor's output side and the
@@ -445,6 +454,12 @@ _FORBIDDEN_STAGED_FILES = {
 }
 
 _OPTIONAL_STAGED_IMPORTS = {
+    ("gpuwm/core/streaming.py", "gpuwm.core.preflight"):
+        "forecast tree admission and execution estimates; standalone preparation "
+        "only reads StreamingOptions and does not call these planners",
+    ("gpuwm/stage_cli.py", "gpuwm.prepared_single_domain_forecast"):
+        "register_cli builds the full ArWen sim parser; standalone source_cli "
+        "uses only the staged bundle contracts and never registers sim",
     ("gpuwm/core/streaming.py", "gpuwm.core.adaptive_clock"):
         "adaptive forecast tile planning/step execution; StreamingOptions "
         "and config validation reach none of these function-local imports",
@@ -469,6 +484,12 @@ _OPTIONAL_STAGED_IMPORTS = {
     ("gpuwm/core/streaming.py", "gpuwm.core.cam_ozone"):
         "live tile physics initialization; pure ozone config dependencies "
         "are staged separately in ozone_contract",
+    ("gpuwm/stage_reuse.py", "gpuwm.prepared_single_domain_forecast"):
+        "claim_run_output delegates the output-directory refusal to the "
+        "forecast runner's own claim_output_directory rather than "
+        "restating it; the import is function-local and only a run door "
+        "claims an output directory.  This wheel prepares inputs and "
+        "claims none",
     ("gpuwm/metem_door.py", "gpuwm.core.preflight"):
         "metgrid_memory_admission is called only by metem_forecast's GPU "
         "run door; metadata and analyzed-field validation use staged contracts",

@@ -27,17 +27,38 @@ def hrrr_cycle_horizon(cycle: datetime) -> int:
 
 def validate_hrrr_source_forecast_hours(
         forecast_hours: Iterable[int], *, cycle: datetime | None = None,
+        allow_single_frame: bool = False, window_flag: str | None = None,
         ) -> tuple[int, ...]:
     """Validate one inclusive, ordered, contiguous public source window.
 
     The returned leads retain NOAA's absolute cycle-relative identity.  Model
     forcing offsets are a separate ``0..len(hours)-1`` sequence and must not
     be substituted here.
+
+    ``window_flag`` is how a command-line door names its own window knob in
+    the refusals below.  Every caller reaches one validator so the doors
+    cannot disagree about one window, and each door spells the knob the way
+    its own user typed it; a door with no window flag names none, rather
+    than pointing at a flag its user cannot pass.
     """
 
     hours = tuple(forecast_hours)
-    if len(hours) < 2:
-        raise ValueError("HRRR source window needs at least two hourly frames")
+    # Acquisition may request one analysis. Every forecast/preparation caller
+    # retains the two-frame temporal-bracketing requirement by default.
+    if not hours:
+        raise ValueError(
+            "HRRR source window needs at least one hourly frame: an empty "
+            "window names no object to acquire.  Pass the leads you want"
+            + (f" with `{window_flag}`." if window_flag else "."))
+    if len(hours) < 2 and not allow_single_frame:
+        widen = ("Widen the window by an hour"
+                 + (f" with `{window_flag}`" if window_flag else ""))
+        raise ValueError(
+            "HRRR source window needs at least two hourly frames: this caller "
+            "brackets model time between consecutive forcing frames, and one "
+            f"frame leaves every interval empty.  {widen}, or acquire the "
+            "single analysis frame through the separate gpuwm fetch command, "
+            "which admits a one-frame window.")
     if any(isinstance(hour, bool) or not isinstance(hour, int)
            for hour in hours):
         raise TypeError("HRRR forecast hours must be integers")

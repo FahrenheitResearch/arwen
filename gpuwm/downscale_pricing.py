@@ -164,13 +164,18 @@ def declared_machine(*, free_bytes: int | None, name: str,
     :func:`gpuwm.core.streaming.planner_machine` so the host budget comes
     from the same reader the run uses.  ``None`` when there is no card
     figure or the host RAM cannot be read.
+
+    ONE MACHINE, BUILT ONCE.  The profile goes in through the constructor
+    the shared builder already takes rather than being replaced onto a
+    bare machine afterwards: a second object means a second thing to keep
+    in step, and the field being replaced is the one
+    :func:`gpuwm.core.preflight.admission_estimate` prices the whole
+    admission from.
     """
     if free_bytes is None:
         return None
-    machine = streaming.planner_machine(vram_bytes=int(free_bytes), name=name)
-    if machine is None:
-        return None
-    return replace(machine, device_profile=device_profile)
+    return streaming.planner_machine(vram_bytes=int(free_bytes), name=name,
+                                     device_profile=device_profile)
 
 
 def price_child(cfg, options: streaming.StreamingOptions | None, *,

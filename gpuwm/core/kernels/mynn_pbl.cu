@@ -758,169 +758,6 @@ void mynn_pblh_scale_columns(
     psig_shcu_o[column] = fminf(fmaxf(psig_shcu, 0.0f), 1.0f);
 }
 
-extern "C" __global__
-void mynn_mixlength_default_columns(
-    const real* __restrict__ dz, const real* __restrict__ zw,
-    const real* __restrict__ u, const real* __restrict__ v,
-    const real* __restrict__ qke, const real* __restrict__ dtv,
-    const real* __restrict__ theta, const real* __restrict__ edmf_w,
-    const real* __restrict__ edmf_a, const real* __restrict__ rmo,
-    const real* __restrict__ fltv, const real* __restrict__ zi,
-    const real* __restrict__ psig_bl, real* __restrict__ el,
-    real* __restrict__ qkw, real* __restrict__ qtke,
-    real* __restrict__ thetaw, real* __restrict__ elblavg,
-    real* __restrict__ dlu, real* __restrict__ dld,
-    int nz, int ncol)
-{
-    int column = blockIdx.x * blockDim.x + threadIdx.x;
-    if (column >= ncol) return;
-    int base = column * nz;
-    int zbase = column * (nz + 1);
-    const real gtr = 9.81f / 300.0f;
-
-    real ugrid = hypotf(u[base], v[base]);
-    real wt_u = 1.0f - fminf(fmaxf(ugrid - 15.0f, 0.0f) / 30.0f, 0.5f);
-    real alp3 = 2.5f * wt_u;
-    real zi2 = fmaxf(zi[column], 300.0f);
-    real h1 = fminf(fmaxf(0.3f * zi2, 300.0f), 600.0f);
-    real h2 = h1 / 2.0f;
-    qtke[base] = fmaxf(0.5f * qke[base], 0.5e-3f);
-    thetaw[base] = theta[base];
-    qkw[base] = sqrtf(fmaxf(qke[base], 1.0e-3f));
-    for (int k = 1; k < nz; ++k) {
-        real afk = dz[base + k] / (dz[base + k] + dz[base + k - 1]);
-        real abk = 1.0f - afk;
-        qkw[base + k] = sqrtf(fmaxf(
-            qke[base + k] * abk + qke[base + k - 1] * afk, 1.0e-3f));
-        qtke[base + k] = fmaxf(
-            0.5f * qkw[base + k] * qkw[base + k], 0.005f);
-        thetaw[base + k] = theta[base + k] * abk
-            + theta[base + k - 1] * afk;
-    }
-
-    real elt = 1.0e-5f, vsc_sum = 1.0e-5f;
-    int k = 1;
-    while (k < nz && zw[zbase + k] <= zi2 + h1) {
-        real dzk = 0.5f * (dz[base + k] + dz[base + k - 1]);
-        real qdz = fminf(fmaxf(qkw[base + k], 0.01f), 30.0f) * dzk;
-        elt += qdz * zw[zbase + k];
-        vsc_sum += qdz;
-        ++k;
-    }
-    elt = fminf(fmaxf(0.23f * elt / vsc_sum, 8.0f), 400.0f);
-    real vsc = powf(gtr * elt * fmaxf(fltv[column], 0.0f), 1.0f / 3.0f);
-
-    // WRF boulac_length: upward and downward parcel displacement.
-    for (int iz = 0; iz < nz; ++iz) {
-        real zup = 0.0f;
-        dlu[base + iz] = zw[zbase + nz] - zw[zbase + iz]
-            - 0.5f * dz[base + iz];
-        real zzz = 0.0f, zup_inf = 0.0f;
-        if (iz < nz - 1) {
-            int izz = iz, found = 0;
-            while (!found) {
-                if (izz < nz - 1) {
-                    real dzt = dz[base + izz];
-                    zup -= gtr * thetaw[base + iz] * dzt;
-                    zup += gtr * (thetaw[base + izz + 1]
-                        + thetaw[base + izz]) * dzt * 0.5f;
-                    zzz += dzt;
-                    if (qtke[base + iz] < zup
-                        && qtke[base + iz] >= zup_inf) {
-                        real bbb = (thetaw[base + izz + 1]
-                            - thetaw[base + izz]) / dzt;
-                        real tl;
-                        if (bbb != 0.0f) {
-                            real value = gtr * (thetaw[base + izz]
-                                - thetaw[base + iz]);
-                            tl = (-value + sqrtf(fmaxf(0.0f, value * value
-                                + 2.0f * bbb * gtr
-                                * (qtke[base + iz] - zup_inf)))) / bbb / gtr;
-                        } else if (thetaw[base + izz] != thetaw[base + iz]) {
-                            tl = (qtke[base + iz] - zup_inf)
-                                / (gtr * (thetaw[base + izz] - thetaw[base + iz]));
-                        } else tl = 0.0f;
-                        dlu[base + iz] = zzz - dzt + tl;
-                        found = 1;
-                    }
-                    zup_inf = zup; ++izz;
-                } else found = 1;
-            }
-        }
-
-        real zdo = 0.0f, zdo_sup = 0.0f;
-        dld[base + iz] = zw[zbase + iz];
-        zzz = 0.0f;
-        if (iz > 0) {
-            int izz = iz, found = 0;
-            while (!found) {
-                if (izz > 0) {
-                    real dzt = dz[base + izz - 1];
-                    zdo += gtr * thetaw[base + iz] * dzt;
-                    zdo -= gtr * (thetaw[base + izz - 1]
-                        + thetaw[base + izz]) * dzt * 0.5f;
-                    zzz += dzt;
-                    if (qtke[base + iz] < zdo
-                        && qtke[base + iz] >= zdo_sup) {
-                        real bbb = (thetaw[base + izz]
-                            - thetaw[base + izz - 1]) / dzt;
-                        real tl;
-                        if (bbb != 0.0f) {
-                            real value = gtr * (thetaw[base + izz]
-                                - thetaw[base + iz]);
-                            tl = (value + sqrtf(fmaxf(0.0f, value * value
-                                + 2.0f * bbb * gtr
-                                * (qtke[base + iz] - zdo_sup)))) / bbb / gtr;
-                        } else if (thetaw[base + izz] != thetaw[base + iz]) {
-                            tl = (qtke[base + iz] - zdo_sup)
-                                / (gtr * (thetaw[base + izz] - thetaw[base + iz]));
-                        } else tl = 0.0f;
-                        dld[base + iz] = zzz - dzt + tl;
-                        found = 1;
-                    }
-                    zdo_sup = zdo; --izz;
-                } else found = 1;
-            }
-        }
-        dld[base + iz] = fminf(dld[base + iz], zw[zbase + iz + 1]);
-        real up = fmaxf(0.1f, fminf(dlu[base + iz], 1000.0f));
-        real down = fmaxf(0.1f, fminf(dld[base + iz], 1000.0f));
-        elblavg[base + iz] = sqrtf(up * down);
-        elblavg[base + iz] /= 1.0f + elblavg[base + iz] / 2000.0f;
-        if (iz == nz - 1) elblavg[base + iz] = elblavg[base + iz - 1];
-    }
-
-    el[base] = 0.0f;
-    for (k = 1; k < nz; ++k) {
-        real zwk = zw[zbase + k], elb, elf;
-        if (dtv[base + k] > 0.0f) {
-            real bv = fmaxf(sqrtf(gtr * dtv[base + k]), 0.0001f);
-            real numerator = fmaxf(0.3f * fmaxf(qkw[base + k], 0.018f),
-                50.0f * edmf_a[base + k - 1] * edmf_w[base + k - 1]);
-            elb = numerator / bv
-                * (1.0f + alp3 * sqrtf(vsc / (bv * elt)));
-            elb = fminf(elb, zwk);
-            elf = fmaxf(qkw[base + k], 0.018f) / bv;
-            elblavg[base + k] = fmaxf(elblavg[base + k],
-                50.0f * edmf_a[base + k - 1]
-                * edmf_w[base + k - 1] / bv);
-        } else {
-            elb = 1.0e10f; elf = elb;
-        }
-        real els;
-        if (rmo[column] > 0.0f)
-            els = 0.4f * zwk
-                / (1.0f + 3.5f * fminf(zwk * rmo[column], 1.0f));
-        else
-            els = 0.4f * zwk * powf(1.0f - 5.0f * zwk * rmo[column], 0.2f);
-        real weight = 0.5f * tanhf((zwk - (zi2 + h1)) / h2) + 0.5f;
-        real value = sqrtf(els * els / (1.0f + els * els / (elt * elt)));
-        value = fminf(fminf(value, elb), elf);
-        value = value * (1.0f - weight) + 0.3f * elblavg[base + k] * weight;
-        el[base + k] = value * psig_bl[column];
-    }
-}
-
 // Default WRF mym_turbulence adjustment after level-2 stability and mixing
 // length have been evaluated. Every vertical interface is independent here.
 extern "C" __global__
@@ -2328,6 +2165,30 @@ __device__ void mynn_mym_length_column(
                          MYNN_MUL(MYNN_MUL(0.3f, elblavg[k]), weight));
         el[k] = MYNN_MUL(value, psig_bl);
     }
+}
+
+extern "C" __global__
+void mynn_mixlength_default_columns(
+    const real* __restrict__ dz, const real* __restrict__ zw,
+    const real* __restrict__ u, const real* __restrict__ v,
+    const real* __restrict__ qke, const real* __restrict__ dtv,
+    const real* __restrict__ theta, const real* __restrict__ edmf_w,
+    const real* __restrict__ edmf_a, const real* __restrict__ rmo,
+    const real* __restrict__ fltv, const real* __restrict__ zi,
+    const real* __restrict__ psig_bl, real* __restrict__ el,
+    real* __restrict__ qkw, real* __restrict__ qtke,
+    real* __restrict__ thetaw, real* __restrict__ elblavg,
+    real* __restrict__ dlu, real* __restrict__ dld,
+    int nz, int ncol)
+{
+    int column = blockIdx.x * blockDim.x + threadIdx.x;
+    if (column >= ncol) return;
+    int base = column * nz, zbase = column * (nz + 1);
+    mynn_mym_length_column(dz + base, zw + zbase, u + base, v + base,
+        qke + base, dtv + base, theta + base, edmf_w + base, edmf_a + base,
+        rmo[column], fltv[column], zi[column], psig_bl[column], el + base,
+        qkw + base, qtke + base, thetaw + base, elblavg + base,
+        dlu + base, dld + base, nz);
 }
 
 // module_bl_mynn.F:1766-1820 mym_level2 for one column.  The Fortran loop runs

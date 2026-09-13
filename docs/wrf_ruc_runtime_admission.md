@@ -475,12 +475,14 @@ about them rather than about soil geometry:
   `&physics/num_soil_layers = 4` outright, so no land-surface scheme with any
   other geometry reaches it at all. Threading a count there would be a
   parameter that cannot vary.
-* `gpuwm/ingest/nest_init.py` — one of the few CRLF files in the tree, so
-  editing it would put CR bytes into a commit this lane keeps at zero; and a
-  RUC land-surface *component override* on a nest is separately refused
-  (`tests/test_ruc_admission.py`) because nothing has measured it. Six-level
-  RUC on a nested domain is therefore still a shape error — named here rather
-  than left to be discovered.
+* `gpuwm/ingest/nest_init.py` -- RETIRED, audit R-038. The shape error this
+  bullet named is gone: the call site imports `soil_layer_count` and passes
+  `num_soil_layers=soil_layer_count(cfg)` into `preprocess_land_surface_soil`,
+  so a nested domain is sized on the geometry its scheme resolved rather than
+  on Noah's four. A consistent RUC land-surface selection is accepted on
+  nested domains. The tree carries one land-surface selector and soil
+  geometry, so domains requesting different shared values are refused with
+  those values named. Missing forecast measurements remain advisory.
 
 **The retirement path, when a six-level oracle exists.** Regenerate the ~20
 harnesses at `nzs=6 / nddzs=8` with six-element `zsmain`; add the eight asset
@@ -490,7 +492,35 @@ pins to `ruc_contract.py`; add six-level rows to `test_ruc.py` and
 first of those exists, six levels is not a validation candidate and this
 document must not imply it is.
 
+**What audit R-038 did change.** The registry's `num_soil_layers` enum was
+`[4, 9]` and enforced as a hard plan error, under the stated reason that "a
+schema enum entry would advertise a validated geometry". That is an evidence
+policy, not an incompatibility, and it made two authorities disagree about one
+geometry: `gpuwm/config.py`'s `soil_layer_count`, built from
+`gpuwm.core.ruc_contract.WRF_SUPPORTED_NUM_SOIL_LAYERS`, accepts six and a
+six-level forecast completes. The enum is now derived from that same module,
+so the schema states what a plan may say and this document states what the
+evidence is worth -- two questions, two answers, no disagreement. A named
+`ruc-lsm-6level` OPTION is deliberately NOT added: land-surface options are
+indexed by `sf_surface_physics` throughout the consumer tables, so a second
+option carrying selector 3 would shadow the first, and admitting the geometry
+as an option needs an inventory keyed by (selector, geometry) rather than
+table work.
+
 ## Can a user select RUC yet?  No — and now for two reasons, not one
+
+**Read this section as the 2026-07-26 record; its verdict is superseded and
+its measurements are not.**  The template shipped later the same day -- see
+"The registry template" below -- and audit R-022 went further: `ruc-lsm` is
+declared on the ERA5 and HRRR single-domain routes AND sits in
+`allowed_component_options.land_surface` on both per-domain routes, so a plan
+may select it per domain and plan review admits it (measured against this
+tree's `gpuwm/physics_registry_v2.json`).  The bold sentence below is the
+answer to the 2026-07-26 question and nothing else.  What stands unchanged
+is everything measured here: the flat per-column cost, the width arithmetic,
+and the column-count rail, whose disposition is settled in "The column-count
+rail: a decision, not an omission" rather than by the closed door this
+section assumed.
 
 Asked and answered on 2026-07-26, after commit `46ce211` landed the soil
 remap.  **RUC still gets no registry template.**  The hold that commit

@@ -38,6 +38,7 @@ use serde::Serialize;
 const ABI: &str = concat!(
     "gpuwm-rw-netcdf-inventory-v1\tformat\tdimensions\tglobal_attributes\tvariables",
     "\tgpuwm-rw-netcdf-dump-v1\tvariables\tfilename\tshape\ttimes",
+    "\tdtype\t<f8\t|S1",
 );
 
 const INVENTORY_SCHEMA: &str = "gpuwm-rw-netcdf-inventory-v1";

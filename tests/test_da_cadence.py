@@ -307,3 +307,24 @@ def test_overrun_needs_a_measured_cost_not_a_placeholder():
     plan = _fast_plan()
     with pytest.raises(CadenceError, match="positive one"):
         check_overrun(plan, cycle_cost_seconds=0.0)
+
+
+def test_the_record_says_whether_the_cost_was_timed_or_priced():
+    """The check is the same either way; what a reader may conclude is not.
+
+    The docstring said the cost is a measured wall time and its only
+    caller in the tree hands it a reviewed price, so the record let a
+    reader take a projection for a stopwatch reading.
+    """
+    plan = _fast_plan()
+    _, clear = check_overrun(plan, cycle_cost_seconds=1.0)
+    assert clear["cost_basis"] == "measured", (
+        "the default is the case the check was written for")
+    with pytest.raises(CadenceError, match="shorter than the estimated"):
+        check_overrun(plan, cycle_cost_seconds=90.0, cost_basis="estimated")
+    _, queued = check_overrun(plan, cycle_cost_seconds=90.0, policy="queue",
+                              cost_basis="estimated")
+    assert queued["cost_basis"] == "estimated"
+    assert queued["outcome"] == "queued"
+    with pytest.raises(CadenceError, match="unknown cost basis"):
+        check_overrun(plan, cycle_cost_seconds=45.0, cost_basis="guessed")

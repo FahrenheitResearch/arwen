@@ -122,9 +122,8 @@ def test_a_fetch_window_may_begin_at_a_lead_and_f000_is_unchanged():
     assert fetch.gfs_forecast_hours(6, 3, 24) == (24, 27, 30)
 
 
-def test_an_off_cadence_or_over_horizon_lead_is_refused():
-    with pytest.raises(ValueError, match="not on the 3 h cadence"):
-        fetch.gfs_forecast_hours(6, 3, 25)
+def test_a_shifted_uniform_window_is_accepted_inside_the_published_horizon():
+    assert fetch.gfs_forecast_hours(6, 3, 25) == (25, 28, 31)
     with pytest.raises(ValueError, match="horizon"):
         fetch.gfs_forecast_hours(6, 3, 381)
     with pytest.raises(ValueError, match="nonnegative forecast lead"):
@@ -143,7 +142,7 @@ def test_the_fetch_hint_table_carries_the_lead_and_scopes_it():
         fetch.validate_fetch_hints(
             {"source": "era5", "hours": 6, "forecast_start_hour": 3},
             source="case.toml")
-    with pytest.raises(ValueError, match="nonnegative forecast lead"):
+    with pytest.raises(ValueError, match="forecast_start_hour.*nonnegative"):
         fetch.validate_fetch_hints(
             {"source": "gfs", "hours": 6, "forecast_start_hour": -1},
             source="case.toml")
@@ -208,7 +207,7 @@ def test_the_hrrr_lead_flag_is_no_longer_refused_for_the_isobaric_ladder(
          "--hours", "6", "--area", "30,-100,40,-90",
          "--forecast-start-hour", "6", "--out", str(tmp_path)]) != 0
     message = capsys.readouterr().err
-    assert "reanalysis" in message
+    assert "publishes analyses, not forecasts" in message
     assert "isobaric" not in message
 
 
@@ -494,8 +493,10 @@ def test_a_lead_the_fetch_lacks_is_refused_at_the_door_as_a_sentence(
     # auto backend falls to CPU (no cupy, or an uncertified cupy/CUDA
     # family), so deliberate warn() lines are set aside; the refusal
     # itself must still be exactly one sentence.
+    # A completed transfer from an earlier fixture can deliver its final
+    # progress line asynchronously; it is not part of this refusal.
     lines = [line for line in captured.err.splitlines()
-             if line.strip() and not line.startswith("warning: ")]
+             if line.strip() and not line.startswith(("warning: ", "fetch gfs: "))]
     assert len(lines) == 1, captured.err
     assert lines[0].startswith("rw-wps --source gfs: ")
     assert "f006" in lines[0] and "f000, f003" in lines[0]
@@ -552,7 +553,7 @@ def test_the_wizard_emits_a_cadence_that_contains_the_lead(tmp_path, capsys):
 
     out = tmp_path / "leg4.toml"
     assert cli_main([
-        "domain", "--point=35.5,-97.5", "--vram-gib", "12", "--root-dx", "12",
+        "domain", "--explain", "--point=35.5,-97.5", "--vram-gib", "12", "--root-dx", "12",
         "--hours", "2", "--source", "gfs", "--cycle", "2026-08-01T00",
         "--forecast-start-hour", "4", "--out", str(out)]) == 0
     printed = capsys.readouterr().out
@@ -578,7 +579,7 @@ def test_a_lead_on_the_default_grid_still_emits_the_default_cadence(
 
     out = tmp_path / "leg6.toml"
     assert cli_main([
-        "domain", "--point=35.5,-97.5", "--vram-gib", "12", "--root-dx", "12",
+        "domain", "--explain", "--point=35.5,-97.5", "--vram-gib", "12", "--root-dx", "12",
         "--hours", "3", "--source", "gfs", "--cycle", "2026-08-01T00",
         "--forecast-start-hour", "6", "--out", str(out)]) == 0
     printed = capsys.readouterr().out
@@ -661,12 +662,11 @@ def test_a_cycle_nomads_no_longer_serves_refuses_in_one_sentence():
     assert "HTTP 500" in fresh
 
 
-def test_a_rotten_cadence_and_lead_pairing_is_caught_at_config_load():
-    """The 1.4.0 emission, met at load instead of at the download."""
-    with pytest.raises(ValueError, match="not on the 3 h cadence"):
-        fetch.validate_fetch_hints(
-            {"source": "gfs", "hours": 3, "cadence": 3,
-             "forecast_start_hour": 4}, source="case.toml")
+def test_config_load_uses_the_requested_leads_instead_of_an_origin_rule():
+    """A shifted uniform subset is valid; an absent source lead is not."""
+    fetch.validate_fetch_hints(
+        {"source": "gfs", "hours": 3, "cadence": 3,
+         "forecast_start_hour": 4}, source="case.toml")
     # The pairing the wizard emits now loads clean.
     fetch.validate_fetch_hints(
         {"source": "gfs", "hours": 2, "cadence": 1,

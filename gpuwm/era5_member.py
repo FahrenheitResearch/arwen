@@ -13,21 +13,38 @@ def validate_selection(*, product_type="reanalysis", member=None, cadence=6, pro
         raise ValueError("ERA5 product must be reanalysis or ensemble_members")
     if provider not in ("cds", "arco"):
         raise ValueError("ERA5 provider must be cds or arco")
-    if isinstance(cadence, bool) or not isinstance(cadence, int) or cadence not in (1, 3, 6):
-        raise ValueError("ERA5 boundary cadence must be 1, 3 or 6 hours")
+    if isinstance(cadence, bool) or not isinstance(cadence, int) or cadence <= 0:
+        raise ValueError("ERA5 boundary cadence must be a positive whole number of hours")
     if product_type == "reanalysis":
         if member is not None:
-            raise ValueError("ERA5 reanalysis has no EDA member; select ensemble_members explicitly")
+            raise ValueError("ERA5 reanalysis has no EDA member. Select era5_product = 'ensemble_members' explicitly with era5_provider = 'cds', member = 0..9 and a cadence in multiples of 3 hours, or omit member for reanalysis")
+        _warn_coarse_cadence(cadence)
         return None
-    if provider != "cds" or cadence != 3:
-        raise ValueError("ERA5 EDA requires CDS and its native 3-hour boundary cadence")
+    if provider != "cds" or cadence % 3:
+        raise ValueError("ERA5 EDA requires CDS and a cadence that is a positive multiple "
+                         "of its native 3-hour interval; this ArWen ARCO reader carries HRES reanalysis only")
     if isinstance(member, str) and len(member) == 1 and member.isascii() and member.isdigit():
         member = int(member)
     if isinstance(member, bool) or not isinstance(member, int) or not 0 <= member <= 9:
         raise ValueError("ERA5 EDA requires an explicit member number 0..9")
     if cycle is not None and (cycle.hour % 3 or cycle.minute or cycle.second or cycle.microsecond):
         raise ValueError("ERA5 EDA initialization must be an exact 3-hourly UTC analysis time")
+    _warn_coarse_cadence(cadence)
     return member
+
+
+def _warn_coarse_cadence(cadence: int) -> None:
+    if cadence <= 6:
+        return
+    from gpuwm.explain import warn_once
+    warn_once(
+        f"boundary-cadence:{cadence}",
+        f"Boundary cadence is {cadence} hours; the requested cadence is retained, "
+        "but forcing is coarser than the 6-hour reference. Use a shorter cadence "
+        "when faster changes matter.",
+        "The source publishes analyses at the selected hours. A longer interval "
+        "is valid input, not a missing-data condition; temporal detail between "
+        "the selected analyses is reduced.")
 
 
 def _invoke(bridge, arguments, *, timeout=300):

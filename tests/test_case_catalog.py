@@ -641,9 +641,10 @@ def worldwide_proposal_document():
         regional["schedules"][tier] = {"start_utc": "2026-09-01T18:00:00Z",
             "total_integration_hours": 6, "boundary_interval_hours": 1}
         regional["status_by_tier"][tier] = {"blocking_reasons": [], "actual_files_verified": False}
+        # The recipe is this case's own d02/d03 subtree, kept under the ids the
+        # catalog gave it; the importer resolves the tree from parent_id.
         domains = deepcopy(case["presets"][tier]["domains"][1:])
-        for index, domain in enumerate(domains):
-            domain.update(id=f"d{index+1:02d}", parent_id=None if index == 0 else f"d{index:02d}")
+        domains[0]["parent_id"] = None
         case["presets"][tier]["source_domain_recipes"] = {"regional_3_1": {"domains": domains}}
     case["initialization"]["source_options"] = {"era5": primary, "hrrr": regional}
     return document
@@ -679,6 +680,127 @@ def test_worldwide_source_blocking_reasons_remain_visible_and_prevent_creation(t
     with pytest.raises(catalog.CatalogError, match="outside_declared_source_coverage"):
         catalog.create_case(loaded, "synthetic-import", out=tmp_path / "blocked.toml", tier="lower", source_option="hrrr", vram_gib=32, now=NOW)
     assert not (tmp_path / "blocked.toml").exists()
+
+
+def subtree_proposal_document():
+    """The same proposal with its outermost domain dropped from every preset."""
+    document = proposal_document()
+    for preset in document["cases"][0]["presets"].values():
+        kept = preset["domains"][1:]
+        kept[0]["parent_id"] = None
+        preset["domains"] = kept
+    return document
+
+
+def test_a_catalog_subtree_keeps_its_own_domain_ids(tmp_path):
+    from gpuwm.case_catalog_import import convert_proposal_v1
+    document = subtree_proposal_document()
+    assert [(row["id"], row["parent_id"]) for row in document["cases"][0]["presets"]["minimum"]["domains"]] == [
+        ("d02", None), ("d03", "d02")]
+    lower = convert_proposal_v1(deepcopy(document))["cases"][0]["tiers"]["lower"]
+    assert lower["nest_ratios"] == [3]
+    assert lower["root_dx_km"] == 3
+    assert [row["dx_km"] for row in lower["domain_intents"]] == [3, 1]
+    assert [row["grid_id"] for row in lower["domain_intents"]] == [1, 2]
+    loaded = catalog.load_catalog(proposal_zip(tmp_path, document=document))
+    preview = catalog.preview_case(loaded, "synthetic-import", tier="lower", now=NOW)
+    assert [row["dx_km"] for row in preview["geometry"]["domain_intents"]] == [3, 1]
+
+
+def test_catalog_domain_ids_may_use_any_vocabulary():
+    from gpuwm.case_catalog_import import convert_proposal_v1
+    document = proposal_document()
+    names = ["outer", "middle", "inner"]
+    for preset in document["cases"][0]["presets"].values():
+        for index, domain in enumerate(preset["domains"]):
+            domain.update(id=names[index], parent_id=None if index == 0 else names[index - 1])
+    lower = convert_proposal_v1(deepcopy(document))["cases"][0]["tiers"]["lower"]
+    assert [row["dx_km"] for row in lower["domain_intents"]] == [12, 3, 1]
+    assert [row["grid_id"] for row in lower["domain_intents"]] == [1, 2, 3]
+    assert lower["nest_ratios"] == [4, 3]
+
+
+def test_per_domain_import_issue_names_the_catalog_s_own_domain_id():
+    from gpuwm.case_catalog_import import convert_proposal_v1
+    document = proposal_document()
+    names = ["outer", "middle", "inner"]
+    for preset in document["cases"][0]["presets"].values():
+        for index, domain in enumerate(preset["domains"]):
+            domain.update(id=names[index], parent_id=None if index == 0 else names[index - 1])
+        preset["domains"][1]["selectors"]["command"] = "do not run"
+    converted = convert_proposal_v1(deepcopy(document))["cases"][0]
+    issues = converted["metadata"]["conversion"]["issues"]
+    assert any(issue.startswith("minimum/middle: per-domain command") for issue in issues)
+    assert not any("/d02" in issue for issue in issues)
+
+
+def test_catalog_domains_may_be_listed_child_first():
+    from gpuwm.case_catalog_import import convert_proposal_v1
+    forward = convert_proposal_v1(proposal_document())["cases"][0]["tiers"]
+    document = proposal_document()
+    for preset in document["cases"][0]["presets"].values():
+        preset["domains"].reverse()
+    assert convert_proposal_v1(document)["cases"][0]["tiers"] == forward
+
+
+def test_v2_source_domain_recipe_imports_under_its_original_ids(tmp_path):
+    document = worldwide_proposal_document()
+    recipe = document["cases"][0]["presets"]["minimum"]["source_domain_recipes"]["regional_3_1"]["domains"]
+    assert [(row["id"], row["parent_id"]) for row in recipe] == [("d02", None), ("d03", "d02")]
+    loaded = catalog.load_catalog(proposal_zip(tmp_path, document=document))
+    preview = catalog.preview_case(loaded, "synthetic-import", tier="lower", source_option="hrrr", now=NOW)
+    assert [row["dx_km"] for row in preview["geometry"]["domain_intents"]] == [3, 1]
+
+
+def _cycle_on_the_root(rows):
+    rows[0]["parent_id"] = rows[1]["id"]
+
+
+def _cycle_beside_the_root(rows):
+    rows[1]["parent_id"], rows[2]["parent_id"] = rows[2]["id"], rows[1]["id"]
+
+
+def _parent_this_preset_never_declares(rows):
+    rows[2]["parent_id"] = "d09"
+
+
+def _a_second_root(rows):
+    rows[2]["parent_id"] = None
+
+
+def _two_nests_on_one_parent(rows):
+    rows[2]["parent_id"] = rows[0]["id"]
+
+
+@pytest.mark.parametrize("mutate,pattern", [
+    (_cycle_on_the_root, r"'d01', 'd02' name each other as nest parents in a closed parent_id chain, so no domain is the outermost one"),
+    (_cycle_beside_the_root, r"'d02', 'd03' name each other as nest parents in a closed parent_id chain, so they never reach the outermost domain 'd01'"),
+    (_parent_this_preset_never_declares, r"domain 'd03' names nest parent 'd09', which this preset does not declare"),
+    (_a_second_root, r"domains 'd01', 'd03' each declare no nest parent, and one tier carries one outermost domain"),
+    (_two_nests_on_one_parent, r"domains 'd02', 'd03' all nest inside 'd01', and a tier's geometry is one nest ladder"),
+])
+def test_only_a_tree_a_native_tier_cannot_carry_is_refused(mutate, pattern):
+    from gpuwm.case_catalog_import import convert_proposal_v1
+    document = proposal_document()
+    for preset in document["cases"][0]["presets"].values():
+        mutate(preset["domains"])
+    with pytest.raises(catalog.CatalogError, match=pattern):
+        convert_proposal_v1(document)
+
+
+def test_sibling_nests_are_refused_for_the_shape_the_tier_emits_not_the_id_sequence():
+    """The deferred half of the tree work: the emitted tier is one ladder."""
+    from gpuwm.case_catalog_import import convert_proposal_v1
+    document = proposal_document()
+    for preset in document["cases"][0]["presets"].values():
+        preset["domains"][2]["parent_id"] = preset["domains"][0]["id"]
+        preset["domains"][2]["dx_km"] = 3
+    with pytest.raises(catalog.CatalogError) as refusal:
+        convert_proposal_v1(document)
+    message = str(refusal.value)
+    assert "root_dx_km plus nest_ratios" in message
+    assert "source_domain_recipes" in message
+    assert "sequential" not in message
 
 
 def test_archive_budget_applies_to_selected_bytes_not_unread_duplicates(tmp_path, monkeypatch):

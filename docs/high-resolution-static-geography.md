@@ -24,11 +24,13 @@ pilot's counted donor fill; TMN is recomputed.  Absence of the block is
 the identity: the 30-arc-second build runs byte-unchanged.
 
 The lane refuses loudly, with the reason in the receipt, when the
-footprint leaves the joint 3DEP/Annual-NLCD publication envelope, when
-the domain's own 30s baseline land use reports WRF ocean category
-anywhere (the inland-water rule is not coast-safe), when the baseline
-land-use inventory is not MODIS-21, when source tiles are missing (named),
-and when an enabled block would replace zero cells.  `on_refuse =
+footprint leaves the joint 3DEP/Annual-NLCD publication envelope, when the
+baseline land-use inventory is not MODIS-21, when source tiles are missing
+(named), and when an enabled block would replace zero cells.  A coastal
+footprint is not refused: the crosswalk's open water is split against the
+domain's own 30s baseline water field, so the sea stays WRF ocean category
+17 and inland water becomes lake category 21, with both cell counts and
+the discriminating method in the receipt.  `on_refuse =
 "fallback-30s"` proceeds on the unchanged baseline beneath a receipt that
 names the refusal; the default stops the case.  Pre-1985 cases take the
 earliest NLCD map and the receipt names the anachronism in years.
@@ -54,13 +56,17 @@ pilot manifest.
 
 | Field | Source | Native resolution | Terms | Pilot treatment |
 | --- | --- | ---: | --- | --- |
-| Bare-earth terrain | [USGS 3DEP](https://www.usgs.gov/3d-elevation-program/about-3dep-products-services) | 1/3 arc-second, about 10 m | US public domain | Area-average to the WRF spherical-Lambert cells, then one WPS smooth/desmooth pass |
-| Land cover and inland water | [Annual NLCD Collection 1.2](https://www.usgs.gov/centers/eros/science/usgs-eros-archive-land-cover-annual-nlcd-collection-12-land-cover) | 30 m | US public domain | Area fractions, explicit NLCD-to-WRF-MODIS-21 crosswalk; inland open water becomes lake category 21 |
+| Bare-earth terrain | [USGS 3DEP](https://www.usgs.gov/3d-elevation-program/about-3dep-products-services) | 1/3 arc-second, about 10 m | US public domain | Area-average to the WRF spherical-earth projected cells, then one WPS smooth/desmooth pass |
+| Land cover and inland water | [Annual NLCD Collection 1.2](https://www.usgs.gov/centers/eros/science/usgs-eros-archive-land-cover-annual-nlcd-collection-12-land-cover) | 30 m | US public domain | Area fractions, explicit NLCD-to-WRF-MODIS-21 crosswalk; open water becomes ocean category 17 where the 30s baseline water field says ocean and lake category 21 elsewhere |
 | Sand, silt, clay | [SoilGrids v2](https://docs.isric.org/globaldata/soilgrids/wcs.html) | 250 m | [CC BY 4.0](https://docs.isric.org/globaldata/soilgrids/SoilGrids_faqs_02.html) | Thickness-weighted 0--30 cm and 30--100 cm medians, normalized and classified with the USDA texture triangle |
 
-The inland-water rule is deliberately scoped to this Ohio window.  It must
-not be used at a coast, where WRF ocean category 17 and lake category 21 need
-a coastline-aware split.
+The crosswalk has one open water class and cannot tell a lake from the sea,
+so the ocean/lake split is made against the domain's own 30-arc-second
+baseline water field: a cell the baseline calls WRF ocean category 17 keeps
+the open water fraction as ocean, and everywhere else it becomes lake
+category 21.  Both counts and the method are written into the receipt.  The
+discriminator is already on the model grid at 30 arc-seconds, which is finer
+than any vendored coastline polygon and needs no extra dependency.
 
 Annual NLCD begins in 1985.  The April 1974 case therefore uses the earliest
 available map, which is still an explicit **11-year anachronism**.  It is an
@@ -87,7 +93,10 @@ fractions only as an explicit, counted fallback.
 The implementation:
 
 - verifies each source SHA-256 before decoding it;
-- uses WPS's spherical Earth and mass-point registration for Lambert grids;
+- uses WPS's spherical Earth and mass-point registration on every WPS
+  projection this tree builds (lambert, mercator, polar): the overlay
+  resamples through the grid's own PROJ CRS, so no projection is
+  singled out;
 - performs continuous area averaging and categorical area-fraction
   aggregation rather than nearest-neighbour sampling at model-cell centres;
 - reads no network data and refuses incomplete terrain or land-cover
@@ -96,7 +105,7 @@ The implementation:
   receipt that states exactly what was and was not certified.
 
 The pilot does **not** certify full real74 d04 coverage, a forecast
-improvement, stock-WRF parity, coastal handling, historical surface fidelity,
+improvement, stock-WRF parity, historical surface fidelity,
 or a public high-resolution-pack CLI.
 
 ## Caesar Creek result
@@ -127,9 +136,14 @@ wired into RW-WPS, or certified.  WorldCover 2021 also has the same, usually
 larger, historical-anachronism problem.
 
 Production work still required includes tiled/cache-aware downloading,
-coastline and lake separation, full-domain halo coverage, selection policy,
-public CLI/schema integration, attribution packaging, global fixtures, and
-trajectory/stock-WRF gates.
+full-domain halo coverage, selection policy, public CLI/schema integration,
+attribution packaging, global fixtures, and trajectory/stock-WRF gates.
+Coastline and lake separation is done: the split runs against the domain's
+own 30-arc-second baseline water field.  It is not optional and there is no
+flag for it.  The mask is a required argument of `build_highres_overrides`,
+and the production overlay and the bounded pilot below both derive it from
+`gpuwm.static.highres.baseline_ocean_mask`, so the two cannot report
+different coastlines for one domain.
 
 ## Reproducing the bounded pilot
 

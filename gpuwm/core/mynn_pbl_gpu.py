@@ -261,9 +261,10 @@ _TPB = 128
 #: ``bool(cp.any(a <= 0.0))``.  Each of those allocates a full ``(ncol, nz)``
 #: boolean temporary, reduces it, and synchronises -- once per validated
 #: array, and the driver validates forty-odd of them per call.  These three
-#: reductions write one persistent int32 word per array instead, so a whole
-#: predicate group costs one device-to-host read and allocates nothing that
-#: scales with the batch.
+#: predicates retain one persistent int32 word per array. Large native
+#: FP32 groups share one scan launch; small or other-typed groups use the
+#: original reductions below. Both complete the same immediate read and
+#: allocate no device descriptor or buffer that scales with the batch.
 #:
 #: The comparison in :func:`_nonpositive` is a float sign compare and CuPy
 #: appends ``-ftz=true`` unconditionally, so a positive subnormal flushes to
@@ -305,6 +306,62 @@ def _nonzero():
         "mynn_pbl_nonzero")
 
 
+_VALIDATION_PREDICATES = {
+    "mynn_pbl_nonfinite": "!isfinite(value)",
+    "mynn_pbl_nonpositive": "value <= 0.0f",
+    "mynn_pbl_nonzero": "value != 0.0f",
+}
+
+
+@lru_cache(maxsize=None)
+def _validation_block_budget(device: int) -> int:
+    """Budget 32 grid blocks per SM across the current input group.
+
+    Cache immutable device metadata only; streams and flag buffers stay with
+    the caller. A fixed per-array cap can leave most SMs idle for large fields.
+    """
+    return 32 * int(cp.cuda.runtime.getDeviceProperties(device)["multiProcessorCount"])
+
+
+def _validation_grid_blocks(longest: int, count: int, device: int) -> int:
+    needed = max(1, (longest + 127) // 128)
+    budget = _validation_block_budget(device)
+    return min(needed, max(1, budget // count))
+
+
+@lru_cache(maxsize=32)
+def _validation_batch_kernel(predicate: str, count: int):
+    """Read-only FP32 scans, with one output word per input array.
+
+    Pointers and lengths travel as launch arguments, so concurrent streams
+    share compiled code only. Each caller owns its existing status buffer.
+    Explicit FTZ matches the ReductionKernel predicates, including the
+    established positive-subnormal comparison behavior.
+    """
+    arguments = ", ".join(f"const float* a{i}, unsigned long long n{i}"
+                          for i in range(count))
+    cases = "\n".join(f"case {i}: data=a{i}; size=n{i}; break;"
+                      for i in range(count))
+    source = f'''
+extern "C" __global__ void mynn_validate_batch({arguments}, int* flags) {{
+    const float* data = nullptr;
+    unsigned long long size = 0;
+    switch (blockIdx.y) {{ {cases} }}
+    unsigned int failed = 0;
+    for (unsigned long long i = blockIdx.x * blockDim.x + threadIdx.x;
+         i < size; i += (unsigned long long)gridDim.x * blockDim.x) {{
+        float value = data[i];
+        failed |= ({_VALIDATION_PREDICATES[predicate]});
+    }}
+    unsigned int any_failed = __ballot_sync(0xffffffffu, failed != 0);
+    if ((threadIdx.x & 31) == 0 && any_failed)
+        atomicOr(flags + blockIdx.y, 1);
+}}
+'''
+    return cp.RawKernel(source, "mynn_validate_batch",
+                        options=("-std=c++17", "--ftz=true"))
+
+
 def _tendency_ncol(values: Mapping[str, object]) -> int:
     """Columns in a tendency batch, for the standalone-workspace fallback."""
     dz = values.get("dz")
@@ -315,20 +372,36 @@ def _tendency_ncol(values: Mapping[str, object]) -> int:
 def _flag_mask(kernel, arrays, flags) -> list[bool]:
     """Per-array verdicts from ``kernel``, one host read per flag block.
 
-    Each array reduces into **its own** word, which is why this is a mask
-    and not an accumulator: a CuPy ``ReductionKernel`` writes ``out``, it
-    does not fold the value already there, so ORing several arrays into one
-    word would silently keep only the last.  Groups longer than the flag
-    block are read a block at a time.
+    Large contiguous FP32 groups use one clear and one batched scan instead
+    of one reduction launch per array. Small or other-typed inputs keep the
+    original reduction. Groups longer than the flag block still preserve
+    every array's word and complete the same immediate host read.
     """
     arrays = tuple(arrays)
     words = int(flags.size)
     mask: list[bool] = []
     for start in range(0, len(arrays), words):
         block = arrays[start:start + words]
-        for index, array in enumerate(block):
-            kernel(array, out=flags[index:index + 1].reshape(()),
-                   keepdims=False)
+        predicate = getattr(kernel, "name", None)
+        factory = {"mynn_pbl_nonfinite": _nonfinite,
+                   "mynn_pbl_nonpositive": _nonpositive,
+                   "mynn_pbl_nonzero": _nonzero}.get(predicate)
+        if (len(block) >= 4 and predicate in _VALIDATION_PREDICATES
+                and factory is not None and kernel is factory()
+                and flags.dtype == cp.int32 and flags.flags.c_contiguous
+                and all(array.dtype == DTYPE and array.flags.c_contiguous
+                        for array in block)):
+            flags[:len(block)].fill(0)
+            arguments = tuple(value for array in block
+                              for value in (array, np.uint64(array.size)))
+            blocks = _validation_grid_blocks(max(array.size for array in block),
+                                             len(block), cp.cuda.runtime.getDevice())
+            _validation_batch_kernel(predicate, len(block))(
+                (blocks, len(block)), (128,), (*arguments, flags))
+        else:
+            for index, array in enumerate(block):
+                kernel(array, out=flags[index:index + 1].reshape(()),
+                       keepdims=False)
         mask.extend(bool(value) for value in flags[:len(block)].get())
     return mask
 
@@ -1060,8 +1133,8 @@ def mynn_tendencies_default_cuda(
                               work)
     if bl_mynn_mixscalars == 1:
         # The five stock qn solves (module_bl_mynn.F:4654-4860) in WRF's
-        # solve order, launched from the NEW translation unit — the frozen
-        # mynn_pbl.cu is untouched and its launch above is byte-identical
+        # solve order, launched from the scalar translation unit. The
+        # tendency body and its launch above are byte-identical
         # to the mixscalars=0 lane.  The solved dqn* replace the aliased
         # structural zeros in fresh buffers; the zero slot itself is never
         # written.  Local import so the mixscalars=0 lane never loads the
@@ -1203,18 +1276,12 @@ def mynn_dmp_mf_cuda(
         raise ValueError("MYNN mass-flux lane requires bl_mynn_edmf_mom=1")
     if bl_mynn_edmf_tke != 0 or type(bl_mynn_edmf_tke) is not int:
         raise ValueError("MYNN mass-flux lane requires bl_mynn_edmf_tke=0")
-    # W4 full admission (mf-close lane): the sibling DMP unit
-    # kernels/mynn_dmp_sibling.cu (D1 pattern, third application) now
-    # exports the four register-local terms the old refusal here named —
-    # PRE-limiter up_a, psig_w, the NUP2>0 gate, and the limiter
-    # adjustment — as tagged line-additions to a byte-copy of the frozen
-    # unit (normalized-diff proof: tests/test_mynn_dmp_sibling.py; the
-    # frozen mynn_pbl.cu byte pin b53ab90e... is untouched).  With
-    # bl_mynn_mixscalars=1 the SIBLING kernel is dispatched and the
-    # landed flux kernel (kernels/mynn_scalar_mix.cu) accumulates the
-    # five s_awqn* from the device exports; with 0 the frozen kernel is
-    # launched exactly as before — bit-identity by construction.  The
-    # CPU twin mynn_dmp_mf(bl_mynn_mixscalars=1) stays the reference.
+    # The sibling DMP unit exports pre-limiter up_a, psig_w, the active
+    # plume gate and the limiter adjustment as tagged additions to its
+    # historical source. The source-difference test permits only the
+    # ordinary mixing-length entry to differ in the active unit; DMP and
+    # its helpers remain identical. Scalar mixing accumulates five s_awqn*
+    # fields from those exports. The CPU DMP routine is the reference.
     if bl_mynn_mixscalars not in (0, 1) or \
             type(bl_mynn_mixscalars) is not int:
         raise ValueError(

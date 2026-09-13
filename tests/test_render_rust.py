@@ -1327,6 +1327,34 @@ def test_list_products_rejects_identity_gated_rows(
 
 
 @needs_renderer
+@pytest.mark.parametrize("heavy", [False, True], ids=["no-heavy", "heavy"])
+def test_excluded_heavy_rows_each_name_their_own_missing_grid(
+        heavy, wrfout, tmp_path):
+    """Architectural guard: one reason per excluded heavy row.
+
+    The catalog used to print a single literal for the whole ECAPE
+    family, so a permanent exclusion (the three native-CAPE ratio pairs,
+    which divide by the source model's own decoded CAPE plane and can
+    never come off a wrfout) was indistinguishable from a per-hour input
+    gap a re-import fixes.  Every excluded heavy row must name the grid
+    it is missing and a way out, and no two may say the same thing.
+    """
+
+    rows, _summary = rustwx.list_products(
+        RENDERER, wrfout, store_root=tmp_path / "heavy-store", heavy=heavy)
+    excluded = [(slug, detail) for slug, kind, status, detail in rows
+                if kind == "heavy" and status == "excluded"]
+    assert excluded, [row for row in rows if row[1] == "heavy"]
+    details = [detail for _slug, detail in excluded]
+    assert len(set(details)) == len(details), (
+        "excluded heavy rows share a reason string: "
+        + repr(sorted(d for d in details if details.count(d) > 1)))
+    for slug, detail in excluded:
+        assert slug in detail, (slug, detail)
+        assert "--heavy" in detail or "GRIB" in detail, (slug, detail)
+
+
+@needs_renderer
 @pytest.mark.parametrize("product", ["qpf_total", "qpf_1h"])
 def test_windowed_products_render_on_whole_hour_stores(
         product, wrfout_hourly, tmp_path):
@@ -1506,7 +1534,8 @@ def test_list_products_matplotlib_engine(tmp_path, monkeypatch, capsys):
 
 def _tiny_png(path, *, width=32, height=24) -> None:
     PIL = pytest.importorskip(
-        "PIL", reason="--pair needs Pillow (render extra)")
+        "PIL", reason="--pair needs Pillow (arrives with matplotlib; no "
+                      "gpuwm extra ships it)")
     from PIL import Image
 
     Image.new("RGB", (width, height), "#336699").save(path)

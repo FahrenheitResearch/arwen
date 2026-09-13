@@ -148,6 +148,8 @@ def member_inventory_rows(
     if executable is None:
         executable, _dump = _build_grib2_tools()
     rows = _grib2_inventory(Path(source), Path(executable))
+    if not rows:
+        raise MemberIdentityRefusal(f"{source} contains no GRIB messages to verify")
     missing = sorted(_REQUIRED_COLUMNS - set(rows[0]))
     if missing:
         raise MemberIdentityRefusal(
@@ -197,6 +199,8 @@ def verify_member_rows(
     without the bridge; :func:`verify_member_file` binds it to bytes.
     """
 
+    if not rows:
+        raise MemberIdentityRefusal(f"{source_label} contains no GRIB messages to verify")
     declared = member.verification
     claim = (f"{source_label} is claimed as {grammar.name} member "
              f"{member.member_id} (class {member.class_name!r}, "

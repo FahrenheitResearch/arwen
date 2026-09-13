@@ -174,7 +174,8 @@ def _hours(raw: str, *, cycle: datetime | None = None) -> tuple[int, ...]:
         values = tuple(int(item) for item in raw.split(","))
     except ValueError as error:
         raise ValueError("forecast hours must be comma-separated integers") from error
-    return validate_hrrr_source_forecast_hours(values, cycle=cycle)
+    return validate_hrrr_source_forecast_hours(
+        values, cycle=cycle, window_flag="--forecast-hours")
 
 
 def _request_bytes(url: str) -> tuple[bytes, dict[str, str]]:

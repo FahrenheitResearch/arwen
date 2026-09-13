@@ -56,7 +56,12 @@ from gpuwm.offline_child import (
     child_surface_requirement,
     derive_child_surface_from_parent,
     read_child_surface_state,
+    require_offline_child_root_forcing,
+    require_runnable_child_radiation_from_archive,
     reserve_output_root,
+    reset_resolution_notices,
+    resolve_child_run_config,
+    resolve_child_streaming_options,
     validate_parent_history,
 )
 
@@ -1049,6 +1054,13 @@ def downscale_main(args) -> int:
 
     from gpuwm.runplan import collect_warnings
 
+    # One warning per INVOCATION, not per process: the flag-over-file
+    # override sentences are deduplicated in module state so that plan
+    # review and the run admission this command dispatches to say the
+    # same sentence once between them, which means the NEXT command has
+    # to start from silence or it would override a written statement
+    # without a word (gpuwm.offline_child.reset_resolution_notices).
+    reset_resolution_notices()
     reservation = _OutputReservation()
     warnings: list[dict] = []
     try:
@@ -1210,22 +1222,18 @@ def _downscale_main(args, reservation: _OutputReservation,
             warn("--hours/--output-interval-seconds are ignored with "
                  "--child-config; the TOML's run_seconds and "
                  "output_interval_s are used")
-        if args.tiles is not None:
-            raise OfflineChildContractError(
-                "--tiles writes a [tiles] block into a config this command "
-                "DERIVES, and --child-config supplies its own.  Put "
-                "[tiles] in that file instead; the child route reads it "
-                "there and honors it.")
-        if args.child_levels is not None:
-            raise OfflineChildContractError(
-                "--child-levels builds an eta ladder for a config this "
-                "command DERIVES, and --child-config supplies its own.  "
-                "Read only on the --point route, it would be parsed here "
-                "and then silently dropped: the child would be prepared "
-                "and integrated on the supplied file's level count with "
-                "nothing said.  Put `eta_levels = [...]` in that file "
-                "instead (nz must equal len(eta_levels) - 1); the child "
-                "route reads it there and remaps onto it.")
+        # --tiles and --child-levels are RESOLVED against the supplied
+        # file, not refused against it: both are answered by one shared
+        # function each (gpuwm.offline_child.resolve_child_streaming_options
+        # and resolve_child_run_config), which this door and the runner
+        # both call, so a flag beside a file that declares nothing about
+        # that key is written into the run and printed at plan review
+        # instead of turned away.  The spec is parsed HERE, at CLI
+        # argument validation and before --out is reserved below, so a
+        # malformed N[,STRETCH] and a bare N with no stretch -- a uniform
+        # ladder under a stretched parent is a different atmosphere --
+        # still refuse at the same moment they always did.
+        _parse_child_levels(args.child_levels)
         child_config = Path(args.child_config)
         sizing = _sizing_budget(args, auto_vram)
         memory_basis = ("measured-local" if sizing.measured else "explicit-size")
@@ -1327,8 +1335,32 @@ def _downscale_main(args, reservation: _OutputReservation,
         raise OfflineChildContractError(
             "pass --child-config TOML or --point LAT,LON")
 
-    from gpuwm.config import load_config, soil_layer_count
-    cfg = load_config(child_config)
+    from gpuwm.config import soil_layer_count
+    # The config that will actually be RUN, resolved through the one
+    # function the runner's admission calls: a --child-levels ladder
+    # beside --child-config lands in the cfg the plan is written from and
+    # the price is taken on, so review and run describe one grid.
+    cfg = resolve_child_run_config(child_config, child_levels=args.child_levels)
+    # The run's root has to take specified boundaries.  Asked HERE, at
+    # plan review and on --dry-run, instead of only once the run had
+    # started (offline_child_run admission) and once the whole parent
+    # archive had been interpolated (build_offline_child_domain_state):
+    # one function, three doors, one sentence.
+    require_offline_child_root_forcing(cfg)
+    # And a ladder this domain's own radiation cannot run is turned away
+    # HERE too, on the model top read straight off the parent tape.  The
+    # RunConfig carries no p_top, so validate_run_config's own vertical
+    # preflight skips the radiation cap-layer arithmetic; until this line
+    # a deep --child-levels ladder planned clean on --dry-run and the run
+    # died at the first radiative call, after the fetch, the SINT, the
+    # remap and the whole preparation had been paid for.  Same function
+    # the state builder calls (gpuwm.offline_child).
+    require_runnable_child_radiation_from_archive(cfg, frames[0])
+    # The [tiles] the child will actually integrate under, resolved once
+    # for the plan document AND the price below, so the warning a
+    # disagreement earns prints exactly once.
+    tiles_options = resolve_child_streaming_options(
+        child_config, getattr(args, "tiles", None))
     _validate_child_window(cfg.run_seconds, window_seconds)
     # The child's clock, refused HERE if it is not a whole number of steps:
     # the same function the runner integrates on
@@ -1415,20 +1447,27 @@ def _downscale_main(args, reservation: _OutputReservation,
                  "parent's history, so the child is no closer to an "
                  "analysis than its parent was.")
 
-    from gpuwm.config import load_streaming_options
-
     plan = {
         "parent_frames": [str(path) for path in frames],
-        # Read off the config that will actually be run, whether this
-        # command derived it or the caller supplied it, so --dry-run reports
-        # the mode the child will use rather than the flag that was typed.
-        "tiles": load_streaming_options(child_config).to_json(),
+        # The mode the child will actually integrate under, whether this
+        # command derived the config, the caller supplied it, or --tiles
+        # resolved against it, so --dry-run reports the effective answer
+        # rather than either input on its own.
+        "tiles": tiles_options.to_json(),
         "initial_condition": lineage,
         "cadence_seconds": contract.interval_seconds,
         "max_boundary_interval_seconds": max_interval,
         "accepted_parent_cadence": bool(cadence_is_parents),
         "physics_binding": dict(binding.receipt()),
         "child_config": str(child_config),
+        # WHICH ladder this child is planned and priced on, beside the
+        # file that was handed in: --child-levels can replace the file's
+        # own eta_levels, so the path alone no longer answers it.
+        "child_levels_override": (None if args.child_levels is None
+                                  else str(args.child_levels)),
+        "effective_nz": int(cfg.nz),
+        "effective_eta_levels": (None if cfg.eta_levels is None
+                                 else [float(v) for v in cfg.eta_levels]),
         "placement": {"ratio": ratio, "i_parent_start": i_start,
                       "j_parent_start": j_start},
         "child_surface_from": (None if args.child_surface_from is None
@@ -1456,7 +1495,7 @@ def _downscale_main(args, reservation: _OutputReservation,
 
     try:
         pricing = downscale_pricing.price_child(
-            cfg, load_streaming_options(child_config),
+            cfg, tiles_options,
             machine=downscale_pricing.declared_machine(
                 free_bytes=(None if memory_vram_gib is None else
                             _budget_bytes(memory_vram_gib, memory_free_bytes)[0]),
@@ -1548,6 +1587,11 @@ def _downscale_main(args, reservation: _OutputReservation,
         preprocess_backend=args.preprocess_backend,
         health_interval_seconds=float(args.health_interval_seconds),
         render_products=render_products,
+        # The two sibling authoring flags travel to the engine door, which
+        # resolves them against the same file with the same two functions:
+        # the runner cannot reach a different answer than the review did.
+        tiles=args.tiles,
+        child_levels=args.child_levels,
         outdir=Path(args.out),
         # This process created --out moments ago to hold the config it
         # derived; the never-adopt reservation already happened there.
@@ -1608,9 +1652,13 @@ def register_cli(subparsers) -> None:
                              "--child-config; --point derives it)")
     parser.add_argument("--child-size", default=None, metavar="NX[,NY]",
                         help="explicit child extent for --point")
-    # THE DERIVED CONFIG'S [tiles] BLOCK, and only for --point: with
-    # --child-config the block belongs in the caller's own file, which the
-    # child route reads and honors.  A refined child is the domain most
+    # THE [tiles] MODE THE CHILD INTEGRATES UNDER.  On --point it is
+    # written into the config this command derives; on --child-config it
+    # is resolved against the caller's own file
+    # (gpuwm.offline_child.resolve_child_streaming_options): the file
+    # decides when the flag is absent, the flag decides when the file is
+    # silent, and a disagreement is one warning, not a refusal, because
+    # [tiles] binds no identity.  A refined child is the domain most
     # likely to outgrow the card it is run on -- --card sizes it to fit
     # RESIDENT, and this is how a caller asks for the larger child instead.
     parser.add_argument("--tiles", choices=("on", "auto"), default=None,
@@ -1674,10 +1722,14 @@ def register_cli(subparsers) -> None:
     parser.add_argument("--out", type=Path, required=True,
                         help="create-only output directory for the child "
                              "run (report.json, wrfout frames, restart)")
-    # THE DOOR onto a child that carries its own vertical ladder.  Without
-    # it the conservative remap is engine-proven and unreachable: the child
-    # config has no other way to name a ladder, and a bare level count is
-    # refused because it would be filled in with a uniform one.
+    # THE DOOR onto a child that carries its own vertical ladder, on BOTH
+    # routes: --point writes the ladder into the config it derives, and
+    # --child-config resolves it against the caller's own file
+    # (gpuwm.offline_child.resolve_child_run_config), which replaces
+    # eta_levels/nz and re-runs validate_run_config.  A bare level count
+    # is still refused, because it would be filled in with a uniform
+    # ladder and a uniform ladder under a stretched parent is a different
+    # atmosphere.
     parser.add_argument("--child-levels", default=None, metavar="N[,STRETCH]",
                         help="give the child its own vertical ladder of N "
                              "levels instead of inheriting the parent's, "

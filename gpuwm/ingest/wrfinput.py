@@ -6,7 +6,7 @@ This module adapts state only; the shared forecast runner owns integration.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
 from types import MappingProxyType
@@ -558,6 +558,8 @@ class RestoredDomain:
     global_attributes: Mapping[str, object]
     mapped_variables: tuple[str, ...]
     auxiliary_variables: tuple[str, ...]
+    surface_input_dispositions: Mapping[str, str] = field(
+        default_factory=lambda: MappingProxyType({}))
 
     def wrf_frame(self) -> dict[str, np.ndarray]:
         """CPU inverse of the restored atmospheric mapping."""
@@ -762,6 +764,14 @@ def read_wrfinput(path: str | Path, *, require_complete: bool = True,
     with netcdf_bridge.open_dataset(path) as dataset:
         dimensions = {name: len(dim) for name, dim in dataset.dimensions.items()}
         attrs = {name: dataset.getncattr(name) for name in dataset.ncattrs()}
+        from gpuwm.ingest.wrfinput_noahmp import input_dispositions
+        surface_dispositions = input_dispositions(cfg)
+        if surface_dispositions or _integral_attribute(attrs.get("SF_SURFACE_PHYSICS")) == 4:
+            from gpuwm.ingest.wrfinput_noahmp import require_cold_start
+            require_cold_start(dataset)
+        recorded_surface_dispositions = {
+            name: reason for name, reason in surface_dispositions.items()
+            if name in dataset.variables}
         if check_schemes:
             # BEFORE the inventory check below, on purpose.  An unported
             # package's hydrometeor names would otherwise surface as
@@ -770,7 +780,8 @@ def read_wrfinput(path: str | Path, *, require_complete: bool = True,
             # a reader can act on.
             check_supported_schemes(attrs, source=str(path))
         unknown = sorted(
-            set(dataset.variables) - ALLOWED_WRFINPUT - IGNORED_WRFINPUT)
+            set(dataset.variables) - ALLOWED_WRFINPUT - IGNORED_WRFINPUT
+            - surface_dispositions.keys())
         if unknown:
             # Reached only when the scheme attributes said the package is
             # supported and the file still carries names this door has no
@@ -785,7 +796,8 @@ def read_wrfinput(path: str | Path, *, require_complete: bool = True,
                 f"{path} has unmapped WRF variable(s): {unknown}.{claim}")
         raw = {}
         for name, variable in dataset.variables.items():
-            if name == "Times" or name in IGNORED_WRFINPUT:
+            if (name == "Times" or name in IGNORED_WRFINPUT
+                    or name in surface_dispositions):
                 continue
             value = _read_numeric(variable)
             _validate_wrfinput_geometry(
@@ -793,9 +805,18 @@ def read_wrfinput(path: str | Path, *, require_complete: bool = True,
             raw[name] = value
     _validate_supplied_physics_fields(raw, cfg, attrs)
     if "QNBCA" in raw and int(getattr(cfg, "wif_input_opt", 0)) == 2:
+        # The fact and the way out come from the table that owns this
+        # selector, so this door and the namelist importer cannot describe
+        # one configuration differently.  Imported on call: this module
+        # keeps its module-scope imports to numpy and the netCDF bridge.
+        from gpuwm.config import MP28_AEROSOL_SOURCE_OPTIONS
+
+        _, _, why = MP28_AEROSOL_SOURCE_OPTIONS["wif_input_opt"]
         raise NotImplementedError(
             "QNBCA is supplied with wif_input_opt=2, but the black-carbon "
-            "state/physics consumer is not implemented")
+            f"state/physics consumer is not implemented: {why}. Set "
+            "wif_input_opt=1 with aer_init_opt=1 for the ported monthly "
+            "climatology, or remove QNBCA from the supplied wrfinput.")
     present_moisture = set(raw) & ALL_MOISTURE_WRFINPUT
     extra_moisture = sorted(present_moisture - allowed_moisture)
     if extra_moisture:
@@ -823,7 +844,8 @@ def read_wrfinput(path: str | Path, *, require_complete: bool = True,
         dimensions=MappingProxyType(dimensions),
         global_attributes=MappingProxyType(attrs),
         mapped_variables=tuple(sorted(mapped)),
-        auxiliary_variables=tuple(sorted(auxiliary)))
+        auxiliary_variables=tuple(sorted(auxiliary)),
+        surface_input_dispositions=MappingProxyType(recorded_surface_dispositions))
 
 
 def _validate_supplied_physics_fields(raw, cfg, attributes):
@@ -1051,7 +1073,11 @@ def initialize_wrfinput_physics(state, restored, cfg, *, radiation=None,
         radiation_latitude=radiation_latitude,
         radiation_longitude=radiation_longitude,
         **({"cam_ozone": cam_ozone} if cam_ozone is not None else {}))
+    from gpuwm.ingest.wrfinput_noahmp import NOAHMP_INITIALIZED_SURFACE_FIELDS
     for field in driver.fields:
+        if (int(cfg.sf_surface_physics) == 4
+                and field in NOAHMP_INITIALIZED_SURFACE_FIELDS):
+            continue
         if field == "glw" and constant_glw_wm2 is not None:
             continue
         aliases = PHYSICS_FIELD_ALIASES.get(field, (field.upper(),))
@@ -1064,7 +1090,8 @@ def initialize_wrfinput_physics(state, restored, cfg, *, radiation=None,
             driver.fields[field][...] = cp.asarray(
                 value, dtype=driver.fields[field].dtype)
     driver.fields["albbck"][...] = cp.asarray(albbck, dtype=cp.float32)
-    driver.fields["lai"][...] = cp.asarray(lai, dtype=cp.float32)
+    if int(cfg.sf_surface_physics) != 4:
+        driver.fields["lai"][...] = cp.asarray(lai, dtype=cp.float32)
     if "RAINNC" in raw:
         driver.microphysics.rainnc[...] = cp.asarray(raw["RAINNC"], dtype=cp.float32)
     if driver.rainc is not None and "RAINC" in raw:

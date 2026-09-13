@@ -826,7 +826,7 @@ class WifSourceResolution:
 
 
 def resolve_wif_climatology(path=None, *, env=None, cwd=None,
-                            explicit_required=False):
+                            explicit_required=False, requested_by=None):
     """Locate ``QNWFA_QNIFA_SIGMA_MONTHLY.dat``, or name why there is none.
 
     Precedence, highest first:
@@ -847,6 +847,14 @@ def resolve_wif_climatology(path=None, *, env=None, cwd=None,
     into the same hard error -- that is what an explicit
     ``mp28_aerosol_source='climatology'`` means, and it is the difference
     between a default that may degrade and a request that is honoured.
+
+    ``requested_by`` names WHICH selector made that request, because there
+    are two spellings of it and only one of them is this field: a namelist
+    carrying ``(aer_init_opt, wif_input_opt) = (1, 1)`` resolves to the
+    same strict request with ``mp28_aerosol_source`` left at its default,
+    and a refusal that named the field there would send the operator to
+    change a setting they never set.  Defaults to the field, which is what
+    every caller that does not say otherwise is asking on behalf of.
     """
     import os
     from pathlib import Path
@@ -925,8 +933,8 @@ def resolve_wif_climatology(path=None, *, env=None, cwd=None,
         + "), or staged with `gpuwm fetch-tables --wif --from DIR`.")
     if explicit_required:
         raise MissingWifClimatologyDataset(
-            "mp28_aerosol_source='climatology' requires the dataset and "
-            + reason)
+            (requested_by or "mp28_aerosol_source='climatology'")
+            + " requires the dataset and " + reason)
     return WifSourceResolution(None, "unresolved", tuple(tried), reason)
 
 

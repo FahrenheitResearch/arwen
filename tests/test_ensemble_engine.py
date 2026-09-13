@@ -462,7 +462,10 @@ def _cycling_runner(**kwargs):
                                         dtype=np.float32)
                for name in names}
     np.savez(kwargs["member_dir"] / "gpuwmrst_d01_000.npz", **payload)
-    return outcome
+    from dataclasses import replace
+    from gpuwm.ensemble.state_sha import checkpoint_state_sha256
+    return replace(outcome, final_state_sha256=checkpoint_state_sha256(
+        kwargs["member_dir"] / "gpuwmrst_d01_000.npz"))
 
 
 def test_cycle_driver_stops_at_the_seam_and_applies_increments(tmp_path):

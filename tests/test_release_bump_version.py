@@ -1,0 +1,102 @@
+"""Every declaration of the release version moves together and agrees.
+
+THE BREAKAGE THIS PREVENTS: opening 2.7.4 moved ``pyproject.toml`` and the
+data package's ``VERSION`` and missed the terminal crate, so the release
+contract set refused the candidate on the terminal/engine version test and
+the cut needed a second commit. ``tools/release/bump_version.py`` rewrites
+all four declaring files and opens the changelog section in one step; the
+tests here run it on a copy of the real files and hold the real tree to
+``--check``. The tool is a script under tools/release, so it is loaded by
+path here, like the launcher template.
+"""
+
+from __future__ import annotations
+
+import importlib.util
+from pathlib import Path
+import shutil
+
+import pytest
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+TOOL = REPO_ROOT / "tools" / "release" / "bump_version.py"
+
+
+def _load():
+    spec = importlib.util.spec_from_file_location("bump_version", TOOL)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _copy_tree(tmp_path: Path) -> Path:
+    module = _load()
+    for relative in {r for r, _, _ in module.DECLARATIONS} | {module.CHANGELOG}:
+        source = REPO_ROOT / relative
+        if not source.is_file():
+            pytest.skip(f"the bump test needs the source tree ({relative})")
+        target = tmp_path / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, target)
+    return tmp_path
+
+
+def test_the_real_tree_declares_one_version_everywhere():
+    module = _load()
+    if not (REPO_ROOT / "pyproject.toml").is_file():
+        pytest.skip("the bump check needs the source tree")
+    assert module.disagreements(REPO_ROOT) == []
+
+
+def test_bumping_moves_every_declaration_and_opens_the_changelog(tmp_path):
+    module = _load()
+    root = _copy_tree(tmp_path)
+    before = module.declared(root)[0][1]
+    to = "99.0.1"
+    assert to != before
+    touched = module.bump(root, to)
+    assert module.disagreements(root) == []
+    assert {version for _, version in module.declared(root)} == {to}
+    assert set(touched) == {r for r, _, _ in module.DECLARATIONS} | {module.CHANGELOG}
+    changelog = (root / module.CHANGELOG).read_text(encoding="utf-8")
+    assert changelog.startswith("# Changelog")
+    assert changelog.splitlines()[2] == f"## {to} (unreleased)"
+    assert f"## {before}" in changelog  # the previous section stays
+    # The pin the engine places on its data package moved with it.
+    assert f'"gpuwm-data=={to}"' in (root / "pyproject.toml").read_text(encoding="utf-8")
+    # The terminal's lockfile entry moved, and only that entry.
+    lock = (root / "tools/arwen-tui/Cargo.lock").read_text(encoding="utf-8")
+    assert f'name = "arwen-tui"\nversion = "{to}"' in lock
+    assert lock.count(to) == 1
+
+
+def test_bumping_again_does_not_open_a_second_changelog_section(tmp_path):
+    module = _load()
+    root = _copy_tree(tmp_path)
+    module.bump(root, "99.0.2")
+    touched_again = module.bump(root, "99.0.3")
+    assert module.CHANGELOG in touched_again
+    # A second pass at the same number rewrites the declarations and leaves the section alone.
+    assert module.CHANGELOG not in module.bump(root, "99.0.3")
+    changelog = (root / module.CHANGELOG).read_text(encoding="utf-8")
+    assert changelog.count("## 99.0.3 (unreleased)") == 1
+    assert changelog.count("## 99.0.2 (unreleased)") == 1
+
+
+def test_check_names_the_file_that_disagrees(tmp_path):
+    module = _load()
+    root = _copy_tree(tmp_path)
+    cargo = root / "tools/arwen-tui/Cargo.toml"
+    current = module.declared(root)[0][1]
+    text = cargo.read_text(encoding="utf-8")
+    cargo.write_text(text.replace(f'version = "{current}"', 'version = "0.0.1"', 1), encoding="utf-8")
+    assert module.disagreements(root) == [
+        f"tools/arwen-tui/Cargo.toml says 0.0.1, pyproject.toml says {current}"
+    ]
+    assert module.main(["--check", "--root", str(root)]) == 1
+
+
+def test_a_malformed_target_is_refused():
+    module = _load()
+    with pytest.raises(SystemExit):
+        module.bump(REPO_ROOT, "2.7")

@@ -331,6 +331,32 @@ def _warn_synthetic_aerosol_fallback(source_choice, resolution) -> None:
     print(MP28_AEROSOL_SYNTHETIC_FALLBACK + detail, file=sys.stderr)
 
 
+def _resolved_mp28_aerosol_source(cfg) -> str:
+    """The mp=28 aerosol source this configuration actually selects.
+
+    ONE SPELLING, because two sites decide on it and a disagreement
+    between them is a refusal for a dataset the run would never open: the
+    run-door floor in :func:`initialize_real` asks it before deciding
+    whether the monthly climatology is a precondition, and the aerosol
+    resolver asks it again when it picks the source.
+
+    ``aer_init_opt = 1`` with ``wif_input_opt = 1`` is real.exe's own
+    spelling of "use the climatology", so it resolves 'auto' to the
+    strict form exactly as the resolver does; every other value of
+    ``mp28_aerosol_source`` is the operator's own word and is returned
+    unchanged.  The pair test itself is
+    :func:`gpuwm.ingest.analyzed_numbers.wif_climatology_named_by_namelist`
+    and not a second copy of the tuple, because the messages that tell an
+    operator how to UNDO this resolution ask the same question and a
+    disagreement between them is a way out that does nothing.
+    """
+    from gpuwm.ingest.analyzed_numbers import wif_climatology_named_by_namelist
+
+    if wif_climatology_named_by_namelist(cfg):
+        return "climatology"
+    return str(getattr(cfg, "mp28_aerosol_source", "auto") or "auto")
+
+
 def _mp28_aerosol_source_policy(cfg: RunConfig, state) -> dict[str, object]:
     """Receipt for the mp=28 half of the source-absent initialization.
 
@@ -2631,6 +2657,24 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
         raise TypeError("sfcp_to_sfcp must be a boolean")
     if not cfg.moist:
         raise ValueError("real initialization requires cfg.moist=True")
+    # THE ANALYZED NUMBER INVENTORY IS RESOLVED HERE, before the mp=28
+    # floor below, because the floor's question depends on the answer: an
+    # analysis carrying its own QNWFA/QNIFA pair opens no climatology, so
+    # "is the climatology installed on this machine" is not a
+    # precondition of that run at all.  Resolving it after the floor is
+    # what made the analyzed route unreachable on the one configuration
+    # it was written for.
+    from gpuwm.ingest.analyzed_numbers import (
+        AEROSOL_NUMBER_FIELDS, METGRID_NUMBER_FIELDS, analyzed_aerosol_fields,
+        analyzed_aerosol_way_out, metgrid_number_targets,
+        wif_climatology_named_by_namelist,
+        WIF_CLIMATOLOGY_NAMELIST_PAIR, WIF_CLIMATOLOGY_NAMELIST_PHRASE)
+    if (not isinstance(analyzed_number_fields, (tuple, list))
+            or any(name not in METGRID_NUMBER_FIELDS for name in analyzed_number_fields)
+            or len(set(analyzed_number_fields)) != len(analyzed_number_fields)):
+        raise ValueError("analyzed_number_fields must list distinct supported metgrid number fields")
+    decoded_numbers = tuple(name for name in METGRID_NUMBER_FIELDS if name in analyzed_number_fields)
+    number_targets = metgrid_number_targets(cfg) if decoded_numbers else {}
     if cfg.mp_physics == 28:
         # The aerosol-source selectors decide what this function is even
         # allowed to leave in nwfa/nifa, so they are checked HERE and not
@@ -2662,7 +2706,40 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
         # same sentence is raised from the same inventory at the doors
         # that commit to building a forecast, before they spend anything
         # (``gpuwm.config.validate_experiment_preparation``).
-        validate_run_preparation(cfg)
+        #
+        # AND IT IS NOT ASKED OF A RUN THAT READS NO CLIMATOLOGY.  When
+        # this analysis carries the whole QNWFA/QNIFA pair and nobody
+        # named a source, the aerosol comes from the analysis
+        # (``_metgrid_analyzed_aerosol`` below), the resolver is never
+        # called and no dataset is searched for, so a precondition about
+        # an uninstalled dataset would refuse a run that does not want
+        # it.  The condition is the SAME pair of facts the resolver
+        # decides on, read through the same two helpers, so the floor and
+        # the resolver cannot disagree about one analysis.
+        _carried_aerosol = analyzed_aerosol_fields(
+            decoded_numbers, number_targets)
+        if not (len(_carried_aerosol) == len(AEROSOL_NUMBER_FIELDS)
+                and _resolved_mp28_aerosol_source(cfg) == "auto"):
+            try:
+                validate_run_preparation(cfg)
+            except ValueError as refused:
+                # The precondition sentence lives in gpuwm/config.py and
+                # predates the analyzed route, so it names three ways out
+                # and not the fourth.  Naming it HERE, where the analysis
+                # in hand says which half is missing, is what keeps the
+                # refusal actionable for a met_em operator.
+                #
+                # AND IT NAMES THE SELECTOR THAT ACTUALLY ASKED.  A
+                # namelist carrying (aer_init_opt, wif_input_opt) = (1, 1)
+                # reaches this floor with mp28_aerosol_source at its
+                # default 'auto', so "leave mp28_aerosol_source at 'auto'"
+                # would be an instruction the operator has already
+                # followed; the pair is what resolved the source and the
+                # pair is what the sentence has to name.
+                _way_out = analyzed_aerosol_way_out(
+                    _carried_aerosol,
+                    named_by_namelist=wif_climatology_named_by_namelist(cfg))
+                raise ValueError(f"{refused} {_way_out}") from None
     if use_sh_qv is None:
         use_sh_qv = getattr(snapshot, "specific_humidity_authority", False)
     if not isinstance(use_sh_qv, (bool, np.bool_)):
@@ -2687,13 +2764,6 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
             "partial specific-humidity forcing inventory: "
             f"present={present}, missing={missing_specific}")
     has_specific_humidity = marker_count == len(specific_markers)
-    from gpuwm.ingest.analyzed_numbers import METGRID_NUMBER_FIELDS, metgrid_number_targets
-    if (not isinstance(analyzed_number_fields, (tuple, list))
-            or any(name not in METGRID_NUMBER_FIELDS for name in analyzed_number_fields)
-            or len(set(analyzed_number_fields)) != len(analyzed_number_fields)):
-        raise ValueError("analyzed_number_fields must list distinct supported metgrid number fields")
-    decoded_numbers = tuple(name for name in METGRID_NUMBER_FIELDS if name in analyzed_number_fields)
-    number_targets = metgrid_number_targets(cfg) if decoded_numbers else {}
     if use_sh_qv and not has_specific_humidity:
         raise ValueError(
             "use_sh_qv=True requires PRES, SPFH, and Q2 forcing")
@@ -3397,20 +3467,128 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
         # as one.
         from gpuwm.ingest.wif_climatology import (
             describe_wif_source, resolve_wif_climatology)
-        _source_choice = str(
-            getattr(cfg, "mp28_aerosol_source", "auto") or "auto")
-        _namelist_demand = (
-            (int(cfg.aer_init_opt), int(cfg.wif_input_opt)) == (1, 1))
-        if _namelist_demand and _source_choice == "auto":
-            # aer_init_opt=1/wif_input_opt=1 is real.exe's own spelling of
-            # "use the climatology"; honour it as the strict form.
-            _source_choice = "climatology"
-        if _source_choice == "synthetic":
+        # aer_init_opt=1/wif_input_opt=1 is real.exe's own spelling of
+        # "use the climatology"; the shared resolver honours it as the
+        # strict form, and the run-door floor above reads the same one.
+        _source_choice = _resolved_mp28_aerosol_source(cfg)
+        # AND WHICH SPELLING ASKED FOR IT, read once here so that the
+        # discard warning below, the missing-dataset refusal and the
+        # underivable-grid refusal all name the selector the operator
+        # actually set.  `mp28_aerosol_source` is the field spelling;
+        # (aer_init_opt, wif_input_opt) = (1, 1) is the namelist spelling
+        # that resolves to the same strict request while the field stays
+        # at its default, and a message naming the field to that operator
+        # offers a change that is already made.
+        _source_named_by_namelist = wif_climatology_named_by_namelist(cfg)
+        _source_request = (
+            WIF_CLIMATOLOGY_NAMELIST_PHRASE if _source_named_by_namelist
+            else f"mp28_aerosol_source={_source_choice!r}")
+        # THE SNAPSHOT'S OWN AEROSOL.  Whether the analysis carried an
+        # QNWFA/QNIFA pair is a property of the FILES, not of the
+        # configuration, so it is read here from ``decoded_numbers`` and
+        # needs no new ``mp28_aerosol_source`` value, no RunConfig field
+        # and no new row in the prepared-cache identity table.  "auto"
+        # keeps meaning "ArWen chooses", and what it chooses when the
+        # analysis carries the fields is the analysis: a climatology is a
+        # monthly mean standing in for exactly this.
+        #
+        # PRECEDENCE, and why it is resolved HERE rather than at the
+        # install below.  The install runs after this whole block, so a
+        # climatology write would land first and the analysis would
+        # silently overwrite it while the receipt still said
+        # "wif-climatology".  Choosing the source once, before the
+        # resolver runs, is what keeps the receipt and the bytes the same
+        # decision.
+        _analyzed_aerosol = analyzed_aerosol_fields(
+            decoded_numbers, number_targets)
+        _analyzed_aerosol_missing = tuple(
+            name for name in AEROSOL_NUMBER_FIELDS
+            if name not in _analyzed_aerosol)
+        # THE PAIR IS THE SOURCE, NOT EITHER HALF OF IT.  With FLAG_QNWFA
+        # and FLAG_QNIFA independent metgrid flags, an analysis can carry
+        # one and not the other; taking that as "the analysis supplies
+        # the aerosol" left the absent half at exact zero while the
+        # receipt said no synthetic profile was used and the lateral
+        # boundaries still declared it carried from input -- an
+        # aerosol-free inflow with nothing saying so, which is the one
+        # breakage the mp=28 precondition exists to name.  A half pair is
+        # therefore not this source: it is warned about by name and the
+        # resolved climatology/synthetic source initializes both fields,
+        # which is the one basis that covers them both.
+        _metgrid_analyzed_aerosol = (
+            not _analyzed_aerosol_missing and _source_choice == "auto")
+        if _analyzed_aerosol and not _metgrid_analyzed_aerosol:
+            # RULE: warn, never refuse.  The run proceeds on a resolved
+            # source; what it must not do is proceed and stay quiet about
+            # the analyzed fields that went in the bin.
+            _discarded = "/".join(_analyzed_aerosol)
+            if _source_choice != "auto":
+                # WHO ASKED, not merely what was resolved.  The pair
+                # (aer_init_opt, wif_input_opt) = (1, 1) resolves to
+                # 'climatology' with mp28_aerosol_source left at its
+                # default, so attributing the request to that field named
+                # a setting the operator never touched and offered a way
+                # out ("leave it at 'auto'") that was already taken.  One
+                # question, one answer, the same one the floor above and
+                # the resolver read.
+                _by_namelist = _source_named_by_namelist
+                if _by_namelist:
+                    _why = (
+                        "and " + WIF_CLIMATOLOGY_NAMELIST_PHRASE + " asks "
+                        "for the WIF climatology (mp28_aerosol_source is at "
+                        "its default 'auto'), so the analyzed field(s) are "
+                        "discarded and the climatology is used. Set either "
+                        "selector to 0 to initialize the aerosol from the "
+                        "analysis.")
+                else:
+                    _why = (
+                        f"and mp28_aerosol_source={_source_choice!r} was "
+                        "requested explicitly, so the analyzed field(s) are "
+                        "discarded and the requested source is used. Leave "
+                        "mp28_aerosol_source at 'auto' to initialize the "
+                        "aerosol from the analysis.")
+                _discard_key = "discarded_by_requested_aerosol_source"
+                _discard_detail = {
+                    "fields": list(_analyzed_aerosol),
+                    "mp28_aerosol_source": _source_choice,
+                    "requested_by": ("namelist" if _by_namelist
+                                     else "mp28_aerosol_source"),
+                }
+                if _by_namelist:
+                    _discard_detail.update(
+                        {name: int(getattr(cfg, name, 0) or 0)
+                         for name, _ in WIF_CLIMATOLOGY_NAMELIST_PAIR})
+            else:
+                _why = (
+                    "but not " + "/".join(_analyzed_aerosol_missing) +
+                    ", and an aerosol-aware run needs the whole pair, so the "
+                    "analyzed field(s) are discarded and both fields are "
+                    "initialized from the resolved aerosol source. Regenerate "
+                    "met_em with " + " and ".join(
+                        f"FLAG_{name}=1" for name in AEROSOL_NUMBER_FIELDS) +
+                    " to initialize the pair from the analysis.")
+                _discard_key = "discarded_by_incomplete_analyzed_aerosol_pair"
+                _discard_detail = {
+                    "fields": list(_analyzed_aerosol),
+                    "missing": list(_analyzed_aerosol_missing),
+                }
+            print(
+                f"mp_physics=28 aerosol: this analysis carries {_discarded}, "
+                f"{_why}", file=sys.stderr)
+            for name in _analyzed_aerosol:
+                number_moments.pop(number_targets[name], None)
+            number_receipt["retained_correspondence"] = {
+                name: target for name, target
+                in number_receipt["retained_correspondence"].items()
+                if name not in _analyzed_aerosol}
+            number_receipt[_discard_key] = _discard_detail
+        if _metgrid_analyzed_aerosol or _source_choice == "synthetic":
             wif_resolution = None
         else:
             wif_resolution = resolve_wif_climatology(
                 cfg.wif_climatology_path or None,
-                explicit_required=(_source_choice == "climatology"))
+                explicit_required=(_source_choice == "climatology"),
+                requested_by=_source_request)
         wif_climatology_selected = (
             wif_resolution is not None and wif_resolution.resolved)
         wif_receipt = None
@@ -3497,8 +3675,7 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
                     "silently different aerosol field, not an error")
                 if _source_choice == "climatology":
                     raise ValueError(
-                        "mp28_aerosol_source='climatology' cannot be "
-                        "honoured: " + unusable)
+                        _source_request + " cannot be honoured: " + unusable)
                 from gpuwm.ingest.wif_climatology import WifSourceResolution
                 wif_resolution = WifSourceResolution(
                     None, "resolved-but-caller-supplied-no-grid",
@@ -3536,19 +3713,61 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
                         "(dyn_em/module_initialize_real.F:2332-2345) AND "
                         "the signal thompson_init's MAXVAL test reads "
                         "(phys/module_mp_thompson.F:493/:531) to install "
-                        "the synthetic profile. The one ingest that MAY "
-                        "populate them is the wif-climatology branch "
-                        "above, which this run did not select.")
+                        "the synthetic profile. The two ingests that MAY "
+                        "populate them are the wif-climatology branch "
+                        "above and the analyzed QNWFA/QNIFA install "
+                        "below, and this run selected neither.")
+        if _metgrid_analyzed_aerosol and "QNWFA" in _analyzed_aerosol:
+            # WRF's own surface-emission formula
+            # (dyn_em/module_initialize_real.F:4530-4547), reached through
+            # the SAME wif_surface_emission the climatology branch uses,
+            # fed from the lowest ANALYZED level rather than the lowest
+            # climatology level.  One formula, two sources: a second
+            # transcription here is how the two would drift.  ``nifa2d``
+            # stays at zero exactly as WRF leaves it
+            # (gpuwm/core/state.py:682-689): WRF derives no ice-friendly
+            # surface emission from an aerosol field at all.
+            from gpuwm.ingest.wif_climatology import wif_surface_emission
+            _analyzed_surface_emission, _ = wif_surface_emission(
+                _host_float32(number_moments[number_targets["QNWFA"]][0]),
+                _host_float32(base.phb))
+            state.nwfa2d[...] = state_xp.asarray(
+                _analyzed_surface_emission, dtype=state_xp.float32)
         # Record the final resolution, including a resolved dataset which
         # could not be used without grid metadata. Zero supplied aerosol
         # remains input. Immutable LBC field names/bytes carry the decision
         # through preparation/cache/streaming/restart; tiles need no flag.
         from gpuwm.boundary_fields import external_scalar_fields
         state._external_scalar_boundary_fields = external_scalar_fields(
-            cfg, aerosol_from_input=wif_climatology_selected)
+            cfg, aerosol_from_input=(
+                wif_climatology_selected or _metgrid_analyzed_aerosol))
         aerosol_initialization = _mp28_aerosol_source_policy(cfg, state)
         aerosol_initialization["mp28_aerosol_source"] = _source_choice
-        if wif_receipt is not None:
+        if _metgrid_analyzed_aerosol:
+            # THE ANALYSIS ITSELF.  nwfa/nifa are written by the analyzed
+            # number install below, from the same vertical operator every
+            # other metgrid number field uses, so thompson_init's MAXVAL
+            # presence tests find them filled and skip the synthetic
+            # profile.  Nothing is awaited and no dataset was searched
+            # for, so neither the climatology's ``dataset`` key nor the
+            # fallback's ``synthetic_fallback_in_use`` belongs here.
+            aerosol_initialization["awaiting_profile_fill"] = False
+            aerosol_initialization["aerosol_source"] = "metgrid-analyzed"
+            aerosol_initialization["aerosol_source_statement"] = (
+                "mp_physics=28 aerosol initialized from the analyzed "
+                "aerosol number fields carried by this analysis "
+                f"({', '.join(_analyzed_aerosol)}), interpolated onto the "
+                "eta grid by the shared metgrid number operator "
+                "(WRF module_initialize_real.F:1999-2120). The surface "
+                "emission nwfa2d is WRF's own :4530-4547 formula applied "
+                "to the lowest analyzed level; nifa2d stays zero, as it "
+                "does in WRF. No aerosol climatology was searched for "
+                "and thompson_init's synthetic profile is not used.")
+            aerosol_initialization["analyzed_aerosol_fields"] = list(
+                _analyzed_aerosol)
+            aerosol_initialization["policy"] = (
+                "metgrid-analyzed-number-vertical-interp")
+        elif wif_receipt is not None:
             # The fields are ALREADY populated: thompson_init's MAXVAL
             # tests will find them nonzero and skip the synthetic fill,
             # so nothing is awaited.  The stage receipt binds which

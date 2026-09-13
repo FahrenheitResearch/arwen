@@ -14,7 +14,8 @@ from gpuwm.ingest import real
 from gpuwm.ingest.preprocess_backend import CudaPreprocessBackend
 from gpuwm.ingest.real import initialize_real
 from gpuwm.verify.npref import np_wrf_real_vert_interp
-from test_metgrid_number_initialization import _case, _mass_case
+from test_metgrid_number_initialization import (
+    _case, _mass_case, numbers_in_effect)
 
 
 def _capture_geometry(monkeypatch):
@@ -67,11 +68,26 @@ def test_cuda_initial_numbers_match_wrf_authority_with_supplied_surface(mp, monk
     supplied = initialize_real(snapshot, cfg, coord, terrain,
         analyzed_number_fields=METGRID_NUMBER_FIELDS, **kw)
     absent = initialize_real(snapshot, cfg, coord, terrain, **kw)
-    for source, target in metgrid_number_targets(cfg).items():
+    # What the package transports is not what the run filled.  This
+    # fixture names an explicit mp=28 aerosol source, so the table's two
+    # analyzed aerosol rows are binned by request and nwfa/nifa stay at
+    # exact zero; the Q oracle would be asked to match an all-zero field
+    # against a nonzero reference, which is a fact about the aerosol
+    # selector and not about CUDA routing.  Same subtraction as the CPU
+    # twin, from the same function.
+    announced = metgrid_number_targets(cfg)
+    targets, by_request = numbers_in_effect(
+        cfg, supplied.hydrometeor_initialization["number_moments"])
+    for source, target in targets.items():
         actual = cp.asnumpy(getattr(supplied.state, target))
         reference = _q_reference(snapshot, source, geometries[0], cfg.nz)
         _assert_q_matches_reference(actual, reference)
         assert np.count_nonzero(actual) > 0
+        assert cp.count_nonzero(getattr(absent.state, target)).item() == 0
+    # A binned row is binned on CUDA too: same zero, from both runs.
+    for source in by_request:
+        target = announced[source]
+        assert cp.count_nonzero(getattr(supplied.state, target)).item() == 0
         assert cp.count_nonzero(getattr(absent.state, target)).item() == 0
     # Number moments cannot enter total water or change thermodynamics.
     for name in ("mup", "thp", "php", "qv", "u", "v", "qc", "qr", "pb", "alb"):

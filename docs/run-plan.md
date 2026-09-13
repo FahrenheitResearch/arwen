@@ -129,9 +129,16 @@ a forcing cadence (so `gpuwm domain` can emit its `namelist.wps`), have
 an acquisition route, and sit on an implementation route one of this
 door's chains executes. A row added to the registry with those facts is
 intent-drivable with zero code change here. An intent naming a source
-that fails a fact is refused up front **with that fact** — a member
-set that needs `gpuwm-member-prep`, a missing acquisition route, a
-missing cadence — never with "unknown source".
+that fails a fact is refused up front **with that fact** (a missing
+acquisition route, a missing cadence, no runnable implementation
+route, a member selection the route's own grammar cannot bind),
+never with "unknown source".
+
+A member set is no longer one of those facts. An ensemble row
+resolves its default or config-selected member through its
+acquisition route's grammar, and the staged chain verifies the member
+identity of the messages that arrive before preparation consumes
+them, so an intent naming an ensemble source drives it.
 
 `gpuwm domain` writes a `[case_data]` table — the declared inputs a
 config-driven run needs — only for the combined-GRIB1 decode family
@@ -250,9 +257,23 @@ refuses.
 | `experiment` | the route holds the geography source for the whole run and rebuilds each footprint at move time. Nothing prepared, nothing priced. |
 | `prepared` + gfs | the preparation seals a **statics corridor** and the tree runner crops it. Run-plan composes `--statics-corridor` on the rw-wps prepare stage. |
 | `prepared` + hrrr | the same corridor, sealed by the **hierarchy stage**. Run-plan composes `--statics-corridor` on `gpuwm.hrrr_hierarchy_direct`. |
-| `prepared` + a packaged mapped source | **refused at resolve time**: rw-wps's mapped arm refuses `--statics-corridor` by name, so nothing on the staged chain can seal one. The refusal names the corridor-sealing chains and the corridor-free routes out. |
+| `prepared` + a packaged mapped source | the same corridor, sealed by mapped hierarchy preparation. Run-plan composes `--statics-corridor` on `gpuwm prep`, which forwards it to `gpuwm.mapped_direct`. Every source using this preparation contract inherits the capability. |
 
-On either prepared chain the preparation seals child-resolution
+The preparation dispatcher (`gpuwm.source_cli.preparation_runners`) owns each
+implementation's hierarchy schema and corridor stage. Run planning and the
+cyclone menu derive moving-statics support from those existing implementation
+rows; they keep no separate source eligibility list. Other workflows can query
+`source_preparation_outputs` without importing either workflow. A new source
+using an existing mapping and preparation implementation inherits its outputs.
+
+These declarations describe available machinery. Actual admission still binds
+the source state, forcing window, geographic coverage and prepared artifacts
+through the ordinary readers. A missing hierarchy or corridor writer is an
+implementation gap; a missing or invalid corridor in a particular bundle is an
+input requirement. Reuse includes the corridor flag in its argument binding,
+so a previous stationary preparation is retained and rebuilt for a moving run.
+
+On every corridor-sealing prepared chain the preparation seals child-resolution
 statics over each child's whole parent extent beside the other
 hierarchy artifacts, digest-bound into the preparation document, and the
 tree runner (`gpuwm-prepared-tree-forecast`) crops each new footprint's
@@ -707,10 +728,11 @@ facts, never a hand-kept list, so a registered source with a runnable
 route, a forcing cadence, an acquisition route and an executable chain
 is intent-drivable the moment its row lands. `run_plan.intent_routes`
 names the route(s), `run_plan.intent_chain` the prepared-route chain
-the dispatch would take, and — on an undrivable row —
+the dispatch would take, and, on an undrivable row,
 `run_plan.intent_refusal` carries the derived sentence naming the
-missing fact (a member set that needs `gpuwm-member-prep`, no
-acquisition route, no cadence). Every row is listed either way,
+missing fact (no acquisition route, no cadence, no runnable route, a
+member the route's grammar cannot bind). Every row is listed either
+way,
 because a truthful "not from an intent" beats a short menu.
 The envelope carries `gpuwm_version` and the registry's `readiness_rule`
 and `certification_rule`, so the maturity words a front end shows are the

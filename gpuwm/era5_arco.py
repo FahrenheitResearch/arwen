@@ -85,10 +85,10 @@ def retrieve_era5_arco(*, cycle: datetime | str, hours: int, area,
         cycle = cycle.astimezone(timezone.utc).replace(tzinfo=None)
     if cycle.minute or cycle.second or cycle.microsecond:
         raise ValueError("ERA5 cycle must fall on an exact UTC hour")
-    if isinstance(hours, bool) or not isinstance(hours, int) or hours <= 0:
-        raise ValueError("ERA5 hours must be a positive integer")
-    if isinstance(cadence, bool) or not isinstance(cadence, int) or cadence not in (1, 3, 6):
-        raise ValueError("ERA5 cadence must be 1, 3 or 6 hours")
+    if isinstance(hours, bool) or not isinstance(hours, int) or hours < 0:
+        raise ValueError("ERA5 hours must be a nonnegative integer")
+    from gpuwm.era5_member import validate_selection
+    validate_selection(cadence=cadence)
     if isinstance(area, str):
         area = fetch.parse_area(area)
     if not isinstance(area, fetch.Area):

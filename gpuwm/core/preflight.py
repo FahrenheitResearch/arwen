@@ -628,17 +628,34 @@ def streaming_advisory(exp, *, machine=None,
     311x146 ... 6.17 GiB" in its binding-phase line.  ``machine`` is the
     same escape for a caller that has a card but not yet an envelope.
     """
-    options = getattr(exp, "tiles", None)
-    mode = getattr(options, "mode", "off")
-    if mode == "off":
-        return None
-    nested_note = ""
-    if len(getattr(exp, "domains", ()) or ()) > 1:
-        if tree_road is _UNPRICED:
-            from gpuwm.core.streaming import tree_road_plan
+    from gpuwm.core import streaming as _streaming
 
+    # THE TABLES THAT GOVERN THIS TREE'S DOMAINS, not the tree-wide one
+    # read raw.  A configuration whose only enabled table is a
+    # ``[[domain]]`` row's own returned here with no sentence at all,
+    # while every run door streamed that domain -- the report was silent
+    # about the one thing this function exists to say out loud.  The mode
+    # NAMED is the one that put the configuration on the tiled road: the
+    # tree-wide table where that is enabled, and otherwise the first
+    # domain table that is.
+    options = getattr(exp, "tiles", None) or _streaming.OFF
+    domains = tuple(getattr(exp, "domains", ()) or ())
+    governing = [_streaming.options_for_domain(dc, options) for dc in domains]
+    if not (options.enabled or any(entry.enabled for entry in governing)):
+        return None
+    mode = (options.mode if options.enabled
+            else next(entry.mode for entry in governing if entry.enabled))
+    nested_note = ""
+    if len(domains) > 1:
+        if tree_road is _UNPRICED:
             try:
-                tree_road = tree_road_plan(exp, machine=machine)
+                # THE SHARED ADMISSION, handed down.  Left out, the walk
+                # falls back to an ``estimate_experiment`` of its own and
+                # this sentence described a road priced from a third
+                # basis, beside a verdict priced from the admission.
+                tree_road = _streaming.tree_road_plan(
+                    exp, machine=machine,
+                    resident_estimate=admission_estimate(exp, machine=machine))
             except Exception:        # a report never dies on its estimate
                 tree_road = None
         if tree_road is None:
@@ -4026,7 +4043,7 @@ def scratch_slot_registry(cfg: RunConfig, *,
         # Same slot shape as mp=6: WDM6's three extra moments are STATE, not
         # scratch, so nothing here grows with the double-moment warm rain.
         slots.update(wdm6_theta=m, wdm6_rho=m, wdm6_pii=m, wdm6_dz=m,
-                     wdm6_z8w=fl, mp_rainnc=s2, mp_rainncv=s2,
+                     wdm6_z8w=fl, wdm6_count_status=(1,), mp_rainnc=s2, mp_rainncv=s2,
                      mp_snownc=s2, mp_snowncv=s2, mp_graupelnc=s2,
                      mp_graupelncv=s2, mp_sr=s2, refl_t=m, refl_10cm=m)
     if cfg.mp_physics == 8:
@@ -4872,7 +4889,7 @@ SCRATCH_SLOT_LIFETIME_AUDIT = (
         "or any dependent read"),
     ScratchSlotLifetime(
         ("wdm6_theta", "wdm6_rho", "wdm6_pii", "wdm6_dz",
-         "wdm6_z8w"), "write_before_read",
+         "wdm6_z8w", "wdm6_count_status"), "write_before_read",
         "gpuwm/core/wdm6.py:apply",
         "WDM6 preparation fully assigns each array before the scheme launch "
         "or any dependent read"),
@@ -6937,13 +6954,22 @@ def streamed_forecast_envelope(exp: ExperimentConfig, *, machine=None, resident_
     ``prepared_domain_builder`` for a nest anyway, so pricing a nest's
     streamed envelope would describe a run that cannot happen.
     """
-    options = getattr(exp, "tiles", None)
-    if options is None or getattr(options, "mode", "off") == "off":
-        return None
     if not getattr(exp, "domains", None):
         return None
     from gpuwm.core import streaming
 
+    # THE ROOT'S OWN TABLE, through the one resolution every other surface
+    # takes (:func:`gpuwm.core.streaming.options_for_domain`).  Read raw,
+    # ``exp.tiles`` answers for the TREE: a root carrying
+    # ``tiles = {...}`` was priced here on a table that does not govern
+    # it, so a root the run door streams was priced resident and a root
+    # the run door keeps resident was priced streamed -- the same
+    # two-answers-to-one-configuration this seam exists to close, one
+    # table down.
+    options = streaming.options_for_domain(
+        exp.domains[0], getattr(exp, "tiles", None))
+    if not options.enabled:
+        return None
     try:
         return streaming.streamed_envelope(
             exp.domains[0].run, options, machine=machine, resident_estimate=resident_estimate)
@@ -7209,7 +7235,7 @@ def admission_estimate(exp: ExperimentConfig, *, machine=None
     asked, because the question has one answer.  The plan review
     (:func:`estimate_phases`, through
     :func:`gpuwm.core.streaming.tree_road_plan`) and the run door
-    (:func:`gpuwm.prepared_domain_tree_forecast.cold_tree_streaming_decision`)
+    (:func:`gpuwm.core.streaming.cold_tree_streaming_decision`)
     used to price it from two different calls: the review with an explicit
     ``column_chunk`` and the target card's profile, the door with the
     prepared cache's retained forcing interval count and its real lateral
@@ -8804,6 +8830,13 @@ def check_main(args) -> int:
     if args.alloc and declared_memory:
         raise ValueError("--alloc measures this GPU; omit --free-gib and --budget-gib")
     exp = _load_experiment_any(args.config)
+    import tomllib
+    from gpuwm.config_authority import read_config_authority
+    from gpuwm.runplan import drivability_for
+    hints = tomllib.loads(read_config_authority(args.config).payload.decode("utf-8")).get("fetch") or {}
+    if drivability_for(hints.get("source")).get("requires_source_root"):
+        from gpuwm.local_preparation import review_local_inputs
+        review_local_inputs(hints, base_dir=Path(args.config).resolve().parent)
     if (target_hardware and target_machine is None
             and (getattr(exp.tiles, "mode", "off") != "off"
                  or any(getattr(getattr(domain, "tiles", None), "mode", "off") != "off"

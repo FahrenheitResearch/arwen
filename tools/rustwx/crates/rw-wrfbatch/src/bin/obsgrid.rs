@@ -361,7 +361,9 @@ fn run(args: Args) -> Result<(), String> {
             display_units: units,
             scale,
             cbar_tick_step: None,
-            legend,
+            legend: if product == "z-composite" {
+                LegendControls { mode: LegendMode::SmoothRamp, ..legend }
+            } else { legend },
             render_density: RenderDensity::default(),
             subtitle_left: format!(
                 "valid {} | {} radar(s) | {} level(s)",

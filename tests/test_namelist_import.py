@@ -1076,15 +1076,47 @@ def test_implicit_switches_come_from_the_shipped_profile_not_the_importer(
     assert "top_lid = false" in explicit_toml
 
 
-def test_rejects_unsupported_theta_m(tmp_path):
+def test_the_bare_door_books_theta_m_as_the_same_substitution_as_the_other_two(
+        tmp_path):
+    """use_theta_m = 1 is one integration divergence, and the bare
+    import-namelist door books it exactly as the met_em and wrfinput doors
+    do: an announced Substitution with a reason, never a refusal that
+    depends on which door the user arrived through."""
     inp = INPUT_TEXT.replace(" use_theta_m = 0,", " use_theta_m = 1,")
-    with pytest.raises(ValueError, match="use_theta_m"):
-        import_namelists(*_pair(tmp_path, inp=inp))
+    _toml, report = import_namelists(*_pair(tmp_path, inp=inp))
+    booked = [item for item in report.substitutions
+              if item.key == "use_theta_m"]
+    assert len(booked) == 1
+    assert (booked[0].wrf_value, booked[0].gpuwm_value) == (1, 0)
+    assert booked[0].gpuwm_key == "use_theta_m"
+    # The bare door states its OWN basis: native initialization builds dry
+    # theta from physical temperature, so the state is recovered exactly.
+    assert "gpuwm/ingest/real.py" in booked[0].reason
+    assert "integration itself differs" in booked[0].reason
 
-    # Omission takes WRF's Registry default 1; it must not silently become
-    # gpuwm's implemented dry-theta branch.
-    inp = INPUT_TEXT.replace(" use_theta_m = 0,\n", "")
-    with pytest.raises(ValueError, match="Registry default when omitted"):
+    # The other two doors book the same key/value triple.
+    _metgrid_toml, metgrid_report = import_namelists(
+        *_pair(tmp_path, inp=inp), metgrid_initialization=True)
+    metgrid = [item for item in metgrid_report.substitutions
+               if item.key == "use_theta_m"]
+    assert [(item.key, item.wrf_value, item.gpuwm_value) for item in metgrid] \
+        == [(item.key, item.wrf_value, item.gpuwm_value) for item in booked]
+    assert "metgrid TT is physical temperature" in metgrid[0].reason
+
+    # Omission takes WRF's Registry default 1 and is booked the same way,
+    # rather than refused for being omitted.
+    omitted = INPUT_TEXT.replace(" use_theta_m = 0,\n", "")
+    _omitted_toml, omitted_report = import_namelists(
+        *_pair(tmp_path, inp=omitted))
+    assert [item.key for item in omitted_report.substitutions
+            if item.key == "use_theta_m"] == ["use_theta_m"]
+
+
+def test_theta_m_outside_wrfs_two_values_is_still_refused(tmp_path):
+    """Keeping the divergence sayable did not admit a value WRF does not
+    define."""
+    inp = INPUT_TEXT.replace(" use_theta_m = 0,", " use_theta_m = 2,")
+    with pytest.raises(ValueError, match="requires 0 or 1"):
         import_namelists(*_pair(tmp_path, inp=inp))
 
 
@@ -1913,15 +1945,23 @@ def test_report_carries_three_explicit_sections(tmp_path):
 # ---------------------------------------------------------------------------
 
 @requires_bundle
-def test_original_bundle_namelist_rejects_unsupported_modes():
+def test_original_bundle_namelist_books_its_omitted_theta_m_as_a_substitution():
     """The published original is not silently rewritten to gpuwm scope.
 
     Since the nwp_diagnostics unpin (STEP17) the original's remaining
-    unsupported mode is use_theta_m: the campaign namelist omits it, WRF's
-    Registry default is 1, and gpuwm implements the dry-theta branch only.
+    divergence is use_theta_m: the campaign namelist omits it and WRF's
+    Registry default is 1, while gpuwm implements the dry-theta branch
+    only.  That is now booked as the announced substitution every import
+    door books, rather than refused on this door alone, so the assertion
+    inverts with the refusal it cited.
     """
-    with pytest.raises(ValueError, match="use_theta_m"):
-        import_namelists(BUNDLE_WPS, BUNDLE_INPUT, name="real74_4dom")
+    _toml, report = import_namelists(
+        BUNDLE_WPS, BUNDLE_INPUT, name="real74_4dom")
+    booked = [item for item in report.substitutions
+              if item.key == "use_theta_m"]
+    assert len(booked) == 1
+    assert (booked[0].wrf_value, booked[0].gpuwm_value) == (1, 0)
+    assert booked[0].reason
 
 
 #: ``[experiment]`` settings the committed flagship config carries that the
@@ -2540,3 +2580,172 @@ def test_inactive_wrf_scalar_radiation_values_remain_declared(tmp_path):
     exp = load_experiment(output)
     assert all((dc.run.o3input, dc.run.use_mp_re, dc.run.icloud) == (0,0,0)
                for dc in exp.domains)
+
+
+def test_the_importer_and_the_loader_refuse_moving_nests_in_one_sentence(
+        tmp_path):
+    """One refusal, owned by the loader: the importer raises the loader's
+    own sentence, which names what breaks and what to write instead."""
+    inp = INPUT_TEXT.replace(
+        " time_step = 60,",
+        " time_step = 60,\n num_moves = 2,\n move_id = 2, 2,")
+    with pytest.raises(ValueError) as excinfo:
+        import_namelists(*_pair(tmp_path, inp=inp))
+    message = str(excinfo.value)
+    assert "[relocation]" in message
+    assert "[[relocation.move]]" in message
+    assert "SINT donor" in message
+    assert "static nests only" not in message
+
+
+def test_ref_x_ref_y_import_as_an_equivalent_centred_projection(tmp_path):
+    """A reference point moved off the WPS default centre is index
+    arithmetic on a projection the importer has already resolved, so it is
+    carried exactly: the emitted six-key [projection] table names the same
+    grid the WPS reader builds."""
+    import numpy as np
+
+    wps_text = WPS_TEXT.replace(
+        " ref_lat   = 39.7,", " ref_x = 20,\n ref_y = 15,\n ref_lat   = 39.7,")
+    wps, inp = _pair(tmp_path, wps=wps_text)
+    toml_text, report = import_namelists(wps, inp, name="refpoint")
+    emitted_path = tmp_path / "refpoint.toml"
+    emitted_path.write_text(toml_text)
+
+    emitted = grids_from_projection_config(load_experiment(emitted_path))[0]
+    declared = grids_from_wps_namelist(wps)[0]
+    assert (declared.known_x, declared.known_y) == (20.0, 15.0)
+    emitted_lat, emitted_lon = emitted.latlon_mass()
+    declared_lat, declared_lon = declared.latlon_mass()
+    assert np.abs(emitted_lat - declared_lat).max() <= 1.0e-3
+    assert np.abs(emitted_lon - declared_lon).max() <= 1.0e-3
+
+    # The move is stated once, not silent.
+    moved = {item.key: item for item in report.fixed}
+    assert "ref_x" in moved and "ref_y" in moved
+    assert "carried exactly" in moved["ref_x"].reason
+
+
+def test_s_we_is_normalized_to_one_and_reported(tmp_path):
+    """s_we is the domain's own start index, not an offset into the parent:
+    it normalizes to 1, nothing moves, and the report says so."""
+    wps_text = WPS_TEXT.replace(
+        " e_we              = 101, 61,",
+        " s_we = 1, 5,\n e_we              = 101, 61,")
+    _toml, report = import_namelists(*_pair(tmp_path, wps=wps_text),
+                                     name="window")
+    entry = next(item for item in report.fixed if item.key == "s_we")
+    assert entry.fixed_value == 1
+    assert "i_parent_start" in entry.reason
+    assert "nothing about the grid moves" in entry.reason
+
+
+def test_the_delayed_nest_input_stream_imports_as_a_declared_divergence(tmp_path):
+    """fine_input_stream was consumed nowhere, so a namelist carrying WRF's
+    delayed-nest-start stream died on the unmapped-key refusal while the
+    RW-WPS support report PASSed the identical pair.  It is a DECLARED
+    DIVERGENCE now: the child starts at its declared start time either
+    way, only the provenance of its masked surface state differs, and the
+    reachable WRF doors admit it."""
+    from types import SimpleNamespace
+
+    from gpuwm.wrfinput_door import require_preserved_wrf_selectors
+
+    inp_text = INPUT_TEXT.replace(
+        " run_hours = 6,", " run_hours = 6,\n fine_input_stream = 0, 2,")
+    _toml, report = import_namelists(*_pair(tmp_path, inp=inp_text),
+                                     name="delayed")
+    entry = next(item for item in report.substitutions
+                 if item.key == "fine_input_stream")
+    assert (entry.wrf_value, entry.gpuwm_value) == (2, 0)
+    assert "delayed-nest-start route" in entry.reason
+    assert "at activation" in entry.reason
+    assert "own-grid analysis rather than from a real.exe wrfinput" \
+        in entry.reason
+    # The gate that guards the met_em and wrfinput doors admits it, so the
+    # route the support report passes is a route those doors also take.
+    require_preserved_wrf_selectors(SimpleNamespace(substitutions=(entry,)))
+    assert "fine_input_stream" in report.format()
+
+
+def test_the_own_input_stream_is_consumed_and_stated(tmp_path):
+    """fine_input_stream = 0 is what gpuwm already does for every domain.
+    It is recorded with its reason, never dropped silently and never
+    refused as an unmapped key."""
+    inp_text = INPUT_TEXT.replace(
+        " run_hours = 6,", " run_hours = 6,\n fine_input_stream = 0, 0,")
+    _toml, report = import_namelists(*_pair(tmp_path, inp=inp_text),
+                                     name="own-input")
+    entry = next(item for item in report.dropped
+                 if item.key == "fine_input_stream")
+    assert entry.values == (0, 0)
+    assert "own-grid" in entry.reason
+    assert not [item for item in report.substitutions
+                if item.key == "fine_input_stream"]
+
+
+def test_an_undefined_fine_input_stream_index_is_refused_by_name(tmp_path):
+    """WRF defines 0 and 2 for this key and nothing else.  The refusal
+    names both, and the way out, instead of reporting an unmapped key."""
+    inp_text = INPUT_TEXT.replace(
+        " run_hours = 6,", " run_hours = 6,\n fine_input_stream = 0, 3,")
+    with pytest.raises(ValueError) as raised:
+        import_namelists(*_pair(tmp_path, inp=inp_text))
+    message = str(raised.value)
+    assert "WRF defines two values for this key" in message
+    assert "0 (every field from the nest's own input)" in message
+    assert "Set fine_input_stream to 0 or 2 on every domain." in message
+    assert "unmapped key" not in message
+
+
+def test_a_fine_input_stream_column_longer_than_max_dom_is_refused(tmp_path):
+    """The support report rejects extra domain values rather than
+    truncating them; the importer reads the same column the same way."""
+    inp_text = INPUT_TEXT.replace(
+        " run_hours = 6,", " run_hours = 6,\n fine_input_stream = 0, 0, 2,")
+    with pytest.raises(ValueError, match="rejected rather than truncated"):
+        import_namelists(*_pair(tmp_path, inp=inp_text))
+
+
+@pytest.mark.parametrize("column,undefined,delayed,refused,diverges", [
+    ([0], (), (), False, False),
+    ([0, 0, 0], (), (), False, False),
+    ([0, 2], (), (2,), False, True),
+    ([2, 2], (), (1, 2), False, True),
+    ([0, 3], (3,), (), True, False),
+    ([1, 4, 2], (1, 4), (3,), True, False),
+])
+def test_the_fine_input_stream_decision_is_the_whole_answer(
+        column, undefined, delayed, refused, diverges):
+    """The record both doors read, field by field: which domains take the
+    delayed route, which declared indices WRF does not define, whether the
+    pair is refused, and the way out that goes with either answer."""
+    from gpuwm.namelist_import import (
+        FINE_INPUT_STREAM_DELAYED_WAY_OUT,
+        FINE_INPUT_STREAM_WAY_OUT,
+        fine_input_stream_decision,
+    )
+
+    decision = fine_input_stream_decision(column)
+    assert decision.streams == tuple(column)
+    assert decision.undefined == undefined
+    assert decision.delayed_domains == delayed
+    assert (decision.refusal is not None) is refused
+    assert (decision.divergence is not None) is diverges
+    assert decision.way_out == (FINE_INPUT_STREAM_DELAYED_WAY_OUT if diverges
+                                else FINE_INPUT_STREAM_WAY_OUT)
+
+
+def test_a_non_integer_fine_input_stream_is_refused_not_coerced(tmp_path):
+    """A Fortran logical is not a stream index.  The shared function is the
+    one type gate, so no door reads a different column from the one the
+    namelist wrote."""
+    from gpuwm.namelist_import import fine_input_stream_decision
+
+    with pytest.raises(ValueError, match="Fortran integer tokens"):
+        fine_input_stream_decision([0, True])
+    inp_text = INPUT_TEXT.replace(
+        " run_hours = 6,",
+        " run_hours = 6,\n fine_input_stream = 0, .true.,")
+    with pytest.raises(ValueError, match="Fortran integer tokens"):
+        import_namelists(*_pair(tmp_path, inp=inp_text))

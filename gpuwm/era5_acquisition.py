@@ -105,10 +105,10 @@ def retrieve_era5(*, cycle: datetime | str, hours: int, area,
         cycle = cycle.astimezone(timezone.utc).replace(tzinfo=None)
     if cycle.minute or cycle.second or cycle.microsecond:
         raise ValueError("ERA5 cycle must fall on an exact UTC hour")
-    if isinstance(hours, bool) or not isinstance(hours, int) or hours <= 0:
-        raise ValueError("ERA5 hours must be a positive integer")
-    if isinstance(cadence, bool) or not isinstance(cadence, int) or cadence not in (1, 3, 6):
-        raise ValueError("ERA5 cadence must be 1, 3 or 6 hours")
+    if isinstance(hours, bool) or not isinstance(hours, int) or hours < 0:
+        raise ValueError("ERA5 hours must be a nonnegative integer")
+    from gpuwm.era5_member import validate_selection
+    validate_selection(cadence=cadence)
     if isinstance(area, str):
         area = fetch.parse_area(area)
     if not isinstance(area, fetch.Area):
@@ -124,18 +124,17 @@ def retrieve_era5(*, cycle: datetime | str, hours: int, area,
     receipt_path = out / _RECEIPT
     template = fetch.era5_request_template(cycle=cycle, hours=hours, area=area,
                                            cadence=cadence, out=out)
-    by_day = {}
-    for moment in times:
-        by_day.setdefault(moment.date(), []).append(moment.strftime("%H:%M"))
     requests = []
-    for day, clock in sorted(by_day.items()):
-        for item in template["requests"]:
-            selection = {key: value for key, value in item["request"].items()
-                         if key not in {"date", "time"}}
-            selection.update(product_type=[product_type], year=[f"{day.year:04d}"],
-                month=[f"{day.month:02d}"], day=[f"{day.day:02d}"], time=clock,
-                data_format="grib", download_format="unarchived")
-            requests.append({"dataset": item["dataset"], "request": selection})
+    for item in template["requests"]:
+        # The template owns the exact per-day schedule. Convert only its
+        # date grammar for CDS; never cross it with an independent day loop.
+        day = datetime.strptime(item["request"]["date"][0], "%Y-%m-%d")
+        selection = {key: value for key, value in item["request"].items()
+                     if key not in {"date", "time"}}
+        selection.update(product_type=[product_type], year=[f"{day.year:04d}"],
+            month=[f"{day.month:02d}"], day=[f"{day.day:02d}"],
+            time=item["request"]["time"], data_format="grib", download_format="unarchived")
+        requests.append({"dataset": item["dataset"], "request": selection})
     identity = {"source": "era5", "cycle": cycle.isoformat() + "Z", "hours": hours,
                 "cadence_hours": cadence, "area": area.as_manifest(), "requests": requests}
     if member is not None:

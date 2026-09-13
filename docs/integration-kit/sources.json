@@ -1,6 +1,6 @@
 {
   "certification_rule": "certified_stock_wrf requires implemented field/level/cadence policies plus acceptance by unchanged stock wrf.exe within the declared source/domain envelope",
-  "gpuwm_version": "2.7.0",
+  "gpuwm_version": "2.7.4",
   "readiness_rule": "runnable means the strict implementation route exists; stock-WRF certification is a separate exact evidence status",
   "registry_schema": "gpuwm-native-source-adapters-v1",
   "routes": {
@@ -15,7 +15,7 @@
       "aliases": [],
       "composition_requirement": null,
       "coverage": {
-        "centre_lat": 38.49724665100055,
+        "centre_lat": 38.4972466510005,
         "centre_lon": -97.50597669104206,
         "describe": "1799x1059 Lambert grid at 3000 m, truelat 38.5/38.5, stand_lon -97.5",
         "east": -60.91719277183785,
@@ -31,8 +31,8 @@
           "truelat2": 38.5
         },
         "kind": "LambertGridWindow",
-        "north": 52.61565330680793,
-        "south": 21.13812300000002,
+        "north": 52.61565330680791,
+        "south": 21.138122999999993,
         "west": -134.09547973426317
       },
       "credentials": {
@@ -89,7 +89,7 @@
       ],
       "composition_requirement": null,
       "coverage": {
-        "centre_lat": 38.49724665100055,
+        "centre_lat": 38.4972466510005,
         "centre_lon": -97.50597669104206,
         "describe": "1799x1059 Lambert grid at 3000 m, truelat 38.5/38.5, stand_lon -97.5",
         "east": -60.91719277183785,
@@ -105,8 +105,8 @@
           "truelat2": 38.5
         },
         "kind": "LambertGridWindow",
-        "north": 52.61565330680793,
-        "south": 21.13812300000002,
+        "north": 52.61565330680791,
+        "south": 21.138122999999993,
         "west": -134.09547973426317
       },
       "credentials": {
@@ -476,10 +476,12 @@
         "pgrb2b"
       ],
       "run_plan": {
-        "intent_chain": null,
-        "intent_refusal": "the registry row for 'gefs' declares member set 'gefs-ensemble-grib2-members-v1': member selection and verification belong to `gpuwm-member-prep`, and an intent carries no member axis, so a chain composed here would prepare an unselected ensemble",
-        "intent_routes": [],
-        "intent_supported": false
+        "intent_chain": "prepared:staged",
+        "intent_refusal": null,
+        "intent_routes": [
+          "prepared"
+        ],
+        "intent_supported": true
       },
       "runner": "mapped_composition_v1",
       "source_id": "gefs",
@@ -580,10 +582,12 @@
         "pres/member"
       ],
       "run_plan": {
-        "intent_chain": null,
-        "intent_refusal": "the registry row for 'aigefs' declares member set 'aigefs-ensemble-grib2-members-v1': member selection and verification belong to `gpuwm-member-prep`, and an intent carries no member axis, so a chain composed here would prepare an unselected ensemble",
-        "intent_routes": [],
-        "intent_supported": false
+        "intent_chain": "prepared:staged",
+        "intent_refusal": null,
+        "intent_routes": [
+          "prepared"
+        ],
+        "intent_supported": true
       },
       "runner": "mapped_composition_v1",
       "source_id": "aigefs",
@@ -1170,7 +1174,7 @@
       ],
       "composition_requirement": null,
       "coverage": {
-        "centre_lat": 38.49724665100055,
+        "centre_lat": 38.4972466510005,
         "centre_lon": -97.50597669104206,
         "describe": "1799x1059 Lambert grid at 3000 m, truelat 38.5/38.5, stand_lon -97.5",
         "east": -60.91719277183785,
@@ -1186,8 +1190,8 @@
           "truelat2": 38.5
         },
         "kind": "LambertGridWindow",
-        "north": 52.61565330680793,
-        "south": 21.13812300000002,
+        "north": 52.61565330680791,
+        "south": 21.138122999999993,
         "west": -134.09547973426317
       },
       "credentials": {
@@ -1494,22 +1498,22 @@
       "credentials": {
         "items": [
           {
-            "absent_message": "No Copernicus CDS key at <USER_HOME>\\.cdsapirc: the retrieval cannot be requested at all -- this source is not downloaded by gpuwm but by the provider's own client, which reads a personal account key from that file and fails several commands later with its own exception if it is absent.  Obtain one at https://cds.climate.copernicus.eu.",
+            "absent_message": "No Copernicus CDS key at <USER_HOME>/.cdsapirc: the retrieval cannot be requested at all -- this source is not downloaded by gpuwm but by the provider's own client, which reads a personal account key from that file and fails several commands later with its own exception if it is absent.  Obtain one at https://cds.climate.copernicus.eu.",
             "breakage": "the retrieval cannot be requested at all -- this source is not downloaded by gpuwm but by the provider's own client, which reads a personal account key from that file and fails several commands later with its own exception if it is absent",
             "credential_id": "copernicus-cds-api-key",
             "display_name": "Copernicus CDS key",
             "location": ".cdsapirc",
-            "location_display": "<USER_HOME>\\.cdsapirc",
+            "location_display": "<USER_HOME>/.cdsapirc",
             "location_kind": "home_file",
             "needed_for": "acquisition",
             "obtain_url": "https://cds.climate.copernicus.eu",
             "present": false,
-            "present_message": "Copernicus CDS key is present (<USER_HOME>\\.cdsapirc); acquisition can proceed.",
-            "status_message": "No Copernicus CDS key at <USER_HOME>\\.cdsapirc: the retrieval cannot be requested at all -- this source is not downloaded by gpuwm but by the provider's own client, which reads a personal account key from that file and fails several commands later with its own exception if it is absent.  Obtain one at https://cds.climate.copernicus.eu."
+            "present_message": "Copernicus CDS key is present (<USER_HOME>/.cdsapirc); acquisition can proceed.",
+            "status_message": "No Copernicus CDS key at <USER_HOME>/.cdsapirc: the retrieval cannot be requested at all -- this source is not downloaded by gpuwm but by the provider's own client, which reads a personal account key from that file and fails several commands later with its own exception if it is absent.  Obtain one at https://cds.climate.copernicus.eu."
           }
         ],
         "required": true,
-        "summary": "this registry row declares 1 credential: Copernicus CDS key (<USER_HOME>\\.cdsapirc), needed for acquisition"
+        "summary": "this registry row declares 1 credential: Copernicus CDS key (<USER_HOME>/.cdsapirc), needed for acquisition"
       },
       "decoder": "rusty-weather/grib-core",
       "default_product": "pressure-level+single-level",
@@ -1564,22 +1568,22 @@
       "credentials": {
         "items": [
           {
-            "absent_message": "No Copernicus CDS key at <USER_HOME>\\.cdsapirc: the retrieval cannot be requested at all -- this source is not downloaded by gpuwm but by the provider's own client, which reads a personal account key from that file and fails several commands later with its own exception if it is absent.  Obtain one at https://cds.climate.copernicus.eu.",
+            "absent_message": "No Copernicus CDS key at <USER_HOME>/.cdsapirc: the retrieval cannot be requested at all -- this source is not downloaded by gpuwm but by the provider's own client, which reads a personal account key from that file and fails several commands later with its own exception if it is absent.  Obtain one at https://cds.climate.copernicus.eu.",
             "breakage": "the retrieval cannot be requested at all -- this source is not downloaded by gpuwm but by the provider's own client, which reads a personal account key from that file and fails several commands later with its own exception if it is absent",
             "credential_id": "copernicus-cds-api-key",
             "display_name": "Copernicus CDS key",
             "location": ".cdsapirc",
-            "location_display": "<USER_HOME>\\.cdsapirc",
+            "location_display": "<USER_HOME>/.cdsapirc",
             "location_kind": "home_file",
             "needed_for": "acquisition",
             "obtain_url": "https://cds.climate.copernicus.eu",
             "present": false,
-            "present_message": "Copernicus CDS key is present (<USER_HOME>\\.cdsapirc); acquisition can proceed.",
-            "status_message": "No Copernicus CDS key at <USER_HOME>\\.cdsapirc: the retrieval cannot be requested at all -- this source is not downloaded by gpuwm but by the provider's own client, which reads a personal account key from that file and fails several commands later with its own exception if it is absent.  Obtain one at https://cds.climate.copernicus.eu."
+            "present_message": "Copernicus CDS key is present (<USER_HOME>/.cdsapirc); acquisition can proceed.",
+            "status_message": "No Copernicus CDS key at <USER_HOME>/.cdsapirc: the retrieval cannot be requested at all -- this source is not downloaded by gpuwm but by the provider's own client, which reads a personal account key from that file and fails several commands later with its own exception if it is absent.  Obtain one at https://cds.climate.copernicus.eu."
           }
         ],
         "required": true,
-        "summary": "this registry row declares 1 credential: Copernicus CDS key (<USER_HOME>\\.cdsapirc), needed for acquisition"
+        "summary": "this registry row declares 1 credential: Copernicus CDS key (<USER_HOME>/.cdsapirc), needed for acquisition"
       },
       "decoder": "packaged ERA5 model-level profile + vendored rusty-weather GRIB2/GRIB1 bridges",
       "default_product": "model-level+pressure-level-surface",

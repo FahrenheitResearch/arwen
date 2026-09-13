@@ -260,6 +260,69 @@ class InputCatalog:
         })
 
 
+def _seconds_text(value: float) -> str:
+    """Seconds printed at their own precision, whole or fractional."""
+    text = f"{float(value):.6f}".rstrip("0").rstrip(".")
+    return text or "0"
+
+
+def check_forcing_window(run_seconds, *, coverage_seconds: float,
+                         source: str, last_valid_time: datetime) -> float:
+    """Refuse, at plan review, a run window its forcing cannot cover.
+
+    ONE function, both source doors.  ``gpuwm run --wrfinput`` and
+    ``gpuwm run --met-em`` each used to carry their own sentence about
+    the same fact, and one of them bounded the window by the PRODUCING
+    NAMELIST's duration rather than by the forcing actually on disk, so a
+    met_em directory holding six hours of forcing could not be run past
+    whatever number its namelist happened to say.  What limits the window
+    is the series, and the series is what this measures.
+
+    ONE TIME as well as one function.  Both launchers ask it before a
+    GPU is selected and before an output directory is made:
+    ``run_metem_forecast`` through ``metem_window_seconds`` and
+    ``run_wrf_forecast`` through ``wrfinput_window_seconds``.  The
+    preparation routines behind them ask it a second time of their own
+    copy, which is where the accepted number is written into the resolved
+    configuration.
+
+    ``coverage_seconds`` is how far the forcing reaches from the run's
+    start; ``last_valid_time`` is the instant it reaches, named in the
+    refusal so the caller can see what to ask for instead.  Returns the
+    accepted duration so a caller can use one expression.
+    """
+    try:
+        requested = float(run_seconds)
+    except (TypeError, ValueError):
+        raise ValueError(
+            f"{source}: run duration must be a number of seconds, got "
+            f"{run_seconds!r}. Ask for a number inside the "
+            f"{_seconds_text(coverage_seconds)} s this forcing covers") from None
+    if not math.isfinite(requested) or requested <= 0.0:
+        raise ValueError(
+            f"{source}: run duration must be a finite, positive number of "
+            f"seconds, got {run_seconds!r}. Ask for a duration inside the "
+            f"{_seconds_text(coverage_seconds)} s this forcing covers")
+    # A FRACTIONAL DURATION INSIDE COVERAGE IS ACCEPTED, and both doors
+    # accepted one before this function existed.  Nothing here needs a
+    # whole second: the comparison below is an exact float comparison,
+    # ``run_seconds`` is resolved on a microsecond lattice
+    # (gpuwm/experiment.py:2987), and the step-grid question is a rational
+    # division by dt (gpuwm/experiment.py:2347).  A fractional end is
+    # therefore bounded exactly as precisely as a whole-second one, and a
+    # duration that lands inside the forcing is neither impossible,
+    # self-contradictory nor missing.
+    if requested > float(coverage_seconds):
+        raise ValueError(
+            f"{source} requests a run of {_seconds_text(requested)} s but "
+            f"this forcing series covers only "
+            f"{_seconds_text(coverage_seconds)} s, through its last valid "
+            f"time {last_valid_time:%Y-%m-%d_%H:%M:%S}. Shorten the run to "
+            f"at most {_seconds_text(coverage_seconds)} s, or supply forcing "
+            "through the requested end")
+    return requested
+
+
 #: The issue code for "this install could not BUILD the decoder", as
 #: distinct from "the decoder ran and your bytes are wrong".  Its own
 #: code because the two have different remedies and because every check

@@ -255,17 +255,160 @@ def test_apply_refuses_outside_us_coverage(tmp_path):
     assert "usgs-3dep-13as" in failure.value.detail
 
 
-def test_apply_refuses_coastal_footprint_naming_method(tmp_path):
+# ---------------------------------------------------------------------------
+# The coast-safe water rule (RETIRES test_apply_refuses_coastal_footprint_
+# naming_method, which asserted reason == "coastal-footprint")
+# ---------------------------------------------------------------------------
+
+#: Model-grid cell the baseline calls WRF ocean, and one it calls land.
+_OCEAN_CELL = (3, 7)
+_INLAND_WATER_CELL = (20, 25)
+
+
+def _full_baseline(ny: int, nx: int) -> dict[str, np.ndarray]:
+    """A complete Noah static state, the shape merge_highres_overrides wants."""
+    luf = np.zeros((21, ny, nx))
+    luf[9] = 1.0                                    # MODIS category 10
+    soil = np.zeros((16, ny, nx))
+    soil[2] = 1.0                                   # WRF soil category 3
+    base = _baseline(ny, nx)
+    base.update({
+        "LANDUSEF": luf,
+        "SOILCTOP": soil.copy(),
+        "SOILCBOT": soil.copy(),
+        "SCT_DOM": np.full((ny, nx), 3.0),
+        "SCB_DOM": np.full((ny, nx), 3.0),
+        "GREENFRAC": np.full((12, ny, nx), 0.5),
+        "LAI12M": np.full((12, ny, nx), 1.0),
+        "ALBEDO12M": np.full((12, ny, nx), 20.0),
+        "SNOALB": np.full((ny, nx), 60.0),
+        "SOILTEMP": np.full((ny, nx), 285.0),
+    })
+    return base
+
+
+class _StubRaster:
+    def __init__(self, source_id: str, role: str):
+        self._receipt = {"source_id": source_id, "role": role}
+
+    def receipt(self):
+        return dict(self._receipt)
+
+
+def _stub_the_overlay(monkeypatch, *, water_cells, halo):
+    """Stub the fetch and the three resamples; keep the science real.
+
+    Everything the network and the raster decoders would produce is
+    supplied here, so what actually runs is the part under test: the
+    crosswalked open-water fraction, the ocean/lake split against the
+    baseline water field, and the landmask/LU_INDEX rules built on top.
+    """
+    from gpuwm.static import highres as highres_module
+
+    def fake_fetch_and_bind(bbox, cache_root, case_date, *, coverage, grid,
+                            baseline, urlopen=None):
+        return (_StubRaster("usgs-3dep-13as", "terrain"),
+                _StubRaster("annual-nlcd", "landcover"),
+                {("sand", "0-5cm"): _StubRaster("soilgrids-v2", "soil")},
+                {"nlcd_year": 2021, "nlcd_anachronism_years": 0,
+                 "bytes_fetched": 0})
+
+    def fake_resample_continuous(source, grid, *, method):
+        ny, nx = grid.e_sn - 1, grid.e_we - 1
+        return np.linspace(300.0, 900.0, ny * nx).reshape(ny, nx)
+
+    def fake_resample_mapped_categories(source, grid, mapping, *,
+                                        category_count):
+        # The crosswalk sends NLCD 11 (open water) to MODIS 21; this stub
+        # stands in for the warp that delivers that fraction, and puts it
+        # on the two named cells only.
+        assert mapping[11] == 21
+        ny, nx = grid.e_sn - 1, grid.e_we - 1
+        fractions = np.zeros((category_count, ny, nx))
+        fractions[9] = 1.0                          # land everywhere else
+        for (row, col) in water_cells:
+            fractions[:, row + halo, col + halo] = 0.0
+            fractions[20, row + halo, col + halo] = 1.0
+        return fractions
+
+    def fake_soilgrids_category_fractions(sources, weights, grid, *,
+                                          category_count):
+        ny, nx = grid.e_sn - 1, grid.e_we - 1
+        fractions = np.zeros((category_count, ny, nx))
+        fractions[5] = 1.0
+        return fractions, {"raw_component_total_percent_min": 100.0,
+                           "raw_component_total_percent_max": 100.0,
+                           "valid_source_pixels": ny * nx}
+
+    monkeypatch.setattr(
+        "gpuwm.static.highres_production._fetch_and_bind", fake_fetch_and_bind)
+    monkeypatch.setattr(highres_module, "resample_continuous",
+                        fake_resample_continuous)
+    monkeypatch.setattr(highres_module, "resample_mapped_categories",
+                        fake_resample_mapped_categories)
+    monkeypatch.setattr(highres_module, "soilgrids_category_fractions",
+                        fake_soilgrids_category_fractions)
+
+
+def test_a_coastal_domain_keeps_ocean_and_takes_high_resolution_land_use(
+        tmp_path, monkeypatch):
+    """A coast is not a refusal: the sea stays ocean and the lake stays lake.
+
+    The land-cover crosswalk has one open water class, so it cannot tell a
+    lake from the sea.  The discriminator is the domain's own 30-arc-second
+    baseline water field, which is already on the model grid.  Open water on
+    a cell the baseline calls WRF ocean category 17 becomes ocean; anywhere
+    else it stays lake category 21.
+    """
+    from gpuwm.static.highres import HALO
+
     grid = _us_interior_grid()
-    baseline = _baseline(40, 40)
-    baseline["LU_INDEX"][3, 7] = 17.0  # WRF ocean category in the baseline
+    baseline = _full_baseline(40, 40)
+    baseline["LU_INDEX"][_OCEAN_CELL] = 17.0   # WRF ocean in the baseline
+    _stub_the_overlay(monkeypatch,
+                      water_cells=(_OCEAN_CELL, _INLAND_WATER_CELL),
+                      halo=HALO)
+
     config = HighresStaticConfig(enabled=True, cache_root=tmp_path)
-    with pytest.raises(HighresRefusal) as failure:
-        apply_highres_statics(
-            baseline, grid, config=config, domain_id=1,
-            case_date=date(2021, 5, 15), landuse_attrs=MODIS21_ATTRS)
-    assert failure.value.reason == "coastal-footprint"
-    assert "30-arc-second baseline LU_INDEX" in failure.value.detail
+    fields, receipt = apply_highres_statics(
+        baseline, grid, config=config, domain_id=1,
+        case_date=date(2021, 5, 15), landuse_attrs=MODIS21_ATTRS)
+
+    assert receipt["status"] == "APPLIED"
+    assert fields["LU_INDEX"][_OCEAN_CELL] == 17.0
+    assert fields["LU_INDEX"][_INLAND_WATER_CELL] == 21.0
+    assert np.allclose(fields["LANDUSEF"].sum(axis=0), 1.0)
+    assert fields["LANDMASK"][_OCEAN_CELL] == 0.0
+    assert fields["LANDMASK"][_INLAND_WATER_CELL] == 0.0
+
+    split = receipt["override_audit"]["water_split"]
+    assert split["ocean_cells_from_baseline_water"] == 1
+    assert split["lake_cells"] == 1
+    assert "baseline LU_INDEX water field" in split["method"]
+    assert "17" in split["method"] and "21" in split["method"]
+
+
+def test_build_highres_overrides_splits_ocean_from_lake_on_a_hand_mask():
+    """The split alone, with no fetch path anywhere near it."""
+    from gpuwm.static.highres import _split_ocean_from_lake
+
+    luf = np.zeros((21, 4, 4))
+    luf[9] = 1.0
+    luf[:, 1, 1] = 0.0
+    luf[20, 1, 1] = 1.0                     # crosswalked open water: the sea
+    luf[:, 2, 3] = 0.0
+    luf[20, 2, 3] = 1.0                     # crosswalked open water: a lake
+    ocean = np.zeros((4, 4), dtype=bool)
+    ocean[1, 1] = True
+
+    audit = _split_ocean_from_lake(luf, ocean, iswater=17, islake=21)
+
+    assert luf[16, 1, 1] == 1.0 and luf[20, 1, 1] == 0.0
+    assert luf[20, 2, 3] == 1.0 and luf[16, 2, 3] == 0.0
+    assert np.allclose(luf.sum(axis=0), 1.0)
+    assert audit["ocean_cells_from_baseline_water"] == 1
+    assert audit["lake_cells"] == 1
+    assert "baseline LU_INDEX water field" in audit["method"]
 
 
 def test_apply_refuses_non_modis21_landuse(tmp_path):
@@ -305,3 +448,111 @@ def test_fallback_30s_returns_identical_baseline_with_receipt(tmp_path):
 # ---------------------------------------------------------------------------
 # An enabled block on a lane that cannot honor it refuses, naming the lane
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# The coast-safe split is default-on, and both doors take it
+# ---------------------------------------------------------------------------
+
+def test_build_highres_overrides_requires_the_baseline_ocean_mask():
+    """Fixed means default-on: the discriminator has no default.
+
+    An optional ``baseline_ocean`` would make the coast-safe rule opt-in,
+    and a caller that omitted it would silently take the crosswalk's
+    inland reading and put the sea in WRF lake 21.  The parameter is
+    required, so that branch cannot be reached by forgetting it.
+    """
+    import inspect
+
+    from gpuwm.static.highres import build_highres_overrides
+
+    parameters = inspect.signature(build_highres_overrides).parameters
+    assert "baseline_ocean" in parameters, (
+        "build_highres_overrides takes no baseline_ocean at all, so the "
+        "crosswalk cannot tell the sea from a lake")
+    assert parameters["baseline_ocean"].default is inspect.Parameter.empty, (
+        "baseline_ocean carries a default, which makes the coast-safe "
+        "split opt-in")
+
+
+def test_the_split_refuses_a_missing_mask_instead_of_skipping_it():
+    """Explicit ``None`` is refused by name, not quietly ignored."""
+    from gpuwm.static.highres import _split_ocean_from_lake
+
+    luf = np.zeros((21, 2, 2))
+    luf[20] = 1.0
+    with pytest.raises(ValueError) as failure:
+        _split_ocean_from_lake(luf, None, iswater=17, islake=21)
+    message = str(failure.value)
+    assert "30-arc-second" in message
+    assert "baseline_ocean_mask" in message      # the way out
+    assert "all-False" in message                # and the other way out
+
+
+def test_baseline_ocean_mask_reads_the_baseline_water_field():
+    """The one discriminator, derived once, from the domain's own field."""
+    from gpuwm.static.highres import baseline_ocean_mask
+
+    baseline = {"LU_INDEX": np.array([[17.0, 21.0], [10.0, 17.0]])}
+    mask = baseline_ocean_mask(baseline)
+    assert mask.dtype == bool
+    np.testing.assert_array_equal(
+        mask, np.array([[True, False], [False, True]]))
+    # The inland lake category is NOT ocean.
+    assert mask[0, 1] == False          # noqa: E712 -- the point is the value
+
+    with pytest.raises(ValueError) as failure:
+        baseline_ocean_mask({"HGT_M": np.zeros((2, 2))})
+    assert "LU_INDEX" in str(failure.value)
+
+
+def test_the_pilot_door_takes_the_same_split_as_the_production_door():
+    """Two doors never disagree about one configuration.
+
+    ``tools/run_highres_geog_pilot.py`` builds the same overrides on the
+    same baseline as :func:`apply_highres_statics`.  If it called
+    ``build_highres_overrides`` without the ocean mask, the pilot's
+    comparison plots and metrics would report a coastline the production
+    run does not produce.
+    """
+    import ast
+
+    tool = (Path(__file__).resolve().parents[1]
+            / "tools" / "run_highres_geog_pilot.py")
+    tree = ast.parse(tool.read_text(encoding="utf-8"))
+    calls = [node for node in ast.walk(tree)
+             if isinstance(node, ast.Call)
+             and isinstance(node.func, ast.Name)
+             and node.func.id == "build_highres_overrides"]
+    assert calls, "the pilot no longer builds high-resolution overrides"
+    for call in calls:
+        keywords = {keyword.arg for keyword in call.keywords}
+        assert "baseline_ocean" in keywords, (
+            f"{tool.name}:{call.lineno} builds overrides without "
+            "baseline_ocean, so the pilot door takes the crosswalk's "
+            "lake-everywhere reading while the production door splits "
+            "the sea out")
+
+
+def test_the_module_docstring_describes_no_retired_coast_gate():
+    """A retired guard's description is retired with it.
+
+    The first thing a reader of this module sees is its docstring.  While
+    the coast refusal existed the docstring stated it as current
+    behaviour; the refusal is gone, replaced by the ocean/lake split, and
+    a docstring still promising a refusal that cannot fire is a false
+    statement about the program in the file that defines it.
+    """
+    import gpuwm.static.highres_production as production
+
+    assert not hasattr(production, "_require_coast_free"), (
+        "the coast gate is back; this test guards its description, not "
+        "its absence")
+
+    text = production.__doc__
+    assert "not coast-safe" not in text
+    assert "coast gate" not in text
+    # What replaced it is described instead, by the name a reader can grep.
+    assert "_split_ocean_from_lake" in text
+    # And the surviving footprint refusal says when it fires.
+    assert "before anything is fetched" in text

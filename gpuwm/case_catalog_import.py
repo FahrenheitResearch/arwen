@@ -59,6 +59,66 @@ def read_archive(raw: bytes, *, limit: int, object_pairs_hook) -> tuple[dict, di
         raise CatalogError(f"Cannot read this catalog ZIP: {error}") from error
 
 
+def _cycle_ids(start: dict, by_id: dict) -> list:
+    """Name the closed parent_id chain reached from ``start``."""
+    walked = []
+    cursor = start
+    while cursor["id"] not in [row["id"] for row in walked]:
+        walked.append(cursor)
+        parent = cursor.get("parent_id")
+        if parent is None:
+            return []
+        cursor = by_id[parent]
+    return [row["id"] for row in walked[[row["id"] for row in walked].index(cursor["id"]):]]
+
+
+def _resolve_nest_tree(domains: list, *, ident, tier_label: str) -> list:
+    """Order a preset's domains parent before child from their declared ids.
+
+    The catalog names each domain's nest parent with ``parent_id``. The id
+    vocabulary and the order of the list are the catalog's own; only a tree a
+    native tier cannot carry is refused, and each refusal names the domain rows
+    that caused it.
+    """
+    from gpuwm.case_catalog import CatalogError
+    where = f"Case {ident}/{tier_label}"
+    by_id: dict = {}
+    for position, domain in enumerate(domains):
+        declared = domain.get("id")
+        if not isinstance(declared, str) or not declared:
+            raise CatalogError(f"{where}: domain row {position + 1} of {len(domains)} declares no id, so no nest can name it as its parent. Give every domain row an id.")
+        if declared in by_id:
+            raise CatalogError(f"{where}: domain id {declared!r} is declared twice, so a parent_id naming it picks out two domains. Give every domain row its own id.")
+        by_id[declared] = domain
+    roots, children = [], {}
+    for domain in domains:
+        parent = domain.get("parent_id")
+        if parent is None:
+            roots.append(domain)
+            continue
+        if parent not in by_id:
+            raise CatalogError(f"{where}: domain {domain['id']!r} names nest parent {parent!r}, which this preset does not declare, so the nest has nothing to sit inside. Declare that parent domain, or point the child at one of {', '.join(repr(name) for name in sorted(by_id))}.")
+        children.setdefault(parent, []).append(domain)
+    if not roots:
+        closed = _cycle_ids(domains[0], by_id)
+        raise CatalogError(f"{where}: domains {', '.join(repr(name) for name in closed)} name each other as nest parents in a closed parent_id chain, so no domain is the outermost one. Leave the outermost domain's parent_id absent or null.")
+    if len(roots) > 1:
+        raise CatalogError(f"{where}: domains {', '.join(repr(row['id']) for row in roots)} each declare no nest parent, and one tier carries one outermost domain. Give every domain except the outermost one a parent_id, or move the extra root into its own source_domain_recipes entry.")
+    ordered, cursor = [], roots[0]
+    while cursor is not None:
+        ordered.append(cursor)
+        kin = children.get(cursor["id"], [])
+        if len(kin) > 1:
+            raise CatalogError(f"{where}: domains {', '.join(repr(row['id']) for row in kin)} all nest inside {cursor['id']!r}, and a tier's geometry is one nest ladder (root_dx_km plus nest_ratios), which no single chain spells. Declare one recipe per branch under source_domain_recipes, or build the sibling nests with gpuwm domain.")
+        cursor = kin[0] if kin else None
+    if len(ordered) < len(domains):
+        reached = {row["id"] for row in ordered}
+        stranded = [row for row in domains if row["id"] not in reached]
+        closed = _cycle_ids(stranded[0], by_id)
+        raise CatalogError(f"{where}: domains {', '.join(repr(name) for name in closed)} name each other as nest parents in a closed parent_id chain, so they never reach the outermost domain {roots[0]['id']!r}. Point one of them at a domain that reaches the outermost one.")
+    return ordered
+
+
 def _convert_proposal(document: dict, archive_report: dict | None = None, *, version: int) -> dict:
     from gpuwm.case_catalog import (CatalogError, SCHEMA, _native_contract,
                                    validate_native_overrides)
@@ -117,10 +177,11 @@ def _convert_proposal(document: dict, archive_report: dict | None = None, *, ver
             domains = preset["domains"]
             if not domains:
                 raise CatalogError(f"Case {ident}/{old_tier} has no domain intents")
+            # The catalog owns its id vocabulary and the order of this list; the
+            # nest tree is the one its parent_id fields declare.
+            ordered = _resolve_nest_tree(domains, ident=ident, tier_label=old_tier)
             intents, selectors = [], []
-            for index, domain in enumerate(domains):
-                if domain.get("id") != f"d{index + 1:02d}" or (index and domain.get("parent_id") != f"d{index:02d}"):
-                    raise CatalogError(f"Case {ident}/{old_tier}: only the declared sequential native nest tree can be mapped")
+            for index, domain in enumerate(ordered):
                 intents.append({"grid_id": index + 1, "center_lat": domain["center_lat"],
                                 "center_lon": domain["center_lon"], "dx_km": domain["dx_km"],
                                 "width_km": domain["width_km"], "height_km": domain["height_km"]})
@@ -143,7 +204,7 @@ def _convert_proposal(document: dict, archive_report: dict | None = None, *, ver
                 else:
                     case_issues.append(f"{old_tier}: native shared setting {key} is not supported")
             per_domain = []
-            for index, chosen in enumerate(selectors):
+            for index, (domain, chosen) in enumerate(zip(ordered, selectors)):
                 values = {}
                 for key, value in chosen.items():
                     if key in common:
@@ -151,7 +212,7 @@ def _convert_proposal(document: dict, archive_report: dict | None = None, *, ver
                     if key in domain_keys:
                         values[key] = value
                     else:
-                        case_issues.append(f"{old_tier}/d{index+1:02d}: per-domain {key} is not supported by the native configuration scope")
+                        case_issues.append(f"{old_tier}/{domain['id']}: per-domain {key} is not supported by the native configuration scope")
                 if values:
                     per_domain.append({"grid_id": index + 1, "settings": values})
             profile_id = original.get("physics", {}).get("recommended_profile_id")
@@ -166,9 +227,10 @@ def _convert_proposal(document: dict, archive_report: dict | None = None, *, ver
                 # Preserve the full original selectors and block creation.
                 # An unsupported choice must not poison browsing other cases.
                 overrides = {}
+            spacing = {domain["id"]: intent["dx_km"] for domain, intent in zip(ordered, intents)}
             ratios = []
-            for parent, child in zip(intents, intents[1:]):
-                ratio = parent["dx_km"] / child["dx_km"]
+            for domain in ordered[1:]:
+                ratio = spacing[domain["parent_id"]] / spacing[domain["id"]]
                 if int(ratio) != ratio:
                     raise CatalogError(f"Case {ident}: grid spacings do not form integer native nest ratios")
                 ratios.append(int(ratio))

@@ -222,9 +222,8 @@ impl Node {
                     valid_sha(hash, name)?;
                     args.extend([format!("--expected-{name}-sha256"), hash.into()]);
                 }
-                if review["memory"]["measured"] != true || review["memory"]["refuse"] != false {
-                    return Err("The remote memory review is not launch-ready. Review the selected node again.".into());
-                }
+                // Sizing remains visible in the review; only the actual
+                // runner can establish whether the requested allocation fits.
                 if review["source_blobs"].as_array().is_some_and(|blobs|!blobs.is_empty()){
                     let path=PathBuf::from(review["local_source_manifest"].as_str().ok_or("Large inputs need the completed local review for background verification.")?);
                     if !path.is_absolute(){return Err("Completed source-input review path must be absolute.".into());}
@@ -957,9 +956,8 @@ impl Binding {
 
 impl Operation {
     pub fn confirmed(&self, review: &Value) -> Result<Self, String> {
-        if review["memory"].is_object() && (review["memory"]["measured"] != true || review["memory"]["refuse"] == true) {
-            return Err(format!("Remote memory review is not launch-ready: {}", review["memory"]["verdict"].as_str().unwrap_or("actual node capacity is unknown")));
-        }
+        // Estimate warnings do not change the user's requested settings.
+        // Binding::from_review still checks the actual input/checkpoint hashes.
         let mut operation = self.clone();
         let resume = matches!(operation, Self::Resume { .. });
         match &mut operation {
@@ -1753,6 +1751,10 @@ mod tests {
         let args=node.args(&Operation::StartPlan{review:with_blobs}).unwrap();
         assert_eq!(args[args.iter().position(|v|v=="--source-inputs-file").unwrap()+1],local_review.to_string_lossy());
         let mut unknown=review;unknown["memory"]["measured"]=json!(false);
+        assert!(node.args(&Operation::StartPlan{review:unknown.clone()}).is_ok());
+        unknown["memory"]["refuse"]=json!(true);
+        assert!(node.args(&Operation::StartPlan{review:unknown.clone()}).is_ok());
+        unknown["input_sha256"]=json!("bad");
         assert!(node.args(&Operation::StartPlan{review:unknown}).is_err());
     }
     #[test]
@@ -2458,5 +2460,23 @@ mod tests {
         let mut malformed = review(false);
         malformed["input_sha256"] = json!("bad hash");
         assert!(preview.confirmed(&malformed).is_err());
+    }
+
+    #[test]
+    fn remote_memory_advice_does_not_block_confirmed_start_or_resume() {
+        let start = Operation::Start { products: "none".into(), preview: true, binding: None };
+        let resume = Operation::Resume { job: "old".into(), checkpoint: "latest".into(),
+            output: String::new(), preview: true, binding: None };
+        for (operation, is_resume) in [(start, false), (resume, true)] {
+            for memory in [json!({"measured": false, "refuse": false}),
+                           json!({"measured": true, "refuse": true})] {
+                let mut value = review(is_resume);
+                value["memory"] = memory;
+                let confirmed = operation.confirmed(&value).unwrap();
+                assert!(node().args(&confirmed).is_ok());
+                value["input_sha256"] = json!("changed");
+                assert!(operation.confirmed(&value).is_err());
+            }
+        }
     }
 }

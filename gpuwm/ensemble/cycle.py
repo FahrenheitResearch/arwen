@@ -29,24 +29,17 @@ re-prepares from the base config starts at zero and runs
 driver checks it is the ``N * cycle_seconds`` the timeline claims and
 refuses a leg that would silently re-integrate or skip an interval.
 
-**The seam is atomic across the whole ensemble, and idempotent on
-resume.**  ``assimilation`` in each cycle record is a slot the DA lane
-fills, and filling it is a three-phase commit: every member's increments
-are validated and written to a staged file; the whole publication is then
-declared in a transaction marker (:data:`PUBLICATION_MARKER_NAME`); and
-only then are the staged files renamed into place and the marker cleared.
-A refusal on member 7 of 10 therefore leaves ten backgrounds and no
-analyses, instead of six published analyses and an ensemble that is half
-analysed.
+**The analysis decision survives the outer completion write.** Every member
+is staged before an immutable intent binds its full-file digest, input
+context and complete prospective assimilation receipt. Recovery checks the
+whole set before any remaining rename and publishes an immutable commit
+receipt. Both records remain available after completion, so losing the
+outer DONE write cannot invoke assimilation again.
 
-The marker is what makes the RENAMES atomic as a set.  A rename is atomic
-for one file and there is no filesystem call that makes ten of them one
-operation, so the guarantee this driver offers is the recoverable form of
-it: a crash between renames leaves a marker naming every member of the
-transaction, and :func:`recover_analysis_publication` -- run before any
-reader touches a leg -- either rolls the remaining renames forward or
-refuses loudly naming the members.  What a reader can never get is a
-roster that is half analysed and looks whole.
+The run compares its current member, method, policy and input identities
+before recovering a decision. A reader verifies every recorded input and
+analysis file before returning a roster. A corrupt or conflicting record
+cannot be repaired by silently recomputing over a committed analysis.
 
 **The consumer contract, stated rather than implied.**
 :func:`read_analysis_roster` is the ONLY supported way to observe a
@@ -105,11 +98,8 @@ from gpuwm.ensemble.state_sha import checkpoint_elapsed_seconds
 #: Where a cycle stashes the analysis it produced for a member.
 ANALYSIS_NAME = "analysis.npz"
 
-#: The transaction marker a leg writes before it starts publishing, and
-#: removes when every member's analysis is live.  Its presence means "the
-#: roster on this leg's disk is mid-transition and no reader may take it
-#: at face value"; :func:`recover_analysis_publication` is the only thing
-#: that clears it, by finishing the transaction or refusing loudly.
+#: The retained immutable decision precedes the first member rename.
+#: The prior schema is named separately for bounded compatibility reads.
 PUBLICATION_MARKER_NAME = "analysis-publication.json"
 PUBLICATION_MARKER_SCHEMA = "gpuwm-da-analysis-publication.v1"
 
@@ -149,7 +139,8 @@ def run_cycles(cfg: EnsembleConfig, ens_root: str | Path, *,
                moment_policy: str = "full-moment",
                moment_repair: bool = True,
                mp_physics: int | None = None,
-               on_event: Callable[[dict], None] | None = None
+               on_event: Callable[[dict], None] | None = None,
+               analysis_context: Callable | None = None
                ) -> CycleResult:
     """Run ``n_cycles`` legs of ``cycle_seconds``, assimilating between them.
 
@@ -164,6 +155,10 @@ def run_cycles(cfg: EnsembleConfig, ens_root: str | Path, *,
     Either way the receipt names the method, because two analyses from
     different methods and different observations otherwise produce
     structurally identical receipts.
+
+    ``analysis_context`` binds caller-owned inputs before analysis. It
+    returns metadata and full-file ``assets``; ``recovering=True`` asks
+    for the original frozen inputs, without acquiring replacements.
 
     ``moment_policy``/``moment_repair``/``mp_physics`` are the
     multi-moment contract (:mod:`gpuwm.da.moments`), threaded to the one
@@ -200,6 +195,12 @@ def run_cycles(cfg: EnsembleConfig, ens_root: str | Path, *,
     binding = cycle_binding(cfg, cycle_seconds=cycle_seconds,
                             n_cycles=n_cycles, positivity=positivity,
                             restart_from_analysis=restart_from_analysis)
+    method_binding, _ = _method_identity(assimilate) if assimilate is not None else (None, None)
+    binding['analysis'] = dict(enabled=assimilate is not None, method=method_binding,
+        declared_method=dict(assimilation_method or {}), moment_policy=moment_policy,
+        moment_repair=bool(moment_repair), mp_physics=mp_physics)
+    from gpuwm.ensemble.analysis_commit import canonical
+    canonical(binding)
     manifest_path = root / CYCLE_MANIFEST_NAME
     if manifest_path.is_file():
         manifest = read_manifest(manifest_path, schema=CYCLE_MANIFEST_SCHEMA)
@@ -209,14 +210,11 @@ def run_cycles(cfg: EnsembleConfig, ens_root: str | Path, *,
             cfg, ens_root=root, cycle_seconds=cycle_seconds,
             n_cycles=n_cycles, positivity=positivity,
             restart_from_analysis=restart_from_analysis)
+        manifest['cycle_binding'] = binding
         write_manifest_atomically(manifest_path, manifest)
 
-    # Before anything reads a leg's roster: settle any publication a crash
-    # left in flight.  This runs first because EVERY later step -- the
-    # resume decision, the restart discovery, the forecast -- reads
-    # analyses whose completeness the marker is the only witness to.
-    _recover_all_publications(root, on_event=on_event)
-
+    # A retry validates current inputs and policies before finishing a
+    # publication. Earlier legs are checked before any later restart read.
     entries = {int(entry["cycle"]): entry
                for entry in manifest.get("cycles", ())}
     done = {index for index, entry in entries.items()
@@ -224,6 +222,23 @@ def run_cycles(cfg: EnsembleConfig, ens_root: str | Path, *,
     ran = []
     for cycle_index in range(n_cycles):
         if cycle_index in done:
+            recorded = entries[cycle_index].get('assimilation')
+            if (recorded is not None) != (assimilate is not None):
+                raise ValueError('The completed cycle used a different assimilation mode; restore its configuration before resuming')
+            if recorded is not None:
+                leg = cycle_root(root, cycle_index)
+                states = _leg_member_states(leg)
+                context = _publication_context(assimilate, cycle_index, states, leg,
+                    positivity=positivity, declared_method=assimilation_method,
+                    moment_policy=moment_policy, moment_repair=moment_repair,
+                    mp_physics=mp_physics, run_binding=binding,
+                    owner=analysis_context, recovering=True)
+                from gpuwm.ensemble import analysis_commit
+                recovered = analysis_commit.recover(leg, publish=publish_staged_analysis, context=context)
+                if recovered is None:
+                    _verify_legacy_completed(leg, states, recorded, context)
+                elif recovered != recorded:
+                    raise ValueError('The completed cycle receipt differs from its immutable analysis decision; restore the original receipt')
             continue
         leg_root = cycle_root(root, cycle_index)
         _emit(on_event, {"event": "cycle-started", "cycle": cycle_index})
@@ -289,7 +304,8 @@ def run_cycles(cfg: EnsembleConfig, ens_root: str | Path, *,
                 positivity=positivity, on_event=on_event,
                 declared_method=assimilation_method, attempt=attempt,
                 moment_policy=moment_policy, moment_repair=moment_repair,
-                mp_physics=mp_physics)
+                mp_physics=mp_physics, run_binding=binding,
+                context_owner=analysis_context)
         entry["status"] = "DONE"
         manifest["status"] = ("COMPLETE" if cycle_index == n_cycles - 1
                               else "RUNNING")
@@ -308,107 +324,25 @@ def publication_marker_path(leg_root: str | Path) -> Path:
     return Path(leg_root) / PUBLICATION_MARKER_NAME
 
 
-def _begin_publication(leg_root: Path, *, cycle_index: int, attempt: int,
-                       pairs) -> Path:
-    """Declare the whole publication before the first rename happens.
-
-    Phase two is N renames and a rename is atomic only for ONE file.  The
-    marker is what makes the SET atomic in the only sense a filesystem
-    allows: not "no reader ever sees a half-published roster", which
-    POSIX will not sell, but "no reader ever takes a half-published
-    roster for a whole one, and the next start finishes it or says so".
-    """
-    payload = {
-        "schema": PUBLICATION_MARKER_SCHEMA,
-        "stability": "experimental",
-        "cycle": int(cycle_index),
-        "attempt": int(attempt),
-        "leg_root": str(leg_root),
-        "member_count": len(pairs),
-        "members": [
-            {"member": int(member),
-             "staged": str(staged),
-             "analysis": str(analysis)}
-            for member, staged, analysis in pairs
-        ],
-    }
-    return write_json_atomically(publication_marker_path(leg_root), payload)
-
-
-def recover_analysis_publication(leg_root: str | Path, *,
-                                 on_event=None) -> dict | None:
-    """Finish, or loudly refuse, a publication a crash interrupted.
-
-    Returns ``None`` when there is nothing to recover.  Otherwise every
-    member named in the marker is settled:
-
-    * a staged file still present is RENAMED INTO PLACE -- rolling
-      forward is safe because phase one proved and fsynced every member's
-      analysis before phase two began, so the staged bytes are the same
-      analysis the completed members already carry;
-    * a member whose ``analysis.npz`` is live and whose staged file is
-      gone was published before the crash;
-    * a member with NEITHER is unrecoverable, and that is a refusal
-      naming the members -- rerunning the cycle from the surviving
-      backgrounds is the operator's call, not this function's.
-
-    Only when every member is settled is the marker removed, so an
-    interrupted recovery is itself recoverable.
-    """
-    import json
-
-    marker = publication_marker_path(leg_root)
-    if not marker.is_file():
+def recover_analysis_publication(leg_root: str | Path, *, on_event=None) -> dict | None:
+    """Verify a durable decision before completing its member publication."""
+    from gpuwm.ensemble import analysis_commit
+    leg = Path(leg_root)
+    marker = publication_marker_path(leg)
+    if not marker.exists() and not (leg / analysis_commit.COMMIT_NAME).exists():
         return None
-    try:
-        payload = json.loads(marker.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as exc:
-        raise ValueError(
-            f"{marker} records an interrupted analysis publication and is "
-            f"unreadable ({exc}). The leg's analyses are in an unknown "
-            "state; nothing here will guess which members are live."
-        ) from exc
-    if not isinstance(payload, dict) \
-            or payload.get("schema") != PUBLICATION_MARKER_SCHEMA:
-        raise ValueError(
-            f"{marker} declares schema {payload.get('schema')!r} if it "
-            f"declares one at all; this build recovers "
-            f"{PUBLICATION_MARKER_SCHEMA!r}")
-
-    rolled_forward: list[int] = []
-    already_live: list[int] = []
-    lost: list[int] = []
-    for record in payload.get("members", ()):
-        member = int(record["member"])
-        staged = Path(record["staged"])
-        analysis = Path(record["analysis"])
-        if staged.is_file():
-            publish_staged_analysis(staged, analysis)
-            rolled_forward.append(member)
-        elif analysis.is_file():
-            already_live.append(member)
-        else:
-            lost.append(member)
-    if lost:
-        raise ValueError(
-            f"cycle {payload.get('cycle')}: the analysis publication "
-            f"recorded in {marker} was interrupted, and member(s) "
-            f"{sorted(lost)} have neither a published {ANALYSIS_NAME} nor "
-            f"the staged file it was to be renamed from. "
-            f"Member(s) {sorted(already_live + rolled_forward)} ARE live, "
-            "so this leg's roster is mixed and cannot be completed from "
-            "what is on disk. Rerun the cycle from the backgrounds, which "
-            "are untouched, rather than assimilating half an ensemble.")
-    marker.unlink()
-    report = {
-        "schema": PUBLICATION_MARKER_SCHEMA,
-        "cycle": payload.get("cycle"),
-        "attempt": payload.get("attempt"),
-        "leg_root": str(leg_root),
-        "rolled_forward": sorted(rolled_forward),
-        "already_live": sorted(already_live),
-    }
-    _emit(on_event, {"event": "publication-recovered", **report})
+    import json
+    payload = json.loads(marker.read_text()) if marker.is_file() else {}
+    if payload.get('schema') == PUBLICATION_MARKER_SCHEMA:
+        raise ValueError(f'{marker}: this legacy publication lacks member byte identities and its method receipt. '
+                         'Preserve the analyses and restore their original complete receipt before recovery.')
+    before = [row['member'] for row in payload.get('members', ())
+              if (leg / row['analysis']).is_file()]
+    receipt = analysis_commit.recover(leg, publish=publish_staged_analysis)
+    report = dict(cycle=receipt['cycle'], receipt=receipt, status='COMMITTED',
+                  already_live=before, rolled_forward=[i for i in range(receipt['member_count']) if i not in before])
+    if report['rolled_forward']:
+        _emit(on_event, {'event': 'publication-recovered', **report})
     return report
 
 
@@ -535,7 +469,6 @@ def read_analysis_roster(leg_root: str | Path, *, n_members: int,
     """
     n_members = _checked_member_count(n_members)
     leg = Path(leg_root)
-    recover_analysis_publication(leg, on_event=on_event)
     observed = _member_directory_indices(leg)
     if leg.is_dir() and observed != list(range(n_members)):
         analysed_beyond = [
@@ -556,6 +489,7 @@ def read_analysis_roster(leg_root: str | Path, *, n_members: int,
             + "The count is the caller's statement of the ensemble and the "
               "directories are the leg's; refusing rather than reconciling "
               "the two here.")
+    recover_analysis_publication(leg, on_event=on_event)
     found: dict[int, Path] = {}
     missing: list[int] = []
     for index in range(n_members):
@@ -767,35 +701,140 @@ def _method_block(assimilate, returned, declared) -> dict:
     return block
 
 
+def _method_identity(assimilate):
+    """The callable and bytecode, excluding source-location metadata."""
+    import hashlib
+    import marshal
+    import types
+    target = getattr(assimilate, '__func__', assimilate)
+    def normalized(code):
+        return code.replace(co_filename='', co_firstlineno=0, co_linetable=b'',
+            co_consts=tuple(normalized(value) if isinstance(value, types.CodeType) else value
+                            for value in code.co_consts))
+    code = getattr(target, '__code__', None)
+    return dict(callable=_callable_path(assimilate),
+                implementation_sha256=(hashlib.sha256(marshal.dumps(normalized(code))).hexdigest()
+                                       if code is not None else None)), None
+
+
+def _leg_member_states(leg):
+    document = read_manifest(leg / ENSEMBLE_MANIFEST_NAME,
+                             schema=ENSEMBLE_MANIFEST_SCHEMA)
+    if document.get('status') != 'COMPLETE':
+        raise ValueError(f'{leg}: the forecast roster is incomplete; recover every member before analysis publication')
+    return {int(row['index']): dict(member_dir=str(leg / row['member_dir']),
+        state_sha256=row.get('final_state_sha256'), seed=row.get('seed'))
+        for row in document['members']}
+
+
+def _publication_context(assimilate, cycle_index, member_states, leg_root, *,
+                         positivity, declared_method, moment_policy,
+                         moment_repair, mp_physics, run_binding,
+                         owner, recovering):
+    from gpuwm.output_identity import file_record
+    from gpuwm.ensemble.state_sha import checkpoint_state_sha256
+    from gpuwm.ensemble.analysis_commit import canonical
+    import json
+    indices = sorted(member_states)
+    if indices != list(range(len(indices))) or any(type(i) is not int for i in indices):
+        raise ValueError('The analysis requires the complete ordered member roster; restore the missing member records')
+    backgrounds = []
+    assets = []
+    for index in indices:
+        info = member_states[index]
+        member_dir = Path(info['member_dir']).resolve()
+        if member_dir != Path(leg_root).resolve() / member_directory_name(index):
+            raise ValueError('The analysis member path belongs to another leg; restore the canonical member roster')
+        path = _member_background_checkpoint(member_dir)
+        actual = checkpoint_state_sha256(path)
+        if info.get('state_sha256') is not None and info['state_sha256'] != actual:
+            raise ValueError(f'{path}: the background state differs from its forecast receipt; restore the completed checkpoint')
+        record = file_record(path)
+        assets.append(record)
+        backgrounds.append(dict(index=index, seed=info.get('seed'), state_sha256=actual,
+                                checkpoint=record))
+    extra = dict(owner(cycle_index, member_states, recovering=recovering)) if owner else {}
+    assets.extend(extra.pop('assets', ()))
+    method, _ = _method_identity(assimilate)
+    context = dict(leg_root=str(Path(leg_root).resolve()), cycle=int(cycle_index),
+        members=indices, backgrounds=backgrounds, assets=assets,
+        positivity=positivity, moment_policy=moment_policy,
+        moment_repair=bool(moment_repair), mp_physics=mp_physics,
+        method=method, declared_method=dict(declared_method or {}),
+        run_binding=run_binding, owner=extra)
+    return json.loads(canonical(context))
+
+
+def _verify_legacy_completed(leg, states, receipt, context):
+    """Preserve an older completed analysis only against facts it recorded."""
+    import numpy as np
+    from gpuwm.ensemble.state_sha import checkpoint_state_sha256
+    if receipt.get('status') != 'APPLIED' or receipt.get('member_count') != len(states):
+        raise ValueError(f'{leg}: the older completed receipt has no complete analysis roster; restore its original receipt')
+    for key in ('moment_policy', 'moment_repair'):
+        if key in receipt and receipt[key] != context[key]:
+            raise ValueError(f'{leg}: the completed analysis used a different {key}; restore its original policy')
+    if receipt.get('positivity_policy') != context['positivity']:
+        raise ValueError(f'{leg}: the completed analysis used another positivity policy; restore it before resuming')
+    if (receipt.get('method') or {}).get('callable') != context['method']['callable']:
+        raise ValueError(f'{leg}: the completed analysis records another method; restore its original callable')
+    method = receipt.get('method') or {}
+    if method.get('declared_by') == 'caller' and method.get('provenance') != context['declared_method']:
+        raise ValueError(f'{leg}: the completed analysis records different declared method settings; restore its original declaration')
+    window = context['owner'].get('observation_window_sha256')
+    if window is not None:
+        from gpuwm.ensemble.analysis_commit import digest
+        recorded_windows = [row['frozen_window'] for row in (method.get('provenance') or {}).get('routes', ())
+                            if isinstance(row, dict) and 'frozen_window' in row]
+        if len(recorded_windows) != 1 or digest(recorded_windows[0]) != window:
+            raise ValueError(f'{leg}: the original observation window does not match the completed method receipt; restore that window and receipt')
+    rows = receipt.get('receipts', ())
+    if [row.get('member') for row in rows] != list(states):
+        raise ValueError(f'{leg}: the completed analysis receipt is missing members; restore the complete receipt')
+    analyses = read_analysis_roster(leg, n_members=len(states))
+    for row in rows:
+        member = Path(states[row['member']]['member_dir'])
+        analysis = analyses[row['member']]
+        background = _member_background_checkpoint(member)
+        if (checkpoint_state_sha256(analysis) != row.get('state_sha256_after')
+                or checkpoint_state_sha256(background) != row.get('state_sha256_before')):
+            raise ValueError(f'{member}: analysis or background state differs from the completed receipt; restore the original bytes')
+        with np.load(background, allow_pickle=False) as before, np.load(analysis, allow_pickle=False) as after:
+            keys = [key for key in before.files if not key.startswith('state/')]
+            def same_metadata(key):
+                left, right = before[key], after[key]
+                return left.dtype == right.dtype and left.shape == right.shape and left.tobytes() == right.tobytes()
+            if set(before.files) != set(after.files) or not all(same_metadata(key) for key in keys):
+                raise ValueError(f'{analysis}: the carried checkpoint metadata differs from its background; restore the original analysis')
+
+
 def _assimilate_cycle(assimilate, cycle_index, member_states, *,
                       leg_root, positivity="clip", on_event=None,
                       declared_method=None, attempt=1,
                       moment_policy="full-moment", moment_repair=True,
-                      mp_physics=None) -> dict:
-    """Apply one assimilation step's increments and receipt every member.
+                      mp_physics=None, run_binding=None, context_owner=None) -> dict:
+    """Return the original durable decision or stage and commit one analysis."""
 
-    Three phases, because two were not enough.  Phase one validates the
-    roster, enforces positivity, and writes every member's analysis to a
-    staged file.  Phase two declares the whole publication in a
-    transaction marker.  Phase three renames the staged files into place
-    and clears the marker.
-
-    Phase two is the fix for the residual F-02 case.  With staging alone,
-    a crash on the SECOND rename left member 0's analysis live and member
-    1's staged, and nothing on disk said so: the next start found "some
-    members have an analysis, some do not" and could not tell an
-    interrupted publication from a partly-assimilated experiment.  Now the
-    marker says it outright, and
-    :func:`recover_analysis_publication` finishes the transaction or
-    refuses naming the members -- so the roster a reader gets is either
-    all pre-analysis or all post-analysis, never the middle.
-    """
     from gpuwm.da.positivity import POLICIES
 
     if positivity not in POLICIES:
         raise ValueError(
             f"unknown positivity policy {positivity!r}; known policies are "
             f"{POLICIES}")
+    from gpuwm.ensemble import analysis_commit
+    marker = publication_marker_path(leg_root)
+    existing = [Path(info['member_dir']) / ANALYSIS_NAME for info in member_states.values()
+                if (Path(info['member_dir']) / ANALYSIS_NAME).exists()]
+    if existing and not marker.exists():
+        raise ValueError(f'cycle {cycle_index}: analyses exist without their method receipt; '
+                         'preserve these files and restore the original complete receipt instead of recomputing them')
+    context = _publication_context(assimilate, cycle_index, member_states, leg_root,
+        positivity=positivity, declared_method=declared_method, moment_policy=moment_policy,
+        moment_repair=moment_repair, mp_physics=mp_physics, run_binding=run_binding,
+        owner=context_owner, recovering=marker.exists())
+    previous = analysis_commit.recover(leg_root, publish=publish_staged_analysis, context=context)
+    if previous is not None:
+        return previous
     returned = assimilate(cycle_index, member_states)
     method_provenance = None
     if isinstance(returned, tuple) and len(returned) == 2:
@@ -863,32 +902,17 @@ def _assimilate_cycle(assimilate, cycle_index, member_states, *,
                 pass
         raise
 
-    # Phase two: declare the transaction.  Written and fsynced BEFORE the
-    # first rename, so a crash anywhere in phase three leaves a marker
-    # naming every member the transaction covers.
-    marker = _begin_publication(leg_root, cycle_index=cycle_index,
-                                attempt=attempt, pairs=staged)
-
-    # Phase three: the whole ensemble becomes analysed here.  A crash
-    # part-way leaves the marker, and the next start rolls the remaining
-    # renames forward or refuses naming the members -- never a roster that
-    # merely looks complete.
-    for (member_index, path, analysis), receipt in zip(staged, receipts):
-        publish_staged_analysis(path, analysis)
-        receipt["published"] = True
-        receipt.pop("staged", None)
-        _emit(on_event, {"event": "member-assimilated", "cycle": cycle_index,
-                         "index": receipt["member"]})
-    marker.unlink(missing_ok=True)
-    return {
+    # The complete prospective receipt precedes every member rename.
+    for receipt in receipts:
+        receipt['published'] = True
+        receipt.pop('staged', None)
+    decision = {
+        'cycle': int(cycle_index),
         "status": "APPLIED",
         "stability": "experimental",
         "member_count": len(receipts),
         "attempt": int(attempt),
-        "commit": "three-phase: every member staged, the publication "
-                  "declared in a transaction marker, then all published; "
-                  "an interrupted publication is rolled forward or refused "
-                  "by recover_analysis_publication",
+        "commit": "three-phase: every member staged, an immutable decision and receipt declared, then all published; recovery returns that original receipt",
         "publication_marker": PUBLICATION_MARKER_NAME,
         # Filled by whoever implements the method: name, version, obs
         # set, localisation.  The engine also records the callable it
@@ -909,6 +933,14 @@ def _assimilate_cycle(assimilate, cycle_index, member_states, *,
             for entry in positivity_receipts),
         "receipts": receipts,
     }
+
+    analysis_commit.begin(leg_root, context=context, receipt=decision,
+        pairs=staged, staged_suffix=STAGED_SUFFIX, analysis_name=ANALYSIS_NAME)
+    def publish(path, analysis):
+        publish_staged_analysis(path, analysis)
+        index = next(i for i, _, target in staged if target.resolve() == analysis.resolve())
+        _emit(on_event, {'event': 'member-assimilated', 'cycle': cycle_index, 'index': index})
+    return analysis_commit.recover(leg_root, publish=publish, context=context)
 
 
 def _enforce_positivity(background: Path, increments, *, policy):

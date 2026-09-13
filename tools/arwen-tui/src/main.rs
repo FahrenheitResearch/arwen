@@ -224,6 +224,7 @@ struct App {
     // the next start.
     run_views: run_view::Manager,
     companion: companion::Controller,
+    enable_local_da: bool,
     companion_remote: Option<CompanionRemoteRequest>,
     companion_waiting: Option<QueuedCompanionRequest>,
     focus_logs_pending: Option<(companion::Request, Instant, String)>,
@@ -583,6 +584,7 @@ impl App {
             plot_catalog: plotsettings::Catalog::default(),
             cds: cds_credentials::Client::default(),
             companion: companion::Controller::default(),
+            enable_local_da: false,
             companion_remote: None,
             companion_waiting: None,
             focus_logs_pending: None,
@@ -1094,6 +1096,7 @@ impl App {
             "output_root":self.output,"geog_root":(!self.geog_root.as_os_str().is_empty()).then_some(&self.geog_root),
             "prepared_root":(!self.prepared.as_os_str().is_empty()).then_some(&self.prepared),
             "render_products":self.session_render_products(),
+            "experimental_features":{"local_da":self.enable_local_da},
             "plot_preferences_path":config.map(|path| plotsettings::sidecar(path)),
             "current_job_dir":self.job.as_ref().map(|job| &job.dir),"target":self.companion_target(),
             "available_targets":self.available_companion_targets()})
@@ -1476,8 +1479,12 @@ impl App {
     /// Otherwise this controller runs in the hidden desktop console when it
     /// has one, or without a terminal.
     fn run_desktop_controller(&mut self, connect_node: bool, desktop_console: bool) -> Result<(), String> {
-        match companion::reopen_live_controller(&self.output) {
-            Some(Ok(_)) => { companion::controller_log(&self.output, "ArWen is already running; its workspace was reopened."); return Ok(()); }
+        match companion::reopen_live_controller(&self.output, self.enable_local_da) {
+            Some(Ok(message)) => {
+                companion::controller_log(&self.output, &message);
+                if self.enable_local_da { eprintln!("{message}"); }
+                return Ok(());
+            }
             // A live controller that refused or stayed silent still owns this
             // root; a second controller could neither see nor stop its forecast.
             Some(Err(reason)) => return Err(reason),
@@ -1726,13 +1733,17 @@ impl App {
                     self.dialog=None;self.dialog_stack.clear();self.view(Tab::Settings);self.reveal_console();
                     Ok(if self.editor.is_none(){"Create or open a configuration on Home."}else if self.desktop_console{"Configuration settings opened in the ArWen terminal window."}else{"Configuration settings opened in the control center."}.into())
                 }
-                companion::Action::OpenWorkspace => {
+                companion::Action::OpenWorkspace { enable_local_da } => {
                     // A second desktop launch over this output root: land the
                     // user on the workspace that is open, or open one.
                     let running=self.companion.child_pid();
+                    let newly_enabled = *enable_local_da && !self.enable_local_da;
+                    self.enable_local_da |= *enable_local_da;
                     if running.is_none(){self.open_companion();}
                     match self.companion.child_pid(){
-                        Some(pid)=>{focus_process_window(pid);Ok(if running.is_some(){"Visual workspace is already open.".into()}else{self.status.clone()})}
+                        Some(pid)=>{focus_process_window(pid);Ok(if running.is_some() && newly_enabled {
+                            "Local DA is enabled for the next visual workspace. Close this visual window, then reopen with --enable-local-da. Running forecasts are preserved.".into()
+                        } else if running.is_some(){"Visual workspace is already open.".into()}else{self.status.clone()})}
                         None=>Err(self.status.clone()),
                     }
                 }
@@ -5940,6 +5951,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 app.companion.explicit_path = Some(absolute(PathBuf::from(args.next().ok_or("--companion needs an executable")?), &app.cwd));
             }
             "--open-companion" => open_companion = true,
+            "--enable-local-da" => app.enable_local_da = true,
             "--headless-companion" => headless_companion = true,
             "--desktop-console" => desktop_console = true,
             "--connect-node" => connect_node = true,
@@ -6086,6 +6098,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 mod tests {
     use super::*;
     use crate::theme::SKY;
+
+    #[test]
+    fn local_da_opt_in_is_explicit_in_every_new_companion_context() {
+        let mut app = App::new().unwrap();
+        let default = app.companion_context();
+        assert_eq!(default["experimental_features"]["local_da"], false);
+        app.enable_local_da = true;
+        for _ in 0..2 {
+            let reopened = app.companion_context();
+            assert_eq!(reopened["experimental_features"]["local_da"], true);
+            assert_eq!(reopened["python"], default["python"]);
+            assert_eq!(reopened["available_targets"], default["available_targets"]);
+        }
+    }
 
     fn ansi(command: impl crossterm::Command) -> String {
         let mut text = String::new();

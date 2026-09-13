@@ -48,11 +48,19 @@ reusing a bundle across an engine change would hand the forecast a
 cache the runner would then refuse, turning a cheap rebuild into a
 confusing late refusal.
 
-**A forecast's output directory is never reused.**  Its receipt has to
-describe one run -- ``claim_output_directory`` in the prepared runners
-says so, and it is right.  A previous attempt's output is moved aside
-so the retry gets a clean directory and the earlier attempt's receipts
-survive beside it.
+**A forecast's output directory is not reused by a NEW run.**  Its
+receipt has to describe one run -- ``claim_output_directory`` in the
+prepared runners says so. A previous attempt's output stays at its
+original address; the retry receives a separate generation for its
+forecast and pictures, preserving every earlier receipt's frame paths.
+
+**A RESUME owns a new output generation inside the previous run.**
+An older checkpoint can replay times already published by the previous
+attempt. :func:`claim_run_output` gives that resumed attempt a fresh
+``segment-NNN`` directory, leaving the earlier frames, input records and
+receipts together and unchanged. The checkpoint continues to refer to
+its original location. A run with no checkpoint uses the shared claim's
+existing rule for new output.
 
 Nothing here ever deletes.  Superseded output is renamed beside
 itself, the same contract ``gpuwm fetch --force-refetch`` offers for a
@@ -677,6 +685,131 @@ def _answer(decision: str, root: Path, reason: str,
         "differences": differences,
         "compared": list(compared),
     }
+
+
+#: A resumed attempt keeps the previous attempt's receipt under this.
+#: Numbered rather than stamped so the order records the run segments.
+#: Three digits is a minimum display width, not a limit on resume count.
+SEGMENT_PREFIX = "segment-"
+
+
+def _checkpoint_inside(resume, outdir: Path) -> bool:
+    """Whether ``resume`` names a checkpoint of the run in ``outdir``.
+
+    The question is asked of the PATHS, not of the checkpoint's
+    contents: whether this checkpoint may be resumed AT ALL is the
+    restart identity guard's decision (it compares the experiment
+    fingerprint and refuses by name), and asking it twice in two
+    vocabularies is how two doors end up disagreeing.  All this decides
+    is whether the directory being claimed is the one the checkpoint
+    was written into.
+    """
+
+    try:
+        checkpoint = Path(resume).resolve()
+        root = Path(outdir).resolve()
+    except OSError:
+        return False
+    return root == checkpoint or root in checkpoint.parents
+
+
+def _next_segment(root: Path) -> Path:
+    """The first free ``segment-NNN`` under ``root``.
+
+    Named, not created: the caller creates it through the shared claim,
+    so a collision between two processes resuming at once is resolved by
+    the same create-exclusive mkdir every other claim in this tree uses.
+    """
+
+    ordinal = 1
+    while True:
+        candidate = Path(root) / f"{SEGMENT_PREFIX}{ordinal:03d}"
+        if not candidate.exists() and not candidate.is_symlink():
+            return candidate
+        ordinal += 1
+
+
+def claim_run_output(outdir, *, flag: str = "--outdir", protected_roots=(),
+                     resume=None) -> Path:
+    """Claim output, preserving every prior attempt during checkpoint replay.
+
+    An empty output remains usable. A checkpoint inside an existing run
+    creates a new, exclusive child generation, because valid-time names
+    alone cannot distinguish a replayed frame from a prior committed one.
+    Both the supervisor and its worker use the returned directory; the
+    worker re-entry sees that fresh empty generation and does not fork
+    it again. Checkpoint paths continue to name the retained parent.
+    """
+
+    from gpuwm.prepared_single_domain_forecast import claim_output_directory
+
+    path = Path(outdir)
+    if resume is None or not _checkpoint_inside(resume, path):
+        return claim_output_directory(
+            path, protected_roots=protected_roots, flag=flag)
+    # The shared claim still checks every protected input tree before
+    # any child directory is created, even when no prior evidence exists.
+    try:
+        return claim_output_directory(
+            path, protected_roots=protected_roots, flag=flag)
+    except FileExistsError:
+        path = path.resolve()
+    while True:
+        segment = _next_segment(path)
+        try:
+            segment.mkdir()
+        except FileExistsError:
+            continue
+        print(f"Resuming into {segment}; previous output remains in {path}.", flush=True)
+        return segment
+
+
+def prepared_inputs_reusable(directory, *, receipt: str,
+                             source_files: Mapping[str, str],
+                             flag: str = "--outdir") -> bool:
+    """Whether an existing prepared-input tree still describes these inputs.
+
+    ``False`` when nothing is there: the caller prepares into a new
+    directory, exactly as it always did.  ``True`` when the manifest the
+    preparation already published records these very digests -- the
+    preparer then keeps every artifact already on disk, which is what
+    makes a resume into a run's own output directory possible at all:
+    the prepared caches under it cannot be written twice, and
+    re-preparing them would either refuse or duplicate gigabytes to
+    reproduce bytes that are already there and already verified.
+
+    A directory holding a preparation of DIFFERENT inputs is refused
+    here rather than at the preparer's ``mkdir``, because the errno
+    that refusal used to arrive as names neither the inputs that moved
+    nor the way out.
+    """
+
+    directory = Path(directory)
+    if not directory.exists():
+        return False
+    manifest = directory / receipt
+    try:
+        payload = json.loads(manifest.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        raise ValueError(
+            f"{directory} already exists but publishes no readable "
+            f"{receipt}, so nothing says which inputs it was prepared "
+            f"from and this run cannot tell whether reusing it would "
+            f"mix two preparations.  Remove it, or pass a new {flag}."
+        ) from None
+    recorded = payload.get("source_files") if isinstance(payload, dict) else None
+    if not isinstance(recorded, dict):
+        recorded = payload if isinstance(payload, dict) else {}
+    changed = sorted(name for name, digest in source_files.items()
+                     if recorded.get(name) != digest)
+    if changed:
+        raise ValueError(
+            f"{directory} holds a prepared input tree built from "
+            f"different inputs ({', '.join(changed)[:160]} changed since "
+            f"{receipt} was written), and one directory cannot describe "
+            f"two preparations.  Remove it to prepare these inputs "
+            f"again, or pass a new {flag}.")
+    return True
 
 
 def supersede(path: Path) -> dict[str, Any] | None:

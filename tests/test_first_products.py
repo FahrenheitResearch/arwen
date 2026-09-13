@@ -664,7 +664,7 @@ def test_arming_the_hrrr_chain_dict_produces_a_live_trigger(tmp_path):
         forecast_dir=tmp_path / "run", run_dir=tmp_path))
 
     assert observer.first_products is not None
-    assert observer.first_products.render_dir == tmp_path / "chain" / "png"
+    assert observer.first_products.render_dir == tmp_path / "png"
     assert observer.first_products.render_products == "refl"
 
     # And the same chain with no products asks for nothing.

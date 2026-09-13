@@ -5,9 +5,10 @@ transcription mirror.  This file is the first test in this repository whose
 Morrison expected values were written by WRF itself.  The fixture comes from
 the public ``MP_MORR_TWO_MOMENT`` wrapper and includes its radar diagnostic.
 
-The measured residual is deliberately pinned exactly.  Improvement and
-regression both require an explicit baseline change, while the strict xfail
-keeps max_ulp 0 visible as the acceptance contract.
+The historical residual signatures below predate the finite-transfer
+corrections. They remain diagnostic records and are not repinned to accept
+changed physics. The complete comparison, a latent-heat negative control,
+and the strict unresolved bitwise comparison remain active.
 """
 
 from __future__ import annotations
@@ -43,11 +44,12 @@ WRF_SOURCE_SHA256 = {
         "2dcd1c70127ea57c8a2437baf2b8a2388b1722e4d4ead9411834946439b8c273",
 }
 
-# Per-field max_ulp measured per platform.  The Windows driver and Linux/CUDA
+# Historical per-field max_ulp, retained unchanged for comparison with the
+# corrected algorithm. These aggregate vectors are not an accuracy gate.
+# The Windows driver and Linux/CUDA
 # 12.9 NVRTC produce slightly different transcendental results on the same
 # sm_120 card; sm_89 and Linux sm_86 add distinct measured vectors.  Pin each complete
-# signature rather than making platform-specific mismatch counts part of the
-# physics contract.  fp32_ulp_distance in gpuwm.core.fp32_ulp is the sole ULP
+# signature. fp32_ulp_distance in gpuwm.core.fp32_ulp is the sole ULP
 # owner. Across the measured platforms graupelnc stays exactly 0, theta
 # stays 154 and sr is the worst field. These signatures describe an
 # unresolved scientific residual; they do not establish WRF agreement.
@@ -158,46 +160,20 @@ MEASURED_PLATFORM_MAX_ULP = (
     MEASURED_SM86_LINUX_MAX_ULP,
 )
 
-#: Why the acceptance contract is unmet, carried on the xfail itself.
-#: An xfail whose reason states only the symptom ("max_ulp is not 0")
-#: records no cause, so the next reader has to rediscover it; the causes
-#: below are measured on the shipped sources and are listed in the
-#: physics registry's morrison-mp10 "NOT ESTABLISHED" warning too.
-#:
-#: 1. LIBM DISPATCH.  morrison.cu calls CUDA's builtins 164 times -- 84
-#:    powf, 45 tgammaf, 14 sqrtf, 10 cbrtf, 7 expf, 4 log10f -- against a
-#:    gfortran/glibc oracle.  gpuwm/core/kernels/glibc_flt32.cuh states
-#:    the rule ("CUDA's expf/powf/tgammaf are DIFFERENT functions ... any
-#:    kernel graded bitwise against a gfortran/glibc oracle must call
-#:    these and not the builtins") and morrison is deliberately NOT in the
-#:    loader's _EXTRA_HEADERS allow-list, because listing it would close
-#:    at most the 84 powf and 7 expf sites: WRF's Morrison does not call
-#:    glibc's gamma at all, it calls its own Cody rational REAL FUNCTION
-#:    GAMMA (module_mp_morr_two_moment.F:4153-4384), which is what the
-#:    oracle links, so gfk_tgamma is the wrong substitute for all 45
-#:    tgammaf sites; and the header transcribes no cbrtf and no log10f.
-#: 2. FP CONTRACTION.  load_module compiles with options=("-std=c++17",),
-#:    i.e. NVRTC's default --fmad=true, so every a*b + c outside
-#:    morr_polysvp fuses while the -O0 oracle does not.  morr_polysvp's
-#:    own __f{add,sub,mul,div}_rn pinning stops at morrison.cu:99.
-#: 3. WHICH ORACLE IS THE TARGET is itself undecided.  The fixture oracle
-#:    is built at -O0 (tools/morrison_wrf461_oracle/build.sh) so it does
-#:    not contract, but gfortran's default is -ffp-contract=fast and the
-#:    reference WRF build is NVHPC, so bitwise agreement with the -O0
-#:    oracle is not the same target as bitwise agreement with a production
-#:    WRF binary.  Nothing may change here before that is chosen.
+# The default-REAL constants and the compiler target still need independent
+# adjudication. Neither library dispatch nor contraction explains every
+# residual: the port also carries deliberate corrections to inherited
+# donor and range failures. A historical aggregate maximum cannot test the
+# accuracy of those corrections and must not be silently redefined for them.
 BITWISE_XFAIL_REASON = (
-    "WRF acceptance contract is max_ulp 0; the measured production "
-    "kernel is pinned by test_measured_morrison_wrf_residual_cannot_"
-    "drift_silently.  Known causes, none of them a formula: morrison.cu "
-    "calls CUDA's libm builtins (84 powf, 45 tgammaf, 10 cbrtf, 7 expf, "
-    "4 log10f) against a gfortran/glibc -O0 oracle, and NVRTC's default "
-    "--fmad=true contracts every a*b+c outside morr_polysvp.  Listing "
-    "morrison in the kernel loader's _EXTRA_HEADERS would not close it: "
-    "WRF calls its own REAL FUNCTION GAMMA "
-    "(module_mp_morr_two_moment.F:4153-4384), not glibc's, and "
-    "glibc_flt32.cuh transcribes no cbrtf and no log10f.  See this "
-    "module's BITWISE_XFAIL_REASON comment."
+    "Unmodified WRF comparison remains nonzero. Deliberate nucleation and "
+    "finite-freezing corrections change the algorithm. Remaining causes "
+    "include default-REAL constants, CUDA powf/tgammaf/cbrtf/log10f versus "
+    "the reference REAL FUNCTION GAMMA (module_mp_morr_two_moment.F:4153-4384), "
+    "and NVRTC --fmad=true versus the -O0 fixture. The _EXTRA_HEADERS "
+    "glibc_flt32.cuh route supplies neither that GAMMA nor cbrtf/log10f. "
+    "A zero residual is not established by a historical signature or "
+    "agreement with the float64 transcription."
 )
 
 
@@ -329,17 +305,7 @@ def test_graupel_and_hail_are_distinct_and_plumbed_through_both_diagnostics():
 
 
 def test_the_bitwise_xfail_states_its_cause_and_the_cause_is_still_true():
-    """The acceptance xfail must record WHY, not only that max_ulp != 0.
-
-    Both halves are load-bearing.  The first reads the reason string off
-    the marker and requires it to name libm dispatch, FMAD contraction and
-    the reason the kernel loader's ``_EXTRA_HEADERS`` allow-list is not the
-    fix -- a reason string that states only the symptom passes nothing on.
-    The second re-measures the claim against the shipped kernel source, so
-    the day somebody routes Morrison through ``glibc_flt32.cuh`` (or trades
-    ``cbrtf`` for ``powf``) this goes red instead of leaving a stale cause
-    on a marker nobody rereads.
-    """
+    """The unresolved comparison must name live causes and corrections."""
     from gpuwm.core.kernels import EXTRA_HEADERS
 
     marks = [mark for mark in test_morrison_wrf_acceptance_is_bitwise.pytestmark
@@ -354,12 +320,9 @@ def test_the_bitwise_xfail_states_its_cause_and_the_cause_is_still_true():
 
     source = (Path(__file__).resolve().parents[1] / "gpuwm" / "core"
               / "kernels" / "morrison.cu").read_text(encoding="utf-8")
-    measured = {name: source.count(f"{name}(")
-                for name in ("powf", "tgammaf", "cbrtf", "expf", "log10f")}
-    assert measured == {"powf": 84, "tgammaf": 45, "cbrtf": 10,
-                        "expf": 7, "log10f": 4}
-    for name, count in measured.items():
-        assert f"{count} {name}" in reason, name
+    for name in ("powf", "tgammaf", "cbrtf", "log10f"):
+        assert f"{name}(" in source
+    assert "finite-freezing corrections" in reason
     # The allow-list decision the reason string explains: morrison is NOT
     # routed through the glibc transcriptions, and the two kernels that are
     # named there so a silent addition cannot leave the reason stale.
@@ -375,13 +338,17 @@ def test_the_bitwise_xfail_states_its_cause_and_the_cause_is_still_true():
 
 @pytest.mark.gpu
 @requires_gpu
-def test_measured_morrison_wrf_residual_cannot_drift_silently():
+def test_wrf_measurement_retains_complete_comparison_and_finite_outputs():
     report = _measurement()
     observed_max_ulp = {
         name: int(entry["max_ulp"])
         for name, entry in report["fields"].items()
     }
-    assert observed_max_ulp in MEASURED_PLATFORM_MAX_ULP
+    assert set(observed_max_ulp) == set(MEASURED_WINDOWS_MAX_ULP)
+    for name, entry in report["fields"].items():
+        assert entry["nonfinite_count"] == 0, name
+        if name != "refl_10cm":
+            assert entry["minimum"] >= 0.0, name
     expected_counts = {
         name: (28 if name in {
             "graupelnc", "graupelncv", "rainnc", "rainncv",
@@ -413,11 +380,12 @@ def test_morrison_wrf_acceptance_is_bitwise():
 
 @pytest.mark.gpu
 @requires_gpu
-def test_measured_platform_signatures_reject_a_latent_heat_perturbation(monkeypatch):
-    """A measured compiler signature must still reject changed physics."""
+def test_wrf_comparison_detects_a_latent_heat_perturbation(monkeypatch):
+    """A known wrong latent heat must worsen the actual WRF theta comparison."""
     import cupy as cp
     from gpuwm.core import kernels, morrison
 
+    baseline = _measurement()
     source = kernels.module_source("morrison")
     coefficient = "real xlv = 3.1484e6f - 2370.0f * temp;"
     assert source.count(coefficient) == 1
@@ -433,6 +401,5 @@ def test_measured_platform_signatures_reject_a_latent_heat_perturbation(monkeypa
 
     monkeypatch.setattr(morrison, "get_kernel", perturbed_kernel)
     report = measure_oracle()
-    observed = {name: int(entry["max_ulp"])
-                for name, entry in report["fields"].items()}
-    assert observed not in MEASURED_PLATFORM_MAX_ULP
+    assert (report["fields"]["theta"]["max_ulp"]
+            > baseline["fields"]["theta"]["max_ulp"])

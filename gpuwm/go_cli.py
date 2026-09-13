@@ -233,6 +233,12 @@ def managed_download_dir(case_root: Path, fetch_table: dict) -> Path:
                         return candidate
                     if not any(candidate.iterdir()):
                         return candidate
+                    if (source in fetch_routes.route_ids()
+                            and fetch_routes.has_recovery_request(candidate)):
+                        fetch_routes.check_prior_request(
+                            candidate, source=source, cycle=cycle,
+                            host=request.get("transport"), member=request.get("member"))
+                        return candidate
                     manifest = candidate / fetch.FETCH_MANIFEST_NAME
                     if manifest.is_file():
                         payload = json.loads(manifest.read_text(encoding="utf-8"))
@@ -253,9 +259,8 @@ def managed_download_dir(case_root: Path, fetch_table: dict) -> Path:
                         return candidate
                 except (OSError, ValueError):
                     pass
-        # An interrupted or unreadable cache cannot establish input identity.
-        # Preserve it and select another managed slot automatically. A retry
-        # finds that same slot once its valid fetch manifest has been written.
+        # A cache without either a complete or recovery receipt cannot
+        # establish input identity. Preserve it and select another slot.
         attempt += 1
 
 
@@ -988,6 +993,7 @@ def tree_forecast_command(plan: dict, *,
             "--preparation-receipt-sha256", receipt_digest,
             "--experiment-config", str(config),
             "--experiment-config-sha256", config_digest,
+            *_profile_flags(plan),
             *_PROGRESS_FLAGS,
             "--io-mode", "history", "--outdir", str(plan["run"])]
 
@@ -1069,14 +1075,34 @@ def _run_forecast(plan: dict, digests: dict, *, explain: bool,
     # inside one stage.  Defaults to True, so every existing caller
     # (which is run-plan, and which does host) is unchanged.
     hosted = observer is not None and getattr(observer, "hosts_forecast", True)
+    early = None if hosted else _early_render_products(plan)
     command = (tree_forecast_command(plan) if plan.get("domains", 1) > 1
-               else forecast_command(plan, digests,
-                                     early_render=None if hosted
-                                     else _early_render_products(plan)))
+               else forecast_command(plan, digests, early_render=early))
     progress = plan["run"] / "progress.json"
     if not hosted:
-        _run_stage("forecast", command, explain=explain, progress=progress,
-                   observer=observer)
+        if early is None:
+            _run_stage("forecast", command, explain=explain, progress=progress,
+                       observer=observer)
+            return
+        # THIS STAGE DRAWS, so it owns working stores exactly as the
+        # render stage does and is swept on the same terms.  The early
+        # render runs inside the forecast subprocess and writes into
+        # ``plan["render"]``, so a forecast that dies mid-frame leaves
+        # tiled hour files beside a delivery that published nothing --
+        # and a sweep can only reach them if this stage's stores carry a
+        # token this door minted, because the plain prefix matches a
+        # concurrent render's live store too.
+        from gpuwm.render import SCRATCH_PREFIX_ENV, stage_scratch_prefix
+
+        stage_prefix = stage_scratch_prefix()
+        try:
+            _run_stage("forecast", command, explain=explain, progress=progress,
+                       observer=observer,
+                       env={SCRATCH_PREFIX_ENV: stage_prefix})
+        except GoStageFailed:
+            _warn_swept_render_scratch(plan, prefix=stage_prefix,
+                                       stage="forecast")
+            raise
         return
 
     # `python -m MODULE ...` -> the module, and the argv it would have
@@ -1142,8 +1168,12 @@ def proof_digests(prepared_root: Path) -> dict:
 def wrfout_frames(plan: dict) -> list[Path]:
     """Every history file the forecast stage published, in time order."""
 
-    return sorted(Path(plan.get("wrfout_dir", plan["run"] / "wrfout"))
-                  .glob(WRFOUT_GLOB))
+    from gpuwm.io.wrfout import iter_wrfout_files
+
+    root = Path(plan.get("wrfout_dir", plan["run"] / "wrfout"))
+    return sorted(iter_wrfout_files(root, WRFOUT_GLOB,
+                                   include_temporaries=False),
+                  key=lambda path: (path.name, path.as_posix()))
 
 
 def render_command(plan: dict, frames: list[Path] | None = None, *,
@@ -1428,10 +1458,58 @@ def _render_stage(plan: dict, *, explain: bool,
     # A digest-verified early frame remains an accumulation baseline even
     # though its already published pictures must not be rewritten.
     from gpuwm.render_receipts import SUMMARY_FILENAME
-    _run_stage("render", render_command(plan, frames, context_frames=already), explain=explain,
-               progress=Path(plan["render"]) / SUMMARY_FILENAME, observer=observer,
-               door=door)
+    from gpuwm.render import SCRATCH_PREFIX_ENV, stage_scratch_prefix
+
+    # THIS STAGE'S OWN working stores, named before it starts: the token
+    # goes down to the render subprocess, every store that subprocess
+    # opens carries it, and nothing another door spawned can.  A sweep
+    # below therefore cannot reach a concurrent render's live store,
+    # whenever that store was created -- which a "what appeared while
+    # this stage ran" test cannot promise, because the second render
+    # into one delivery usually opens its store a beat AFTER this one
+    # started, and on POSIX removing it takes the live render's work
+    # with it.
+    stage_prefix = stage_scratch_prefix()
+    try:
+        _run_stage("render", render_command(plan, frames, context_frames=already), explain=explain,
+                   progress=Path(plan["render"]) / SUMMARY_FILENAME, observer=observer,
+                   door=door, env={SCRATCH_PREFIX_ENV: stage_prefix})
+    except GoStageFailed:
+        # A render that died mid-store leaves its working tree in the
+        # sibling `<case>.render-scratch/` -- tens of GiB of tiled hour
+        # files beside a delivery that published nothing, and nothing
+        # after this point will ever read them.  The delivered tree is
+        # evidence and is kept (see the GoStageFailed arm in go_main);
+        # working scratch is not, so it goes, and the line that says the
+        # stage failed says what went with it.
+        _warn_swept_render_scratch(plan, prefix=stage_prefix)
+        raise
     return True
+
+
+def _warn_swept_render_scratch(plan: dict, *, prefix: str,
+                               stage: str = "render") -> None:
+    """Clear a dead stage's own working stores and name what was cleared.
+
+    ``stage`` names the stage that died, because two of them draw: the
+    render stage, and the forecast stage when it carries the early
+    render.  Both open their stores under a token this door minted, so
+    both are swept the same way and the line says which one it was.
+    """
+    from gpuwm.render import sweep_abandoned_scratch, scratch_root_for
+
+    try:
+        removed = sweep_abandoned_scratch(plan["render"], prefix=prefix)
+    except Exception:            # a cleanup never replaces the real failure
+        return
+    if not removed:
+        return
+    print(f"{stage}: warning: the failed {stage} left {len(removed)} working "
+          f"store(s) in {scratch_root_for(plan['render'])}; they held no "
+          "product and nothing later reads them, so they were removed. "
+          "Only this stage's own stores went; anything else beside the "
+          "delivery belongs to another render and was left alone.",
+          file=sys.stderr)
 
 
 def resolve_bridge() -> Path:
@@ -1533,7 +1611,8 @@ def _notify(observer, event: str, **fields) -> None:
 def _run_stage(label: str, command: list[str], *, explain: bool,
                progress: Path | None = None,
                heartbeat_seconds: float = HEARTBEAT_SECONDS,
-               observer=None, door: str = "go") -> None:
+               observer=None, door: str = "go",
+               env: dict | None = None) -> None:
     """Run one stage; replay everything it said and stop if it failed.
 
     Output is captured so the default is one line per stage, and
@@ -1553,6 +1632,13 @@ def _run_stage(label: str, command: list[str], *, explain: bool,
 
     ``door`` names the command the reader typed, for the one sentence
     below that addresses them directly.
+
+    ``env`` adds to the environment every stage gets (:func:`_stage_env`)
+    the few names THIS stage needs -- the render stage's own scratch
+    token, today.  Added here rather than spelled onto the command line
+    because these lines are also printed for a reader to paste, and a
+    pasted line carrying one run's private token would be wrong the
+    moment it is reused.
     """
 
     print(f"  .. {label}", flush=True)
@@ -1574,7 +1660,7 @@ def _run_stage(label: str, command: list[str], *, explain: bool,
             proc = subprocess.Popen(
                 command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 text=True, errors="replace", cwd=str(_stage_cwd()),
-                env=_stage_env())
+                env={**_stage_env(), **(env or {})})
             box["pid"] = proc.pid
             out, err = proc.communicate()
             box["completed"] = subprocess.CompletedProcess(
@@ -2148,16 +2234,32 @@ def _registered_launch(args, *, config: Path, payload: dict) -> int:
     case_root = Path(args.outdir) if args.outdir is not None else (
         config.parent / f"{config.stem}-go")
     fetch = payload.get("fetch") or {}
-    if (not declared_inputs and prepared_root is None
-            and {"source", "cycle"} <= fetch.keys()):
+    acquires = (not declared_inputs and prepared_root is None
+                and {"source", "cycle"} <= fetch.keys())
+    if acquires:
         checked_config_fetch_cycle(
             fetch, start_time=payload.get("experiment", {}).get("start_time"))
-    data_dir = (Path(args.data_dir) if args.data_dir is not None else
-                managed_download_dir(case_root, fetch)
-                if not declared_inputs and prepared_root is None
-                and {"source", "cycle"} <= fetch.keys() else
-                case_root / "data")
-    if not declared_inputs and prepared_root is None and case_root.resolve() == data_dir.resolve():
+    # A source with no acquisition route downloads nothing, so there is
+    # no managed download cache to compute for it.  Computing one anyway
+    # made `[fetch].source_root` -- the key `gpuwm domain --data-dir`
+    # writes, and the only root a config can carry by itself -- dead on
+    # this door: `resolve_source_root` takes the run option whenever it
+    # is set, and this one was always set.  A local-input config then
+    # refused against a managed downloads path the reader never named.
+    # Only an explicit `--data-dir` overrides the config here; the
+    # default leaves the config's own root to speak.
+    local_input = acquires and bool(
+        runplan.drivability_for(fetch.get("source")).get("requires_source_root"))
+    if args.data_dir is not None:
+        data_dir = Path(args.data_dir)
+    elif local_input:
+        data_dir = None
+    elif acquires:
+        data_dir = managed_download_dir(case_root, fetch)
+    else:
+        data_dir = case_root / "data"
+    if (not declared_inputs and prepared_root is None and data_dir is not None
+            and case_root.resolve() == data_dir.resolve()):
         raise GoRefusal("--outdir and --data-dir must differ. "
                         "Next: omit --data-dir to use the shared download cache.")
     stamp = run_stamp_module.run_stamp_enabled(args)
@@ -2169,7 +2271,7 @@ def _registered_launch(args, *, config: Path, payload: dict) -> int:
                              else str(Path(args.geog_root).resolve())),
                "render_products": (args.render_products if args.render_products is not None
                                    else DEFAULT_RENDER_PRODUCTS)}
-    if not declared_inputs and prepared_root is None:
+    if not declared_inputs and prepared_root is None and data_dir is not None:
         options["data_dir"] = str(data_dir.resolve())
     elif prepared_root is not None and args.data_dir is not None:
         options["data_dir"] = str(Path(args.data_dir).resolve())
@@ -2384,7 +2486,8 @@ def go_main(args, *, observer=None) -> int:
     if not source:
         raise GoRefusal("The config has no [fetch] table with a source. "
                         "Next: gpuwm domain --help")
-    chain = prepared_chain_for_source(str(source))
+    local_root = getattr(args, "data_dir", None) or fetch.get("source_root")
+    chain = prepared_chain_for_source(str(source), source_root=local_root)
     if chain != "prepared:go":
         return _registered_launch(args, config=config, payload=payload)
     if getattr(args, "supplement", None):

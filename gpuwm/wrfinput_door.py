@@ -248,17 +248,41 @@ def check_projection_agreement(experiment, metadata: Mapping[
     return worst
 
 
+#: The declared divergences a reachable WRF door admits, as
+#: ``(key, wrf_value, gpuwm_value)`` rows.  Each names a route ArWen HAS
+#: and integrates, differing from the literal namelist request in a way
+#: the importer states and ``announce_wrf_substitutions`` prints at the
+#: terminal.  A row here is the ONLY way a substitution survives this
+#: gate, and adding one is table work rather than another branch.
+#:
+#: * ``use_theta_m`` 1 -> 0: the moist theta_m prognostic is implemented
+#:   nowhere in the engine, and the initial and boundary state is
+#:   recovered exactly on every import route.
+#: * ``fine_input_stream`` 2 -> 0: WRF's delayed-nest-start stream.  The
+#:   child still starts at its declared start time; only the provenance
+#:   of its masked surface state differs
+#:   (:func:`gpuwm.namelist_import.fine_input_stream_decision`, the one
+#:   function this door, the importer and the RW-WPS support report all
+#:   read the answer from).
+ADMITTED_DECLARED_DIVERGENCES = frozenset({
+    ("use_theta_m", 1, 0),
+    ("fine_input_stream", 2, 0),
+})
+
+
 def require_preserved_wrf_selectors(report):
     """A reachable WRF door must not replace an explicit physics package.
 
-    Only ``use_theta_m = 1`` to ``use_theta_m = 0`` is an admitted declared
-    divergence, and it must carry the reason announced at the terminal by
-    ``announce_wrf_substitutions``. A reason explains a change; it does not
-    authorize replacing any other requested physics selector.
+    Only a row of :data:`ADMITTED_DECLARED_DIVERGENCES` is an admitted
+    declared divergence, and it must carry the reason announced at the
+    terminal by ``announce_wrf_substitutions``. A reason explains a
+    change; it does not authorize replacing any other requested physics
+    selector.
     """
     for item in report.substitutions:
-        if (item.key == item.gpuwm_key == "use_theta_m"
-                and item.wrf_value == 1 and item.gpuwm_value == 0
+        if (item.key == item.gpuwm_key
+                and (item.key, item.wrf_value, item.gpuwm_value)
+                in ADMITTED_DECLARED_DIVERGENCES
                 and item.reason):
             continue
         if item.wrf_value != item.gpuwm_value:

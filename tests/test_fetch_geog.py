@@ -410,6 +410,62 @@ def test_validate_dataset_dir_checks_every_declared_child(tmp_path, monkeypatch)
     assert not ok and "second" in detail, detail
 
 
+def _staged_tree(root: Path, dataset: str, projection: str | None) -> Path:
+    """Stage one dataset directory whose index declares ``projection``.
+
+    ``projection=None`` writes no projection row at all, which is the
+    WPS default (regular_ll) and must stay readable.
+    """
+    directory = root / dataset
+    directory.mkdir(parents=True)
+    lines = [line for line in _INDEX_TEXT.splitlines()
+             if not line.startswith("projection")]
+    if projection is not None:
+        lines.append(f"projection = {projection}")
+    (directory / "index").write_text("\n".join(lines) + "\n")
+    (directory / "00001-00004.00001-00004").write_bytes(b"\x00\x01" * 16)
+    return directory
+
+
+def test_validate_dataset_dir_names_an_index_projection_it_cannot_read(
+        tmp_path):
+    """The inventory names a projected tree, before anything downloads.
+
+    Real WPS_GEOG ships projected tile sets, and such a tree parses
+    perfectly while being unreadable: the reader resolves a source cell
+    by dividing a longitude difference by the index dx.  Every door that
+    consults this inventory (the listing, the pre-fetch skip decision,
+    post-stage validation) therefore names it here rather than leaving
+    it to surface at dataset construction inside a run.
+    """
+    _staged_tree(tmp_path, "projected_ds", "albers_nad83")
+    ok, detail = validate_dataset_dir(tmp_path, "projected_ds",
+                                      check_receipt=False)
+    assert not ok, detail
+    assert "albers_nad83" in detail                  # what was declared
+    assert "equirectangular" in detail               # the assumption
+    assert "wrong source cells" in detail            # the breakage
+    assert "regular_ll" in detail                    # the way out
+
+
+@pytest.mark.parametrize("projection", ["regular_ll", None])
+def test_validate_dataset_dir_passes_equirectangular_trees(
+        tmp_path, projection):
+    """NEGATIVE CONTROL: the new bar refuses only what it names.
+
+    The staged trees in use declare regular_ll, and an index with no
+    projection row defaults to it, so both still validate and both
+    still construct.
+    """
+    directory = _staged_tree(tmp_path, "plain_ds", projection)
+    ok, detail = validate_dataset_dir(tmp_path, "plain_ds",
+                                      check_receipt=False)
+    assert ok, detail
+
+    from gpuwm.static.geog import GeogDataset
+    assert GeogDataset(directory).index.projection == "regular_ll"
+
+
 # ---------------------------------------------------------------------------
 # The engine: skip, download, verify, extract, manifest
 # ---------------------------------------------------------------------------

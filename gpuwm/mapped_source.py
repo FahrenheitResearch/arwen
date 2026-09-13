@@ -5863,6 +5863,72 @@ def _nearest_soil_column_repair(
     return soil_t, soil_m
 
 
+#: The five canonical hydrometeors and the legacy names the regular-source
+#: join packs them under.  One table, read twice: a plane the frame carries
+#: is packed, a plane it does not carry is zero-filled under the header's
+#: declared policy.
+HYDROMETEOR_LEGACY_NAMES = {
+    "cloud_water_mixing_ratio": "QC",
+    "rain_water_mixing_ratio": "QR",
+    "cloud_ice_mixing_ratio": "QI",
+    "snow_mixing_ratio": "QS",
+    "graupel_or_hail_mixing_ratio": "QG",
+}
+
+#: Canonical fields a mapping may legitimately declare that the
+#: regular-source join has no consumer for.  Carrying more than the target
+#: consumes is neither impossible nor self-contradictory nor missing, so it
+#: is not refused: the plane is left out of the pack and named once.
+REGULAR_JOIN_DROPPED_FIELDS = ("vertical_velocity",)
+
+
+def regular_join_dropped_fields(declared) -> tuple[str, ...]:
+    """Which declared canonical fields the regular-source join drops."""
+
+    names = set(declared)
+    return tuple(name for name in REGULAR_JOIN_DROPPED_FIELDS
+                 if name in names)
+
+
+#: Drop notices already given in this process, keyed on the dropped
+#: fields.  One preparation reaches this function from three places (the
+#: plan review at both gpuwm.mapped_direct.prepare_mapped_wrf call sites,
+#: and the frame join), and ``explain.warn`` has no memory of its own, so
+#: "named once" needs this: the first door to notice says it, the rest
+#: stay quiet about the same drop.
+_JOIN_DROPS_WARNED: set[tuple[str, ...]] = set()
+
+
+def warn_regular_join_drops(declared, *, subject: str) -> tuple[str, ...]:
+    """Name the dropped fields once per run, at whichever door asked first.
+
+    ONE function, both doors: the mapped plan review calls it against the
+    mapping document's declared field list, and the frame join calls it
+    against the frames it was handed, so the two can never disagree about
+    which declared field reaches the forecast.  Both still get the answer
+    back for their receipts; only the sentence is said once.
+    """
+
+    dropped = regular_join_dropped_fields(declared)
+    if not dropped:
+        return ()
+    if dropped in _JOIN_DROPS_WARNED:
+        return dropped
+    _JOIN_DROPS_WARNED.add(dropped)
+    names = ", ".join(dropped)
+    warn(
+        f"{subject} declares {names}, which the regular-source join has no "
+        f"consumer for: the field is decoded and then dropped, so it does "
+        f"not reach the forecast",
+        why=("The regular-source join packs the canonical fields the "
+             "initialization ABI consumes.  A source that carries more "
+             "than the target consumes is not an error; it is a drop, and "
+             "this line is where it is stated.  Remove the field from the "
+             "mapping to stop paying for its decode."),
+    )
+    return dropped
+
+
 def _regular_snapshot_field_items(frame, pressure, *, soil_land_repair,
                                   initialize_absent_hydrometeors):
     """Yield unchanged join arithmetic while retaining only its active inputs."""
@@ -5952,23 +6018,26 @@ def _regular_snapshot_field_items(frame, pressure, *, soil_land_repair,
     yield MAPPED_SOIL_TEMPERATURE, soil_t
     yield MAPPED_SOIL_MOISTURE, soil_m
     del soil_t, soil_m, source_land, terrestrial
-    if initialize_absent_hydrometeors:
-        zero_fields = {
-            "cloud_water_mixing_ratio": "QC",
-            "rain_water_mixing_ratio": "QR",
-            "cloud_ice_mixing_ratio": "QI",
-            "snow_mixing_ratio": "QS",
-            "graupel_or_hail_mixing_ratio": "QG",
-        }
-        for canonical_name, output in zero_fields.items():
-            if frame.header.initialization_policies.get(canonical_name) \
-                    != "explicit_zero_with_adapter_validation":
-                raise ValueError(
-                    f"absent {canonical_name} lacks the supported "
-                    "explicit-zero policy"
-                )
-            # Era5Snapshot takes its own contiguous, immutable copy.
-            yield output, np.broadcast_to(np.float64(0.0), pressure_shape)
+    # Per field, not per block.  A frame that carries a hydrometeor gets
+    # the decoded plane packed under its legacy name, exactly as the snow
+    # and sea-ice names above are; one that does not gets the declared
+    # zero.  A mixed inventory therefore composes (three real planes, two
+    # zero-filled) instead of being refused for carrying what it has.
+    for canonical_name, output in HYDROMETEOR_LEGACY_NAMES.items():
+        if canonical_name in canonical:
+            yield output, np.asarray(
+                canonical[canonical_name].values, dtype=np.float64)
+            continue
+        if not initialize_absent_hydrometeors:
+            continue
+        if frame.header.initialization_policies.get(canonical_name) \
+                != "explicit_zero_with_adapter_validation":
+            raise ValueError(
+                f"absent {canonical_name} lacks the supported "
+                "explicit-zero policy"
+            )
+        # Era5Snapshot takes its own contiguous, immutable copy.
+        yield output, np.broadcast_to(np.float64(0.0), pressure_shape)
 
 
 def mapped_frames_to_regular_snapshots(
@@ -5986,29 +6055,33 @@ def mapped_frames_to_regular_snapshots(
     validated composition contract supplies their depth/remapping semantics.
     ``soil_land_repair`` is the composition's declared missing.land policy
     when it is a bounded repair object rather than ``"reject"``; absent, the
-    historical strict gate is unchanged.  A composed source can request
-    ``initialize_absent_hydrometeors`` only when its header explicitly
-    authorizes zero initialization for all five absent hydrometeors.  Their
-    zero views and the decoded fields are copied once by the same immutable
+    historical strict gate is unchanged.
+
+    Hydrometeors are packed per field.  A frame that CARRIES one of the five
+    canonical hydrometeors has that decoded plane packed under its legacy
+    name (QC/QR/QI/QS/QG); one it does not carry is zero-filled only when
+    ``initialize_absent_hydrometeors`` is requested AND the header
+    explicitly authorizes zero initialization for that field, so the flag's
+    meaning is "zero whichever of the five this header declares absent"
+    rather than "zero all five".  A mixed inventory composes.  The zero
+    views and the decoded fields are copied once by the same immutable
     snapshot constructor; no temporary full-grid zero bank is allocated.
+
+    A canonical field the regular join has no consumer for (today:
+    ``vertical_velocity``) is not refused.  It is dropped, and named once
+    through :func:`warn_regular_join_drops`, which the mapped plan review
+    calls on the same question.
     """
 
     frames = tuple(frames)
     if not frames:
         raise ValueError("at least one mapped frame is required")
-    unsupported = {
-        "cloud_water_mixing_ratio", "rain_water_mixing_ratio",
-        "cloud_ice_mixing_ratio", "snow_mixing_ratio",
-        "graupel_or_hail_mixing_ratio", "vertical_velocity",
-    }
+    carried: set[str] = set()
+    for frame in frames:
+        carried.update(frame.fields)
+    warn_regular_join_drops(carried, subject="this mapped source")
     result = []
     for frame in frames:
-        present_unsupported = sorted(unsupported & set(frame.fields))
-        if present_unsupported:
-            raise ValueError(
-                "the current regular-source join cannot inject mapped "
-                f"prognostic fields {present_unsupported}"
-            )
         canonical = frame.fields
         if "air_pressure" not in canonical:
             # The header may satisfy its pressure requirement through a

@@ -440,10 +440,14 @@ value):
   `nssl_alphahl 1`, `nssl_cnoh 4e5`, ... `nssl_3moment 0`); tunable
   NSSL parameters are not yet plumbed.
 - **Thompson aerosol-aware** (`&physics`/`&domains`,
-  `mp_physics = 28`): the port runs at exactly one aerosol-forcing
-  identity -- no aerosol IC/BC, no WIF metgrid stream, no fire
-  emissions, no black-carbon species. Concretely `use_aero_icbc
-  .false.`, `use_rap_aero_icbc .false.`, `wif_input_opt 0`,
+  `mp_physics = 28`): native `met_em` preparation accepts an analyzed
+  `QNWFA`/`QNIFA` pair. The monthly WIF dataset is selected by imported
+  `use_aero_icbc .true.`, `wif_input_opt 1`, `num_wif_levels 30`;
+  `auto` uses the complete analyzed pair when no source was explicitly
+  requested. Receipts identify the source and any ignored analyzed pair.
+  Fire emissions and black carbon remain unsupported. The synthetic
+  fallback uses `use_aero_icbc .false.`, `use_rap_aero_icbc .false.`,
+  `wif_input_opt 0`,
   `num_wif_levels` unused, `qna_update 0`, `wif_fire_emit .false.`,
   `wif_fire_inj` unused, `dust_emis 0`, `grav_settling 0`,
   `scalar_pblmix 0`. WRF *derives* `aer_init_opt` and
@@ -559,7 +563,7 @@ pins differ from what WRF assumes for an omitted key.
 | `diff_opt` | 2 | the only mixing form behind `km_opt` |
 | `mix_full_fields` | .true. | full-field mixing only (must be explicit: WRF's omitted default is false) |
 | `non_hydrostatic` | .true. | nonhydrostatic-only |
-| `use_theta_m` | 0 | the engine evolves dry theta and has no moist-theta branch; `run --wrfinput` and `run --met-em` admit a namelist's `use_theta_m = 1` (WRF's omitted default) as a DECLARED DIVERGENCE announced at the terminal and recorded under "Physics substitutions" in the import receipt: the initial and boundary state is recovered exactly (moist wrfbdy THM/QV/MU converted at each forcing time; metgrid TT is physical temperature) but the integration is dry theta, so it differs from a `use_theta_m = 1` WRF run. Standalone `import-namelist` still requires 0 |
+| `use_theta_m` | 0 | the engine evolves dry theta and has no moist-theta branch; every import door (`import-namelist`, `run --wrfinput` and `run --met-em`) admits a namelist's `use_theta_m = 1` (WRF's omitted default) as a DECLARED DIVERGENCE announced at the terminal and recorded under "Physics substitutions" in the import receipt: the initial and boundary state is recovered exactly (moist wrfbdy THM/QV/MU converted at each forcing time; metgrid TT is physical temperature; native initialization builds dry theta from physical temperature) but the integration is dry theta, so it differs from a `use_theta_m = 1` WRF run |
 | `scalar_adv_opt` | 1 | must match `moist_adv_opt` |
 | `w_crit_cfl` | 1.0 | `#define` in `gpuwm/core/kernels/openbc.cu` (Registry default) |
 | `isfflx` | 1 | surface fluxes on |
@@ -576,8 +580,8 @@ pins differ from what WRF assumes for an omitted key.
 | `cu_rad_feedback` | .false. | KF cloud fraction does not feed radiation |
 | `kf_edrates` | 0 | no KF rate diagnostics |
 | `sst_update`, `sst_skin`, `tmn_update` | 0 | single-analysis case runs |
-| `use_aero_icbc`, `use_rap_aero_icbc` | .false. | no GOCART climatological aerosol IC/BC reader (`mp_physics = 28` only) |
-| `wif_input_opt` | 0 | no WIF metgrid aerosol stream; `num_wif_levels` is inert with it. **WRF's `real.exe` FATALs `mp_physics = 28` at this value** (`dyn_em/module_initialize_real.F:2734-2736`) while ArWen runs it, taking WRF's own internal fallback — the synthetic CCN/IN profile `thompson_init` installs — as the aerosol initial condition. So an ArWen mp=28 run and a WIF-initialised WRF mp=28 run are **not** directly comparable; see D9a/D9b in [PROVENANCE.md](../../PROVENANCE.md) |
+| `use_aero_icbc`, `use_rap_aero_icbc` | .false. | synthetic fallback identity; imported `use_aero_icbc .true.` with `wif_input_opt 1` selects the monthly WIF dataset. A generic GOCART reader and the RAP source are unavailable |
+| `wif_input_opt` | 0 | synthetic fallback identity; the imported monthly WIF route accepts value 1 with `num_wif_levels = 30`. Value 2 requires unimplemented black carbon. At 0, `num_wif_levels` is inert. **WRF's `real.exe` FATALs `mp_physics = 28` at this value** (`dyn_em/module_initialize_real.F:2734-2736`) while ArWen runs it, taking WRF's own internal fallback — the synthetic CCN/IN profile `thompson_init` installs — as the aerosol initial condition. So an ArWen mp=28 run and a WIF-initialised WRF mp=28 run are **not** directly comparable; see D9a/D9b in [PROVENANCE.md](../../PROVENANCE.md) |
 | `qna_update` | 0 | no auxiliary `wrfqnainp` input stream |
 | `wif_fire_emit`, `wif_fire_inj` | .false. / unused | no biomass-burning aerosol emission inventory |
 | `dust_emis` | 0 | no non-chem dust source; `nifa2d` stays exactly zero, matching `thompson_init` |

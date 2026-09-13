@@ -310,7 +310,9 @@ def test_wdm6_driver_seams_treat_it_as_a_full_ice_scheme():
     assert kf_phase_mode_for_microphysics(16) == \
         KFPhaseMode.SEPARATE_ICE_SNOW
     assert MICROPHYSICS_ALGORITHM_IDENTITIES[16].startswith(
-        "wdm6-double-moment-warm-rain-wrf-v4.6.1-v1")
+        "wdm6-double-moment-warm-rain-wrf-v4.6.1-v3")
+    assert MICROPHYSICS_ALGORITHM_IDENTITIES[16].endswith(
+        "conservative-rain-interface-flux-bounded-transport-time")
 
 
 def test_the_ring_guard_captures_wdm6_s_number_moments():
@@ -425,7 +427,11 @@ def test_the_registry_row_is_honest_about_having_no_oracle():
     option = registry["components"]["microphysics"]["options"]["wdm6-mp16"]
     assert option["implemented"] is True
     assert option["maturity"] == "implemented-unverified"
-    assert option["reachability"]["state"] == "component-override"
+    # RETIRED with the defect it guarded (audit R-067): this pinned
+    # ``component-override``, i.e. "the only way here is a hand-written
+    # tuple".  WDM6 has a named suite now and the state is COMPUTED from
+    # the declared template lists, so the assertion is the new fact.
+    assert option["reachability"]["state"] == "template"
     assert option["selectors"] == {"mp_physics": 16}
     assert option["scientific_evidence"] == "none"
     first = option["warnings"][0]
@@ -442,10 +448,23 @@ def test_the_registry_row_is_honest_about_having_no_oracle():
     for forbidden in ("max_ulp", "bitwise", "model-validated",
                       "validation-candidate", "ULP parity"):
         assert forbidden not in claim, forbidden
-    # No template registers mp=16, which is what component-override means.
-    for template in registry["templates"].values():
-        assert template.get("components", {}).get("microphysics") != \
-            "wdm6-mp16"
+    # RETIRED with the same defect, and replaced by what the absence was
+    # standing in for.  A template DOES register mp=16 now -- that is the
+    # front door R-067 minted -- and the property that still matters is
+    # that a suite reaching an unjudged scheme cannot outrank it and
+    # cannot become anybody's default.
+    suites = [
+        template_id
+        for template_id, template in registry["templates"].items()
+        if template.get("components", {}).get("microphysics") == "wdm6-mp16"
+    ]
+    assert suites, "an implemented scheme with no named suite has no door"
+    for template_id in suites:
+        assert registry["templates"][template_id]["maturity"] == (
+            "implemented-unverified"), template_id
+    for route in registry["runner_routes"].values():
+        for declared in (route.get("source_template_ids") or {}).values():
+            assert not declared or declared[0] not in suites, declared
 
 
 # --------------------------------------------------------------------------
@@ -610,11 +629,11 @@ def test_the_wdm6_refl_launcher_refuses_an_xcre_the_kernel_cannot_honour():
 
 
 def test_the_plm_remap_clamp_divergence_is_documented_at_the_site():
-    """The one place the kernel departs from the Fortran, with its citation."""
+    """The PLM difference keeps its source citation beside the implementation."""
     source = _KERNEL.read_text(encoding="utf-8")
     index = source.index("kt = (kt > 0) ? kt - 1 : 0;\n        if (kt == kb)")
     preamble = source[max(0, index - 1800):index]
-    assert "DELIBERATE, DOCUMENTED DIVERGENCE" in preamble
+    assert "DELIBERATE, DOCUMENTED PLM DIVERGENCE" in preamble
     for citation in ("nislfv_rain_plmr:2629", "nislfv_rain_plm6:2891"):
         assert citation in preamble, citation
 

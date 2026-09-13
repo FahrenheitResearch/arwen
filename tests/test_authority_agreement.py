@@ -91,15 +91,31 @@ _REGISTRY_ONLY_CODES = frozenset({
     # pass (audit R-045).
     "asset-undeclared",
     "component-override-route",
+    # AUDIT R-005.  A conditional refusal scoped by ``sources``: native HRRR
+    # supplies analyzed condensate that microphysics-off cannot retain.  A
+    # RunConfig carries no source identity, so this is the one refusal in
+    # the constraint battery the per-domain authority cannot mirror -- and
+    # it has its own code so excusing it does not excuse the rest of that
+    # battery.
+    "component-source-refusal",
     "expert-route-policy",
-    "fixed-template-components",
     "graph-setting-constraint",
-    "nonuniform-base-template",
+    # AUDIT R-058.  ``nonuniform-base-template`` compared template LABELS and
+    # is retired; this is its replacement, and it is still registry-only for
+    # the reason the old code was: a per-domain RunConfig is ONE domain, so
+    # nothing built from it can see that a sibling resolved a different value
+    # for a setting the tree loader carries once.
+    "nonuniform-shared-setting",
     "parameter-route",
-    # This asks whether a real-source plan explicitly opted into a moist
-    # carrier while MP is off.  RunConfig sees only the resolved boolean and
-    # cannot distinguish an explicit parameter from the registry default.
+    # AUDIT R-005.  Both halves are registry-only for one reason: a
+    # RunConfig carries the resolved boolean and no route, so it cannot
+    # distinguish a stated moist=false from the microphysics-off option's
+    # own default, and it cannot know that every source on this route
+    # enters gpuwm.ingest.real.  The refusal therefore has to be the
+    # registry's, and it has to fire at review -- resolving the value here
+    # instead would be a resolution nothing downstream performs.
     "real-source-mp-off-requires-explicit-moist",
+    "real-source-mp-off-requires-moist",
     "transition-required-setting",
     # A published cross edge whose endpoint has no ported closure: the
     # nest-edge resolver refuses it at tree load, and only a plan with edges
@@ -338,7 +354,7 @@ def _declared_environment(report: dict) -> dict[str, str]:
     The registry may publish an external table set as an asset requirement
     with ``enable_environment`` and ``root_environment`` rather than as an
     error, the same way it publishes bundled package data: a prerequisite a
-    launcher checks, not a malformed choice.  So the honest comparison is
+    launcher checks, not a malformed choice.  So the accurate comparison is
     "given the prerequisites the plan itself declares, do the two authorities
     agree".  Since the mp8 promotion (packaged Thompson tables, product/v1
     packaging lane 2026-07-28) no shipped requirement declares either key --
@@ -468,6 +484,19 @@ def test_exhaustive_component_cross_product_agrees_on_every_combination(
     options = _component_option_ids(registry)
     component_ids = sorted(options)
 
+    # The fixture is fixed throughout the exhaustive walk. Hash its exact
+    # bytes once, retaining every option comparison and checking immutability
+    # afterward instead of serializing the same document for every tuple.
+    from gpuwm import physics_registry as registry_module
+    original_hash = registry_module.registry_sha256
+    fixed_hash = original_hash(registry)
+
+    def fixture_hash(value=None):
+        return fixed_hash if value is registry else original_hash(value)
+
+    monkeypatch.setattr(registry_module, "registry_sha256", fixture_hash)
+    monkeypatch.setitem(globals(), "registry_sha256", fixture_hash)
+
     disagreements: list[str] = []
     combinations = 0
     for values in itertools.product(*(options[c] for c in component_ids)):
@@ -489,6 +518,7 @@ def test_exhaustive_component_cross_product_agrees_on_every_combination(
     assert combinations >= 4032, (
         "the registry should carry at least the component options this gate "
         f"was written against; enumerated {combinations}")
+    assert original_hash(registry) == fixed_hash, "the shared fixture changed during the walk"
     assert disagreements == [], (
         f"{len(disagreements)} of {combinations} component combinations are "
         "decided differently by the registry and by validate_run_config:\n  "
@@ -753,6 +783,60 @@ def test_the_asset_code_is_emitted_classified_and_names_what_is_missing(
     # makes this an install-state code rather than a shared one.
     assert _config_refusal(report["resolved_domains"][0]["settings"],
                            nested=False) is None
+
+
+def test_every_install_state_row_names_the_domain_it_is_about(
+        tmp_path, monkeypatch):
+    """An install-state row is anchored at ``domains[<index>]``, per domain.
+
+    Every per-domain issue this module raises is anchored at the
+    ``domains[<index>]`` prefix built once as ``base_path``, and a reader
+    -- this file's own ``_domain_index_of``, and any panel that shows a
+    row beside the domain it belongs to -- takes the domain from that
+    anchor.  The two asset rows were written as
+    ``plan.domains[<grid id>,<grid id>].asset_requirements.<id>``: a shape
+    that matches no anchor, carries grid ids where every other row carries
+    an index, and folds every domain needing the set into one row.  So the
+    one code that says a table set is missing on THIS machine was the one
+    code whose domain could not be read.
+
+    A two-domain tree is used because the single-domain case cannot tell a
+    per-domain row from a folded one.
+    """
+
+    registry = _permissive_registry()
+    mp8 = next(key for key, row in registry["components"]["microphysics"][
+        "options"].items() if row.get("selectors") == {"mp_physics": 8})
+    monkeypatch.setenv("HOME", str(tmp_path / "no-staged-tables"))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "no-staged-tables"))
+    empty = tmp_path / "no-table-root"
+    empty.mkdir()
+    monkeypatch.setenv("GPUWM_THOMPSON_TABLE_ROOT", str(empty))
+    _wheel_shaped_companion(
+        tmp_path, monkeypatch,
+        registry["components"]["microphysics"]["options"][mp8][
+            "asset_requirements"][0])
+
+    report = validate_physics_plan(_tree_plan(
+        registry, _PERMISSIVE_RUNNER, "any-source",
+        _base_template_id(registry), components={"microphysics": mp8}),
+        registry=registry)
+
+    rows = report["install_state"]
+    assert rows, report
+    unreadable = [row["path"] for row in rows
+                  if _domain_index_of(row["path"]) is None]
+    assert not unreadable, unreadable
+
+    asset_rows = [row for row in rows if row["code"] == "asset-unresolved"]
+    assert sorted(_domain_index_of(row["path"]) for row in asset_rows) == [
+        0, 1], [row["path"] for row in asset_rows]
+    for row in asset_rows:
+        assert row["path"].endswith(".asset_requirements.thompson-mp8-v1")             or ".asset_requirements." in row["path"], row["path"]
+    # The aggregate block still answers "which domains", by grid id.
+    entry = next(row for row in report["asset_requirements"]
+                 if "thompson-mp8" in str(row["requirement"]["id"]))
+    assert entry["domain_ids"] == ["d01", "d02"], entry
 
 
 def test_every_install_state_code_is_raised_by_a_run_door(
@@ -1065,7 +1149,7 @@ def test_an_unimplemented_option_is_refused_when_its_selectors_are_forced():
             selectors = option.get("selectors") or {}
             if not selectors:
                 # No projection exists at all; the reachability declaration is
-                # what carries this option's honesty
+                # what carries this option's accuracy
                 # (tests/test_registry_reachability.py).
                 continue
             forced = dict(baseline)
@@ -1486,14 +1570,15 @@ def test_every_published_cross_edge_has_two_ported_endpoints():
 
 
 def test_the_menu_citations_are_named_through_the_registry():
-    """The R-068 omissions are keyed by the templates' composition and the
-    default-template constant, never by a source-named id literal, and the
-    resolved keys are exactly the two templates without a runtime-switch
+    """The R-068 omissions are keyed by the templates' composition and by
+    the door's own menu, never by a source-named id literal, and the
+    resolved keys are exactly the templates without a runtime-switch
     row."""
 
     from gpuwm.physics_compat import (
         _SINGLE_DOMAIN_RUNTIME_SWITCHES, _TEMPLATES_OUTSIDE_THE_SINGLE_DOMAIN_MENU)
-    from gpuwm.physics_menu import _TEMPLATES_OUTSIDE_THE_WIZARD_MENU
+    from gpuwm.physics_menu import (
+        _TEMPLATES_OUTSIDE_THE_WIZARD_MENU, WIZARD_PHYSICS_PROFILES)
     from gpuwm.physics_registry import (
         DEFAULT_TEMPLATE_ID, template_ids_with_components)
 
@@ -1502,10 +1587,29 @@ def test_the_menu_citations_are_named_through_the_registry():
     assert set(_TEMPLATES_OUTSIDE_THE_SINGLE_DOMAIN_MENU) == without_switch_row
     assert without_switch_row <= set(_TEMPLATES_OUTSIDE_THE_WIZARD_MENU)
     assert DEFAULT_TEMPLATE_ID in without_switch_row
+    # RETIRED, with the citation it guarded: this asserted that the one
+    # WSM6 + KF template on the aggregate RTE+RRTMGP option had no
+    # runtime-switch row.  It has one now -- the menu is derived from
+    # every fixed-template route's own declaration, that template is
+    # declared on one of them, and the derivation reproduced the
+    # twenty-three-value row the single-domain door used to hand-type for
+    # it exactly.  The assertion is inverted rather than deleted, so a
+    # regression that drops the template back out of the menu, or
+    # re-cites it as an omission, fails here.
     aggregate_kf = template_ids_with_components(
         microphysics="wsm6-mp6", cumulus="kain-fritsch",
         radiation="rte-rrtmgp-legacy-aggregate")
-    assert len(aggregate_kf) == 1 and aggregate_kf[0] in without_switch_row
+    assert len(aggregate_kf) == 1
+    assert aggregate_kf[0] not in without_switch_row
+    assert _SINGLE_DOMAIN_RUNTIME_SWITCHES[aggregate_kf[0]]["mp_physics"] == 6
+    # The SAME retirement, on the wizard's side of the pair.  It was the
+    # half that did not get swept: gpuwm/physics_menu.py went on excluding
+    # this template from the wizard menu with the R-068 reason after the
+    # door had resolved a row for it, so a user picking a suite was never
+    # offered a composition the route beneath the wizard declares.  Both
+    # legs are asserted here so the next sweep is one test, not two greps.
+    assert aggregate_kf[0] not in _TEMPLATES_OUTSIDE_THE_WIZARD_MENU
+    assert aggregate_kf[0] in WIZARD_PHYSICS_PROFILES
     assert template_ids_with_components(microphysics="no-such-option") == ()
     source = (_ROOT / "gpuwm" / "physics_compat.py").read_text(encoding="utf-8")
     for template_id in without_switch_row:

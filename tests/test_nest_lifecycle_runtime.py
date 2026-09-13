@@ -88,6 +88,15 @@ history_interval_s = 900.0
 {d02}
 """
 
+# The uh follower these tests hang on d02 is admitted against the
+# WATCHED domain, which is its PARENT d01, and d01 stashes at
+# history_interval_s = 3600 s.  Its cadence read 900 s at three
+# sites: the echo plane a rotation tracker falls back to is written
+# on that history cadence, so 900 s asked for a plane that is not
+# there.  That was refused when the relocation runners were built
+# and is now refused when the configuration loads, which is where
+# these tests meet it.  They are about episode and identity policy,
+# so they carry a cadence the tree can actually serve.
 ONE_SHOT = 'spawn = { trigger = "time", at_s = 120.0 }'
 LIFECYCLE = (
     'spawn = { trigger = "time", at_s = 120.0 }\n'
@@ -143,7 +152,7 @@ def test_follow_alone_is_placement_policy_not_episode_policy(tmp_path):
     d02 = (ONE_SHOT + '\nfollow = { field = "uh", threshold = 100.0, '
            'fallback_threshold = 35.0, search_margin_cells = 12, '
            'min_shift_cells = 2, max_shift_cells = 10, '
-           'cooldown_seconds = 600.0, cadence_seconds = 900.0, '
+           'cooldown_seconds = 600.0, cadence_seconds = 3600.0, '
            'max_move_parent_cells = 8, min_overlap_fraction = 0.70 }')
     dc = _exp(tmp_path, d02).domain(2)
     assert dc.follow is not None
@@ -236,7 +245,7 @@ def test_a_declared_follow_binds_the_identity(tmp_path):
     d02 = (ONE_SHOT + '\nfollow = { field = "uh", threshold = 100.0, '
            'fallback_threshold = 35.0, search_margin_cells = 12, '
            'min_shift_cells = 2, max_shift_cells = 10, '
-           'cooldown_seconds = 600.0, cadence_seconds = 900.0, '
+           'cooldown_seconds = 600.0, cadence_seconds = 3600.0, '
            'max_move_parent_cells = 8, min_overlap_fraction = 0.70 }')
     following = restart_identity_payload(_exp(tmp_path, d02))
     assert (following != restart_identity_payload(_exp(tmp_path, ONE_SHOT)))
@@ -780,7 +789,7 @@ def test_restart_admits_a_follow_only_lifecycle(tmp_path):
     d02 = (ONE_SHOT + '\nfollow = { field = "uh", threshold = 100.0, '
            'fallback_threshold = 35.0, search_margin_cells = 12, '
            'min_shift_cells = 2, max_shift_cells = 10, '
-           'cooldown_seconds = 600.0, cadence_seconds = 900.0, '
+           'cooldown_seconds = 600.0, cadence_seconds = 3600.0, '
            'max_move_parent_cells = 8, min_overlap_fraction = 0.70 }')
     exp = _exp(tmp_path, d02)
     assert admit_restart_with_lifecycle(exp, restart="ckpt.nc") is True

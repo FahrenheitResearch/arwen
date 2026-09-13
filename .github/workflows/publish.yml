@@ -76,9 +76,11 @@ jobs:
             tests/test_namelist_compat.py \
             tests/test_native_wrf_distribution.py \
             tests/test_prepared_publication.py \
+            tests/test_carried_channel.py tests/test_carried_release_packet.py \
             tests/test_publish_workflow_state_machine.py \
             tests/test_publish_dist_shape_agreement.py \
-            tests/test_release_version_declaration.py \
+            tests/test_release_version_declaration.py tests/test_release_bump_version.py \
+            tests/test_precut_gate_completion.py \
             tests/test_bridge_bundle_adopt.py \
             tests/test_verify_source_bridge_pins.py \
             tests/test_verify_release_artifacts.py
@@ -152,6 +154,8 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ needs.release_authority.outputs.commit }}
+          # Verify this release and the carried channel's old Git endpoint.
+          fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:

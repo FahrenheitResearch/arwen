@@ -61,6 +61,9 @@ def read_wrfinput_identity(path) -> WrfinputIdentity:
             raise ValueError(f"{path}: missing input identity attributes {missing}")
         for name in required[:5]:
             attributes[name] = _integer(attributes[name], name, path)
+        if attributes["SF_SURFACE_PHYSICS"] == 4:
+            from gpuwm.ingest.wrfinput_noahmp import require_cold_start
+            require_cold_start(dataset)
         for name in ("west_east", "south_north", "bottom_top", "soil_layers_stag"):
             if dimensions.get(name, 0) <= 0:
                 raise ValueError(f"{path}: missing or empty {name} dimension")

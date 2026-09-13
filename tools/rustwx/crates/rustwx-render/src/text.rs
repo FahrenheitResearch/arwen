@@ -158,6 +158,48 @@ pub(crate) fn regular_line_height_with_factor(scale: u32, size_factor: f32) -> u
     line_height(scale, size_factor, FontKind::Regular)
 }
 
+pub(crate) struct VerticalText {
+    pub width: u32,
+    pub height: u32,
+    pixels: Vec<(u32, u32, u8)>,
+}
+
+impl VerticalText {
+    pub fn draw(&self, img: &mut RgbaImage, x: u32, y: u32, color: Rgba) {
+        for &(dx, dy, coverage) in &self.pixels {
+            let mut ink = color;
+            ink.a = ((u32::from(color.a) * u32::from(coverage) + 127) / 255) as u8;
+            blend_pixel(img, (x + dx) as i32, (y + dy) as i32, ink);
+        }
+    }
+}
+
+pub(crate) fn vertical_text(text: &str, scale: u32, size_factor: f32) -> VerticalText {
+    // Rasterize through the same font owner, then rotate coverage rather
+    // than a canvas rectangle. Padding retains glyph overhangs; trimming
+    // only zero-coverage pixels gives the actual complete label bounds.
+    let pad = regular_line_height_with_factor(scale, size_factor).max(1);
+    let width = text_width_with_factor(text, scale, size_factor) + 2 * pad;
+    let height = 3 * pad;
+    let mut mask = RgbaImage::from_pixel(width, height, Rgba::BLACK.to_image_rgba());
+    draw_text_with_factor(&mut mask, text, pad as i32, pad as i32,
+                          Rgba::WHITE, scale, size_factor);
+    let (mut left, mut top, mut right, mut bottom) = (width, height, 0, 0);
+    for (x, y, pixel) in mask.enumerate_pixels() {
+        if pixel[0] > 0 {
+            left = left.min(x); top = top.min(y);
+            right = right.max(x); bottom = bottom.max(y);
+        }
+    }
+    if left > right || top > bottom {
+        return VerticalText { width: 0, height: 0, pixels: Vec::new() };
+    }
+    let pixels = mask.enumerate_pixels().filter_map(|(x, y, pixel)| {
+        if pixel[0] > 0 { Some((y - top, right - x, pixel[0])) } else { None }
+    }).collect();
+    VerticalText { width: bottom - top + 1, height: right - left + 1, pixels }
+}
+
 pub(crate) fn bold_line_height_with_factor(scale: u32, size_factor: f32) -> u32 {
     line_height(scale, size_factor, FontKind::Bold)
 }

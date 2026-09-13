@@ -1,47 +1,9 @@
-"""Does the device MYNN driver reproduce the oracle-pinned CPU driver?
+"""Device driver checks against the pinned CPU and WRF references.
 
-``tests/test_mynn_pbl.py`` pins :func:`gpuwm.core.mynn_pbl.mynn_bl_driver`
-against ``gpuwm/data/mynn/oracle/driver.csv``, dumped from the byte-unmodified
-``module_bl_mynn.F``.  That makes the CPU driver the reference the device twin
-has to reproduce.
-
-Running the two side by side measured something this repository had not
-recorded: **the CPU and CUDA leaves are not bitwise twins away from their
-oracle fixtures.**  Both halves of every leaf pass their own gate at max_ulp 0
-against the same CSV, and on the driver fixture's four columns they disagree
-by up to 137 ULP.  The reason is visible in the kernel source and is a
-generation gap, not a transcription error: ``mynn_pblh_scale_columns``,
-``mynn_mixlength_default_columns``, ``mynn_turbulence_default_interfaces`` and
-``mynn_condensation_default_columns`` are written with plain C operators and
-CUDA's ``powf``/``tanhf``/``atanf``/``expf``, from before the ``MYNN_ADD``/
-``MYNN_MUL`` inline-PTX helpers and the glibc shims were introduced for
-``DMP_mf``, ``mym_initialize`` and ``mynn_tendencies``.  Plain operators let
-NVRTC contract ``a*b+c`` into an FMA and let CuPy's unconditional
-``-ftz=true`` flush subnormals; the oracle inputs never separated the two
-roundings, and these do.
-
-``mynn_level2_pairs`` was the fifth member of that list and is no longer:
-every operator in it and in ``mynn_mym_level2_column`` is now a
-round-to-nearest PTX instruction, and both are bit identical to the oracle.
-What that bought here is worth recording precisely, because it is small and it
-is not all in one direction.  ``rqiblten`` fell 12 -> 8 and ``tsq`` rose
-282 -> 283; the other eighteen profile fields and all five column fields did
-not move by one ULP.  A leaf becoming exact does not shrink a residue that the
-*other* leaves' contraction dominates -- it just moves where their error lands.
-
-The bisection below is the evidence, one leaf at a time, on identical inputs:
-
-===========================  ==========================================
-``mynn_driver_*`` assembly   bitwise (zw, thl, sqw, thetav, qv1, fluxes)
-``DMP_mf``                   bitwise on all 18 compared outputs
-``GET_PBLH``/``SCALE_AWARE`` 1 ULP in ``zi``, 2 in ``psig_shcu``
-``mym_condensation``         5 ULP ``qc_bl``, 32 ``cldfra``, 64 ``vt``
-``mym_turbulence``           101 ULP ``el``, 137 ``dfm``/``dfq``
-===========================  ==========================================
-
-So the budgets here are not slack.  They are the measured cost of the four
-pre-discipline kernels, and the two exactness assertions -- the assembly and
-``DMP_mf`` -- are what says this lane's own code is not contributing to it.
+The historical per-field driver budgets remain unchanged. Ordinary mixing
+length now reuses the rounded helper already called by initialization.
+The other leaves retain their recorded residuals; these upper bounds are
+regression limits, not a claim of full WRF or forecast accuracy.
 """
 
 from __future__ import annotations
@@ -88,6 +50,59 @@ def _worst(device, host) -> int:
 def _device(values):
     return {name: cp.asarray(np.ascontiguousarray(np.asarray(value)))
             for name, value in values.items()}
+
+
+@requires_gpu
+@pytest.mark.parametrize("step", (1, 2))
+@pytest.mark.parametrize("contraction", ("production", "disabled"))
+def test_ordinary_mixing_length_uses_the_rounded_column_contract(
+        monkeypatch, step, contraction):
+    """The ordinary driver must use the same length law as initialization.
+
+    Capture the actual coupled inputs, including the cloud and plume fields,
+    then compare the leaf with the independent CPU transcription. The old
+    duplicated device body differs by 101 ULP on these inputs.
+    """
+    from gpuwm.core import mynn_pbl, mynn_pbl_gpu
+
+    original = mynn_pbl_gpu.mynn_mixlength_default_cuda
+    seen = []
+    if contraction == "disabled":
+        from test_mynn_pbl_gpu import _mynn_module
+
+        module = _mynn_module("-fmad=false")
+        get_kernel = mynn_pbl_gpu.get_kernel
+
+        def length_kernel(name, function):
+            if name == "mynn_pbl" and function == "mynn_mixlength_default_columns":
+                return module.get_function(function)
+            return get_kernel(name, function)
+
+        monkeypatch.setattr(mynn_pbl_gpu, "get_kernel", length_kernel)
+
+    def capture(values, **kwargs):
+        inputs = {name: cp.asnumpy(value).copy()
+                  for name, value in values.items()}
+        result = original(values, **kwargs)
+        actual = {name: cp.asnumpy(getattr(result, name)).copy()
+                  for name in ("el", "qkw")}
+        seen.append((inputs, actual))
+        return result
+
+    monkeypatch.setattr(mynn_pbl_gpu, "mynn_mixlength_default_cuda", capture)
+    _, values, initflag, delt = _driver_step(step)
+    mynn_pbl_gpu.mynn_bl_driver_cuda(
+        _device(values), initflag=initflag, delt=delt, flag_qs=True)
+    assert len(seen) == 1
+    inputs, actual = seen[0]
+    reference = mynn_pbl.mynn_mixlength_default(inputs)
+    for name in ("el", "qkw"):
+        np.testing.assert_array_equal(actual[name].view(np.uint32),
+                                      reference[name].view(np.uint32))
+        assert np.isfinite(actual[name]).all()
+    assert (actual["el"][:, 0] == 0).all()
+    assert (actual["el"][:, 1:] > 0).all()
+    assert (actual["qkw"] > 0).all()
 
 
 @requires_gpu

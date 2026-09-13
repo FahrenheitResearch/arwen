@@ -218,9 +218,13 @@ def test_unimplemented_projection_namelist_rejected(tmp_path):
 
 def test_projection_config_builds_every_registered_domain():
     """The TOML projection plus nest layout reproduces the full chain."""
-    from gpuwm.experiment import load_experiment
+    from gpuwm.case_data import load_experiment_case_bytes
 
-    exp = load_experiment_case(REPO / "configs" / "real74_4dom.toml")[0]
+    # This control consumes only the declared geometry, never case data.
+    path = REPO / "configs" / "real74_4dom.toml"
+    exp = load_experiment_case_bytes(
+        path.read_bytes(), source=str(path), base_dir=path.parent,
+        require_inputs=False)[0]
     grids = grids_from_projection_config(exp)
     assert len(grids) == len(exp.domains) == 4
     assert [(grid.e_we, grid.e_sn) for grid in grids] == [
@@ -330,3 +334,78 @@ def test_config_driven_d01_reproduces_geo_em_projection_fields():
             (grid.mapfac_u(), "MAPFAC_U"),
             (grid.mapfac_v(), "MAPFAC_V")):
         assert np.abs(actual / ref[name] - 1.0).max() <= MAPFAC_RELTOL
+
+
+#: A self-contained single-domain WPS namelist (no bundle): the reference
+#: point is the only thing the two grids below disagree about.
+_REFERENCE_POINT_WPS = """\
+&share
+ wrf_core = 'ARW',
+ max_dom = 1,
+/
+&geogrid
+ parent_id = 1,
+ parent_grid_ratio = 1,
+ i_parent_start = 1,
+ j_parent_start = 1,
+ e_we = 101,
+ e_sn = 81,
+ geog_data_res = 'default',
+ dx = 12000,
+ dy = 12000,
+ map_proj = 'lambert',
+ ref_lat = 39.7,
+ ref_lon = -83.9,
+ truelat1 = 30.0,
+ truelat2 = 60.0,
+ stand_lon = -83.9,
+/
+"""
+
+
+def test_the_wps_reader_honours_an_explicit_reference_cell(tmp_path):
+    """&geogrid ref_x/ref_y name the cell the reference lat/lon sits on.
+
+    The reader used to drop them and build the CENTRED grid, silently --
+    the one door of three that answered a moved reference point with a
+    different grid instead of with a refusal.
+    """
+    centred = tmp_path / "centred.wps"
+    centred.write_text(_REFERENCE_POINT_WPS, encoding="utf-8")
+    moved = tmp_path / "moved.wps"
+    moved.write_text(
+        _REFERENCE_POINT_WPS.replace(
+            " ref_lat = 39.7,", " ref_x = 20,\n ref_y = 15,\n ref_lat = 39.7,"),
+        encoding="utf-8")
+
+    default_grid = grids_from_wps_namelist(centred)[0]
+    moved_grid = grids_from_wps_namelist(moved)[0]
+    assert (default_grid.known_x, default_grid.known_y) == (101 / 2.0, 81 / 2.0)
+    assert (moved_grid.known_x, moved_grid.known_y) == (20.0, 15.0)
+
+    default_lat, default_lon = default_grid.latlon_mass()
+    moved_lat, moved_lon = moved_grid.latlon_mass()
+    # The moved reference point is a different grid, and the reader says so.
+    assert np.abs(default_lat - moved_lat).max() > COORD_TOL
+    assert np.abs(default_lon - moved_lon).max() > COORD_TOL
+    # ... and the reference lat/lon lands on the cell the namelist named.
+    lat, lon = moved_grid.ij_to_latlon(20.0, 15.0)
+    assert abs(float(lat) - 39.7) < 1e-10
+    assert abs(float(lon) - (-83.9)) < 1e-10
+
+
+def test_a_declared_window_start_does_not_translate_the_grid(tmp_path):
+    """s_we/s_sn declare the domain's own 1-based start, which every
+    WPS/WRF grid already runs from: reading them moves nothing."""
+    plain = tmp_path / "plain.wps"
+    plain.write_text(_REFERENCE_POINT_WPS, encoding="utf-8")
+    windowed = tmp_path / "windowed.wps"
+    windowed.write_text(
+        _REFERENCE_POINT_WPS.replace(
+            " e_we = 101,", " s_we = 1,\n s_sn = 1,\n e_we = 101,"),
+        encoding="utf-8")
+    plain_lat, plain_lon = grids_from_wps_namelist(plain)[0].latlon_mass()
+    windowed_lat, windowed_lon = grids_from_wps_namelist(
+        windowed)[0].latlon_mass()
+    assert np.array_equal(plain_lat, windowed_lat)
+    assert np.array_equal(plain_lon, windowed_lon)

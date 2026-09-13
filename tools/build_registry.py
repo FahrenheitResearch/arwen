@@ -38,7 +38,9 @@ REGISTRY_PATH = MODEL / "gpuwm" / "physics_registry_v2.json"
 from gpuwm.config import (  # noqa: E402
     MP28_AEROSOL_SOURCES as MP28_AEROSOL_SOURCES,
 )
-from gpuwm.physics_registry import canonical_json  # noqa: E402
+from gpuwm.physics_registry import (  # noqa: E402
+    canonical_json, component_override_declaration,
+)
 from gpuwm import physics_compat  # noqa: E402
 
 #: The value ``mp28_aerosol_source`` takes when nobody chooses, which is
@@ -296,6 +298,31 @@ TIGHTEN: dict[str, dict] = {
             "carries soil_geometry_evidence=internal-consistency-only in its "
             "run receipt. See docs/wrf_ruc_runtime_admission.md."]},
     "terrain_opt": {"type": "integer", "enum": [0, 1], "default": 0},
+    # AUDIT R-060.  These three were roadmap rows that had outlived their
+    # gap, and the gate that keeps such a row true was one-directional --
+    # it proved an implemented row's citation and FORBADE an unimplemented
+    # row from carrying one, so a lane that landed the read could not move
+    # the row even if it wanted to.  tools/check_parameter_claims.py now
+    # proves the negative as well.
+    #
+    # smooth_option: gpuwm/core/nest_interp.py smoother() dispatches WRF's
+    # sm121 and smdsm through the nest_smooth_i/nest_smooth_j kernels, and
+    # gpuwm/core/model.py wires ExperimentConfig.smooth_option into it.
+    "smooth_option": {"type": "integer", "enum": [0, 1, 2], "default": 0,
+                      "warnings": [
+                          "0 is no smoothing, 1 is WRF's sm121 and 2 is "
+                          "smdsm. Prepared hierarchy artifacts remain "
+                          "static one-way, so this smooths a resident "
+                          "parent after feedback and does nothing to a "
+                          "prepared child."]},
+    # wif_input_opt / aer_init_opt: gpuwm/ingest/wif_climatology.py IS the
+    # WIF ingest, gpuwm/ingest/real.py branches on the (aer_init_opt,
+    # wif_input_opt) == (1, 1) pair, and gpuwm/config.py's own error text
+    # instructs the user to "use aer_init_opt=1 with wif_input_opt=1" --
+    # a pair the registry made unspellable, since one row refused it and
+    # the other did not exist.
+    "wif_input_opt": {"type": "integer", "enum": [0, 1], "default": 0},
+    "aer_init_opt": {"type": "integer", "enum": [0, 1], "default": 0},
     "epssm": {"type": "number", "minimum": 0.0, "maximum": 1.0,
               "default": 0.1},
     "diff_6th_factor": {"type": "number", "minimum": 0.0, "maximum": 1.0,
@@ -589,9 +616,9 @@ UNIMPLEMENTED_LEDGER: dict[str, tuple[str, str]] = {
     "num_wif_levels": (
         "c",
         "This sizes the WIF (water/ice-friendly aerosol) metgrid input "
-        "stream. components.microphysics.options.thompson-aerosol-mp28 runs "
-        "thompson_init's synthetic CCN/IN profile because gpuwm has no WIF "
-        "ingest, so the count would size an array nothing reads."),
+        "stream. The WRF namelist importer accepts the monthly WIF dataset's "
+        "30 levels with use_aero_icbc=true and wif_input_opt=1; the native "
+        "configuration does not expose an independent level-count override."),
     "nssl_3moment": (
         "c",
         "The NSSL three-moment extension (nssl_3moment=1, which WRF rewrites "
@@ -740,11 +767,6 @@ UNIMPLEMENTED_LEDGER: dict[str, tuple[str, str]] = {
         "Slope-aware radiation needs slope/aspect terrain statics and modified "
         "solar-incidence geometry in the radiation driver; those fields and "
         "branches are absent."),
-    "smooth_option": (
-        "c",
-        "WRF nest smoothing requires parent/child feedback-time smoothing "
-        "kernels and halo/ownership semantics. gpuwm has no smoothing "
-        "operator; prepared hierarchy artifacts are explicitly static one-way."),
     "sst_update": (
         "c",
         "SST updates require a time-varying lower-boundary input stream, "
@@ -810,14 +832,6 @@ UNIMPLEMENTED_LEDGER: dict[str, tuple[str, str]] = {
         "This selects the vertical injection profile for the biomass-burning "
         "aerosol emissions above. It is a branch inside a subsystem gpuwm "
         "does not have, so there is nothing for it to distribute."),
-    "wif_input_opt": (
-        "c",
-        "This selects WRF's WIF metgrid aerosol input stream. gpuwm has no "
-        "WIF ingest and no QNWFA/QNIFA initial/boundary carrier. NOTE the "
-        "asymmetry recorded on thompson-aerosol-mp28: WRF's real.exe FATALs "
-        "mp_physics=28 with wif_input_opt=0 "
-        "(dyn_em/module_initialize_real.F:2734-2736) while gpuwm runs it on "
-        "thompson_init's synthetic profile."),
 }
 
 NOISE = re.compile(
@@ -2199,20 +2213,22 @@ def _thompson_aerosol_mp28(registry: dict) -> None:
             "table, the allowance list and the two counts, and "
             "docs/public/validation/mp28-column-evidence.md section 3.4 for "
             "the re-derivation from the committed fixtures.",
-            "NO AEROSOL INGEST -- but the aerosol INITIALISATION is wired, "
-            "and that distinction is the whole of this warning. INGEST: "
-            "gpuwm has no WIF metgrid stream, no GOCART climatology reader "
-            "and no black-carbon (nbca) species, so use_aero_icbc, "
-            "use_rap_aero_icbc, wif_input_opt, num_wif_levels and qna_update "
-            "are all published implemented=false and refuse. INITIALISATION: "
-            "WRF's own fallback for exactly that case is thompson_init's "
+            "AEROSOL INPUT LIMITS: native met_em preparation accepts a complete "
+            "analyzed QNWFA/QNIFA pair and the monthly WIF climatology reader "
+            "is available. Auto uses the analyzed pair when present; an explicit "
+            "source selector is retained and its receipt names the input used. "
+            "The imported use_aero_icbc=true / wif_input_opt=1 / "
+            "num_wif_levels=30 route selects the monthly dataset. There is no "
+            "black-carbon (nbca) species, generic GOCART reader or qna_update "
+            "auxiliary stream. SYNTHETIC INITIALISATION: "
+            "WRF's synthetic fallback is thompson_init's "
             "SYNTHETIC CCN/IN profile (phys/module_mp_thompson.F:493-558), "
             "gpuwm implements it in "
             "gpuwm/core/microphysics.py::microphysics_init, measures it "
             "against WRF, and -- since 2026-08-01 -- CALLS it, once per "
             "domain, from gpuwm/core/physics.py::initialize_physics, at the "
             "seam WRF calls mp_init from phy_init. A freshly initialised "
-            "mp=28 domain therefore starts on WRF's decaying continental "
+            "mp=28 domain selecting this fallback starts on WRF's decaying continental "
             "profile, strictly above the terminal apply's clamps "
             "(phys/module_mp_thompson.F:3972-4021), not pinned at them. HOW "
             "MUCH THAT IS WORTH, measured over 150 steps x 12 s on a "
@@ -4230,6 +4246,10 @@ def build(registry: dict) -> dict:
     _thompson_aerosol_mp28(registry)
     _milbrandt2mom_mp9(registry)
     _wdm6_mp16(registry)
+    from tools.morrison_wrf461_oracle.patch_registry_morrison import (
+        MORRISON_WARNINGS)
+    registry["components"]["microphysics"]["options"]["morrison-mp10"][
+        "warnings"] = list(MORRISON_WARNINGS)
     # After every microphysics option is registered, because it walks them.
     _rte_rrtmgp_cloud_optics_constraints(registry)
     registry["authority"][
@@ -4241,7 +4261,7 @@ def build(registry: dict) -> dict:
         "template, 'component-override' through either a route's full "
         "allowed_component_overrides or its option-scoped "
         "allowed_component_options, 'expert-template' only through a route's "
-        "expert_template_ids with its expert_acknowledgement_id, and "
+        "expert_template_ids, with expert_acknowledgement_id advisory, and "
         "'unreachable' not normally reachable -- which must name a blocker. "
         "implemented and reachable are independent. "
         "tests/test_registry_reachability.py recomputes every state.")
@@ -5747,6 +5767,13 @@ def build(registry: dict) -> dict:
         "mp8-to-mp18-mass-diagnosed-v1",
         "mp-edge-mass-diagnosed-v1",
     ]
+    # After every option, template and route the passes above created, and
+    # before the maturity/evidence/consumer-row passes below, which walk
+    # whatever this one leaves behind.
+    _phase2c_route_declarations(registry)
+    _every_served_source_declares_a_template_list(registry)
+    _phase2c_soil_geometry(registry)
+    _phase2c_suiteless_templates(registry)
     _no_radiation_name_warnings(registry)
     # After every option that owns an asset is registered.
     _asset_resolution(registry)
@@ -5758,8 +5785,13 @@ def build(registry: dict) -> dict:
     # every maturity renamed, so the consumer rows see the final
     # option set.
     _consumer_rows(registry)
-    # After the consumer rows exist, because it reads one of them.
+    # After the consumer rows exist, because it reads one of them, and
+    # BEFORE the reachability pass below, which prices a way out through
+    # the allowed_parameter_keys this one widens.
     _lateral_forcing_remedy_is_reachable(registry)
+    # LAST of all: every template and every route declaration above is
+    # final, so the easiest path to each option is the one this computes.
+    _phase2c_recompute_reachability(registry)
     return registry
 
 
@@ -5852,6 +5884,1305 @@ def _no_radiation_name_warnings(registry: dict) -> None:
         warnings = template.setdefault("warnings", [])
         if NO_RADIATION_NAME_WARNING not in warnings:
             warnings.append(NO_RADIATION_NAME_WARNING)
+
+
+#: Audit R-021: the one route whose immutable templates are the point.
+_BENCHMARK_OVERRIDE_REFUSAL = (
+    "its published wall-clock and skill numbers are only "
+    "comparable against the immutable template they were measured on, so a "
+    "component override would silently retire the comparison the route "
+    "exists to publish. Run the same suite on "
+    "tools.prepared_single_domain_forecast, which declares the same "
+    "component overrides as the domain-tree route.")
+
+#: Audit R-021, per component.  Every implemented option a per-domain
+#: route's lists exclude is keyed here with the breakage that exclusion
+#: prevents.  Keyed per component because a refusal is delivered about ONE
+#: component: a route-wide essay pasted into every refusal told a user
+#: naming land_surface what is wrong with an analytic radiation scheme, and
+#: restated the admitted lists the surrounding sentence already names.
+_PER_DOMAIN_EXCLUSION_REASONS = {
+    ("radiation", "analytic-clear-sky"): (
+        "analytic-clear-sky is not a forecast radiation scheme: it computes "
+        "a clear-sky flux from solar geometry alone and carries no cloud, "
+        "aerosol or gas optics, so every cloudy column's heating is wrong by "
+        "the whole cloud effect"),
+}
+
+#: Where each route sends the value instead, per component.  The exclusion
+#: above is the same physical fact on both routes; the way out is not,
+#: because only one of them declares expert selectors.
+_TREE_ROUTE_OVERRIDE_WAY_OUT = {
+    "radiation": (
+        "; this route declares ra_lw_physics and ra_sw_physics in "
+        "allowed_expert_selector_keys, which is where a dycore or idealized "
+        "experiment writes 90/90"),
+}
+_SINGLE_ROUTE_OVERRIDE_WAY_OUT = {
+    "radiation": (
+        "; this route declares no expert selectors, so write it in the "
+        "hash-bound experiment config, or run the experiment on "
+        "tools.prepared_domain_tree_forecast, which declares ra_lw_physics "
+        "and ra_sw_physics as expert selectors"),
+}
+
+#: Audit R-059: what each single-domain route refuses an expert SETTING
+#: for.  Two sentences, not one, because the two routes stopped refusing
+#: the same things when R-021 widened one of them: a component override is
+#: accepted on tools.prepared_single_domain_forecast and refused on the
+#: benchmark route, so a shared "invalidates the seal" sentence no longer
+#: distinguished what is refused from what is allowed.
+_BENCHMARK_ROUTE_EXPERT_REFUSAL = (
+    "sealed-proof benchmark route: this runner replays ONE immutable "
+    "template and verifies it against "
+    "--proof-sha256/--prepared-content-sha256, and it varies NOTHING -- an "
+    "expert setting and a component override are refused alike, because "
+    "either one retires the comparison the published numbers were measured "
+    "against. State the value in the hash-bound experiment config and run "
+    "it on tools.prepared_domain_tree_forecast, whose declaration lists "
+    "the parameters its loader accepts.")
+_SINGLE_DOMAIN_ROUTE_EXPERT_REFUSAL = (
+    "single-domain route: it runs ONE domain, so there is no per-domain "
+    "override table for a plan-level expert setting to be carried in "
+    "(gpuwm/experiment.py _DOMAIN_RUN_OVERRIDES is the tree loader's), and "
+    "every value this runner uses comes from the experiment config it "
+    "hash-binds before step 0. State the value THERE, where "
+    "gpuwm.config.validate_run_config checks it, or run the plan on "
+    "tools.prepared_domain_tree_forecast, whose declaration lists the "
+    "parameters its loader accepts. A COMPONENT choice is a different "
+    "question and this route admits the ones it declares: the seal covers "
+    "the prepared input and its preparation proof, not the suite, and the "
+    "2026-07-31 owner ruling removed this runner's profile whitelist so it "
+    "resolves any engine-valid suite from that same hash-bound config.")
+
+
+def _constraints(option: dict) -> dict:
+    """``option['constraints']`` as a dict, created when it is JSON null."""
+
+    current = option.get("constraints")
+    if not isinstance(current, dict):
+        current = {}
+        option["constraints"] = current
+    return current
+
+
+def _reachability(option: dict) -> dict:
+    """``option['reachability']`` as a dict, created when it is missing.
+
+    A caller here writes only the BLOCKER.  The state is derived by
+    :func:`_phase2c_recompute_reachability` from the declared template and
+    override lists, so that "how do I select this" and "why can I not" are
+    never two hand-set opinions about the same option.
+    """
+
+    current = option.get("reachability")
+    if not isinstance(current, dict):
+        current = {}
+        option["reachability"] = current
+    return current
+
+
+#: Knobs the domain-tree loader accepts per domain and this route does NOT
+#: offer at plan review, each with the concrete refusal that keeps it out
+#: (audit R-059).  Every one is a coupling that lives only in
+#: ``gpuwm.config.validate_run_config``: the registry can say "this option
+#: requires that setting" and "this option is refused when that setting
+#: holds", and none of these is scoped to a component -- they are
+#: parameter-to-parameter.  Offering them here without the rule would make
+#: plan review call launchable a plan the loader refuses, which is the
+#: exact drift class this audit exists to close, so the omission is
+#: DECLARED with its reason instead.
+#:
+#: FOLLOW-UP, named: encode each as a component-scoped ``refused_when``
+#: rule and delete its row here.  The gate that will notice is
+#: tests/test_authority_agreement.py::
+#: test_every_reachable_plan_the_registry_calls_launchable_actually_validates.
+_COUPLINGS_NOT_YET_REGISTRY_ROWS = {
+    "diff_6th_opt": (
+        "diff_6th_opt=1 is non-monotonic and gpuwm.config refuses it with "
+        "moist=true, because the unlimited 6th-order fluxes bypass the "
+        "positive-definite transport limiter and can drive negative "
+        "moisture. The coupling is to moist, not to any component, so no "
+        "option row can carry it yet. Set it in the experiment config, "
+        "where validate_run_config checks the pair."),
+    "ishallow": (
+        "clos_choice and ishallow are Grell-family keys, read only where "
+        "cu_physics=3; gpuwm.config refuses a nonzero value beside any "
+        "other cumulus scheme. Select Grell-Freitas and set them in the "
+        "experiment config."),
+    "o3input": (
+        "o3input and use_mp_re are honoured only by the legacy RRTMG "
+        "engine; the modern spectrum does not implement the nondefault "
+        "ozone and effective-radius operations, and gpuwm.config refuses "
+        "the pair. Select ra_rrtmg_variant='rrtmg_legacy' in the "
+        "experiment config and set them there."),
+    "use_mp_re": (
+        "use_mp_re is honoured only by the legacy RRTMG engine; see "
+        "o3input. Set it in the experiment config beside "
+        "ra_rrtmg_variant='rrtmg_legacy'."),
+    "ra_rrtmg_variant": (
+        "the engine and the compatibility token must agree, and "
+        "gpuwm.config refuses a variant that contradicts the resolved "
+        "wrf_rrtmg_compatibility. A per-domain override of one without the "
+        "other is exactly that contradiction, so the pair is set together "
+        "in the experiment config."),
+    "wrf_rrtmg_compatibility": (
+        "the compatibility token records a 4/4 substitution and "
+        "gpuwm.config refuses it unless the domain resolves the 4/4 pair. "
+        "Selecting the radiation option that resolves that pair is how a "
+        "domain asks for it; the token follows the option rather than "
+        "varying against it."),
+}
+
+
+def _phase2c_route_declarations(registry: dict) -> None:
+    """Audit phase 2c: route declarations stop refusing what the runners run.
+
+    Section 3 of the 2026-09-10 physics-glue audit found every refusal in
+    this area names no breakage, which under the gate law means it does
+    not exist: a blanket "fixed-template runner accepts only its
+    immutable template_id" on a route whose own runner applies registry
+    governance as a warning and runs (R-021); a land-surface axis simply
+    absent from the tree route's option lists, with no blocker text
+    anywhere, while every other axis carries a written reason for each
+    option it lists AND for the one it excludes (R-022); three options
+    the desktop offers and the engine accepts, declared unreachable for
+    parity reasons that were retired (R-023); a uniform-base-template
+    check that compares template LABELS while the same route declares
+    per-domain variation legal for nearly every component (R-058); an
+    expert-override refusal on all three routes with no stated reason and
+    42 registered parameters stranded behind it (R-059); and a relocating
+    nest tree with no declared topology, which is a sequence of static
+    one-way trees and changes nothing plan review validates (R-056).
+
+    Everything here is ROWS.  A scheme is rows, and so is a route
+    capability: adding one is table work in this builder, never a code
+    path in the validator.
+    """
+
+    components = registry["components"]
+    routes = registry["runner_routes"]
+    tree_route = routes["tools.prepared_domain_tree_forecast"]
+    single_route = routes["tools.prepared_single_domain_forecast"]
+    benchmark_route = routes["tools.hrrr_single_domain_benchmark"]
+    land_options = components["land_surface"]["options"]
+    surface_options = components["surface_layer"]["options"]
+    radiation_options = components["radiation"]["options"]
+    parameters = registry["parameters"]
+
+    # -- R-023 ---------------------------------------------------------
+    # Selecting land_surface "off" resolved no num_soil_layers at all, so
+    # whatever count the plan was carrying reached
+    # gpuwm.config.soil_layer_count, which refuses a count the selected
+    # scheme does not define.  Scheme 0's geometry is Noah's four
+    # (gpuwm/config.py LAND_SURFACE_SOIL_LAYERS._PROVIDERS[0] ->
+    # gpuwm.core.noah.NUM_SOIL_LAYERS, which is also what
+    # NO_LAND_SURFACE_SOIL_LAYERS resolves to), so the option states its
+    # geometry the way every other land surface does.
+    _constraints(land_options["off"]).setdefault(
+        "required_settings", {})["num_soil_layers"] = 4
+    land_options["off"]["warnings"] = [
+        "No land-surface scheme runs: TSK, the soil column and the surface "
+        "fluxes below the surface layer stay at their initial values for the "
+        "whole forecast.  Every registered source supplies a soil state, so "
+        "this is a deliberate degradation -- an idealized or LES composition "
+        "-- rather than a saving."
+    ]
+    surface_options["off"]["warnings"] = [
+        "No surface layer runs: nothing computes a friction velocity or the "
+        "heat and moisture fluxes, so a land-surface scheme or a PBL closure "
+        "selected beside it is refused by gpuwm/core/physics.py -- that "
+        "refusal names its own breakage and stands.  What remains legal is a "
+        "dry no-physics column."
+    ]
+
+    # -- R-059: two couplings that ARE component-scoped, as rows -------
+    # cudt is a Kain-Fritsch cadence knob.  Grell-Freitas and New Tiedtke
+    # both run on the model step and carry no NCA hold, so gpuwm.config
+    # refuses a nonzero cudt beside either -- and each option already
+    # PINS cudt_minutes=0 in its own parameter block, which a per-domain
+    # override could silently move.  Stating it as a required setting is
+    # what makes plan review refuse the override the loader refuses.
+    for option_id in ("grell-freitas", "new-tiedtke"):
+        _constraints(components["cumulus"]["options"][option_id]).setdefault(
+            "required_settings", {})["cudt_minutes"] = 0.0
+    # Every radiation option resolves its spectra through the split
+    # ra_lw_physics/ra_sw_physics selectors, and gpuwm.config refuses a
+    # plan that also sets the legacy aggregate ra_physics to anything but
+    # 0 ("do not mix split and legacy radiation selection").  Each option
+    # already carries ra_physics=0 in its parameters; the required setting
+    # is what refuses a per-domain override of it.
+    for option in components["radiation"]["options"].values():
+        if (option.get("parameters") or {}).get("ra_physics") == 0:
+            _constraints(option).setdefault(
+                "required_settings", {})["ra_physics"] = 0
+
+    # -- R-005: the one per-source refusal, as a row -------------------
+    # Microphysics off on a real-source route carried TWO refusals fused
+    # into one prose error.  The first is per-source, and it is a row now:
+    # native HRRR supplies analyzed QC/QR/QI/QS/QG and MP off cannot
+    # faithfully retain it, which is why the run died in
+    # gpuwm/ingest/real.py rather than at review.  It is refused before
+    # step 0, and a source that gains such an incompatibility is table
+    # work.
+    #
+    # The second is the moist carrier, and it STAYS an error at review.
+    # This pass briefly resolved it instead -- plan review defaulted
+    # moist=true and warned -- and that was a resolution nothing performs:
+    # validate_physics_plan reports, while the RunConfig a runner builds
+    # takes moist from the microphysics-off option's own row and from the
+    # experiment config, so review would have called launchable a plan
+    # gpuwm/ingest/real.py refuses before step 0.  What the attempt got
+    # right is that the remedy has to be expressible on the route it is
+    # prescribed to: the old text prescribed one two of the three routes
+    # could not express.  Each route now declares WHERE its moist value
+    # lives, and the refusal reads that declaration out.
+    mp_off_constraints = _constraints(components["microphysics"]["options"]["off"])
+    # Rebuilt, not appended: this builder transforms the tracked registry in
+    # place, so a rule appended on every run would multiply.
+    mp_off_constraints["refused_when"] = [
+        rule for rule in mp_off_constraints.get("refused_when", [])
+        if not isinstance(rule, dict) or "sources" not in rule
+    ]
+    mp_off_constraints["refused_when"].append({
+        "sources": ["hrrr"],
+        "reason": (
+            "native HRRR supplies analyzed QC/QR/QI/QS/QG, and microphysics "
+            "off cannot faithfully retain them: no radiation-only "
+            "analyzed-cloud carrier is implemented, so the analyzed "
+            "condensate would be dropped at initialization and the forecast "
+            "would run clear where the analysis was cloudy. Select a "
+            "microphysics scheme, or run microphysics off on a source whose "
+            "analysis carries no condensate."),
+    })
+    registry["authority"]["real_source_moisture_contract"] = (
+        "runner_routes.<runner>.requires_moist_real_initialization declares "
+        "that every source on the route enters gpuwm.ingest.real and "
+        "therefore requires a moist state even when microphysics is off. "
+        "Plan review REFUSES such a plan until moist=true is stated, "
+        "because nothing between review and the loader rewrites the "
+        "microphysics-off option's own moist=false: the refusal names "
+        "runner_routes.<runner>.moist_declaration_site, which is where that "
+        "route's value lives, so the remedy is expressible on the route it "
+        "is prescribed to. An explicit moist=false is refused for the same "
+        "reason, naming what a dry column would drop. Per-source "
+        "incompatibilities are rows -- "
+        "components.<id>.options.<id>.constraints.refused_when entries "
+        "carrying a sources clause -- so they are refused at review rather "
+        "than inside the preparation.")
+    # WHERE each route's moist value lives.  A refusal that prescribes a
+    # door the route does not have is the defect this key exists to
+    # prevent; it is a declaration, so a new route answers the question by
+    # adding a row rather than by teaching the validator about itself.
+    for route_id, site in (
+            ("tools.prepared_domain_tree_forecast",
+             "in the plan's per-domain parameters -- this route declares "
+             "moist in allowed_parameter_keys -- or in the hash-bound "
+             "experiment config the tree loader reads"),
+            ("tools.prepared_single_domain_forecast",
+             "in the hash-bound experiment config this route runs from, "
+             "whose physics keys carry the same names"),
+            ("tools.hrrr_single_domain_benchmark",
+             "by selecting one of this route's immutable templates: every "
+             "one of them runs a microphysics scheme, so this route has no "
+             "microphysics-off composition to carry a moist value"),
+    ):
+        registry["runner_routes"][route_id]["moist_declaration_site"] = site
+
+    # -- R-022 + R-023: the tree route's option lists -------------------
+    # land_surface was the one component axis with NO entry at all: no
+    # option list, no blocker text, no physical statement anywhere, while
+    # every other axis carries a written reason for each option it lists
+    # and for the one it excludes.  RUC is a shipped land surface with a
+    # runtime gate, a device-path two-sided gate and three declared ERA5
+    # templates; its one named consequence under mp_physics=9 is a
+    # fidelity divergence carried as the option's own warning, not a
+    # failure.
+    #
+    # Implemented land options retain their own state and coupling constraints.
+    # The former throughput acknowledgement is advisory and cannot exclude one.
+    tree_route["allowed_component_options"]["land_surface"] = sorted(
+        option_id for option_id, option in land_options.items()
+        if option.get("implemented") is True)
+    # "off" joins the surface-layer list on the same terms: the engine
+    # accepts it, the desktop already offers it, and the combinations that
+    # would make it dangerous are refused by gpuwm/core/physics.py with
+    # their own named breakage.
+    tree_route["allowed_component_options"]["surface_layer"] = [
+        "off", "revised-mm5", "classic-mm5", "mynn", "eta-similarity"]
+    # analytic-clear-sky is the third member of R-023's trio, and it is
+    # the one this block does NOT add to a per-domain option list.  Its
+    # STATE is not hand-set either way: _phase2c_recompute_reachability
+    # derives it, and the derivation answers component-override for a
+    # reason worth stating, because it is the reason the audit found the
+    # old "unreachable" label untrue.  The tree route declares
+    # ra_lw_physics and ra_sw_physics in allowed_expert_selector_keys, so
+    # writing 90/90 through expert_overrides.selectors reaches this
+    # option on that route today.  Calling it unreachable while a
+    # declared door opens it is exactly the drift this pass exists to
+    # end; the degradation is carried by the warning below instead, which
+    # is what a user actually reads.
+    #
+    # The BLOCKER is rewritten rather than kept, so that if the option
+    # ever does become unreachable it names a breakage in ArWen's own
+    # terms.  The old text -- "WRF v4.6.1 registers no equivalent
+    # package" -- is a PARITY reason, and parity stopped being the
+    # referee.
+    analytic = radiation_options["analytic-clear-sky"]
+    _reachability(analytic)["blocker"] = (
+        "The 90/90 proxy is not a forecast radiation scheme: it computes "
+        "a clear-sky flux from solar geometry alone and carries no cloud, "
+        "aerosol or gas optics, so in any cloudy column the radiative "
+        "heating profile is wrong by the entire cloud effect -- surface "
+        "shortwave too high by day, longwave cooling too strong at night. "
+        "It is a dycore and idealized instrument, which is why no template "
+        "selects it and no per-domain option list admits it.")
+    analytic["warnings"] = [
+        "ARWEN-SPECIFIC, NOT A WRF SCHEME, AND NOT A FORECAST PRODUCT. The "
+        "90/90 analytic clear-sky proxy carries no cloud, aerosol or gas "
+        "optics: every cloudy column's radiative heating is wrong by the "
+        "whole cloud effect. WRF v4.6.1 registers no equivalent package "
+        "(Registry.EM_COMMON:3107-3125), so a run selecting it also has no "
+        "stock-WRF counterpart to be compared against."
+    ]
+
+    # -- R-022: the RUC warning sentence the shipped tree contradicts ---
+    # gpuwm/ingest/soil_contract.py carries RUC_TARGET_LEVEL_DEPTHS_M (nine
+    # levels) with an import-time drift check against
+    # gpuwm.ingest.ruc_soil.RUC_LEVEL_DEPTHS_M, plus RUC_REMAP_POLICIES.
+    # The sentence claiming a composition that ships a soil_layer_contract
+    # "cannot ask for RUC" was true before that landed and is false now.
+    # The GFS withdrawal it also records was root-caused rather than
+    # re-gated: a shoreline land column carrying the water soil category
+    # reached soilvegin, which has no arm for it, and 0./0. went into
+    # MAVAIL. Every ArWen door reconciles that column now
+    # (gpuwm/ingest/soil.py door_reconciled_soil_category), and
+    # gpuwm/prepared_single_domain_forecast.py records that no route
+    # blocker remains and none is enforced.
+    #
+    # Rewritten IN PLACE rather than dropped: _surface_coupling_warnings
+    # above addresses this list by index, so removing a member would move
+    # every warning after it.
+    ruc = land_options["ruc-lsm"]
+    ruc["warnings"] = [
+        warning.replace(
+            "WHAT IS STILL REFUSED is the DECLARATIVE contract: "
+            "gpuwm/ingest/soil_contract.py validate_soil_layer_contract "
+            "declares exactly one target, Noah's four layers, so a "
+            "composition that ships a soil_layer_contract -- which is the "
+            "20crv3/mapped path -- cannot ask for RUC.",
+            "THE DECLARATIVE CONTRACT REACHES RUC TOO: "
+            "gpuwm/ingest/soil_contract.py carries "
+            "RUC_TARGET_LEVEL_DEPTHS_M and RUC_REMAP_POLICIES beside "
+            "Noah's four layers, with an import-time drift check against "
+            "gpuwm.ingest.ruc_soil.RUC_LEVEL_DEPTHS_M, so a composition "
+            "that ships a soil_layer_contract can target RUC.",
+        ).replace(
+            "The template is offered through the direct HRRR and ERA5 "
+            "preparations; it remains absent from 20crv3/mapped "
+            "preparation, and from GFS preparation. The GFS withdrawal is "
+            "a v1.1.1 field finding rather than an ingest-contract one: a "
+            "GFS-initialised RUC forecast PREPARES cleanly -- proof PASS, "
+            "nine soil layers -- and then dies on its first "
+            "surface-temperature call with `mavail must be finite` "
+            "(gpuwm/core/ruc.py:_horizontal_float_field) having advanced "
+            "no model time, so the GFS route's initialised land and soil "
+            "state does not reach ruc_cold_start in a condition RUC can "
+            "integrate from. Completing that initialisation is a v1.2 "
+            "item.",
+            "The GFS withdrawal that once stood here is RETIRED, and was "
+            "root-caused rather than re-gated: a shoreline land column "
+            "carrying the water soil category (SOILTYP 14 under a land "
+            "LU_INDEX) reached soilvegin, which has no arm for it, and "
+            "0./0. went into MAVAIL. WRF's own real program reconciles "
+            "that column at initialization and so does every ArWen door, "
+            "through gpuwm/ingest/soil.py door_reconciled_soil_category "
+            "(proven both ways by "
+            "tests/test_ruc_shoreline_soil_category.py). No route blocker "
+            "remains and none is enforced.",
+        )
+        for warning in ruc.get("warnings", [])
+    ]
+
+    # -- R-021: the single-domain route mirrors the tree route ----------
+    # The 2026-07-31 owner ruling removed the profile whitelist from this
+    # route's runner: gpuwm/prepared_single_domain_forecast.py records the
+    # removal, labels its own per-source lists "REPORTED METADATA, NOT A
+    # GATE", applies registry governance as a WARNING and runs.  The route
+    # DECLARATION was never widened to match, so plan review refused what
+    # the runner runs -- and the trigger configuration integrated 59
+    # minutes on this exact route with two components the declaration says
+    # cannot vary. Mirroring the tree route retains each option's actual
+    # field and shared-setting constraints, evaluated by the same authority.
+    single_route["allowed_component_overrides"] = list(
+        tree_route["allowed_component_overrides"])
+    single_route["allowed_component_options"] = {
+        component_id: list(option_ids)
+        for component_id, option_ids
+        in tree_route["allowed_component_options"].items()
+    }
+    # The benchmark route stays closed, and now says why.  An empty
+    # declaration with no reason is a refusal that names no breakage; this
+    # is the one route where immutability IS the product.
+    benchmark_route["allowed_component_overrides"] = []
+    benchmark_route["allowed_component_options"] = {}
+    benchmark_route["component_override_refusal_reason"] = (
+        _BENCHMARK_OVERRIDE_REFUSAL)
+
+    # The refusal that actually FIRES on the two per-domain routes had no
+    # reason at all: only the benchmark route carried one, so the single
+    # option the widened lists deliberately exclude came back as "runner
+    # route does not allow this component option to vary per domain" and
+    # stopped there.  Every option a route excludes is named here with its
+    # way out, and the exclusion set is computed rather than trusted, so a
+    # list that moves cannot leave this sentence describing the old one.
+    excluded = {
+        (component_id, option_id)
+        for component_id, component in components.items()
+        if component_id not in tree_route["allowed_component_overrides"]
+        for option_id, option in component["options"].items()
+        if option.get("implemented") is True
+        and option_id not in tree_route[
+            "allowed_component_options"].get(component_id, [])
+    }
+    if excluded != set(_PER_DOMAIN_EXCLUSION_REASONS):
+        raise SystemExit(
+            "the per-domain option lists exclude "
+            f"{sorted(excluded)}; _PER_DOMAIN_EXCLUSION_REASONS keys "
+            f"{sorted(_PER_DOMAIN_EXCLUSION_REASONS)} and nothing else. "
+            "Give each new exclusion its own breakage and way out in that "
+            "table, or add the option to the list.")
+    # One reason per COMPONENT, because one refusal is about one component.
+    for route, route_way_out in ((tree_route, _TREE_ROUTE_OVERRIDE_WAY_OUT),
+                                 (single_route, _SINGLE_ROUTE_OVERRIDE_WAY_OUT)):
+        reasons: dict[str, str] = {}
+        for (component_id, _option), reason in sorted(
+                _PER_DOMAIN_EXCLUSION_REASONS.items()):
+            clause = reason + route_way_out.get(component_id, "")
+            if reasons.setdefault(component_id, clause) != clause:
+                raise SystemExit(
+                    f"component {component_id!r} excludes two implemented "
+                    "options with different reasons; one refusal carries one "
+                    "component's reason, so merge them into one clause or "
+                    "key the table by option as well.")
+        route["component_override_refusal_reasons"] = reasons
+        # Specific component reasons take precedence. Other components need
+        # this route's general declaration, not an inferred benchmark reason.
+        # Replace on every build so obsolete wording cannot survive a rebuild.
+        route["component_override_refusal_reason"] = (
+            component_override_declaration(route))
+
+    # -- R-059: expert overrides ---------------------------------------
+    # allowed_parameter_keys and allowed_expert_selector_keys are DERIVED
+    # from the loader that actually accepts them, so a parameter the tree
+    # loader gains becomes settable at plan review in the same pass.  Hand
+    # lists are how 42 registered parameters carrying a named
+    # consuming_read came to be settable through no route at all, while
+    # the validator's own message pointed at expert_overrides.settings --
+    # a door every route nailed shut.
+    from gpuwm.experiment import _DOMAIN_RUN_OVERRIDES
+
+    selector_keys = {
+        key
+        for component in components.values()
+        for key in component.get("selector_keys", ())
+    }
+    # A knob EVERY option of one component pins in ``required_settings`` is
+    # that component's own identity spelling, not a free per-domain value: a
+    # plan overriding it either restates the option it already selected or
+    # contradicts it, and plan review then refuses a configuration
+    # gpuwm.config.validate_run_config admits -- two doors disagreeing about
+    # one file.  ``ra_physics`` is the live case, the pre-split spelling of
+    # the radiation pair, which every radiation option states; asking for
+    # the aggregate spelling is selecting the OPTION that carries it.
+    # Derived rather than listed, so a second alias is excluded the day it
+    # is registered.
+    identity_keys: set[str] = set()
+    for component in components.values():
+        pinned = None
+        for option in (component.get("options") or {}).values():
+            required = set(
+                (option.get("constraints") or {}).get("required_settings")
+                or ())
+            pinned = required if pinned is None else (pinned & required)
+        identity_keys |= set(pinned or ())
+    per_domain_loader_keys = frozenset(_DOMAIN_RUN_OVERRIDES)
+    tree_route["allowed_parameter_keys"] = sorted(
+        name for name, spec in parameters.items()
+        if spec.get("implemented") is not False
+        and name in per_domain_loader_keys
+        and name not in selector_keys
+        and name not in identity_keys
+        and name not in _COUPLINGS_NOT_YET_REGISTRY_ROWS)
+    # Published on the route, so the declaration a door reads carries the
+    # reason a loader-accepted knob is not offered here.  A refusal that
+    # names no breakage does not exist; neither does an omission.
+    tree_route["deferred_parameter_keys"] = {
+        name: reason
+        for name, reason in sorted(_COUPLINGS_NOT_YET_REGISTRY_ROWS.items())
+        if name in per_domain_loader_keys and name in parameters
+    }
+    for name in sorted(identity_keys & per_domain_loader_keys & set(parameters)):
+        component_id = next(
+            cid for cid, component in components.items()
+            if all(name in ((option.get("constraints") or {}).get(
+                       "required_settings") or ())
+                   for option in (component.get("options") or {}).values()))
+        tree_route["deferred_parameter_keys"][name] = (
+            f"every {component_id} option states {name}, so it spells WHICH "
+            f"option is selected rather than a value inside one. Select the "
+            f"{component_id} option that carries the value you want; "
+            f"overriding {name} per domain could only restate or contradict "
+            "the option already chosen.")
+    tree_route["allowed_expert_selector_keys"] = sorted(
+        selector_keys & per_domain_loader_keys)
+    # The two sealed routes keep empty lists, and now name what the
+    # emptiness protects: the proof they replay.
+    for route, refusal in (
+            (single_route, _SINGLE_DOMAIN_ROUTE_EXPERT_REFUSAL),
+            (benchmark_route, _BENCHMARK_ROUTE_EXPERT_REFUSAL)):
+        route["allowed_parameter_keys"] = []
+        route["allowed_expert_selector_keys"] = []
+        route["expert_override_refusal_reason"] = refusal
+    tree_route["expert_override_refusal_reason"] = (
+        "the domain-tree loader accepts the parameters and selectors this "
+        "route declares; an expert SETTING outside them would reach "
+        "gpuwm.config.validate_run_config with no registry row to validate "
+        "it against. Register the knob as a parameter -- table work in "
+        "tools/build_registry.py -- rather than passing it through.")
+
+    # -- R-058: per-domain declarations, and a value check --------------
+    # The uniform-base-template check compared template LABELS, so two
+    # templates whose component maps are byte-identical and differ only in
+    # a per-domain key were refused for having different names.  The
+    # narrow thing it stood in for is real: sf_surface_physics, its soil
+    # geometry and the Noah-MP option block are deliberately outside the
+    # loader's per-domain table, so ONE land surface runs for a whole
+    # tree.  That is now stated per parameter and checked on resolved
+    # VALUES.
+    for name, spec in parameters.items():
+        spec["per_domain"] = name in per_domain_loader_keys
+    for component in components.values():
+        selectors = {
+            key: key in per_domain_loader_keys
+            for key in component.get("selector_keys", ())
+        }
+        if selectors:
+            component["per_domain_selectors"] = selectors
+    tree_route.pop("template_policy", None)
+    registry["authority"]["per_domain_declaration"] = (
+        "parameters.<name>.per_domain and components.<id>."
+        "per_domain_selectors declare which knobs the domain-tree loader "
+        "accepts inside a [[domain]] table (gpuwm/experiment.py "
+        "_DOMAIN_RUN_OVERRIDES, which this registry is generated from). "
+        "validate_physics_plan refuses a tree whose domains resolve "
+        "DIFFERENT values for a knob declared per_domain false, naming both "
+        "values and the loader that cannot express them; it no longer "
+        "compares template ids, which are labels.")
+
+    # -- R-056: a relocating tree is a sequence of static one-way trees --
+    # Nothing plan review validates changes when a nest moves: the
+    # topology stays one-way nested, the transition policy stays the
+    # microphysics edge policy, and relocation is a runtime schedule.  The
+    # route says so rather than leaving a relocating plan with no declared
+    # topology at all.  No second topology id is minted -- a receipt naming
+    # one would claim a second closure exists.
+    tree_route["relocation"] = {
+        "supported": True,
+        "topology_id": "one-way-nested-v1",
+        "declaration": (
+            "A relocating child is a SEQUENCE of static one-way nested "
+            "trees: at every instant the tree validated is the one this "
+            "topology id names, and relocation moves the child's parent "
+            "window between instants. Plan review validates the instant; "
+            "the schedule is runtime state (gpuwm/core/nest_spawn.py, and "
+            "the follow/target itineraries in gpuwm/companion_domains.py)."),
+        "unchanged_by_relocation": [
+            "topology_ids",
+            "transition_policy_id",
+            "graph_setting_constraints",
+        ],
+    }
+
+
+def _phase2c_soil_geometry(registry: dict) -> None:
+    """Audit R-038: one soil geometry, one authority.
+
+    Two authorities described the same geometry and disagreed.  This
+    registry's ``num_soil_layers`` enum was ``[4, 9]`` and is enforced as a
+    HARD plan error, while ``gpuwm/config.py``'s ``soil_layer_count``,
+    built from ``gpuwm.core.ruc_contract.WRF_SUPPORTED_NUM_SOIL_LAYERS``
+    (which is itself tabulated from ``gpuwm.ingest.ruc_soil``), accepts six
+    and a six-level forecast completes with ``soil_layers_stag = 6`` in its
+    wrfout.  The registry's stated reason for the refusal was "a schema
+    enum entry would advertise a validated geometry" -- an EVIDENCE
+    POLICY, not a physical or numerical incompatibility, so under the gate
+    law it is not a refusal at all.
+
+    The enum is now DERIVED from the module that owns the geometry, so a
+    count the soil column gains is table work here rather than a second
+    hand-typed opinion.  What six actually lacks -- a WRF FORECAST oracle,
+    every lsmruc/sfctmp/soilmoist/snowtemp fixture in the tree being
+    nine-level -- is said in the warning a user reads, beside the receipt
+    field that carries it, which is what an absence of evidence is worth.
+
+    DELIBERATELY NOT DONE HERE, and handed back as a named follow-up: the
+    ``ruc-lsm-6level`` OPTION row the audit note proposes.  Land-surface
+    options are keyed by ``sf_surface_physics`` throughout the authority
+    lane that landed after the audit was written -- ``implemented_selector_
+    values``, ``consumer_rows_by_selector`` and ``_option_for_selectors``
+    all index by selector value -- so a second option carrying selector 3
+    would silently shadow the first in every consumer table derived from
+    those.  Admitting six-level RUC as a named option needs an inventory
+    keyed by (selector, geometry), which is a design change rather than
+    table work, and it rides on the owner decision the audit files as its
+    open question 5.  Six-level RUC keeps the door it has: the hash-bound
+    experiment config, which ``gpuwm.config.soil_layer_count`` admits and
+    ``gpuwm/core/ruc_contract.py`` sizes.
+    """
+
+    from gpuwm.core.ruc_contract import WRF_SUPPORTED_NUM_SOIL_LAYERS
+
+    spec = registry["parameters"]["num_soil_layers"]
+    # 4 is Noah/Noah-MP's single geometry (gpuwm/core/noah.NUM_SOIL_LAYERS);
+    # the rest is every count RUC's own level table defines.
+    spec["enum"] = sorted({4, *(int(count)
+                                for count in WRF_SUPPORTED_NUM_SOIL_LAYERS)})
+    spec["warnings"] = [
+        warning.replace(
+            "This ENUM declares 4 and 9 -- 4 with Noah "
+            "or Noah-MP, 9 with RUC -- because those are the geometries an "
+            "oracle has judged; the enum is a statement about EVIDENCE, not "
+            "the whole set of selectable values.",
+            "This ENUM declares every geometry a plan may STATE, derived "
+            "from gpuwm.core.ruc_contract.WRF_SUPPORTED_NUM_SOIL_LAYERS and "
+            "Noah's single count, because a schema that refused a value the "
+            "shipped resolver accepts was two authorities disagreeing about "
+            "one geometry. Which count each SCHEME resolves is a separate "
+            "question, answered by soil_layer_count above; how much evidence "
+            "each geometry carries is a third, answered here and in the run "
+            "receipt.",
+        ).replace(
+            "A schema enum entry would advertise a validated geometry; "
+            "see docs/wrf_ruc_runtime_admission.md.",
+            "Six carries no WRF FORECAST oracle -- every "
+            "lsmruc/sfctmp/soilmoist/snowtemp fixture in the tree is "
+            "nine-level -- so a run at six carries "
+            "soil_geometry_evidence=internal-consistency-only in its "
+            "receipt and warns at runtime. What IS measured at six: ZS/DZS "
+            "reproduce WRF 4.7.1 real.exe wrfinput_d01 exactly, and the "
+            "43-field host/device column comparison agrees at max_ulp 0. "
+            "See docs/wrf_ruc_runtime_admission.md.",
+        )
+        for warning in spec.get("warnings", [])
+    ]
+
+
+#: Audit R-067.  Eleven implemented options had no shipped template at all,
+#: so every one of them was a scheme a user could not select from a named
+#: suite -- ``implemented: true`` with no front door.  Each row below is
+#: built from an existing template by moving the FEWEST components that
+#: reach the option, so a paired run against its base isolates the change,
+#: and each is registered on every route the composition is valid for.
+#:
+#: The ids carry no case, site or source token: they name the composition.
+_SUITELESS_TEMPLATES = (
+    # (new id, base id, component moves, extra parameters, label, warnings)
+    (
+        "milbrandt2mom-mp9-ysu-mm5-noah-ntiedtke-rrtmg-legacy-v1",
+        "thompson-mp8-ysu-mm5-noah-rrtmg-legacy-v1",
+        {"microphysics": "milbrandt2mom-mp9", "cumulus": "new-tiedtke"},
+        {},
+        "Milbrandt-Yau two-moment + YSU + classic MM5 + Noah + New Tiedtke "
+        "+ legacy RRTMG",
+        (
+            "Composition candidate: every component is individually "
+            "implemented and the legacy RRTMG engine is the certified WRF "
+            "v4.6.1 port, but no receipt covers the composed suite. This is "
+            "the suite that ran 59 minutes and died at its first checkpoint "
+            "before the identity row for mp_physics=9 existed; it is "
+            "registered so the scheme has a named front door rather than "
+            "only an unnamed tuple.",
+            "This preset selects the legacy RRTMG engine to retain its "
+            "named composition. Milbrandt-Yau also supports the modern "
+            "RTE+RRTMGP coupling through its implemented cloud-optics row; "
+            "choose that engine in a separate composition when wanted.",
+        ),
+    ),
+    (
+        "wdm6-mp16-ysu-mm5-noah-grell-freitas-rte-rrtmgp-v1",
+        "thompson-mp8-ysu-mm5-noah-kf-rte-rrtmgp-v1",
+        {"microphysics": "wdm6-mp16", "cumulus": "grell-freitas"},
+        {},
+        "WDM6 + YSU + classic MM5 + Noah + Grell-Freitas + RTE+RRTMGP",
+        (
+            "Composition candidate: WDM6 and Grell-Freitas are each "
+            "implemented and individually measured, and RTE+RRTMGP is the "
+            "shipped radiation arm, but no receipt covers the composed "
+            "suite. Registered so both schemes have a named front door.",
+            "Grell-Freitas requires a PBL closure that supplies its "
+            "boundary-layer state (its own requires_components row); YSU is "
+            "the arm this suite pairs it with.",
+        ),
+    ),
+    (
+        "thompson-aerosol-mp28-myj-eta-noah-rte-rrtmgp-v1",
+        "thompson-mp8-ysu-mm5-noah-kf-rte-rrtmgp-v1",
+        {
+            "microphysics": "thompson-aerosol-mp28",
+            "pbl": "myj",
+            "surface_layer": "eta-similarity",
+            "cumulus": "off",
+        },
+        {"cudt_minutes": 0.0},
+        "Thompson aerosol-aware + MYJ + Eta similarity + Noah + cumulus off "
+        "+ RTE+RRTMGP",
+        (
+            "Composition candidate: no receipt covers the composed suite. "
+            "Registered so the aerosol-aware Thompson scheme and the "
+            "MYJ/Eta pair each have a named front door.",
+            "MYJ and the Eta similarity surface layer require EACH OTHER "
+            "(both requires_components rows, and gpuwm.config."
+            "validate_myj_pairing), so they are selected together or not at "
+            "all. This template is the one registered suite that satisfies "
+            "both halves.",
+            "The aerosol-aware scheme reads the packaged CCN activation "
+            "table shipped in the gpuwm-data companion wheel; a default "
+            "install satisfies it, and a run with no bound aerosol input "
+            "uses the packaged fallback constants and says so.",
+        ),
+    ),
+    (
+        "wsm6-sase-revised-mm5-noah-closure-supplied-v1",
+        "wsm6-ysu-mm5-noah-no-radiation-v1",
+        {
+            "pbl": "sase",
+            "surface_layer": "revised-mm5",
+            "turbulence": "closure-supplied",
+        },
+        # NOT restated here.  SASE's own required_settings row pins the
+        # quadruple (bldt, khdif, kvdif, km_opt), the derivation reads
+        # that row into every runtime product, and a template that
+        # mentions ``bldt`` at ANY value is the inheritance vector
+        # tests/test_noahmp_surface_interval.py refuses outright: a
+        # surface-call interval is a cost mitigation that must stay
+        # opt-in per configuration, and a template carries its parameters
+        # into every run built from it with no author ever typing them.
+        {},
+        "WSM6 + SASE + revised MM5 + Noah + closure-supplied mixing",
+        (
+            "Composition candidate: no receipt covers the composed suite. "
+            "Registered so the SASE closure has a named front door.",
+            "SASE supplies its own mixing, so this suite runs with km_opt=0 "
+            "and bldt, khdif and kvdif at zero -- the quadruple SASE's own "
+            "required_settings row states, which every route resolves and "
+            "plan review refuses an override of. The suite inherits that "
+            "row rather than restating it. A second mixing operator beside "
+            "the closure would double-count its own transport.",
+            "SASE is not a WRF v4.6.1 scheme: it carries an "
+            "out-of-namespace selector and has no stock-WRF counterpart to "
+            "be compared against, so its surface-layer requirement states "
+            "what the closure READS rather than transcribing WRF's cell "
+            "table.",
+        ),
+    ),
+    (
+        "wsm6-pbl-off-mm5-noah-tke-1-5-order-v1",
+        "wsm6-ysu-mm5-noah-no-radiation-v1",
+        {"pbl": "off", "turbulence": "tke-1.5-order"},
+        {},
+        "WSM6 + PBL off + classic MM5 + Noah + 1.5-order TKE mixing",
+        (
+            "Composition candidate: no receipt covers the composed suite. "
+            "Registered so the 1.5-order TKE closure has a named front "
+            "door.",
+            "A three-dimensional mixing operator REPLACES the PBL "
+            "parameterization rather than joining it: km_opt=2 requires "
+            "bl_pbl_physics=0 (the option's own required_settings row), "
+            "which is why this suite selects PBL off. The surface layer "
+            "stays on and supplies the fluxes Noah needs.",
+            "This is a large-eddy composition. On a grid whose spacing does "
+            "not resolve the energy-containing eddies it under-mixes the "
+            "boundary layer, because nothing else is parameterizing it.",
+        ),
+    ),
+    (
+        "wsm6-pbl-off-mm5-noah-smagorinsky-3d-v1",
+        "wsm6-ysu-mm5-noah-no-radiation-v1",
+        {"pbl": "off", "turbulence": "smagorinsky-3d"},
+        {},
+        "WSM6 + PBL off + classic MM5 + Noah + 3D Smagorinsky mixing",
+        (
+            "Composition candidate: no receipt covers the composed suite. "
+            "Registered so the three-dimensional Smagorinsky closure has a "
+            "named front door.",
+            "km_opt=3 requires bl_pbl_physics=0 (the option's own "
+            "required_settings row): the operator replaces the PBL "
+            "parameterization rather than joining it. The surface layer "
+            "stays on and supplies the fluxes Noah needs.",
+            "This is a large-eddy composition, and it is the sibling of the "
+            "1.5-order TKE row: the two differ in exactly ONE component, so "
+            "a paired run isolates the closure.",
+        ),
+    ),
+    (
+        "wsm6-pbl-off-mm5-noah-constant-k-v1",
+        "wsm6-ysu-mm5-noah-no-radiation-v1",
+        {"pbl": "off", "turbulence": "constant-k"},
+        {},
+        "WSM6 + PBL off + classic MM5 + Noah + constant-K mixing",
+        (
+            "Composition candidate: no receipt covers the composed suite. "
+            "Registered so the constant-K operator has a named front door, "
+            "as the km_opt=1 sibling of the two large-eddy rows above.",
+            "khdif and kvdif come from the option's own row and are zero "
+            "there, which is no horizontal or vertical mixing at all. A "
+            "suite that wants constant-K transport states the two "
+            "coefficients in its experiment config; this template does not "
+            "invent values an oracle has not judged.",
+        ),
+    ),
+)
+
+
+#: The ONE runner route id that replays a native comparison rather than
+#: building its product from the registry alone.  Named once, here, so the
+#: exclusion table below and the gate that checks it read the same string.
+_NATIVE_BENCHMARK_ROUTE = "tools.hrrr_single_domain_benchmark"
+_FIXED_TEMPLATE_ROUTES = (
+    _NATIVE_BENCHMARK_ROUTE, "tools.prepared_single_domain_forecast")
+
+#: Which suite-less template stays off which route, and the concrete
+#: breakage that keeps it off.  A template is registered on every route it
+#: is valid for; every departure from "all three" is a row here, and
+#: :func:`_phase2c_suiteless_templates` FAILS THE BUILD if a template is
+#: absent from a route with no row -- which is the reverse leg the first
+#: pass lacked, when six suites were declared on a route whose runner
+#: refuses all six.
+_TEMPLATE_ROUTES_REFUSED: dict[str, dict[str, str]] = {
+    "thompson-aerosol-mp28-myj-eta-noah-rte-rrtmgp-v1": {
+        route_id: (
+            "gpuwm/ingest/microphysics_cold_start.py "
+            "source_absent_microphysics has no arm for mp_physics=28: a "
+            "real analysis supplies none of the aerosol-aware boundary "
+            "species and there is no cold-start row for them, so a runner "
+            "that prepares its own initialization from the named source "
+            "cannot build an initialization contract for this suite at "
+            "all. Both fixed-template routes do exactly that. Audit R-044 "
+            "owns the arm; the template rides the domain-tree route, whose "
+            "plan states its own per-domain composition, until it lands.")
+        for route_id in _FIXED_TEMPLATE_ROUTES
+    },
+}
+#: The six composition suites are valid compositions and the prepared
+#: single-domain route resolves each of them from the registry alone.  The
+#: NATIVE BENCHMARK route cannot: its product is a replay of a native WRF
+#: run, gated field for field against a transcribed namelist contract
+#: (tools/hrrr_single_domain_benchmark.py _NATIVE_HRRR_NAMELIST_CONTRACTS)
+#: and forwarded through a per-switch home map (_PROFILE_SWITCH_HOMES).
+#: A composition with no native run behind it has no contract to be
+#: replayed against, so declaring it there offered a suite the runner
+#: refused with `unsupported native HRRR physics profile`.
+for _composition_suite_id, _off_the_benchmark_because in (
+        ("milbrandt2mom-mp9-ysu-mm5-noah-ntiedtke-rrtmg-legacy-v1",
+         "no native run of this composition exists, so there is no "
+         "namelist contract to gate its replay against"),
+        ("wdm6-mp16-ysu-mm5-noah-grell-freitas-rte-rrtmgp-v1",
+         "no native run of this composition exists, so there is no "
+         "namelist contract to gate its replay against"),
+        ("wsm6-sase-revised-mm5-noah-closure-supplied-v1",
+         "SASE carries an out-of-namespace selector and has no stock-WRF "
+         "counterpart at all, so a native comparison cannot be stated for "
+         "it, let alone measured"),
+        ("wsm6-pbl-off-mm5-noah-tke-1-5-order-v1",
+         "a large-eddy closure on this route's fixed kilometre-scale "
+         "single domain has no native run behind it and no resolved "
+         "energy-containing eddies to close over"),
+        ("wsm6-pbl-off-mm5-noah-smagorinsky-3d-v1",
+         "a large-eddy closure on this route's fixed kilometre-scale "
+         "single domain has no native run behind it and no resolved "
+         "energy-containing eddies to close over"),
+        ("wsm6-pbl-off-mm5-noah-constant-k-v1",
+         "the constant-K operator runs with the option's own zero "
+         "coefficients, so there is nothing for a published wall-clock "
+         "and skill comparison to be measured against"),
+):
+    _TEMPLATE_ROUTES_REFUSED.setdefault(_composition_suite_id, {})[
+        _NATIVE_BENCHMARK_ROUTE] = (
+            "the native benchmark route replays ONE immutable template and "
+            "gates the operator's native WRF namelist field for field "
+            "against a transcribed contract: "
+            + _off_the_benchmark_because
+            + ". Run this suite on tools.prepared_single_domain_forecast, "
+            "which resolves every switch of it from the registry, or state "
+            "it per domain on tools.prepared_domain_tree_forecast.")
+del _composition_suite_id, _off_the_benchmark_because
+
+
+#: A source whose template contract is another declared source's, because the
+#: two decode the SAME producer on the same field and soil contract through
+#: routes that differ only in transport.  One row per such pair, so a route
+#: that gains a second way into a producer it already serves inherits that
+#: producer's declaration instead of acquiring an empty one.  This is table
+#: work by construction: a new producer is a key, never a branch.
+_CONTRACT_TWIN_SOURCES = {
+    # The native and packaged pressure-level routes into one producer, each
+    # way in naming the other: whichever of the pair a route declares, the
+    # other inherits, so a route that reaches a producer twice does not
+    # offer its suites on one road and nothing on the other.
+    "hrrr": "hrrr-prs",
+    "hrrr-prs": "hrrr",
+    # The NetCDF profile decodes the same producer on the same
+    # pressure-level and soil contract as the GRIB one.
+    "20crv3-cf": "20crv3",
+}
+
+
+#: A source a route SERVES and names NO suite for, with the reason it names
+#: none.  The completion below prices every other undeclared source from the
+#: route's own generic declaration, so an empty list is reachable only by
+#: saying here that the source names nothing and why.  Table work by
+#: construction: such a source is a key, never a branch.
+_SOURCES_THAT_NAME_NO_SUITE = {
+    # The caller-supplied composition: no packaged profile stands behind it
+    # and the physics is whatever the caller wrote, so there is no suite to
+    # name and no route-wide expert list to reach it either (which is what
+    # gpuwm.physics_registry.expert_template_ids_for_source reads an empty
+    # normal list as meaning).
+    "mapped": "the composition is the caller's, so no suite is named for it",
+}
+
+
+def _route_generic_template_declaration(
+        stated: dict[str, list[str]]) -> list[str]:
+    """The suites a route declares for EVERY source it has declared.
+
+    A template every declared source names is one that reads nothing
+    source-specific, by construction -- no source's own verification row
+    can survive the intersection -- so this is the most conservative basis
+    the route itself has on record, and it is what a source with no
+    measurement of its own is priced from.
+
+    Computed from TWO OR MORE declared sources only.  With one, the
+    intersection is that source's whole list, evidence rows and all, and
+    handing it to a second source would publish one source's evidence as
+    another's -- the exact failure tests/test_build_registry.py's Kessler
+    pin caught in the first, route-wide version of this completion.
+    """
+
+    lists = [templates for templates in stated.values() if templates]
+    if len(lists) < 2:
+        return []
+    common = list(lists[0])
+    for other in lists[1:]:
+        common = [template_id for template_id in common if template_id in other]
+    return common
+
+
+def _every_served_source_declares_a_template_list(registry: dict) -> None:
+    """A fixed-template route that SERVES a source says what it offers there.
+
+    Such a route runs ONLY its registered templates, so a source it serves
+    and declares nothing for offers nothing at all, and the declaration has
+    to say which of the two it means.
+
+    ``source_ids`` and ``source_template_ids`` were allowed to disagree:
+    three sources of the single-domain route were served and undeclared,
+    so the runner drift check raised ``KeyError`` on the first of them
+    rather than comparing anything, and
+    ``expert_template_ids_for_source``'s rule that an empty declared list
+    offers nothing could not fire for a source that had no list at all.
+
+    An undeclared source gets, in order: the declaration of the source it
+    shares a producer and contract with where one is recorded; an empty
+    list where the source is recorded as naming no suite at all, with the
+    reason; and otherwise the route's OWN generic declaration, the suites
+    every source it has declared names.
+
+    What it may NOT get is an empty list for want of a measurement.  That
+    was the first shape of this pass, and an empty list here is not
+    silence: it is published as "this source reaches no named suite", and
+    ``expert_template_ids_for_source`` withholds the route-wide expert
+    list from such a source as well.  On the single-domain route it took
+    the six composition suites and the three Noah-MP expert suites away
+    from aigfs and era5-l137 -- two sources the runner runs through the
+    same generic mapped route as the seven siblings that declare those
+    suites -- and warned a plan naming one with
+    ``template-route-evidence``, which says the template is off-route for
+    this source, instead of handing it the acknowledgement advisory.  The
+    plan still launched; what was published about it was wrong.  A source with nothing measured on it is priced from the
+    most conservative basis the route has on record, and the route says
+    which basis that was.
+    """
+
+    for route_id, route in registry["runner_routes"].items():
+        if route.get("mode") != "fixed-template":
+            # An experiment-per-domain route composes from its declaration
+            # rather than from a template, so an absent per-source list is a
+            # different shape there, not an incomplete one -- and filling it
+            # would hand a source evidence-scoped registrations made for
+            # another (the Kessler and legacy-RRTMG rows are one source's own).
+            continue
+        declared = route.setdefault("source_template_ids", {})
+        if not declared:
+            continue
+        # Twins and the generic basis both resolve against what the route
+        # declared BEFORE this pass, so the completion does not depend on
+        # the order source_ids happens to list a pair in, and a second
+        # build over this build's own output changes nothing.
+        stated = {source_id: list(templates)
+                  for source_id, templates in declared.items() if templates}
+        generic = _route_generic_template_declaration(stated)
+        for source_id in route.get("source_ids", []):
+            if declared.get(source_id):
+                continue
+            twin = _CONTRACT_TWIN_SOURCES.get(source_id)
+            if twin is not None:
+                declared[source_id] = list(stated.get(twin, ()))
+                continue
+            if source_id in _SOURCES_THAT_NAME_NO_SUITE:
+                declared[source_id] = []
+                continue
+            if not generic:
+                raise RuntimeError(
+                    f"runner route {route_id} serves source {source_id}, "
+                    "declares no template list for it, and its declared "
+                    "sources share no suite for one to be priced from, so "
+                    "completing it would publish a source as reaching no "
+                    "named suite at all. Record the source it shares a "
+                    "producer with in _CONTRACT_TWIN_SOURCES, or record "
+                    "why it names no suite in _SOURCES_THAT_NAME_NO_SUITE.")
+            declared[source_id] = list(generic)
+
+
+def _phase2c_suiteless_templates(registry: dict) -> None:
+    """Audit R-067: every implemented option gets a named suite.
+
+    Eleven implemented options carried ``reachability: component-override``
+    and no template at all, which is the ship-only-what-users-can-reach
+    rule failing quietly: the option was selectable only by hand-writing a
+    tuple, and the front doors that offer NAMED suites offered none of
+    them.
+
+    Each template below is registered on every route it is physically
+    valid for.  None of these compositions reads anything source-specific,
+    so what a route CAN do with them is the only question, and every
+    departure from "all three routes" carries a row in
+    ``_TEMPLATE_ROUTES_REFUSED`` naming the breakage and the way out.  A
+    source that declares no suite AT ALL (the ``mapped`` row, which is a
+    caller-supplied composition) does not get its first one here: that is
+    the source's gap, not the composition's.
+
+    The build FAILS if a minted template ends up off a route with no row,
+    or carries a row for a route it was never kept off.  That reverse leg
+    is why this function is the place the exclusion is enforced: the first
+    pass declared six of these on the native benchmark route, whose runner
+    refuses every one of them, and nothing in the build noticed.
+    """
+
+    templates = registry["templates"]
+    routes = registry["runner_routes"]
+    benchmark = routes["tools.hrrr_single_domain_benchmark"]
+    tree = routes["tools.prepared_domain_tree_forecast"]
+    single = routes["tools.prepared_single_domain_forecast"]
+    minted: list[str] = []
+
+    for (template_id, base_id, moves, extra_parameters, label,
+         warnings) in _SUITELESS_TEMPLATES:
+        template = copy.deepcopy(templates[base_id])
+        template["components"].update(moves)
+        template["parameters"].update(extra_parameters)
+        template["label"] = label
+        # The composition ceiling: a suite with no receipt of its own
+        # cannot rank above the weakest thing in it, and none of these has
+        # a composed receipt at all.
+        template["maturity"] = "implemented-unverified"
+        template["warnings"] = list(warnings)
+        # per_domain_overrides transcribe values from a verified run of
+        # the BASE suite; none of these suites has one, so the row is
+        # dropped rather than inherited as a claim about this composition.
+        template.pop("per_domain_overrides", None)
+        templates[template_id] = template
+        minted.append(template_id)
+
+    # Idempotent: remove before inserting, exactly as the Kessler, legacy
+    # NSSL-2, Shin-Hong and P3 rows above do, so a second build produces
+    # the same bytes.
+    for route in routes.values():
+        for declared in route.get("source_template_ids", {}).values():
+            for template_id in minted:
+                if template_id in declared:
+                    declared.remove(template_id)
+    declared_on: dict[str, set[str]] = {
+        template_id: set() for template_id in minted}
+    for route_id, route in (
+            (_NATIVE_BENCHMARK_ROUTE, benchmark),
+            ("tools.prepared_domain_tree_forecast", tree),
+            ("tools.prepared_single_domain_forecast", single),
+    ):
+        refused_here = {
+            template_id
+            for template_id, routes in _TEMPLATE_ROUTES_REFUSED.items()
+            if route_id in routes
+        }
+        for source_id, declared in route["source_template_ids"].items():
+            if source_id not in route["source_ids"]:
+                continue
+            if not declared:
+                # A source with no declared suite at all keeps none.
+                continue
+            for template_id in minted:
+                if template_id in refused_here:
+                    continue
+                declared.append(template_id)
+                declared_on[template_id].add(route_id)
+
+    # The reverse leg.  A template off a route with no written reason is a
+    # silent narrowing; a reason for a route the template is on is a stale
+    # refusal that will outlive what it describes.
+    all_routes = {
+        _NATIVE_BENCHMARK_ROUTE,
+        "tools.prepared_domain_tree_forecast",
+        "tools.prepared_single_domain_forecast",
+    }
+    for template_id in minted:
+        refused = set(_TEMPLATE_ROUTES_REFUSED.get(template_id, {}))
+        absent = all_routes - declared_on[template_id]
+        if absent != refused:
+            raise SystemExit(
+                f"template {template_id!r} is declared on "
+                f"{sorted(declared_on[template_id])} and refused on "
+                f"{sorted(refused)}: every route a suite-less template is "
+                "kept off needs a row in _TEMPLATE_ROUTES_REFUSED naming "
+                "the breakage and the way out, and a row for a route it "
+                "IS on must be retired with the reason it recorded "
+                f"(unreconciled: {sorted(absent ^ refused)})")
+
+    _publish_refused_template_ids(registry)
+
+
+def _publish_refused_template_ids(registry: dict) -> None:
+    """Put every route refusal where the user meets it: the registry.
+
+    ``_TEMPLATE_ROUTES_REFUSED`` above states, for each template kept off
+    a route, the concrete breakage and the way out.  It lived only in this
+    builder, so none of it reached a user: plan review saw a template that
+    the route simply did not declare, warned that "the resolved runtime
+    settings still apply", and returned launchable -- and then the runner
+    refused at the door with a bare ``unsupported ... physics profile``
+    naming neither the breakage nor an alternative.  A refusal that fires
+    after review, in a sentence that offers nothing, is the shape this
+    project refuses to ship.
+
+    Published as ``runner_routes.<runner>.refused_template_ids``, a map of
+    template id to that sentence, so
+    :func:`gpuwm.physics_registry.validate_physics_plan` can refuse at plan
+    review with the reason written here.  Rewritten from scratch on every
+    build, so a retired row leaves the registry with the reason it recorded
+    rather than outliving it.
+    """
+
+    for route_id, route in registry["runner_routes"].items():
+        refused = {
+            template_id: routes[route_id]
+            for template_id, routes in sorted(_TEMPLATE_ROUTES_REFUSED.items())
+            if route_id in routes
+        }
+        if refused:
+            route["refused_template_ids"] = refused
+        else:
+            route.pop("refused_template_ids", None)
+
+
+def _phase2c_recompute_reachability(registry: dict) -> None:
+    """Recompute every option's ``reachability`` from templates and routes.
+
+    ``reachability.state`` names the EASIEST path a user has to an option,
+    and it was hand-set beside each row that created a path.  With the
+    route declarations widened (R-021, R-022, R-023, R-059) and eleven
+    options gaining their first template (R-067), hand-setting forty
+    states is how one of them ends up wrong and nobody notices.  It is
+    computed here from the same two facts a user actually has -- the
+    declared template lists and the declared override lists -- and
+    ``tests/test_registry_reachability.py`` recomputes it independently
+    and fails on any difference, which is the agreement that makes this a
+    derivation rather than a second opinion.
+
+    An option that ends up unreachable keeps the blocker it declared: an
+    implemented option declared unreachable must name what blocks it, and
+    that sentence is written where the option is registered, not here.
+    """
+
+    components = registry["components"]
+    templates = registry["templates"]
+    # Easiest first, the order a user finds them in.
+    state_order = ("template", "component-override", "expert-template")
+    reached: dict[tuple[str, str], set[str]] = {
+        (component_id, option_id): set()
+        for component_id, component in components.items()
+        for option_id in component["options"]
+    }
+
+    for route in registry["runner_routes"].values():
+        if route.get("implemented") is not True:
+            continue
+        normal = route.get("source_template_ids", {}) or {}
+        expert = route.get("expert_template_ids", {}) or {}
+        declares = bool(normal) or bool(expert)
+        per_domain = route.get("mode") == "experiment-per-domain"
+        overridable = set(route.get("allowed_component_overrides", []) or [])
+        option_overrides = route.get("allowed_component_options", {}) or {}
+        expert_selector_keys = set(
+            route.get("allowed_expert_selector_keys", []) or [])
+        for source_id in route.get("source_ids", []) or []:
+            if declares:
+                normal_ids = list(normal.get(source_id, []) or [])
+                expert_ids = list(expert.get(source_id, []) or [])
+            else:
+                normal_ids, expert_ids = list(templates), []
+            for template_id in normal_ids:
+                for component_id, option_id in templates[
+                        template_id]["components"].items():
+                    reached[(component_id, option_id)].add("template")
+            for template_id in expert_ids:
+                for component_id, option_id in templates[
+                        template_id]["components"].items():
+                    reached[(component_id, option_id)].add("expert-template")
+            if not (normal_ids or expert_ids):
+                # An override still needs a base template to override.
+                continue
+            for component_id, component in components.items():
+                selector_keys = set(component.get("selector_keys", []) or [])
+                by_override = per_domain and component_id in overridable
+                by_selector = bool(selector_keys) and selector_keys <= (
+                    expert_selector_keys)
+                admitted = set(option_overrides.get(component_id, []) or [])
+                for option_id in component["options"]:
+                    if by_override or by_selector or option_id in admitted:
+                        reached[(component_id, option_id)].add(
+                            "component-override")
+
+    for (component_id, option_id), ways in reached.items():
+        option = components[component_id]["options"][option_id]
+        declared = option.get("reachability")
+        declared = declared if isinstance(declared, dict) else {}
+        if option.get("implemented") is not True:
+            # Nameable is not reachable: the resolver refuses it from every
+            # template, on every route, for every source.
+            option["reachability"] = declared
+            continue
+        state = next((name for name in state_order if name in ways), None)
+        if state is None:
+            if not declared.get("blocker"):
+                raise RuntimeError(
+                    f"components.{component_id}.options.{option_id} is "
+                    "implemented and no template or route declaration "
+                    "reaches it, and it names no blocker; give it a route "
+                    "row or write what blocks it")
+            option["reachability"] = {
+                "state": "unreachable", "blocker": declared["blocker"]}
+            continue
+        option["reachability"] = {"state": state}
 
 
 def render(registry: dict) -> bytes:

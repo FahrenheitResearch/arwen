@@ -1,4 +1,4 @@
-"""EXPERIMENTAL: which background the cycling radar-DA driver starts from.
+"""Source metadata for the background the regional cycling driver starts from.
 
 The driver has always ridden ONE deterministic background and made its
 ensemble by perturbing it (:mod:`gpuwm.da.perturb`, applied once at leg
@@ -15,7 +15,7 @@ this driver learns must be an entry here, not another branch.
 
 Three things live here and nothing else:
 
-1. :data:`BACKGROUND_SOURCES` -- per-source cycle cadence, publication
+1. :data:`BACKGROUND_SOURCES` -- a live source-registry projection of cycle cadence, publication
    lag, forecast horizon and forcing interval, plus the coverage
    question, with the numbers each source's own contract module owns
    (:mod:`gpuwm.hrrr_forecast` for HRRR's 18 h/48 h horizon,
@@ -31,7 +31,7 @@ Nothing here reaches the network, the GPU, or a prepared bundle.  It is
 plan-time arithmetic and refusals, so a front door can prove a case is
 buildable before it pays for a byte.
 
-EXPERIMENTAL: not on a default route.
+Compatibility timing defaults are not a capability roster.
 """
 
 from __future__ import annotations
@@ -94,8 +94,8 @@ class BackgroundSource:
 
     name: str
     label: str
-    cycle_step_hours: int
-    forcing_interval_seconds: float
+    cycle_step_hours: int | None
+    forcing_interval_seconds: float | None
     publication_lag_seconds: Callable[[int], float]
     horizon_hours: Callable[[datetime], int]
     #: ``True`` when the source's native grid is smaller than the globe,
@@ -151,7 +151,7 @@ def _hrrr_lag(last_lead_hours: int) -> float:
     return HRRR_BASE_LAG_S + HRRR_PER_LEAD_LAG_S * max(0, int(last_lead_hours))
 
 
-BACKGROUND_SOURCES: Mapping[str, BackgroundSource] = MappingProxyType({
+_LEGACY_BACKGROUND_DEFAULTS: Mapping[str, BackgroundSource] = MappingProxyType({
     "gfs": BackgroundSource(
         name="gfs",
         label="GFS 0.25 degree",
@@ -181,15 +181,52 @@ BACKGROUND_SOURCES: Mapping[str, BackgroundSource] = MappingProxyType({
 DEFAULT_BACKGROUND_SOURCE = "gfs"
 
 
-def resolve_background_source(name: str) -> BackgroundSource:
-    """Return the registry entry for ``name`` or refuse with the roster."""
+class _BackgroundSources(Mapping):
+    """Live projection. Compatibility defaults do not decide membership."""
 
+    def __iter__(self):
+        from gpuwm.source_adapters import source_adapters
+        return iter(row.source_id for row in source_adapters() if row.runnable)
+
+    def __len__(self):
+        return sum(1 for _ in self)
+
+    def __getitem__(self, name):
+        from gpuwm.source_adapters import get_source_adapter
+        from gpuwm.source_cycles import cycle_grid_for
+        adapter = get_source_adapter(name)
+        if not adapter.runnable:
+            raise KeyError(name)
+        if adapter.source_id in _LEGACY_BACKGROUND_DEFAULTS:
+            return _LEGACY_BACKGROUND_DEFAULTS[adapter.source_id]
+        grid = cycle_grid_for(adapter.source_id)
+        gaps = (() if grid is None else tuple(
+            (grid.hours[(i + 1) % len(grid.hours)] - hour) % 24 or 24
+            for i, hour in enumerate(grid.hours)))
+        step = gaps[0] if gaps and len(set(gaps)) == 1 else None
+        def horizon(cycle):
+            declared = None if grid is None else grid.horizon(cycle)
+            return adapter.max_forecast_hour if declared is None else declared
+        return BackgroundSource(
+            name=adapter.source_id, label=adapter.display_title,
+            cycle_step_hours=step, forcing_interval_seconds=adapter.forcing_interval_seconds,
+            publication_lag_seconds=lambda lead: 0. if grid is None else grid.delay_hours * 3600.,
+            horizon_hours=horizon, coverage_bounded=adapter.coverage_window is not None,
+            initial_hydrometeors="See the bound native or mapped preparation inventory; not inferred from transport.",
+            coverage_fallback=None)
+
+
+BACKGROUND_SOURCES: Mapping[str, BackgroundSource] = _BackgroundSources()
+
+
+def resolve_background_source(name: str) -> BackgroundSource:
+    """Resolve aliases through the source owner, without a regional roster."""
     try:
-        return BACKGROUND_SOURCES[str(name)]
+        return BACKGROUND_SOURCES[name]
     except KeyError:
-        raise BackgroundError(
-            f"unknown background source {name!r}; this driver knows "
-            + ", ".join(sorted(BACKGROUND_SOURCES))) from None
+        raise BackgroundError(f"Source {name!r} declares no runnable preparation route") from None
+    except ValueError as exc:
+        raise BackgroundError(str(exc)) from exc
 
 
 @dataclass(frozen=True)
@@ -203,9 +240,12 @@ class BackgroundCycle:
     init: datetime
     horizon_hours: int
     publication_lag_seconds: float
+    selected_forecast_hours: tuple[int, ...] = ()
 
     @property
     def forecast_hours(self) -> tuple[int, ...]:
+        if self.selected_forecast_hours:
+            return self.selected_forecast_hours
         return tuple(range(self.forecast_start_hour,
                            self.forecast_end_hour + 1))
 
@@ -226,58 +266,30 @@ class BackgroundCycle:
 def plan_background_cycle(
         source: str, *, init: datetime, now: datetime, run_seconds: float,
 ) -> BackgroundCycle:
-    """Newest cycle at/before ``init`` that can force ``run_seconds``.
+    """Compatibility forecast-cycle view of the shared selection contract.
 
-    The walk backwards is the same shape for every source and the STEP
-    is the source's own: six hours for GFS, one for HRRR.  A source
-    whose cycles come hourly therefore lands an init on f000 or f001
-    instead of the f004..f010 a six-hourly cycle forces, which is the
-    whole point of offering it.
-
-    Fail-closed twice.  A cycle is not selected until the LAST forecast
-    hour the run needs should be published, and a window that would run
-    past the cycle's own horizon is refused rather than truncated.
+    The shared planner checks every required lead and can try an older extended
+    cycle. Analysis sequences use background_contract.plan directly because
+    their absolute valid times must not be relabeled as forecast leads.
     """
-
-    entry = resolve_background_source(source)
-    if not isinstance(init, datetime) or not isinstance(now, datetime):
-        raise BackgroundError("init and now must be datetimes")
-    if init.minute or init.second or init.microsecond:
-        raise BackgroundError(
-            f"model init {init.isoformat()} must land on a whole hour")
-    if not math.isfinite(float(run_seconds)) or float(run_seconds) <= 0.0:
-        raise BackgroundError("run-seconds must be finite and positive")
-
-    span_hours = max(1, math.ceil(float(run_seconds) / 3600.0))
-    candidate = init - timedelta(
-        hours=init.hour % entry.cycle_step_hours)
-    # Twenty steps is the GFS route's own search depth (five days at six
-    # hours); at one hour it is twenty hours, which is longer than any
-    # HRRR cycle stays useful.
-    for _ in range(20):
-        start_hour = int((init - candidate).total_seconds() // 3600)
-        end_hour = start_hour + span_hours
-        horizon = entry.horizon(candidate)
-        lag = entry.lag_seconds(end_hour)
-        if candidate <= init and (now - candidate).total_seconds() >= lag:
-            if end_hour > horizon:
-                raise BackgroundError(
-                    f"init {init.isoformat()} needs "
-                    f"f{start_hour:03d}..f{end_hour:03d} of the "
-                    f"{candidate:%Y-%m-%dT%H}Z {entry.label} cycle, but "
-                    f"that cycle publishes only to f{horizon:03d}; "
-                    "shorten the run or choose a background whose "
-                    "horizon covers it")
-            return BackgroundCycle(
-                source=entry.name, cycle=candidate,
-                forecast_start_hour=start_hour, forecast_end_hour=end_hour,
-                init=init, horizon_hours=horizon,
-                publication_lag_seconds=lag)
-        candidate -= timedelta(hours=entry.cycle_step_hours)
-    raise BackgroundError(
-        f"no plausibly-published {entry.label} cycle at or before "
-        f"{init.isoformat()} (searched back 20 cycles of "
-        f"{entry.cycle_step_hours} h)")
+    from gpuwm.background_contract import plan
+    try:
+        selected = plan(source, init=init, now=now, run_seconds=run_seconds)
+    except ValueError as exc:
+        raise BackgroundError(str(exc)) from exc
+    if selected.time_axis != "forecast_leads":
+        raise BackgroundError("This is an analysis sequence; use background_contract.plan and its absolute valid times, not a forecast-cycle receipt")
+    resolved = datetime.fromisoformat(selected.cycle)
+    if init.tzinfo is None:
+        resolved = resolved.replace(tzinfo=None)
+    entry = resolve_background_source(selected.source)
+    return BackgroundCycle(
+        source=selected.source, cycle=resolved, init=init,
+        forecast_start_hour=selected.forecast_leads[0],
+        forecast_end_hour=selected.forecast_leads[-1],
+        horizon_hours=entry.horizon(resolved),
+        publication_lag_seconds=selected.publication_lag_seconds,
+        selected_forecast_hours=selected.forecast_leads)
 
 
 def refuse_uncovered_area(source: str, area) -> None:
@@ -313,9 +325,12 @@ def refuse_uncovered_domain(source: str, experiment) -> None:
     entry = resolve_background_source(source)
     if not entry.coverage_bounded:
         return
-    if entry.name != "hrrr":                     # pragma: no cover
+    from gpuwm.source_adapters import get_source_adapter
+    if get_source_adapter(entry.name).runner != "hrrr_f00_f12_v1":
         raise BackgroundError(
-            f"{entry.label} declares bounded coverage but no domain gate")
+            f"{entry.label} needs native target geometry for its coverage proof; "
+            "use domain_wizard.source_coverage_refusal at configuration time and "
+            "retain the preparation owner's interpolation-halo check")
     from gpuwm.hrrr_route_inputs import HrrrRouteInputError, coverage_refusal
 
     try:

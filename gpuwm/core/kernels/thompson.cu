@@ -223,11 +223,13 @@ __device__ __forceinline__ void thompson_cloud_saturation_adjust_impl(
     float* __restrict__ qc,
     float* __restrict__ reference_density,
     float* __restrict__ reference_temperature,
+    float* __restrict__ condensation_marker,
     int idx)
 {
     const float temp0 = temperature[idx];
     const float qv0 = fmaxf(1.0e-10f, qv[idx]);
     const float qc0 = qc[idx];
+    if (condensation_marker != nullptr) condensation_marker[idx] = 0.0f;
     const float rho = 0.622f * pressure[idx]
         / (287.04f * temp0 * (qv0 + 0.622f));
     if (reference_density != nullptr) reference_density[idx] = rho;
@@ -258,6 +260,9 @@ __device__ __forceinline__ void thompson_cloud_saturation_adjust_impl(
     }
     if (rc + clap * rho <= 1.0e-12f) clap = -rc / rho;
 
+    if (condensation_marker != nullptr) {
+        condensation_marker[idx] = clap > 0.0f ? 1.0f : 0.0f;
+    }
     qv[idx] = fmaxf(1.0e-10f, qv0 - clap);
     qc[idx] = fmaxf(0.0f, qc0 + clap);
     temperature[idx] = temp0 + lvap * ocp * clap;
@@ -273,7 +278,7 @@ extern "C" __global__ void thompson_cloud_saturation_adjust(
     const int idx = blockDim.x * blockIdx.x + threadIdx.x;
     if (idx >= n) return;
     thompson_cloud_saturation_adjust_impl(
-        temperature, pressure, qv, qc, nullptr, nullptr, idx);
+        temperature, pressure, qv, qc, nullptr, nullptr, nullptr, idx);
 }
 
 extern "C" __global__ void thompson_cloud_saturation_adjust_with_density(
@@ -287,7 +292,7 @@ extern "C" __global__ void thompson_cloud_saturation_adjust_with_density(
     const int idx = blockDim.x * blockIdx.x + threadIdx.x;
     if (idx >= n) return;
     thompson_cloud_saturation_adjust_impl(
-        temperature, pressure, qv, qc, reference_density, nullptr, idx);
+        temperature, pressure, qv, qc, reference_density, nullptr, nullptr, idx);
 }
 
 extern "C" __global__ void thompson_cloud_saturation_adjust_with_state(
@@ -303,7 +308,24 @@ extern "C" __global__ void thompson_cloud_saturation_adjust_with_state(
     if (idx >= n) return;
     thompson_cloud_saturation_adjust_impl(
         temperature, pressure, qv, qc,
-        reference_density, reference_temperature, idx);
+        reference_density, reference_temperature, nullptr, idx);
+}
+
+extern "C" __global__ void thompson_cloud_saturation_adjust_with_history(
+    float* __restrict__ temperature,
+    const float* __restrict__ pressure,
+    float* __restrict__ qv,
+    float* __restrict__ qc,
+    float* __restrict__ reference_density,
+    float* __restrict__ reference_temperature,
+    float* __restrict__ condensation_marker,
+    int n)
+{
+    const int idx = blockDim.x * blockIdx.x + threadIdx.x;
+    if (idx >= n) return;
+    thompson_cloud_saturation_adjust_impl(
+        temperature, pressure, qv, qc, reference_density,
+        reference_temperature, condensation_marker, idx);
 }
 
 extern "C" __global__ void thompson_effective_radius(
@@ -2168,6 +2190,8 @@ __device__ __forceinline__ void thompson_rain_evaporation_impl(
     float* __restrict__ reference_density,
     float* __restrict__ reference_temperature,
     const float* __restrict__ graupel_melt_marker,
+    const float* __restrict__ source_density,
+    const float* __restrict__ condensation_marker,
     float dt, int size)
 {
     const int idx = blockIdx.x * blockDim.x + threadIdx.x;
@@ -2182,11 +2206,18 @@ __device__ __forceinline__ void thompson_rain_evaporation_impl(
     // restrict-qualified and remain simultaneously live in this kernel.
     const bool melting_graupel = graupel_melt_marker != nullptr
         && graupel_melt_marker[idx] != 0.0f;
-    if (reference_density != nullptr) reference_density[idx] = rho;
+    // Rain mass and number concentrations were formed before cloud
+    // adjustment.  Only an executed rain evaporation branch refreshes them.
+    const float rain_density = source_density == nullptr
+        ? rho : source_density[idx];
+    if (reference_density != nullptr) reference_density[idx] = rain_density;
     if (reference_temperature != nullptr) {
         reference_temperature[idx] = temp0;
     }
     if (qr[idx] <= 1.0e-12f) return;
+    // WRF retains prw_vcd > 0 from cloud adjustment, even when a small
+    // post-adjustment saturation residual has the opposite sign.
+    if (condensation_marker != nullptr && condensation_marker[idx] != 0.0f) return;
 
     const float qvs = thompson_rslf(pressure[idx], temp0);
     float ssatw = qv0 / qvs - 1.0f;
@@ -2194,8 +2225,8 @@ __device__ __forceinline__ void thompson_rain_evaporation_impl(
     if (ssatw >= -1.0e-15f) return;
 
     const float orho = 1.0f / rho;
-    const float rr = qr[idx] * rho;
-    const float rain_number = fmaxf(1.0e-6f, nr[idx] * rho);
+    const float rr = qr[idx] * rain_density;
+    const float rain_number = fmaxf(1.0e-6f, nr[idx] * rain_density);
 
     const float pi = 3.1415926536f;
     const float am_r = pi * 1000.0f / 6.0f;
@@ -2291,6 +2322,7 @@ __device__ __forceinline__ void thompson_rain_evaporation_impl(
     const float temperature_tendency = (float)(
         -(double)thermal_factor * evaporation_rate);
 
+    if (reference_density != nullptr) reference_density[idx] = rho;
     qr[idx] += qr_tendency * dt;
     qv[idx] = fmaxf(1.0e-10f, qv0 + qv_tendency * dt);
     nr[idx] += nr_tendency * dt;
@@ -2307,7 +2339,7 @@ extern "C" __global__ void thompson_rain_evaporation(
 {
     thompson_rain_evaporation_impl(
         qr, nr, temperature, pressure, qv, nullptr, nullptr, nullptr,
-        dt, size);
+        nullptr, nullptr, dt, size);
 }
 
 extern "C" __global__ void thompson_rain_evaporation_with_density(
@@ -2321,7 +2353,7 @@ extern "C" __global__ void thompson_rain_evaporation_with_density(
 {
     thompson_rain_evaporation_impl(
         qr, nr, temperature, pressure, qv, reference_density, nullptr,
-        nullptr, dt, size);
+        nullptr, nullptr, nullptr, dt, size);
 }
 
 extern "C" __global__ void thompson_rain_evaporation_with_state(
@@ -2336,7 +2368,7 @@ extern "C" __global__ void thompson_rain_evaporation_with_state(
 {
     thompson_rain_evaporation_impl(
         qr, nr, temperature, pressure, qv, reference_density,
-        reference_temperature, nullptr, dt, size);
+        reference_temperature, nullptr, nullptr, nullptr, dt, size);
 }
 
 extern "C" __global__ void
@@ -2352,7 +2384,24 @@ thompson_rain_evaporation_with_density_and_graupel_melt_marker(
 {
     thompson_rain_evaporation_impl(
         qr, nr, temperature, pressure, qv, reference_density, nullptr,
-        graupel_melt_marker, dt, size);
+        graupel_melt_marker, nullptr, nullptr, dt, size);
+}
+
+extern "C" __global__ void thompson_rain_evaporation_with_density_history(
+    float* __restrict__ qr,
+    float* __restrict__ nr,
+    float* __restrict__ temperature,
+    const float* __restrict__ pressure,
+    float* __restrict__ qv,
+    float* __restrict__ reference_density,
+    const float* __restrict__ graupel_melt_marker,
+    const float* __restrict__ source_density,
+    const float* __restrict__ condensation_marker,
+    float dt, int size)
+{
+    thompson_rain_evaporation_impl(
+        qr, nr, temperature, pressure, qv, reference_density, nullptr,
+        graupel_melt_marker, source_density, condensation_marker, dt, size);
 }
 
 extern "C" __global__ void thompson_snow_sublimation(

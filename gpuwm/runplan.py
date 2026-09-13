@@ -89,9 +89,12 @@ list and a reader can see, before the run, every number nobody typed.
 
 from __future__ import annotations
 
+from gpuwm.explain import warning_scope as _review_warning_scope
+
 import argparse
 import contextlib
 from contextvars import ContextVar
+import copy
 import dataclasses
 import hashlib
 import io
@@ -106,7 +109,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
-from gpuwm.explain import layered
+from gpuwm.explain import layered, split as _split_message
 
 
 #: The plan document a caller writes.
@@ -194,6 +197,10 @@ _INTENT_FLAGS = {
     "source": "--source",
     "cycle": "--cycle",
     "forecast_start_hour": "--forecast-start-hour",
+    "member": "--member",
+    "cadence": "--cadence",
+    "era5_product": "--era5-product",
+    "era5_provider": "--era5-provider",
     "data_dir": "--data-dir",
     "forcing": "--forcing",
     "vtable": "--vtable",
@@ -241,6 +248,10 @@ _INTENT_DELIVERY = {
     "source": "config",
     "cycle": "config",
     "forecast_start_hour": "config",
+    "member": "config",
+    "cadence": "config",
+    "era5_product": "config",
+    "era5_provider": "config",
     "history_interval_s": "config",
     "nest_history_interval_s": "config",
     # `go` defaults its data directory to <outdir>/data and never reads
@@ -265,138 +276,10 @@ _INTENT_DELIVERY = {
 #: The filename the generated config takes inside the run directory.
 GENERATED_CONFIG_NAME = "intent-config.toml"
 
-#: The registry ``runner`` ids the run-plan chains execute.  Dispatch is
-#: by RUNNER -- a declared implementation-route fact on the registry row
-#: -- never by model name, which is what lets a row added to
-#: ``gpuwm.source_adapters._ADAPTERS`` become intent-drivable with zero
-#: code change here (the arbitrary acceptance test).
-#:
-#: ``_CASE_DATA_RUNNER`` is the combined-GRIB1 preparation the
-#: config-driven ``experiment`` route hosts: the wizard writes a
-#: ``[case_data]`` table exactly for that decode family
-#: (domain_wizard.py, the ERA5 arm), and ``gpuwm run`` consumes it.
-#: ``_HRRR_CHAIN_RUNNER`` names the native HRRR tool route
-#: :func:`_hrrr_chain` drives.  ``_STAGED_CHAIN_RUNNER`` is the
-#: declarative mapped-composition route: every packaged source on it is
-#: prepared by ``gpuwm prep`` from the table-route fetch's own bound
-#: handoff and run by the prepared forecast runners, which is what
-#: :func:`_staged_chain` composes.
-_NATIVE_CHAIN_RUNNER = "gfs_pgrb2_0p25_v1"
-_CASE_DATA_RUNNER = "era5_combined_grib1_v1"
-_HRRR_CHAIN_RUNNER = "hrrr_f00_f12_v1"
-_STAGED_CHAIN_RUNNER = "mapped_composition_v1"
-
-
 def intent_drivability() -> dict[str, dict[str, Any]]:
-    """Which run-plan routes an INTENT can drive each registered source on.
-
-    ``{source_id: {"routes": [...], "chain": str | None,
-    "refusal": str | None}}`` for every registry row, DERIVED from
-    declared facts and never from a list of model names kept here:
-
-    * the row is ``runnable`` (a strict implementation route exists);
-    * it declares ``forcing_interval_seconds``, so ``gpuwm domain`` can
-      emit a ``namelist.wps`` for it (:func:`wizard_planable_source_ids`
-      is that exact predicate);
-    * a chain of this front door can execute the wizard's emission:
-      the config-driven ``experiment`` route for the combined-GRIB1
-      runner, the native rw-wps chain for its declared runner,
-      the native HRRR chain for its runner,
-      and the staged fetch->prep->sim chain for a mapped-composition
-      row whose packaged profile is composed, whose acquisition is a
-      table fetch route (the route's bound prep handoff is what the
-      chain composes its preparation from), and which declares no
-      member set (member selection is ``gpuwm-member-prep``'s and an
-      intent carries no member axis).
-
-    A row that fails one of those carries the FIRST missing fact as its
-    ``refusal`` -- the registry's own vocabulary, never "unknown
-    source", so a front end can show the reader what is actually absent.
-    """
-
-    from gpuwm import fetch_routes
-    from gpuwm.source_adapters import (source_adapters,
-                                       wizard_planable_source_ids)
-    from gpuwm.source_authorities import packaged_profile
-
-    planable = set(wizard_planable_source_ids())
-    table = set(fetch_routes.route_ids())
-    legacy = set(fetch_routes.LEGACY_ROUTE_SOURCES)
-
-    def _one(adapter) -> dict[str, Any]:
-        source = adapter.source_id
-        if adapter.runner == _CASE_DATA_RUNNER and source in planable:
-            return {"routes": ["experiment"], "chain": "experiment",
-                    "refusal": None}
-        if not adapter.runnable:
-            return {"routes": [], "chain": None, "refusal": (
-                f"the registry row for {source!r} declares no runnable "
-                f"implementation route (status "
-                f"{adapter.status.value!r}), so there is nothing for an "
-                "intent to drive")}
-        if source not in planable:
-            return {"routes": [], "chain": None, "refusal": (
-                f"the registry row for {source!r} declares no "
-                "forcing_interval_seconds, so `gpuwm domain` has no "
-                "boundary cadence to write into an emitted namelist.wps "
-                "and cannot plan it")}
-        if adapter.member_set is not None:
-            return {"routes": [], "chain": None, "refusal": (
-                f"the registry row for {source!r} declares member set "
-                f"{adapter.member_set!r}: member selection and "
-                "verification belong to `gpuwm-member-prep`, and an "
-                "intent carries no member axis, so a chain composed "
-                "here would prepare an unselected ensemble")}
-        fetch_kind = ("table" if source in table
-                      else "legacy" if source in legacy else None)
-        if fetch_kind is None:
-            return {"routes": [], "chain": None, "refusal": (
-                f"no acquisition route is registered for {source!r} "
-                f"(`gpuwm fetch --source {source}` refuses), so the "
-                "chain's fetch stage has no way to bring its bytes")}
-        if adapter.runner == _NATIVE_CHAIN_RUNNER:
-            return {"routes": ["prepared"], "chain": "prepared:go",
-                    "refusal": None}
-        if adapter.runner == _HRRR_CHAIN_RUNNER:
-            return {"routes": ["prepared"], "chain": "prepared:hrrr",
-                    "refusal": None}
-        if adapter.runner == _STAGED_CHAIN_RUNNER:
-            if fetch_kind != "table":
-                return {"routes": [], "chain": None, "refusal": (
-                    f"{source!r} is acquired over a legacy transport, "
-                    "which publishes no bound mapped-prep handoff "
-                    f"({fetch_routes.PREP_ARGUMENTS_NAME}); the staged "
-                    "chain composes its preparation from that handoff, "
-                    "so this source needs a table acquisition route "
-                    "before an intent can drive it")}
-            profile_id = adapter.packaged_profile
-            if profile_id is None:
-                return {"routes": [], "chain": None, "refusal": (
-                    f"the registry row for {source!r} names the "
-                    "declarative mapped route but ships no packaged "
-                    "profile, so a preparation would need a "
-                    "caller-authored mapping, which an intent cannot "
-                    "supply")}
-            try:
-                state = str(packaged_profile(profile_id)
-                            ["composition_state"])
-            except Exception as error:  # noqa: BLE001 - report, not raise
-                return {"routes": [], "chain": None, "refusal": (
-                    f"the packaged profile {profile_id!r} for "
-                    f"{source!r} is unreadable: {error}")}
-            if state != "composed":
-                return {"routes": [], "chain": None, "refusal": (
-                    f"the packaged profile {profile_id!r} for "
-                    f"{source!r} declares composition_state {state!r}, "
-                    "so no preparation can compose it yet")}
-            return {"routes": ["prepared"], "chain": "prepared:staged",
-                    "refusal": None}
-        return {"routes": [], "chain": None, "refusal": (
-            f"the registry row for {source!r} names runner "
-            f"{adapter.runner!r}, which no run-plan chain executes")}
-
-    return {adapter.source_id: _one(adapter)
-            for adapter in source_adapters()}
+    """Return the shared source preparation facts used by input validation."""
+    from gpuwm.source_drivability import intent_drivability as shared_drivability
+    return shared_drivability()
 
 
 def _intent_sources_for(route: str) -> frozenset[str]:
@@ -746,6 +629,17 @@ def _build_intent(intent: object, *, route: str) -> dict[str, Any]:
 
     source = intent.get("source", "era5")
     _refuse_undrivable_intent_source(str(source), route=route)
+    from gpuwm import fetch_routes
+    from gpuwm.fetch import validate_fetch_hints
+    selection = {key: intent[key] for key in
+                 ("member", "cadence", "era5_product", "era5_provider") if key in intent}
+    if selection:
+        if selection.get("era5_product") == "ensemble_members":
+            selection["retrieve"] = True
+        try:
+            validate_fetch_hints(dict(selection, source=source), source="config.intent")
+        except ValueError as error:
+            raise PlanError(str(error)) from error
     return dict(intent)
 
 
@@ -893,70 +787,8 @@ def _run_option(key: str, value: object, base: Path) -> Any:
 # Moving nests: which chain can feed one, and at what price
 # ---------------------------------------------------------------------------
 
-#: How a ``[relocation]`` follow source gets its per-move statics on
-#: each chain this front door can dispatch to.
-#:
-#: A moving nest needs child-resolution statics for a footprint nobody
-#: knew about at preparation time.  There are exactly two honest ways to
-#: have them, and one way to not have them:
-#:
-#: ``"case_data_ingest"``   the route holds the geography source for the
-#:                          whole run and rebuilds each footprint at
-#:                          move time.  Nothing to prepare, nothing to
-#:                          price.
-#: ``"statics_corridor"``   the preparation seals child-resolution
-#:                          statics over the whole parent extent and the
-#:                          tree runner crops them.  Run-plan's prepare
-#:                          stage carries ``--statics-corridor``,
-#:                          derived from the very same predicate that
-#:                          indexes this table.
-#: ``None``                 the chain's preparation emits neither, so a
-#:                          follow config is REFUSED at resolve time.
-#:                          Without this entry the run reaches the tree
-#:                          runner's preflight instead -- after the
-#:                          fetch and both preparation stages, which is
-#:                          minutes of work to arrive at a refusal that
-#:                          was knowable from the config alone.
-#:
-#: Every chain :func:`_chain_key` can return must appear here; a test
-#: fails if one does not, so a chain cannot be added without answering
-#: "and where does a moving nest get its statics on it?".
-_FOLLOW_STATICS_DELIVERY: dict[str, str | None] = {
-    "experiment": "case_data_ingest",
-    "prepared:go": "statics_corridor",
-    # Was ``None`` until the HRRR chain learned to seal one.  Its
-    # corridor comes out of the stage that builds the children and holds
-    # the GEOG root (``gpuwm.hrrr_hierarchy_direct --statics-corridor``)
-    # rather than out of rw-wps, which is not on this path at all -- but
-    # it is the same corridor module, the same sealed artifact and the
-    # same digest relay, so the tree runner cannot tell the two apart
-    # and this table says the same word for both.
-    "prepared:hrrr": "statics_corridor",
-    # The staged mapped chain cannot: rw-wps's mapped arm refuses
-    # --statics-corridor by name ("--statics-corridor is not used by
-    # --source mapped"), because the corridor builder is the GFS arm's
-    # geography stage and the declarative mapped preparation has no
-    # equivalent.  ``None`` refuses a follow config at resolve time,
-    # before the fetch, with the detail below.
-    "prepared:staged": None,
-    "prepared:existing": "retained_corridor",
-}
-
-
-#: Which stage of each corridor-sealing chain carries the flag.  Named
-#: in the resolution note because "the prepare stage" is the wrong
-#: sentence on HRRR -- its root preparer seals no corridor and would
-#: refuse the flag -- and a reader who went looking for it there would
-#: conclude the feature was not wired.  A completeness test requires an
-#: entry for every chain whose delivery is ``statics_corridor``.
-_CORRIDOR_STAGE = {
-    "prepared:go": "the rw-wps prepare stage (gpuwm.source_cli)",
-    "prepared:hrrr": "the hierarchy stage (gpuwm.hrrr_hierarchy_direct) "
-                     "-- the stage that builds the children and holds "
-                     "the geography root --",
-}
-
-
+# Moving-statics capability belongs to source_cli's preparation dispatcher.
+# The runner's artifact preflight remains responsible for actual input validity.
 def _chain_key(route: str, config_source: str | None) -> str:
     """Which chain this plan dispatches to.
 
@@ -980,22 +812,27 @@ def _chain_key(route: str, config_source: str | None) -> str:
         return route
     source = (config_source or "").strip()
     if source:
-        verdict = intent_drivability().get(_canonical_source_id(source))
+        verdict = drivability_for(source) or None
         if verdict is not None and (verdict["chain"] or "").startswith(
                 "prepared:"):
             return str(verdict["chain"])
     return "prepared:go"
 
 
-def prepared_chain_for_source(source: str) -> str:
+def prepared_chain_for_source(source: str, *, source_root=None) -> str:
     """The native launch chain declared by this source's capabilities.
 
     Unlike _chain_key's legacy fallback, a human launch must not send an
     undrivable source into a different decoder and discover it after fetch.
     """
     canonical = _canonical_source_id(source)
-    verdict = intent_drivability().get(canonical)
+    verdict = drivability_for(source) or None
     if verdict is not None and "prepared" in verdict["routes"]:
+        if verdict.get("requires_source_root") and source_root is None:
+            raise PlanError(
+                f"{canonical} requires local input bytes; no acquisition route "
+                "can obtain them. Supply data_dir in the plan, --data-dir DIR "
+                "with gpuwm go, or [fetch].source_root.")
         return _chain_key("prepared", canonical)
     reason = ("no source is registered with that name" if verdict is None
               else verdict["refusal"] or
@@ -1003,6 +840,45 @@ def prepared_chain_for_source(source: str) -> str:
     raise PlanError(layered(
         f"{source} has no automatic native launch route. Next: gpuwm sources",
         reason))
+
+
+def drivability_for(source: object) -> dict[str, Any]:
+    """The drivability verdict for a config's own spelling of a source.
+
+    :func:`intent_drivability` is keyed by REGISTRY ID.  A config, a
+    ``--source`` flag and an emitted ``[fetch]`` table may each spell an
+    alias instead, and an alias that missed this lookup read as "no
+    verdict": the local-input admission, which lives in the verdict, was
+    silently skipped and the plan went on to look for a download route
+    that does not exist.  Every door asks through here so an alias
+    cannot admit what its registry id refuses.
+    """
+
+    return intent_drivability().get(_canonical_source_id(str(source or "")), {})
+
+
+def _local_input_hints(hints: Mapping[str, Any]) -> tuple[str, str, Any]:
+    """``source``, ``cycle`` and ``hours`` of a local-input ``[fetch]``.
+
+    A local-input source is prepared from bytes already on disk, and
+    these three are what say WHICH bytes: the source names the
+    preparation contract, the cycle names the analysis time the files
+    carry, and hours names the window they have to cover.  Indexing them
+    raised ``KeyError`` from inside the review, which reaches a reader as
+    a traceback naming a dictionary key rather than as a refused plan
+    naming the missing line.
+    """
+
+    missing = [key for key in ("source", "cycle", "hours")
+               if hints.get(key) is None]
+    if missing:
+        raise PlanError(
+            "[fetch] is missing " + ", ".join(missing) + ": this source is "
+            "prepared from local input bytes, and source, cycle and hours "
+            "are what name which bytes.\n"
+            "  what to do: add " + ", ".join(f"{key} = ..." for key in missing)
+            + " to the config's [fetch] table.")
+    return str(hints["source"]), str(hints["cycle"]), hints["hours"]
 
 
 def _canonical_source_id(source: str) -> str:
@@ -1016,7 +892,70 @@ def _canonical_source_id(source: str) -> str:
         return source
 
 
-def follow_statics_decision(exp, *, chain: str) -> dict[str, Any] | None:
+def source_follow_statics(source: str) -> dict[str, Any]:
+    """Whether a moving nest can be fed when SOURCE drives this front door.
+
+    The two derivations the dispatch itself uses, read in the order the
+    dispatch reads them: :func:`intent_drivability` places the row on a
+    chain -- the same placement :func:`_chain_key` makes when it turns a
+    plan into a dispatch -- and :func:`gpuwm.source_cli.preparation_statics` says how
+    that chain delivers the child-resolution statics a moving nest
+    travels over.
+
+    An AUTHORING door asks this before it emits a following nest, and
+    :func:`follow_statics_decision` asks it again at resolve time, so
+    the two cannot reach different verdicts about the same
+    configuration: there is one table and one derivation between them.
+    Without this seam an author emitted a following nest for a source
+    whose chain seals no corridor, and the reader met the refusal at the
+    run door instead of on the screen where the source was chosen.
+
+    TWO ANSWERS WEAR ``delivery = None`` and they are not the same
+    answer.  A row placed on a chain whose preparation seals no corridor
+    is launchable, and only its nest is refused.  A row placed on NO
+    chain is not launchable at all: :func:`prepared_chain_for_source` --
+    the function ``gpuwm go`` itself calls before it considers anything
+    in the configuration -- refuses the source, and a sentence about
+    statics would send the reader to fix the wrong thing.  That refusal
+    is returned verbatim as ``launch_refusal`` (``None`` for every row
+    that does reach a chain) so the authoring door can quote the run
+    door rather than paraphrase it.
+
+    ``delivery`` is the table's own word (``None`` on both of the above);
+    ``reason`` is why, in the vocabulary of whichever derivation
+    answered.
+    """
+
+    canonical = _canonical_source_id(source)
+    verdict = intent_drivability().get(canonical)
+    chain = (verdict or {}).get("chain")
+    launch_refusal = None
+    if chain is None:
+        # Asked of the run door's own gate, not reconstructed here, so
+        # the sentence the reader is shown at authoring is the sentence
+        # the launch will raise.
+        try:
+            prepared_chain_for_source(canonical)
+        except PlanError as error:
+            launch_refusal = _split_message(str(error))[0]
+    from gpuwm.source_cli import preparation_statics
+
+    statics = preparation_statics(chain, source=canonical) if chain else None
+    delivery = statics["delivery"] if statics else None
+    if delivery is not None:
+        reason = None
+    elif chain is None:
+        reason = ((verdict or {}).get("refusal")
+                  or f"no registry row named {canonical!r} reaches a chain "
+                     "this front door dispatches to")
+    else:
+        reason = statics["reason"]
+    return {"source": canonical, "chain": chain, "delivery": delivery,
+            "integrates_moving_nest": delivery is not None, "reason": reason,
+            "launch_refusal": launch_refusal}
+
+
+def follow_statics_decision(exp, *, chain: str, source: str | None = None) -> dict[str, Any] | None:
     """How a moving nest gets its statics on ``chain``, or ``None``.
 
     ``None`` means the config declares no moving nest, which is most of
@@ -1031,13 +970,12 @@ def follow_statics_decision(exp, *, chain: str) -> dict[str, Any] | None:
 
     if not config_declares_follow_source(exp):
         return None
-    if chain not in _FOLLOW_STATICS_DELIVERY:
-        raise PlanError(
-            f"run-plan cannot say how a [relocation] follow source is fed "
-            f"on chain {chain!r}: it is not in the follow-statics "
-            "delivery table, and guessing would either refuse a runnable "
-            "config or prepare a bundle its own forecast stage rejects")
-    delivery = _FOLLOW_STATICS_DELIVERY[chain]
+    from gpuwm.source_cli import preparation_statics
+
+    try:
+        delivery = preparation_statics(chain, source=source)["delivery"]
+    except ValueError as error:
+        raise PlanError(str(error)) from None
     from gpuwm.static.corridor import moving_grid_ids
     cohort = any(getattr(dc, "follow", None) is not None for dc in exp.domains)
     grid_ids = sorted(moving_grid_ids(exp))
@@ -1049,7 +987,7 @@ def follow_statics_decision(exp, *, chain: str) -> dict[str, Any] | None:
         "relocation_grid_id": grid_id,
         "statics_corridor": delivery in {"statics_corridor", "retained_corridor"},
         "refusal": (None if delivery is not None
-                    else _follow_unsupported_refusal(chain, grid_id)),
+                    else _follow_unsupported_refusal(chain, grid_id, source=source)),
     }
 
 
@@ -1074,46 +1012,22 @@ _CORRIDOR_RESOLUTION_NOTE = {
 }
 
 
-#: Why each chain with no delivery cannot feed a moving nest, in its
-#: own words.  A refusal that named another chain's tools would send a
-#: reader to the wrong file, so the chain-specific half of the sentence
-#: lives beside the chain rather than inside a generic formatter; the
-#: completeness test requires an entry for every ``None`` delivery.
-#:
-#: EMPTY, and that is the current truth rather than a dropped feature:
-#: every chain this front door dispatches to can now feed a moving nest.
-#: ``prepared:hrrr`` was the one entry, and it went when its hierarchy
-#: stage learned to seal a corridor.  The machinery stays because a
-#: chain added tomorrow may not be able to, and the generic sentence in
-#: :func:`_follow_unsupported_refusal` would then be its stand-in until
-#: someone writes it a better one.  The staged mapped chain is that
-#: chain: its preparation is rw-wps's declarative mapped arm, which
-#: refuses ``--statics-corridor`` by name, so a moving nest has no
-#: statics source anywhere on the route.
-_FOLLOW_UNSUPPORTED_DETAIL: dict[str, str] = {
-    "prepared:staged": (
-        "its preparation is rw-wps's declarative mapped arm, which "
-        "refuses --statics-corridor by name (the corridor builder "
-        "belongs to the GFS arm's geography stage), so nothing on this "
-        "chain can seal child-resolution statics over the nest's travel"
-    ),
-}
-
-
-def _follow_unsupported_refusal(chain: str, grid_id: int) -> str:
+def _follow_unsupported_refusal(chain: str, grid_id: int, *, source: str | None = None) -> str:
     """Why this chain cannot run a moving nest, and what will."""
 
-    detail = _FOLLOW_UNSUPPORTED_DETAIL.get(
-        chain, "its preparation seals no child-resolution statics "
-               "corridor and it holds no geography source at run time")
+    from gpuwm.source_cli import preparation_statics
+
+    try:
+        detail = preparation_statics(chain, source=source)["reason"]
+    except ValueError:
+        detail = "its preparation seals no child-resolution statics corridor and it holds no geography source at run time"
     return (
         f"this plan's config declares a [relocation] follow source on "
         f"d{grid_id:02d}, and the {chain!r} chain cannot supply the "
         f"statics a moving nest needs: {detail} -- so it is refused "
         "here instead, before the fetch.\n"
         "  remedy: run this config on a prepared chain that seals a "
-        "corridor -- gfs (rw-wps) or hrrr (the hierarchy stage) -- "
-        "either of which run-plan composes --statics-corridor for "
+        "corridor; run-plan composes --statics-corridor for "
         "itself, from this same [relocation] predicate; or run it on "
         "the `experiment` route with a "
         "[case_data] block, which holds the geography source and "
@@ -2086,7 +2000,10 @@ def generate_intent_config(plan: RunPlan, *, destination: Path
 
     destination.mkdir(parents=True, exist_ok=True)
     out = destination / GENERATED_CONFIG_NAME
-    arguments = intent_arguments(plan.config_intent, out=out)
+    intent = dict(plan.config_intent)
+    if drivability_for(intent.get("source")).get("requires_source_root") and not intent.get("data_dir"):
+        intent["data_dir"] = str((plan.config_base_dir / "data" / plan.name).resolve())
+    arguments = intent_arguments(intent, out=out)
     try:
         args = build_parser().parse_args(["domain", *arguments])
     except SystemExit as stop:
@@ -2192,6 +2109,7 @@ def declared_inputs(data) -> list[dict[str, str]]:
     } for role, path, kind in entries]
 
 
+@_review_warning_scope()
 def resolve_plan(plan: RunPlan, *, generate_into: Path | None = None,
                  require_inputs: bool = True) -> dict[str, Any]:
     """Load a plan's config through the real seam and describe it.
@@ -2320,13 +2238,48 @@ def resolve_plan(plan: RunPlan, *, generate_into: Path | None = None,
                 raise PlanError(str(error)) from error
     chain = ("prepared:existing" if existing_bundle is not None else
              _chain_key(plan.route, (raw.get("fetch") or {}).get("source")))
+    if chain == "prepared:staged":
+        from gpuwm import fetch_routes
+        hints = raw.get("fetch") or {}
+        source_id = fetch_routes.canonical_source(str(hints.get("source", "")))
+        if source_id in fetch_routes.route_ids():
+            route = fetch_routes.route_for(source_id)
+            if route.members is not None:
+                requested = hints.get("member")
+                member, token = fetch_routes.resolve_member(
+                    route, None if requested is None else str(requested))
+                resolutions.append({
+                    "scope": "fetch", "key": "member",
+                    "value": {"id": member, "token": token},
+                    "basis": "route_default" if requested is None else "declared"})
+    local_verdict = drivability_for((raw.get("fetch") or {}).get("source"))
+    if chain == "prepared:staged" and local_verdict.get("requires_source_root"):
+        from gpuwm.local_preparation import review_local_inputs
+        hints = raw.get("fetch") or {}
+        try:
+            snapshot = review_local_inputs(hints,
+                data_dir=plan.run_options.get("data_dir") or (plan.config_intent or {}).get("data_dir"),
+                base_dir=base_dir, supplements=plan.run_options.get("supplement", ()))
+        except ValueError as error:
+            raise PlanError(str(error)) from error
+        local_root = Path(snapshot["source_root"])
+        resolutions.append({
+            "scope": "preparation", "key": "local_inputs",
+            "value": {"source_root": str(local_root), "sha256": snapshot["sha256"],
+                      "file_count": len(snapshot["files"])},
+            "basis": "local_source_root"})
     if plan.run_options.get("supplement"):
         from gpuwm.go_cli import managed_download_dir
         from gpuwm.launch_supplements import validate_route
         validate_route(plan.run_options["supplement"], chain=chain)
         hints = raw.get("fetch") or {}
         intent = plan.config_intent or {}
+        # The config's own root counts here too.  A local-input source
+        # has no managed download cache to fall back to, and reading the
+        # supplement bindings against one would check them against an
+        # empty directory the reader never named.
         source_root = (plan.run_options.get("data_dir") or intent.get("data_dir")
+                       or hints.get("source_root")
                        or managed_download_dir(plan.run_dir, hints))
         validate_route(plan.run_options["supplement"], chain=chain,
                        source_root=source_root)
@@ -2397,8 +2350,11 @@ def resolve_plan(plan: RunPlan, *, generate_into: Path | None = None,
     # what `_execute_prepared_route` dispatches on, so the chain judged
     # here is the chain that runs.  A plan with no follow source adds
     # nothing to this document.
-    decision = follow_statics_decision(exp, chain=chain)
+    moving_source = (raw.get("fetch") or {}).get("source")
+    decision = follow_statics_decision(exp, chain=chain, source=moving_source)
     if decision is not None:
+        from gpuwm.source_cli import preparation_statics
+
         if decision["refusal"] is not None:
             raise PlanError(decision["refusal"])
         # Published without the refusal slot: reaching here means there
@@ -2423,8 +2379,7 @@ def resolve_plan(plan: RunPlan, *, generate_into: Path | None = None,
                 if "follower_grid_ids" in decision else
                 _CORRIDOR_RESOLUTION_NOTE[decision["delivery"]].format(
                     grid_id=decision["relocation_grid_id"],
-                    stage=_CORRIDOR_STAGE.get(decision["chain"],
-                                              "the preparation"))))})
+                    stage=preparation_statics(decision["chain"], source=moving_source)["stage"])))})
 
     # [tiles], on the same terms and in the same place.  A configured
     # streaming mode that the chain cannot honour is refused HERE --
@@ -2806,39 +2761,41 @@ def _prepare_stage(root: Path, *, arguments: Sequence[Any],
 
 
 def _clear_forecast_output(forecast_dir: Path, *,
-                           observer: RunObserver) -> dict[str, Any] | None:
-    """Give the forecast stage a directory that holds no earlier run.
+                           observer: RunObserver) -> Path:
+    """Reserve a forecast path without moving any earlier output address.
 
-    The prepared runners refuse an output directory that already holds
-    output, and they are right to: the receipt a run writes has to
-    describe one run.  On a retry that refusal would fire on the very
-    directory the previous attempt failed in, so the earlier attempt's
-    output is moved aside -- nothing is deleted, and its receipts stay
-    readable beside the new run's.
+    A retry owns another generation containing its forecast and pictures.
+    Prior receipts and their absolute frame paths remain together. The
+    caller must use the returned path for execution, rendering and summary.
     """
-
-    from gpuwm import stage_reuse
-
+    forecast_dir = Path(forecast_dir)
+    forecast_dir.parent.mkdir(parents=True, exist_ok=True)
     try:
-        held = any(Path(forecast_dir).iterdir())
-    except OSError:
-        return None
-    if not held:
-        return None
-    superseded = stage_reuse.supersede(forecast_dir)
-    if superseded is not None:
+        forecast_dir.mkdir()
+        return forecast_dir
+    except FileExistsError:
+        pass
+    sequence = 1
+    while True:
+        generation = forecast_dir.with_name(
+            f"{forecast_dir.name}-attempt-{sequence:03d}")
         try:
-            observer.events.emit(
-                "warning", code="forecast_output_superseded",
-                message=(
-                    f"{forecast_dir} already held an earlier attempt's "
-                    f"output; it was moved to {superseded['path']} "
-                    "(nothing was deleted) so this run's receipts describe "
-                    "one run"),
-                path=superseded["path"], bytes=superseded["bytes"])
-        except Exception:            # noqa: BLE001 - telemetry never fails a run
-            pass
-    return superseded
+            generation.mkdir()
+            break
+        except FileExistsError:
+            sequence += 1
+    output = generation / forecast_dir.name
+    output.mkdir()
+    try:
+        observer.events.emit(
+            "warning", code="forecast_output_recovery",
+            message=(f"Earlier output remains at {forecast_dir}. "
+                     f"This attempt writes to {output}; prior receipt "
+                     "addresses and pictures are preserved."),
+            previous_path=str(forecast_dir), path=str(output))
+    except Exception:            # noqa: BLE001 - telemetry never fails a run
+        pass
+    return output
 
 
 def _validate_prepared_output(plan: RunPlan, *, require_empty: bool = False,
@@ -2921,7 +2878,8 @@ def _existing_prepared_forecast(plan: RunPlan, *, config_path: Path,
 
 
 def _hrrr_chain(plan: RunPlan, *, config_path: Path, exp,
-                observer: RunObserver, run_dir: Path) -> Mapping[str, Any]:
+                observer: RunObserver, run_dir: Path,
+                prepare_only: bool = False) -> Mapping[str, Any]:
     """The documented HRRR chain: fetch, prepare, forecast.
 
     This is the native HRRR chain used by both run-plan and go.
@@ -3046,12 +3004,15 @@ def _hrrr_chain(plan: RunPlan, *, config_path: Path, exp,
                               progress=prep_root / "progress.json",
                               observer=_GoObserver(observer)))
 
+    if not prepare_only:
+        forecast_dir = _clear_forecast_output(forecast_dir, observer=observer)
     # Armed before either forecast arm, with the very dict `_chain_render`
     # will hand the finalize stage below, so the frame rendered as it
     # lands and the frames rendered at the end agree on both the output
     # directory and the product spec by construction.
-    observer.arm_first_products(
-        _chain_render_plan(plan, forecast_dir=forecast_dir, run_dir=run_dir))
+    if not prepare_only:
+        observer.arm_first_products(
+            _chain_render_plan(plan, forecast_dir=forecast_dir, run_dir=run_dir))
 
     if len(exp.domains) > 1:
         # A nested HRRR run takes a THIRD stage between the root
@@ -3070,6 +3031,8 @@ def _hrrr_chain(plan: RunPlan, *, config_path: Path, exp,
             # plan reported as corridor-bearing seals one and a plan
             # reported as still does not.
             statics_corridor=config_declares_follow_source(exp))
+        if prepare_only:
+            return _prepared_chain_result(tree_root, config_path, None)
         _hrrr_tree_forecast(
             tree_root=tree_root, config_path=config_path,
             forecast_dir=forecast_dir, observer=observer)
@@ -3121,6 +3084,10 @@ def _hrrr_chain(plan: RunPlan, *, config_path: Path, exp,
                                      "public-wrapper-result.json"),
                           prepared=prepared)
 
+    if prepare_only:
+        return _prepared_chain_result(prepared_root, Path(handoff['experiment_config']),
+                                      Path(handoff['wps_namelist']))
+
     # -- forecast ------------------------------------------------------
     # In process, so the runner's per-step progress and its per-wrfout
     # landing hook reach the observer.  Same runner and same flags the
@@ -3162,12 +3129,11 @@ def _hrrr_chain(plan: RunPlan, *, config_path: Path, exp,
     # Only when the mode is enabled, so an ordinary run composes the
     # argv it has always composed, token for token.
     if exp.tiles.enabled:
-        argv += ["--tiles", json.dumps(exp.tiles.to_mapping(),
-                                       sort_keys=True)]
+        from gpuwm.stage_cli import streaming_flags
+        argv += streaming_flags("single", tiles=exp.tiles)
     observer.enter_stage("forecast", phase="forecast")
     from gpuwm import prepared_single_domain_forecast as runner
 
-    _clear_forecast_output(forecast_dir, observer=observer)
     code = runner.main(argv, observer=observer)
     if code:
         raise StageExitError("forecast", code)
@@ -3304,7 +3270,6 @@ def _hrrr_tree_forecast(*, tree_root: Path, config_path: Path,
     observer.enter_stage("forecast", phase="forecast")
     from gpuwm import prepared_domain_tree_forecast as runner
 
-    _clear_forecast_output(forecast_dir, observer=observer)
     code = runner.main(argv, observer=observer)
     if code:
         raise StageExitError("forecast", code)
@@ -3320,7 +3285,7 @@ def _chain_render_plan(plan: RunPlan, *, forecast_dir: Path,
     its first frame into one directory and the rest into another.
     """
 
-    return {"run": forecast_dir, "render": run_dir / "chain" / "png",
+    return {"run": forecast_dir, "render": forecast_dir.parent / "png",
             "render_products": plan.run_options.get("render_products")}
 
 
@@ -3330,7 +3295,7 @@ def _chain_render(plan: RunPlan, *, forecast_dir: Path, run_dir: Path,
 
     render_plan = _chain_render_plan(plan, forecast_dir=forecast_dir, run_dir=run_dir)
     _finish_render(render_plan, observer=observer)
-    return _chain_summary(run_dir / "chain", observer=observer)
+    return _chain_summary(forecast_dir.parent, observer=observer)
 
 
 def _finish_render(render_plan: dict, *, observer: RunObserver,
@@ -3374,7 +3339,8 @@ def _run_prep(arguments: Sequence[str]) -> None:
 
 
 def _staged_chain(plan: RunPlan, *, config_path: Path, exp,
-                  observer: RunObserver, run_dir: Path) -> Mapping[str, Any]:
+                  observer: RunObserver, run_dir: Path,
+                  prepare_only: bool = False, reviewed_inputs=None) -> Mapping[str, Any]:
     """The staged route for a packaged mapped source: fetch, prep, sim.
 
     The documented per-stage chain for every packaged
@@ -3423,10 +3389,51 @@ def _staged_chain(plan: RunPlan, *, config_path: Path, exp,
 
     # -- fetch ---------------------------------------------------------
     observer.enter_stage("fetch", phase="fetch")
-    fetch_report = _run_fetch(
-        _fetch_arguments_from_hints(hints, out=data_dir), run_dir,
-        events=getattr(observer, "events", None))
-    handoff_path = data_dir / fetch_routes.PREP_ARGUMENTS_NAME
+    verdict = drivability_for(hints.get("source"))
+    local_snapshot = None
+    if verdict.get("requires_source_root"):
+        from gpuwm.local_preparation import (
+            inspect_local_inputs, publish_local_handoff, resolve_source_root)
+        from gpuwm.fetch import parse_cycle
+        local_source, local_cycle, local_hours = _local_input_hints(hints)
+        data_dir = resolve_source_root(
+            hints, data_dir=plan.run_options.get("data_dir") or intent.get("data_dir"),
+            base_dir=config_path.parent)
+        if reviewed_inputs is None:
+            snapshot = inspect_local_inputs(
+                local_source, data_dir,
+                cycle=parse_cycle(local_cycle, local_source),
+                hours=local_hours, cadence=hints.get("cadence"),
+                start_hour=hints.get("forecast_start_hour", 0),
+                supplements=plan.run_options.get("supplement", ()))
+        else:
+            from gpuwm.local_preparation import verify_local_snapshot
+            from datetime import timedelta
+            from math import ceil
+            from gpuwm.source_adapters import get_source_adapter
+            snapshot = reviewed_inputs
+            verify_local_snapshot(snapshot)
+            cadence = hints.get("cadence") or int(
+                get_source_adapter(local_source).forcing_interval_seconds / 3600)
+            initial = parse_cycle(local_cycle, local_source) + timedelta(
+                hours=hints.get("forecast_start_hour", 0))
+            times = [(initial + timedelta(hours=i * cadence)).isoformat()
+                     for i in range(ceil(float(local_hours) / cadence) + 1)]
+            if (snapshot.get("source") != local_source
+                    or Path(snapshot.get("source_root", "")).resolve() != data_dir.resolve()
+                    or snapshot.get("cycle") != local_cycle
+                    or snapshot.get("valid_times") != times):
+                raise PlanError("The reviewed local inputs describe another source or window; restore the reviewed handoff.")
+        local_snapshot = snapshot
+        handoff_path = publish_local_handoff(snapshot, run_dir / "chain" / "local-inputs")
+        fetch_report = {"source": hints["source"], "mode": "local",
+                        "network_used": False, "input_sha256": snapshot["sha256"],
+                        "file_count": len(snapshot["files"])}
+    else:
+        fetch_report = _run_fetch(
+            _fetch_arguments_from_hints(hints, out=data_dir), run_dir,
+            events=getattr(observer, "events", None))
+        handoff_path = data_dir / fetch_routes.PREP_ARGUMENTS_NAME
     handoff = _read_json_object(handoff_path)
     if handoff.get("schema") != fetch_routes.PREP_ARGUMENTS_SCHEMA:
         raise PlanError(
@@ -3443,20 +3450,35 @@ def _staged_chain(plan: RunPlan, *, config_path: Path, exp,
             f"role(s) {sorted(unfetched)} unbound. Supply each with "
             "gpuwm go CONFIG --supplement ROLE=PATH; the fetch route's notes in "
             f"{fetch_routes.PREP_COMMAND_NAME} say what each one needs")
-    observer.finish_stage(fetch=fetch_report)
+    from gpuwm.prep_handoff import preparation_arguments
+    from gpuwm.forcing_member import verify_handoff, prepare_verified
+    arguments = preparation_arguments(handoff)
+    # Member staging can change the input tree. Bind the receipt to the
+    # selected tree the preparer will consume, never to the prior upstream list.
+    bound_handoff = dict(handoff, argv=arguments)
+    member_receipt = verify_handoff(hints, bound_handoff, out=data_dir)
+    observer.finish_stage(fetch=fetch_report, member_verification=member_receipt)
 
     # -- prepare -------------------------------------------------------
     observer.enter_stage("prepare", phase="prepare")
-    arguments = [str(token) for token in handoff.get("argv") or []]
+    if member_receipt is not None:
+        arguments[arguments.index("--input-list") + 1] = member_receipt["input_list"]
     arguments += [token for binding in supplements
                   for token in ("--supplement", binding)]
     arguments += [
-        # The four the handoff declares are the caller's, and no more.
+        # The four paths the handoff declares are the caller's.
         "--wps-namelist", str(namelist),
         "--experiment-config", str(config_path),
         "--geog-root", str(geog_root),
         "--output-root", str(prep_root),
     ]
+    from gpuwm.source_cli import preparation_statics
+    from gpuwm.static.corridor import config_declares_follow_source
+
+    if config_declares_follow_source(exp):
+        # Bind this requirement before reuse is decided. A sealed stationary
+        # bundle cannot satisfy the newly requested moving corridor.
+        arguments.append(preparation_statics("prepared:staged", source=hints["source"])["option"])
     # Same recovery seam as the HRRR chain, and the same function: this
     # route's preparer is create-only too, so a re-run into the same
     # output_root has to decide before calling it whether the bundle
@@ -3464,10 +3486,26 @@ def _staged_chain(plan: RunPlan, *, config_path: Path, exp,
     # can state exactly -- the fetch handoff it composed the argv from
     # -- because a member a chain cannot compute must not become a
     # silent pass.
-    prepared = _prepare_stage(
+    def verify_local():
+        if local_snapshot is not None:
+            from gpuwm.local_preparation import verify_local_snapshot
+            listing = (Path(arguments[arguments.index("--input-list") + 1])
+                       if "--input-list" in arguments else None)
+            verify_local_snapshot(local_snapshot, input_list=listing)
+
+    def run_preparation():
+        result = _run_prep(arguments)
+        # Verify before the stage writes its completion/reuse binding.
+        verify_local()
+        return result
+
+    verify_local()
+    prepared = prepare_verified(member_receipt, prep_root, lambda: _prepare_stage(
         prep_root, arguments=arguments,
-        stated={}, run=lambda: _run_prep(arguments))
-    observer.finish_stage(prepared_root=str(prep_root), prepared=prepared)
+        stated={}, run=run_preparation))
+    verify_local()
+    observer.finish_stage(prepared_root=str(prep_root), prepared=prepared,
+                          member_verification=member_receipt)
 
     # -- forecast ------------------------------------------------------
     # The bundle speaks for itself: `resolve_bundle` reads which source
@@ -3479,6 +3517,9 @@ def _staged_chain(plan: RunPlan, *, config_path: Path, exp,
     from gpuwm import stage_cli
 
     bundle = stage_cli.resolve_bundle(prep_root)
+    if prepare_only:
+        return _prepared_chain_result(prep_root, config_path, namelist, bundle=bundle)
+    forecast_dir = _clear_forecast_output(forecast_dir, observer=observer)
     profile = (plan.run_options.get("physics_profile")
                or intent.get("physics_profile"))
     command = stage_cli.sim_command(
@@ -3486,24 +3527,29 @@ def _staged_chain(plan: RunPlan, *, config_path: Path, exp,
         wps_namelist=namelist if bundle["layout"] == "single" else None,
         outdir=forecast_dir,
         physics_profile=None if profile is None else str(profile),
-        progress_format="jsonl")
+        progress_format="jsonl",
+        tiles=exp.tiles if exp.tiles.enabled and bundle["layout"] == "single" else None)
     argv = command[3:]
-    if exp.tiles.enabled and bundle["layout"] == "single":
-        # Same shape and same reason as the HRRR chain: the prepared
-        # authority carries no [tiles] table, so the mode travels as
-        # the runner's own flag and stays out of the bundle identity.
-        argv += ["--tiles", json.dumps(exp.tiles.to_mapping(),
-                                       sort_keys=True)]
     observer.arm_first_products(
         _chain_render_plan(plan, forecast_dir=forecast_dir,
                            run_dir=run_dir))
     observer.enter_stage("forecast", phase="forecast")
-    _clear_forecast_output(forecast_dir, observer=observer)
     _staged_forecast(argv, layout=str(bundle["layout"]), observer=observer)
 
     # -- render --------------------------------------------------------
     return _chain_render(plan, forecast_dir=forecast_dir, run_dir=run_dir,
                          observer=observer)
+
+
+
+def _prepared_chain_result(root: Path, config: Path, namelist: Path | None, *, bundle=None) -> dict:
+    """Relay a prepared bundle and its authority paths without forecasting."""
+    from gpuwm.stage_cli import resolve_bundle
+    bundle = resolve_bundle(root) if bundle is None else bundle
+    return {'schema': 'gpuwm-preparation-result-v1', 'prepared_root': str(root.resolve()),
+            'bundle': bundle, 'experiment_config': str(config.resolve()),
+            'wps_namelist': None if namelist is None else str(namelist.resolve()),
+            'forecast_started': False}
 
 
 def _staged_forecast(argv: list[str], *, layout: str,
@@ -3579,6 +3625,8 @@ def _chain_summary(chain: Path, *,
                  "than a status report; the capsule's presence is not "
                  "read as a verdict here"),
         "chain_root": str(chain),
+        "forecast_root": str(forecast),
+        "render_root": str(chain / "png"),
         "report": str(report_path) if report_path.is_file() else None,
         "certification_capsule": (str(capsule_path)
                                   if capsule_path.is_file() else None),
@@ -4617,16 +4665,19 @@ def _execution_estimate(phases, exp, machine) -> dict[str, Any]:
         if road is not None:
             resolved = bool(road.priced)
         elif len(exp.domains) == 1:
-            if options.mode == "off":
+            # The table that GOVERNS this domain, not the tree-wide one: a
+            # root carrying its own tiles = {...} was reported resolved
+            # here without deciding anything, while the run door decided
+            # it on the domain's table.
+            if not streaming.options_for_domain(exp.domains[0], options).enabled:
                 resolved = True
             elif machine is not None:
                 # Reuse the estimate's observation and resident arithmetic.
                 # Never probe again to distinguish a resident auto decision
                 # from the conservative fallback after a planner refusal.
                 try:
-                    decision = streaming.decide(
-                        exp.domains[0].run, options, machine=machine,
-                        resident_estimate=phases.forecast)
+                    decision = streaming.cold_single_domain_decision(
+                        exp, machine=machine)
                     resolved = not decision.stream
                     if decision.stream:
                         reason = "The selected tile plan could not be priced."
@@ -4799,8 +4850,61 @@ def estimate_plan(plan: RunPlan) -> dict[str, Any]:
     }
 
 
+#: One process, one ``rw_wrfbatch --list-products``, keyed by the renderer
+#: binary that answered it.
+#:
+#: The catalog is asked at PLAN REVIEW, and plan review is asked several
+#: times over one door: ``gpuwm go`` checks the ``--products`` spelling,
+#: the desktop's picker fills its product list, ``gpuwm downscale`` does
+#: both again for the child.  Each of those spawned the renderer and
+#: waited for it.  The answer cannot change while the binary that gives
+#: it does not, so the binary IS the key: its path plus the mtime and
+#: size of that file.  Restage a renderer and the next call asks it
+#: afresh; nothing is carried across processes, so a cached answer can
+#: never outlive the install that produced it.
+_RENDER_CATALOG_CACHE: dict[tuple, dict[str, Any]] = {}
+
+
+def _render_catalog_key() -> tuple | None:
+    """The identity of the renderer a catalog would come from.
+
+    ``None`` when there is no renderer to key on -- an install with none
+    staged is a case the catalog answers with a refusal document, and a
+    refusal is not cached: the remedy it names is "stage the renderer",
+    and the whole point of following it is that the next call answers
+    differently.
+    """
+    try:
+        from gpuwm import rustwx
+
+        renderer = Path(rustwx.find_renderer())
+        stat = renderer.stat()
+    except Exception:
+        return None
+    return (str(renderer), int(stat.st_mtime_ns), int(stat.st_size))
+
+
 def render_catalog() -> dict[str, Any]:
     """What may be put in ``render_products``, as JSON.
+
+    Cached per process against the renderer binary's own identity; see
+    :data:`_RENDER_CATALOG_CACHE`.  The copy handed back is the caller's
+    own, so a consumer that annotates the document cannot edit what the
+    next caller reads.
+    """
+    key = _render_catalog_key()
+    if key is not None:
+        cached = _RENDER_CATALOG_CACHE.get(key)
+        if cached is not None:
+            return copy.deepcopy(cached)
+    document = _read_render_catalog()
+    if key is not None and document.get("products"):
+        _RENDER_CATALOG_CACHE[key] = copy.deepcopy(document)
+    return document
+
+
+def _read_render_catalog() -> dict[str, Any]:
+    """Ask the renderer itself what it can draw.
 
     The renderer's own answer, asked rather than transcribed.  Which
     engine speaks is part of the answer, not an implementation detail,
@@ -5095,6 +5199,8 @@ def source_inventory() -> dict[str, Any]:
                     # translate it.
                     "intent_chain": verdict["chain"],
                     "intent_refusal": verdict["refusal"],
+                    "requires_source_root": bool(verdict.get("requires_source_root")),
+                    "source_root_reason": verdict.get("source_root_reason"),
                 },
             })
         except Exception as error:  # noqa: BLE001 - a query mode reports

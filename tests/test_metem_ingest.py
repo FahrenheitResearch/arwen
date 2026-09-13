@@ -247,3 +247,29 @@ def test_finite_input_that_overflows_float32_is_refused(tmp_path):
         variable.units="K"
     with pytest.raises(MetgridRefusal,match="float32 representation"):
         read_met_em(case(tmp_path,mutate=mutate))
+
+
+def test_the_source_top_pressure_is_read_from_the_real_file(tmp_path):
+    """The number the vertical contract bounds the model top with.
+
+    Read through the real decoder, not a stub: ``resolve_metem_run``
+    calls this for every met_em resolve
+    (gpuwm/metem_door.py:116) and hands the answer to
+    ``validate_explicit_eta_grid``.
+    """
+    from gpuwm.ingest.metem import met_em_source_top_pressure_pa
+    assert met_em_source_top_pressure_pa(case(tmp_path)) == 20000.0
+
+
+def test_an_empty_pressure_stack_names_the_breakage_and_the_way_out(tmp_path):
+    """A refusal states what breaks AND how to get out of it."""
+    from gpuwm.ingest.metem import met_em_source_top_pressure_pa
+
+    def mutate(ds):
+        ds["PRES"][:] = np.nan
+
+    with pytest.raises(MetgridRefusal) as refused:
+        met_em_source_top_pressure_pa(case(tmp_path, mutate=mutate))
+    said = str(refused.value)
+    assert "no finite positive pressure" in said
+    assert "Re-run metgrid" in said and "point --met-em at" in said

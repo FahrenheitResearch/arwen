@@ -155,7 +155,7 @@ static inline long long __double_as_longlong(double d)
 static inline double __longlong_as_double(long long l)
 { double d; std::memcpy(&d, &l, 8); return d; }
 static inline float __double2float_rn(double d) { return (float)d; }
-using std::max; using std::min;
+using std::max; using std::min; using std::isfinite;
 #include "morrison_assembled.cu"
 
 extern "C" float morr_probe_pgam(float qc, float nc, float rhoa,
@@ -220,9 +220,8 @@ def test_pgam_reference_density_is_rebuilt_from_the_current_temperature(
          "-fno-unsafe-math-optimizations", "-shared", "-fPIC",
          "-I", str(tmp_path), str(source), "-o", str(out), "-lm"],
         capture_output=True, check=False)
-    if not out.exists():                             # pragma: no cover
-        pytest.skip("morrison.cu does not build as host C++ here: "
-                    + built.stderr.decode("utf-8", "replace")[-800:])
+    assert built.returncode == 0 and out.exists(), (
+        built.stderr.decode("utf-8", "replace")[-2000:])
 
     library = ctypes.CDLL(str(out))
     library.morr_probe_pgam.restype = ctypes.c_float

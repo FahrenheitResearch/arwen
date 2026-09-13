@@ -1,33 +1,9 @@
-"""GDAS: the GFS assimilation cycle through the certified GFS container.
+"""GDAS acquisition through the declared GFS container.
 
-GDAS publishes ``pgrb2.0p25`` -- the same 0.25-degree regular lat/lon
-grid, the same variable and level codes, the same originating centre and
-table versions as GFS.  Under gpuwm's certified selector it yields the
-same 124-record census, in the same south-to-north simple-packed form.
-So it rides the certified mapping and bridge with a source tag and
-nothing else; what differs is the grib-filter script and the directory.
-
-**Fetch and decode, f000..f009 -- not a front door.**  f000 is an
-analysis rather than a forecast field.  Real f003/f006/f009 NOMADS
-samples certify the forecast span through f009 -- the endpoint is one
-of the committed files, not an extrapolation past the last one -- with
-process ID 96 declared per series row instead of admitted as a generic
-hour rule; the bridge verifies the declaration against its certified
-``{81, 96}`` set and never infers a capability from an hour or a source
-name.  Past f009 still refuses up front.
-
-What is *not* certified -- and what these tests therefore assert
-refuses -- is ingest: ``rw-wps --source gdas`` has no field/level/
-cadence mapping, so fetch prints no ``rw-wps`` next step for GDAS.  The
-container is the certified GFS container and the mapping is expected to
-be reusable wholesale, but that reuse has not been run end to end, and
-an unrun route is not a front door.
-
-The live smoke (``GPUWM_NETWORK_TESTS=1``) is what makes the container
-claim honest rather than assumed -- it fetches the whole certified
-ladder from a live cycle and checks the census, the record bar, the
-declared process IDs, and the manifest contract on every hour it
-asserts about.
+The provider publishes the f000 through f009 ladder. Requests beyond
+that ladder refuse before download, while valid acquisitions publish
+the structured preparation handoff for the composed packaged profile.
+The separate network smoke checks real container and manifest bytes.
 """
 
 from __future__ import annotations
@@ -92,12 +68,14 @@ def test_the_object_urls_and_cycle_cadence_follow_the_source():
         fetch.parse_cycle("2026-07-29T13", "gdas")
 
 
-def test_the_certified_gdas_ladder_stops_at_the_proven_horizon():
+def test_the_gdas_ladder_stops_at_the_published_horizon():
     """The scope constant and the ladder agree, and nothing widens it.
 
-    v1.0.1 pinned this at f000 because the bridge was certified only
-    against the analysis generating process, and said in as many words
-    that widening it would be a re-certification event.  The v1.1
+    v1.0.1 pinned this at f000 against the analysis generating process
+    alone, and widening it was treated as a re-certification event.  The
+    span is a PUBLICATION fact now, not a claim about what was proved
+    here: the assimilation cycle writes f000..f009 and nothing else, so
+    the constant below records what the publisher writes.  The v1.1
     hygiene lane IS that event -- real NOMADS f000/f003/f006/f009
     subsets under ``tests/fixtures/gdas-process-id/`` with the declared
     81/96 processes, the last of them the endpoint itself -- so the span
@@ -106,12 +84,12 @@ def test_the_certified_gdas_ladder_stops_at_the_proven_horizon():
     """
 
     assert fetch.GDAS_MAX_FORECAST_HOUR == 9
-    assert fetch.GDAS_CERTIFIED_HOURS == tuple(range(10))
+    assert fetch.GDAS_PUBLISHED_HOURS == tuple(range(10))
     assert fetch.gdas_forecast_hours(0) == (0,)
     assert fetch.gdas_forecast_hours(6) == (0, 3, 6)
     assert fetch.gdas_forecast_hours(9, 3) == (0, 3, 6, 9)
     for beyond in (10, 12, 24, 384):
-        with pytest.raises(ValueError, match="certified"):
+        with pytest.raises(ValueError, match="publishes"):
             fetch.gdas_forecast_hours(beyond)
 
 
@@ -153,7 +131,11 @@ def test_fetch_help_cannot_drift_from_the_registry_gdas_span(capsys):
     assert "analysis-only" not in help_text
     assert "certified analysis" not in help_text
     # --cadence used to list gfs, era5 and hrrr and silently skip gdas.
-    assert "gdas 1, 3, or 6" in help_text
+    # It states GDAS's rule, and states it as the ladder's own: whole
+    # hours that divide the window, not a list of three values that
+    # would have to be edited beside the ladder.
+    assert "gdas any whole number of hours that divides --hours" in help_text
+    assert f"f{registry_max:03d} ladder" in help_text
 
     # And `gpuwm --help` alone must not leave a reader thinking GDAS
     # initializes a run.
@@ -162,7 +144,7 @@ def test_fetch_help_cannot_drift_from_the_registry_gdas_span(capsys):
     assert "native GDAS uses its mapped preparation" in " ".join(capsys.readouterr().out.split())
 
 
-def test_a_gdas_request_past_the_certified_span_refuses_up_front(tmp_path,
+def test_a_gdas_request_past_the_published_span_refuses_up_front(tmp_path,
                                                                  capsys):
     """Refused at the CLI, before any download, in capability wording."""
 
@@ -172,16 +154,18 @@ def test_a_gdas_request_past_the_certified_span_refuses_up_front(tmp_path,
                    "--out", str(out)])
     assert rc == 2
     err = capsys.readouterr().err
-    # Says what IS certified, and that f012 is not it.
+    # Names the published limit and the absent f012 object.
     assert "f009" in err and "f012" in err
     # ...and says what to reach for instead, at the default width,
     # because a remedy never moves behind a flag.
-    assert "--hours 0..9" in err
+    assert "f000..f009" in err
     assert "--source gfs" in err
-    # The mechanism -- which binary selects by exact field identity --
-    # is one flag away, and the refusal says so.
-    assert "gfs_grib2_bridge" not in err
+    # The mechanism -- why no later object exists to fetch -- is one flag
+    # away, and the refusal says so.  A remedy never moves behind a flag,
+    # and the reason never crowds it out at the default width.
+    assert "never written" not in err
     assert "--explain" in err
+    assert "publishes" in err
     # Nothing was created, because nothing was attempted.
     assert not out.exists()
 
@@ -190,16 +174,19 @@ def test_a_gdas_request_past_the_certified_span_refuses_up_front(tmp_path,
                    "--out", str(out), "--explain"])
     assert rc == 2
     explained = capsys.readouterr().err
-    # ...says why the boundary is where it is, in its original wording.
-    assert "gfs_grib2_bridge" in explained
-    assert "--hours 0..9" in explained
+    # Explain mode keeps the limit and the remedy, and restores the
+    # mechanism the default width held back: the object is never
+    # published, so no later fetch could find it.
+    assert "f000..f009" in explained
+    assert "--source gfs" in explained
+    assert "never written" in explained
     assert not out.exists()
 
 
 def test_the_library_boundary_refuses_the_same_request(tmp_path):
     """A caller reaching fetch_gfs directly hits the same gate."""
 
-    with pytest.raises(ValueError, match="certified"):
+    with pytest.raises(ValueError, match="publishes"):
         fetch.fetch_gfs(
             cycle=datetime(2026, 7, 29, 12), hours=(0, 3, 12),
             area=fetch.parse_area("30,-100,40,-90"),
@@ -257,12 +244,12 @@ def test_the_fetch_hint_table_refuses_an_unrouted_source_by_name(spelling):
     assert "gdas" in message  # the vocabulary that would have worked
 
 
-def test_a_config_hint_past_the_certified_span_is_refused():
+def test_a_config_hint_past_the_published_span_is_refused():
     """The config surface is gated too, in the same words."""
 
     fetch.validate_fetch_hints({"source": "gdas", "hours": 6},
                                source="experiment.toml")
-    with pytest.raises(ValueError, match="certified"):
+    with pytest.raises(ValueError, match="publishes"):
         fetch.validate_fetch_hints({"source": "gdas", "hours": 12},
                                    source="experiment.toml")
 

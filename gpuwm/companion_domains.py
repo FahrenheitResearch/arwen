@@ -709,9 +709,21 @@ def physics_components():
                     selectors["ra_rrtmg_variant"] = variant
                     label = "WRF RRTMG longwave and shortwave" if variant == "rrtmg_legacy" else label
                 constraints = option.get("constraints", {})
+                # AUDIT R-023: the filter above is ``implemented`` only, so
+                # this menu offered options the registry declared
+                # UNREACHABLE and said nothing about it -- the desktop
+                # listed land surface off, surface layer off and the
+                # analytic 90/90 proxy while the registry called all three
+                # unreachable.  Reachability is now carried to the caller
+                # with the blocker that explains it, so a door can rank,
+                # gray or warn rather than guess, and an option that
+                # becomes unreachable stops being offered silently.
+                reachability = option.get("reachability") or {}
                 options.append({"id": key if variant is None else f"{key}:{variant}", "registry_option_id": key, "label": label,
                     "selectors": selectors, "settings": selected_settings,
                     "shared_settings": sorted(set(selected_settings) - domains),
+                    "reachability": reachability.get("state", ""),
+                    "blocker": reachability.get("blocker", ""),
                     "maturity": option.get("maturity", ""), "warnings": option.get("warnings", []),
                     "requires_components": constraints.get("requires_components", {}),
                     "refused_when": _conditional_refusals(constraints)})

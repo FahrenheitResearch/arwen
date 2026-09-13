@@ -740,6 +740,15 @@ def test_execution_label_does_not_treat_resident_fallback_as_a_selected_plan(tmp
     if outcome == "unmeasured":
         assert not calls
     else:
-        assert len(calls) == 1 and calls[0]["machine"] is machine and calls[0]["resident_estimate"] is resident
+        # The card is the caller's own -- never probed a second time --
+        # and the estimate is the SHARED admission, which is what the run
+        # door prices the same domain from.  It used to be this report's
+        # own forecast term, by identity; that guard is retired with the
+        # disagreement it pinned.
+        assert len(calls) == 1 and calls[0]["machine"] is machine
+        assert (calls[0]["resident_estimate"].peak_envelope_bytes
+                == preflight.admission_estimate(
+                    exp, machine=machine).peak_envelope_bytes
+                == resident.peak_envelope_bytes)
     if outcome == "refused":
         assert "No tile fits" in result["planner_refusal"]

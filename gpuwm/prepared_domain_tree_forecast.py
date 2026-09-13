@@ -558,6 +558,7 @@ class PreparedTreeInputs:
     statics_corridor_cache_path: Path | None = None
     mapped_authority_paths: Mapping[str, Path] = field(
         default_factory=lambda: MappingProxyType({}))
+    physics_profile_assertion: Mapping[str, object] | None = None
 
 
 def _prepared_planning_nodes(inputs):
@@ -647,14 +648,20 @@ def tree_restart_identity_components(
 
     from gpuwm.core.model import restart_identity_payload
 
+    # An external-input adapter may separate observations about the
+    # preparation's resource budget from its immutable scientific recipe.
+    # Raw artifact digests remain verified by that adapter; source, cache,
+    # configuration and runtime identity remain bound below.
+    receipt_identity = getattr(initialization, 'preparation_receipt_sha256', None)
+    preparation_sha256 = (receipt_identity() if callable(receipt_identity)
+                          else inputs.authority_sha256["preparation_receipt"])
     # Strict-JSON at construction, not at hash time: these components are
     # also written into the checkpoint header, and a MappingProxyType or
     # a Path reaching json.dump there fails the checkpoint write itself.
     return _strict_json({
         "schema": REPORT_SCHEMA,
         "experiment_identity": restart_identity_payload(inputs.experiment),
-        "preparation_receipt_sha256":
-            inputs.authority_sha256["preparation_receipt"],
+        "preparation_receipt_sha256": preparation_sha256,
         "domain_cache_content_sha256": {
             f"d{bundle.grid_id:02d}": (
                 bundle.cache_reader.content_sha256 if initialization is None
@@ -684,28 +691,12 @@ def _plan_restart_identity(plan) -> dict[str, object]:
     return identity
 
 
-def cold_tree_streaming_decision(exp, nodes, *, machine=None, decisions=None):
-    """The RUN DOOR's own ``[tiles]`` admission, as one callable question.
-
-    Extracted so the door and the plan review ask the same question the
-    same way, and so a test can drive the door's invocation -- its machine,
-    its estimate arguments -- without standing up a forecast.  The estimate
-    is :func:`gpuwm.core.preflight.admission_estimate`, the single pricing
-    both sides call; the run's memory LEDGER keeps its own richer estimate,
-    which is a different question and is never compared with this one.
-
-    ``None`` when nothing in the tree configures streaming: an unconfigured
-    tree consults no planner and touches no card, exactly as before.
-    """
-    from gpuwm.core.preflight import admission_estimate
-    if not streaming.tree_streams_anywhere(
-            SimpleNamespace(walk_parent_first=lambda: nodes), exp.tiles):
-        return None
-    from gpuwm.core.streamed_relocation import mark_reconstruction_nodes
-    mark_reconstruction_nodes(nodes, exp)
-    return streaming.decide_tree(
-        nodes, exp.tiles, machine=machine, decisions=decisions,
-        resident_estimate=admission_estimate(exp, machine=machine))
+#: THE ``[tiles]`` admission this door takes, and the same callable
+#: ``gpuwm run``'s tree route takes: it lives beside :func:`decide_tree`
+#: in :mod:`gpuwm.core.streaming` so the two run doors cannot grow two
+#: implementations of one question.  Re-exported under this module's name
+#: because this door was its first caller and its callers name it here.
+cold_tree_streaming_decision = streaming.cold_tree_streaming_decision
 
 
 def resolve_execution_plan(exp) -> Mapping[str, object]:
@@ -990,12 +981,21 @@ def _validate_delayed_prepared_time(exp, domain, reader, receipt) -> None:
                 "from the analysis at its activation time")
 
 
+def validate_physics_profile(exp, *, source: str, profile: str | None):
+    """Assert one named suite on every domain; never rewrite configuration."""
+    if profile is None:
+        return None
+    return prepared_single._validate_profile_switches(
+        exp, source=source, profile=profile, all_domains=True)
+
+
 def preflight_prepared_tree(
     *,
     prepared_root: Path,
     preparation_receipt_sha256: str,
     experiment_config: Path,
     experiment_config_sha256: str,
+    physics_profile: str | None = None,
 ) -> PreparedTreeInputs:
     """Verify the complete hierarchy and resolve a runnable CPU-only plan."""
 
@@ -1034,6 +1034,8 @@ def preflight_prepared_tree(
     exp = load_experiment(experiment_config)
     if len(exp.domains) < 2:
         raise ValueError("prepared domain-tree runner requires at least two domains")
+    profile_assertion = validate_physics_profile(
+        exp, source=prepared_source, profile=physics_profile)
     # Same governance one line down from the relocation refusal, and for
     # the same reason: this route restores children from prepared caches,
     # so it neither reserves a dormant nest's VRAM nor evaluates its
@@ -1445,6 +1447,7 @@ def preflight_prepared_tree(
         execution_plan=execution_plan,
         authority_sha256=authority_hashes,
         source=prepared_source,
+        physics_profile_assertion=profile_assertion,
         mapped_authority_paths=MappingProxyType(mapped_paths),
         tolerated_identity_fields=MappingProxyType({
             label: tuple(names)
@@ -2913,16 +2916,14 @@ def run_prepared_tree(
     if moved is not None:
         raise RuntimeError(
             f"forecast implementation changed during execution: {moved}")
-    outputs = [
-        {
-            "path": str(path.resolve()),
-            "bytes": path.stat().st_size,
-            "sha256": _sha256(path),
-        }
-        for path in wrfout_paths
-    ]
+    from gpuwm.output_identity import file_records
+
+    outputs = file_records(
+        wrfout_paths, completed=getattr(writers, "completed_records", ()))
     timing["total"] = time.perf_counter() - started_total
     report = {
+        **({} if inputs.physics_profile_assertion is None else
+           {"physics_profile_assertion": dict(inputs.physics_profile_assertion)}),
         "schema": REPORT_SCHEMA,
         "status": "PASS",
         "source": inputs.source,
@@ -3186,6 +3187,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--preparation-receipt-sha256", required=True)
     parser.add_argument("--experiment-config", type=Path, required=True)
     parser.add_argument("--experiment-config-sha256", required=True)
+    parser.add_argument("--physics-profile", default=None, metavar="ID",
+                        help="assert every hash-bound domain uses the named "
+                             "suite; omit to preserve mixed per-domain physics")
     parser.add_argument("--io-mode", choices=("history", "none"), default="history")
     parser.add_argument(
         "--restart", type=Path,
@@ -3248,6 +3252,14 @@ def main(argv=None, *, observer=None) -> int:
               "the only argument on the command line", file=sys.stderr)
         return 2
     args = build_parser().parse_args(argv)
+    from gpuwm.first_products import render_without_output_refusal
+
+    render_refusal = render_without_output_refusal(
+        args.render_products, args.io_mode)
+    if render_refusal is not None:
+        print(f"prepared_domain_tree_forecast: refused: {render_refusal}",
+              file=sys.stderr)
+        return 2
     # THE capability preflight, from the same registry `gpuwm run` and
     # `gpuwm go` refuse with.  Before the output directory is claimed,
     # for the same reason the --outdir guard below is where it is: a gap
@@ -3286,6 +3298,8 @@ def main(argv=None, *, observer=None) -> int:
             preparation_receipt_sha256=args.preparation_receipt_sha256,
             experiment_config=args.experiment_config,
             experiment_config_sha256=args.experiment_config_sha256,
+            **({} if args.physics_profile is None else
+               {"physics_profile": args.physics_profile}),
         )
         # An experimental component option warns on every front door it
         # can be selected through, and this runner is one of them: a

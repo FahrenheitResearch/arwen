@@ -160,18 +160,28 @@ def test_the_native_source_offers_implemented_kain_fritsch_combinations(capsys):
 
 
 def test_day_only_is_the_longwave_off_class_read_off_the_switches(capsys):
-    """The nocturnal-validity class, derived from the pairing itself."""
+    """The nocturnal-validity class, derived from the pairing itself.
+
+    RETIRED, with the reader it duplicated: this asked the switch map
+    directly and fell back to the combined ``ra_physics`` only when a
+    split key was ABSENT.  The aggregate radiation option states the
+    split keys as -1 and the pair in the combined key, so the moment a
+    menu offered the suite on that option this read reported both
+    streams as -1 while the door reported 4 and 4.  The independence
+    that matters here is between the MENU DOCUMENT and the switch
+    resolution, not between two spellings of the same fallback, so the
+    pairing is read through the same ``radiation_scheme_ids`` the doors
+    use and the document is still checked against it entry by entry.
+    """
 
     from gpuwm.physics_compat import single_domain_runtime_switches
+    from gpuwm.physics_menu import radiation_scheme_ids
 
     document, _raw = _menu_document(capsys)
     asymmetric = 0
     for entry in document["profiles"]:
         switches = single_domain_runtime_switches(entry["profile_id"])
-        lw = int(switches.get("ra_lw_physics",
-                              switches.get("ra_physics", 0)))
-        sw = int(switches.get("ra_sw_physics",
-                              switches.get("ra_physics", 0)))
+        lw, sw = radiation_scheme_ids(switches)
         expected = sw > 0 and lw == 0
         assert entry["day_only"] is expected, entry["profile_id"]
         assert entry["longwave_scheme_id"] == lw

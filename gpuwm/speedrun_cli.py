@@ -538,7 +538,10 @@ def run_artifacts(run_root: str | Path) -> dict[str, Any]:
 
     run_root = Path(run_root)
     forecast = run_root / FORECAST_SUBDIR
-    frames = sorted((forecast / WRFOUT_SUBDIR).glob("wrfout_d*"))
+    from gpuwm.io.wrfout import iter_wrfout_files
+    frames = sorted(iter_wrfout_files(forecast / WRFOUT_SUBDIR, "wrfout_d*",
+                                     include_temporaries=False),
+                    key=lambda path: (path.name, path.as_posix()))
     products, files = _rendered_products(run_root / RENDER_SUBDIR)
     return {
         "wrfout": [{"name": path.name, "bytes": path.stat().st_size}

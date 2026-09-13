@@ -108,6 +108,8 @@ def write_json_atomically(path: str | Path, payload) -> Path:
     against one ensemble root safe, and the engine does not attempt them:
     members run sequentially by design.
     """
+    from gpuwm.supervisor import replace_file_with_retry
+
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
     text = json.dumps(payload, indent=2, sort_keys=True, allow_nan=False)
@@ -118,7 +120,10 @@ def write_json_atomically(path: str | Path, payload) -> Path:
             stream.write(text + "\n")
             stream.flush()
             os.fsync(stream.fileno())
-        os.replace(tmp, target)
+        # Readers or indexing software can briefly deny replacement on
+        # Windows. Retry through the shared durable-publication boundary;
+        # a persistent denial still fails and leaves the old JSON intact.
+        replace_file_with_retry(tmp, target)
     finally:
         if tmp.exists():
             tmp.unlink()

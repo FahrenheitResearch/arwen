@@ -363,7 +363,7 @@ def fit_main(args):
                                  "keep the original input window or choose an hourly start.")
             fetch["cycle"] = cycle.strftime("%Y-%m-%dT%H")
         if args.hours is not None:
-            fetch["hours"] = max(1, math.ceil(hours / (interval / 3600)) * (interval / 3600))
+            fetch["hours"] = math.ceil(max(1, math.ceil(hours / (interval / 3600)) * (interval / 3600)))
         # Fetch paths are interpreted by the fetch command relative to its cwd,
         # not the TOML directory. Preserve that meaning when printing the new file.
         if fetch.get("out"):
@@ -459,6 +459,50 @@ def fit_main(args):
     return 0
 
 
+def _tiles_grid_names(grids):
+    return ", ".join(f"d{int(grid):02d}" for grid in grids)
+
+
+def _tiles_governing_tables(tables):
+    """Every ``[tiles]`` table in ``tables``, with the grids it governs.
+
+    A domain's own ``tiles = {...}`` REPLACES the tree-wide ``[tiles]`` for
+    that domain instead of merging with it, which is the ruling
+    :func:`gpuwm.core.streaming.options_for_domain` applies at every other
+    door; the tree-wide table therefore governs exactly the domains that
+    declare no table of their own.  Reading that pairing here once keeps
+    this door's refusals, its mode change and its printed claims on the same
+    tables the run reads.
+    """
+    tree = [int(domain["grid_id"]) for domain in tables.get("domain", ())
+            if "tiles" not in domain]
+    name = "the tree-wide [tiles] table"
+    if tree:
+        name += ", governing grid(s) " + _tiles_grid_names(tree)
+    governing = [(name, tree, tables.get("tiles") or {})]
+    for domain in tables.get("domain", ()):
+        override = domain.get("tiles")
+        if override is not None:
+            grid = int(domain["grid_id"])
+            governing.append((f"the [[domain]] tiles table of grid "
+                              f"{_tiles_grid_names([grid])}", [grid], override))
+    return governing
+
+
+def _tiles_pinned_grids(tables):
+    """Grid IDs whose tiling is pinned by the table that governs them.
+
+    A pinned tile_nx/tile_ny is carried into the copy verbatim and priced as
+    written, so the sentence promising automatic tile dimensions is not true
+    of that copy.
+    """
+    grids = []
+    for _name, governed, table in _tiles_governing_tables(tables):
+        if table.get("tile_nx") is not None:
+            grids.extend(governed)
+    return sorted(grids)
+
+
 def _tiles_tables(authority, mode):
     """Change only the requested tile mode and schema-owned path spellings."""
     from gpuwm.experiment import build_experiment_from_config_tables
@@ -467,23 +511,27 @@ def _tiles_tables(authority, mode):
         original, source=str(authority.source), base_dir=authority.base_dir)
     raw = copy.deepcopy(original)
     configured = raw.get("tiles", {})
-    pins = sorted(set(configured) & {
-        "tile_nx", "tile_ny", "nbuffers", "halo", "vram_budget_bytes",
-        "host_budget_bytes"})
-    overrides = [str(domain["grid_id"]) for domain in raw["domain"]
-                 if "tiles" in domain]
-    if pins or overrides or configured.get("store", "host") != "host":
-        details = []
-        if pins:
-            details.append("[tiles] declares " + ", ".join(pins))
-        if overrides:
-            details.append("domain tile overrides exist on grid(s) "
-                           + ", ".join(overrides))
-        if configured.get("store", "host") != "host":
-            details.append("[tiles] selects a device store")
-        raise ValueError("domain-tiles cannot replace explicit streaming choices: "
-                         + "; ".join(details)
-                         + ". Review those settings explicitly; no files were written.")
+    governing = _tiles_governing_tables(raw)
+    # Everything declared in every governing table is carried into the copy
+    # below; only the mode changes, on the tree-wide table AND on each
+    # [[domain]] tiles table, because a domain that declares its own table
+    # never reads the tree-wide one and a mode written only there would
+    # govern no grid.  The one setting this door cannot carry is a device
+    # store: it plans and prices a pinned host out-of-core store and writes
+    # store = 'host', so a declared device store would be replaced by a plan
+    # nobody asked for.  Pins are not refused here: rebuilding the copy hands
+    # them to StreamingOptions, which refuses tile_nx, tile_ny, nbuffers and
+    # halo under mode = 'auto' by name, and honours them under mode = 'on'.
+    device = [name for name, _grids, table in governing
+              if table.get("store", "host") != "host"]
+    if device:
+        raise ValueError(
+            "domain-tiles plans and prices a pinned host out-of-core store "
+            "and writes store = 'host', so the device store declared by the "
+            "store key in " + "; ".join(device) + " would be silently "
+            "replaced by a plan you did not choose. Set store = 'host' there "
+            "to take this copy, or keep the configuration you have; no files "
+            "were written.")
     if "case_data" in raw:
         from gpuwm.case_data import resolved_case_data_paths
         raw["case_data"] = resolved_case_data_paths(
@@ -498,11 +546,17 @@ def _tiles_tables(authority, mode):
             raw["static"]["highres"]["cache_root"] = str(highres.cache_root.resolve())
     rebased = copy.deepcopy(raw)
     raw["tiles"] = {**configured, "mode": mode, "store": "host"}
+    for domain in raw["domain"]:
+        if "tiles" in domain:
+            domain["tiles"] = {**domain["tiles"], "mode": mode, "store": "host"}
     unchanged = copy.deepcopy(raw)
     if "tiles" in rebased:
         unchanged["tiles"] = rebased["tiles"]
     else:
         unchanged.pop("tiles")
+    for index, domain in enumerate(rebased["domain"]):
+        if "tiles" in domain:
+            unchanged["domain"][index]["tiles"] = domain["tiles"]
     if unchanged != rebased:
         raise RuntimeError("Tile selection changed unrelated configuration settings")
     return original, raw
@@ -587,10 +641,19 @@ def _tiles_memory_plan(path, experiment, *, original):
             raise ValueError(message)
         rows = [{**row, **row.get("tile", {})} for row in road.rows]
     else:
+        # The run door prices the ONE domain's own table when it carries one
+        # (gpuwm/runtime.py calls streaming.options_for_domain for its single
+        # domain, and tree_road_plan calls it per node on the road above), so
+        # this door reads the same table through the same function: a receipt
+        # that priced the tree-wide table would sign a plan the run declines.
+        single = streaming.options_for_domain(experiment.root, experiment.tiles)
         try:
-            decision = streaming.decide(
-                experiment.root.run, experiment.tiles, machine=machine,
-                resident_estimate=phases.forecast)
+            decision = streaming.cold_single_domain_decision(
+                experiment, machine=machine)
+            # estimate_phases already uses this domain's governing table.
+            # Keep the current shared cold admission rather than reintroduce
+            # the older report-only decision carried by this group.
+            envelope = phases.streamed if decision.stream else None
         except Exception as error:
             from tilestream.autoplan import CannotPlan
             if isinstance(error, CannotPlan) and error.resource in {"vram", "host"}:
@@ -598,20 +661,36 @@ def _tiles_memory_plan(path, experiment, *, original):
                     resource=error.resource, budget_bytes=budget,
                     free_bytes=sizing.free_bytes) from error
             raise ValueError(f"No fitting automatic tile plan: {error}") from error
-        rows = [dict(grid_id=experiment.root.grid_id,
+        if decision.stream and envelope is None:
+            raise ValueError("The selected tile plan could not be priced; no output written")
+        phases = replace(phases, streamed=envelope,
+                         forecast_envelope_bytes=(
+                             phases.forecast.peak_envelope_bytes if envelope is None
+                             else int(envelope.peak_vram_bytes)))
+        rows = [dict(grid_id=experiment.root.grid_id, mode=single.mode,
                      road="streamed" if decision.stream else "resident",
                      reason=decision.reason, tile_nx=decision.tile_nx,
                      tile_ny=decision.tile_ny, nbuffers=decision.nbuffers,
                      halo=decision.halo)]
-        if decision.stream and phases.streamed is None:
-            raise ValueError("The selected tile plan could not be priced; no output written")
     host_bytes = 0 if phases.streamed is None else phases.streamed.host_bytes
     if (phases.peak_envelope_bytes > budget
             or host_bytes > machine.host_budget_bytes):
+        # A pinned tiling is priced as written, so when it is the tiling that
+        # does not fit, the way out is the pin: nothing else on this door can
+        # make those bytes smaller.
+        pinned = sorted(int(domain.grid_id) for domain in experiment.domains
+                        if streaming.options_for_domain(
+                            domain, experiment.tiles).tile_nx is not None)
+        way_out = ("" if not pinned else
+                   " The tiling pinned on grid(s) " + _tiles_grid_names(pinned)
+                   + " is priced exactly as written: pin a smaller tile or "
+                     "fewer buffers there, or drop tile_nx and tile_ny to let "
+                     "this door plan a tiling that fits.")
         raise MemoryAdmissionError("Tile streaming does not fit the available memory: "
                          + phases.verdict(budget)
                          + f"; host store {host_bytes / dw.GIB:.2f} GiB against "
-                         f"{machine.host_budget_bytes / dw.GIB:.2f} GiB available allowance",
+                         f"{machine.host_budget_bytes / dw.GIB:.2f} GiB available allowance."
+                         + way_out,
                          peak_envelope_bytes=phases.peak_envelope_bytes, budget_bytes=budget,
                          host_store_bytes=host_bytes, host_budget_bytes=machine.host_budget_bytes)
     return dict(source=source, mode=experiment.tiles.mode, domains=rows,
@@ -660,12 +739,23 @@ def tiles_main(args):
     print("Exact changes:")
     for key, before, after in delta:
         print(f"  {key}: {before!r} -> {after!r}")
+    pinned = _tiles_pinned_grids(raw)
     for row in proof["domains"]:
-        detail = (f"; planner tile {row['tile_nx']}x{row['tile_ny']}, "
+        # WHOEVER CHOSE IT.  A tiling carried from the table is not the
+        # planner's, and calling it the planner's contradicts the sentence
+        # below that says this configuration pins it.
+        origin = "pinned" if row["grid_id"] in pinned else "planner"
+        detail = (f"; {origin} tile {row['tile_nx']}x{row['tile_ny']}, "
                   f"{row['nbuffers']} buffers" if row["road"] == "streamed" else "")
         print(f"  d{row['grid_id']:02d}: {row['road']}{detail}")
     print(proof["verdict"])
-    print("Tile dimensions stay automatic and are checked again when the forecast starts.")
+    if pinned:
+        print("The tiling this configuration pins is preserved and priced as "
+              "written on grid(s) "
+              + ", ".join(f"d{grid:02d}" for grid in pinned)
+              + "; it is checked again when the forecast starts.")
+    else:
+        print("Tile dimensions stay automatic and are checked again when the forecast starts.")
     if not proof["ingest_priced"]:
         print("Preprocessing is not priced for this input route; this estimate covers the forecast.")
     if not args.write:

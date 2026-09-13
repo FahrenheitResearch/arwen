@@ -241,7 +241,26 @@ def test_auto_keeps_the_measured_card_in_its_resident_decision(monkeypatch, free
     assert phases.peak_envelope_bytes <= budget
     assert phases.streamed is None
     assert phases.forecast.non_pool_device_bytes == actual.non_pool_device_bytes
-    assert len(seen) == 2 and all(value is phases.forecast for value in seen)
+    # THE GUARD THIS RETIRES required both estimates to BE this report's
+    # own forecast term.  The second one is now the shared admission --
+    # the same call, on the same machine, that the run door and the
+    # prepared forecast take -- so identity with the report's term is no
+    # longer the property to pin; what has to hold is that the caller's
+    # MEASURED card reaches it, because an admission priced against the
+    # 170-SM reference refuses this domain outright.  MEASURED on this
+    # fixture at 6.54 GiB free, budget 6,485,400,616 bytes: the admission
+    # is 5,602,673,416 bytes with the profile carried and 7,091,619,592
+    # without it, so dropping the profile turns a domain that fits into a
+    # DomainFitError.
+    from dataclasses import replace as _replace
+
+    profiled = _replace(machine, device_profile=profile)
+    assert len(seen) == 2
+    assert seen[0] is phases.forecast
+    assert seen[1] == pf.admission_estimate(exp, machine=profiled)
+    assert all(value.local_memory_profile.multiprocessor_count == 68
+               for value in seen)
+    assert all(value.peak_envelope_bytes < budget for value in seen)
     assert (exp.root.run.nx, exp.root.run.ny, exp.root.run.nz) == (280, 280, 49)
     assert exp.root.run.mp_physics == 10 and exp.tiles.mode == "auto"
 

@@ -373,11 +373,22 @@ FROZEN_MODULE_DIGESTS = {
         # test_pgam_reference_density_is_rebuilt_from_the_current_temperature,
         # which compiles module_source("morrison") and drives morr_bound
         # through ctypes.
-        '270af004b00f0962d2f39cb120d14c246fdfcb99770c0c45b855b4cd1adff3d1',
-        '1c4148b5e49a63feb7deecffcde9dd523fccccc89d79f26918102366c34b6ca5'),
+        # The finite-transfer correction changes Morrison's rain/cloud
+        # freezing range, final vapor store and in-range number behavior.
+        # Its device contracts cover each change; continuation identity v3
+        # distinguishes it. Morrison is not an mp=8 translation unit, and
+        # the other source digests remain unchanged. These are source
+        # identities, not regenerated physical reference outputs.
+        'a563005eb0992bc925d1c80f58d173dad1bfb385824be1bae5f9f90cc6ecb829',
+        '9038bbbdfc9f0f03c57ab3c6e81c93618cdee2be9f258bfb2df1a497ac29e3d9'),
     'mynn_pbl': (
-        'b53ab90e634e61367afadfaa77667c8f2eb2430fc061ce9976509fe0e2f4490e',
-        '87f80d06cc7724fd1277eefbf91738fe8eb0e774768ed64292cb1157f19a2d84'),
+        # Ordinary mixing length shares the rounded initialization helper.
+        # This changes PBL tendencies and has continuation identity v2.
+        # The old source digest remains pinned by the stripped DMP sibling;
+        # its test proves all source outside this entry point is unchanged.
+        # These identify source, not new numerical reference outputs.
+        'ef5ad38bdddaaf1cc465290e22f5b6ee176e8f19e33354c939d18b37f906c5da',
+        '32592d90718ea3da2b0261cb10be432c60a43656ffe45b1c4aefb0c6aa54f169'),
     'mynn_surface': (
         'a94de3ff2da95c37e12b437123b4a3807ac1318c524b339609f6024f4d21f85b',
         '891ec5d565c720afabab57169f1a3b1aa95efc3d1ac84e87ffbd4ebb239c57fe'),

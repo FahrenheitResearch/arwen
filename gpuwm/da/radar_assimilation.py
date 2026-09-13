@@ -61,14 +61,45 @@ Nothing here is wired into a default route.  EXPERIMENTAL.
 
 from __future__ import annotations
 
+import gc
 import os
 import time
 import types
-from dataclasses import dataclass
+from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable, Mapping, Sequence
 
 import numpy as np
+
+
+_ANALYSIS_EXECUTION = ContextVar("analysis_execution", default=None)
+
+
+@contextmanager
+def analysis_execution_options(*, scratch_budget=None, progress=None):
+    """Execution scheduling for one calling context, with automatic restoration.
+
+    The scope does not change input configuration or the analysis method.
+    Direct solver calls and concurrent contexts retain their own settings.
+    """
+    token = _ANALYSIS_EXECUTION.set((scratch_budget, progress))
+    try:
+        yield
+    finally:
+        _ANALYSIS_EXECUTION.reset(token)
+
+
+def _execution_settings(memory_budget_mib, progress):
+    options = _ANALYSIS_EXECUTION.get()
+    if options is None:
+        return memory_budget_mib, progress, None
+    resolve, relay = options
+    budget, receipt = (resolve(memory_budget_mib) if resolve else
+                       (memory_budget_mib, None))
+    return budget, progress if progress is not None else relay, receipt
+
 
 from gpuwm.da.letkf import (RELAXATION_MODES, GriddedObs, LetkfConfig,
                             LetkfDiagnostics, Localization, analyze)
@@ -117,6 +148,31 @@ class RadarAssimilationError(ValueError):
 # ---------------------------------------------------------------------------
 # configuration
 # ---------------------------------------------------------------------------
+
+
+def analysis_sources(cfg, *, extra_batches: int | None) -> tuple[str, ...]:
+    """Which observation families one analysis actually carries.
+
+    ONE FUNCTION, BOTH DOORS.  The config's own refusal and the analysis
+    call both ask this, so a configuration cannot be admitted at one door
+    and called empty at the other.  ``extra_batches`` is the COUNT of
+    attributed extra batches when it is known (the analysis call) and
+    ``None`` when it is not yet (construction), where the config's
+    ``extra_observations`` statement stands in: ``None`` there means "the
+    batch list will say", which is admitted, and ``False`` means "there
+    will be none", which is a fact the construction can already act on.
+    """
+
+    names = [name for name, enabled in (
+        ("velocity", cfg.velocity), ("reflectivity", cfg.reflectivity),
+        ("clear_air", cfg.clear_air), ("cwp", cfg.cwp)) if enabled]
+    declared = getattr(cfg, "extra_observations", None)
+    if extra_batches is None:
+        if declared is not False:
+            names.append("extra_observations")
+    elif int(extra_batches) > 0:
+        names.append("extra_observations")
+    return tuple(names)
 
 
 @dataclass(frozen=True)
@@ -248,6 +304,22 @@ class RadarAssimilationConfig:
     #: beside the radar ones.  Needs a provider; see
     #: :func:`gpuwm.da.obsop_cwp.checkpoint_cwp_provider`.
     cwp: bool = False
+    #: Whether this analysis carries attributed extra batches beside (or
+    #: instead of) the radar and satellite ones.  ``None``, the DEFAULT,
+    #: means the config does not claim to know: the batch list handed to
+    #: :func:`assimilate_radar_grid` is the fact, and that is where the
+    #: emptiness of an analysis is decided.  ``True`` and ``False`` are
+    #: statements, kept because a caller that KNOWS it will pass none
+    #: gets its "this would assimilate nothing" refusal at construction,
+    #: which is earlier.
+    #:
+    #: It is not an admission ticket.  A flag defaulting False meant a
+    #: caller with real attributed point observations and no radar was
+    #: refused at construction for not having declared them, while a
+    #: caller that declared them and then passed an empty list was
+    #: admitted; both are the declaration disagreeing with the data.
+    #: :func:`analysis_sources` is the one function both doors call.
+    extra_observations: bool | None = None
     #: Per-type localization for CWP.  This one is not decoration: CWP is a
     #: column integral carried at one level (see :mod:`gpuwm.da.obs_goes`),
     #: so its vertical radius is what decides whether the observation acts
@@ -327,14 +399,14 @@ class RadarAssimilationConfig:
         if len(set(self.analysis_fields)) != len(self.analysis_fields):
             raise RadarAssimilationError(
                 f"analysis_fields has duplicates: {self.analysis_fields!r}")
-        if not (self.velocity or self.reflectivity or self.clear_air
-                or self.cwp):
+        if not analysis_sources(self, extra_batches=None):
             raise RadarAssimilationError(
                 "none of velocity, reflectivity, clear_air or cwp is "
-                "enabled, so this "
+                "enabled and extra_observations is declared False, so this "
                 "config would assimilate nothing. An intentional "
                 "no-observation cycle is a run_cycles call with "
-                "assimilate=None, not an empty analysis here")
+                "assimilate=None, not an empty analysis here; leave "
+                "extra_observations unset to let the batch list decide")
         if self.z_source not in Z_SOURCES:
             raise RadarAssimilationError(
                 f"z_source must be one of {Z_SOURCES}, got "
@@ -1176,6 +1248,98 @@ def innovation_summary(batches: Sequence[GriddedObs]) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 
+
+def _resident_memory_failure(exc):
+    """Only allocation failures or the owner's explicit capacity condition."""
+    from gpuwm.da.letkf import LetkfCapacityError, LetkfError, _is_device_memory_error
+    if isinstance(exc, (MemoryError, LetkfCapacityError)):
+        return True
+    if isinstance(exc, LetkfError):
+        return exc.__cause__ is not None and _resident_memory_failure(exc.__cause__)
+    if type(exc).__module__.split('.')[0] in ('cupy', 'cupy_backends'):
+        return _is_device_memory_error(exc)
+    # A numerical error or cancellation with an incidental OOM context is
+    # still that error, not a request to try another storage mode.
+    return False
+
+
+def _analysis_attempt(solver, prior, batches, geometry, config, *, namespace,
+                      storage, supports_staging, progress, diagnostics=None):
+    """Own every device reference until the result is back on the host."""
+    if diagnostics is None:
+        diagnostics = LetkfDiagnostics()
+    solve_prior, solve_batches = prior, batches
+    stage_seconds = unstage_seconds = 0.
+    if storage == 'cuda-resident':
+        started = time.perf_counter()
+        solve_prior = {name: namespace.asarray(value) for name, value in prior.items()}
+        solve_batches = [replace(batch,
+            values=namespace.asarray(np.asarray(batch.values, np.float64)),
+            errors=namespace.asarray(np.asarray(batch.errors, np.float64)),
+            simulated=namespace.asarray(np.asarray(batch.simulated, np.float64)),
+            mask=namespace.asarray(np.asarray(batch.mask, bool))) for batch in batches]
+        if hasattr(namespace, 'cuda'):
+            namespace.cuda.runtime.deviceSynchronize()
+        stage_seconds = time.perf_counter()-started
+    options = dict(progress=progress) if supports_staging else {}
+    if supports_staging and storage != 'cuda-resident':
+        options['solve_namespace'] = namespace
+    increments = solver(solve_prior, solve_batches, geometry, config, diagnostics, **options)
+    if storage == 'cuda-resident':
+        started = time.perf_counter()
+        increments = {name: namespace.asnumpy(value) for name, value in increments.items()}
+        unstage_seconds = time.perf_counter()-started
+    return increments, diagnostics, stage_seconds, unstage_seconds
+
+
+def _execute_analysis(solver, prior, batches, geometry, config, *, namespace,
+                      device, progress=None, diagnostics=None):
+    supports_staging = bool(getattr(solver, 'supports_host_staging', False))
+    routes = (['cuda-resident', 'host-staged-cuda'] if device == 'cuda' and supports_staging
+              else ['cuda-resident'] if device == 'cuda' else ['host'])
+    attempts = []
+    last_progress = None
+    for number, storage in enumerate(routes, 1):
+        def relay(value):
+            nonlocal last_progress
+            last_progress = dict(value, attempt=number, storage=storage)
+            if progress is not None:
+                progress(last_progress)
+        callback = (relay if supports_staging and device == 'cuda' else progress)
+        started = time.perf_counter()
+        try:
+            result = _analysis_attempt(solver, prior, batches, geometry, config,
+                namespace=namespace, storage=storage, supports_staging=supports_staging,
+                progress=callback, diagnostics=diagnostics if len(routes) == 1 else None)
+        except Exception as exc:
+            if number == len(routes) or not _resident_memory_failure(exc):
+                raise
+            # Retain only scalar evidence, never the exception/traceback:
+            # its frames own the arrays that must die before the retry.
+            attempts.append(dict(attempt=number, storage=storage, status='memory-failed',
+                error_type=type(exc).__name__, reason=str(exc),
+                wall_seconds=time.perf_counter()-started, last_progress=last_progress,
+                committed=False))
+        else:
+            attempts.append(dict(attempt=number, storage=storage, status='computed',
+                wall_seconds=time.perf_counter()-started, committed=False))
+            return (*result, storage, attempts)
+        # Outside the exception handler: no failed frame should retain
+        # resident arrays when the bounded mode takes its first allocation.
+        gc.collect()
+        if hasattr(namespace, 'cuda'):
+            namespace.cuda.runtime.deviceSynchronize()
+        namespace.get_default_memory_pool().free_all_blocks()
+        if progress is not None:
+            progress(dict(schema='gpuwm-da.analysis-progress.v1', phase='retry',
+                attempt=number+1, storage=routes[number], gridpoints_done=0,
+                gridpoints_total=int(np.prod(next(iter(prior.values())).shape[1:])),
+                chunks=0, active_points=0, elapsed_seconds=time.perf_counter()-started,
+                reason=attempts[-1]['reason'], previous_attempt_committed=False))
+        last_progress = None
+    raise AssertionError('Analysis execution ended without a result')
+
+
 def assimilate_radar_grid(checkpoints: Mapping[int, str | Path],
                           observations, grid,
                           cfg: RadarAssimilationConfig, *,
@@ -1184,6 +1348,7 @@ def assimilate_radar_grid(checkpoints: Mapping[int, str | Path],
                           extra_obs_provenance=None,
                           cwp_observations=None,
                           cwp_provider=None,
+                          analysis_runner=None, progress=None,
                           diagnostics: LetkfDiagnostics | None = None
                           ) -> tuple[dict, dict]:
     """One LETKF analysis over member checkpoints, radar and/or satellite.
@@ -1240,6 +1405,11 @@ def assimilate_radar_grid(checkpoints: Mapping[int, str | Path],
         model condensate under the phase the retrieval saw, never the
         model's own -- see :mod:`gpuwm.da.obsop_cwp`.
 
+    analysis_runner
+        Optional transform with the same contract as letkf.analyze. Local
+        deterministic cycling uses the static covariance mean transform;
+        the default remains the existing ensemble transform.
+
     Returns
     -------
     ``(increments_by_member, provenance)`` in exactly the shape the cycle
@@ -1249,6 +1419,20 @@ def assimilate_radar_grid(checkpoints: Mapping[int, str | Path],
     the adapter provenance, the observation-space innovation statistics
     and the filter diagnostics.
     """
+    # The batch list is the fact about what this analysis carries, so the
+    # emptiness of an analysis is decided here and not from a flag set
+    # before anybody knew. It is the FIRST check: refusing before a
+    # checkpoint is opened keeps the refusal at plan review rather than
+    # partway into one.
+    extra_batches = [] if extra_obs is None else list(extra_obs)
+    if not analysis_sources(cfg, extra_batches=len(extra_batches)):
+        raise RadarAssimilationError(
+            "this analysis carries no velocity, reflectivity, clear_air or "
+            "cwp source and no extra observation batch arrived, so it would "
+            "update the background with nothing. Enable a source, pass the "
+            "attributed extra batches, or run the cycle with "
+            "assimilate=None, which is what a deliberate forecast-only "
+            "cycle is")
     if not checkpoints:
         raise RadarAssimilationError("no member checkpoints were given")
     needs_dbz = (cfg.reflectivity or cfg.clear_air
@@ -1404,7 +1588,6 @@ def assimilate_radar_grid(checkpoints: Mapping[int, str | Path],
             clear_air_error_inflation=1.0,
             radars=None if cfg.radars is None else list(cfg.radars))
 
-    extra_batches = list(extra_obs) if extra_obs else []
     if extra_batches:
         if extra_obs_provenance is None:
             raise RadarAssimilationError(
@@ -1484,6 +1667,8 @@ def assimilate_radar_grid(checkpoints: Mapping[int, str | Path],
     # -- the filter ----------------------------------------------------------
     if diagnostics is None:
         diagnostics = LetkfDiagnostics()
+    execution_budget, progress, execution_receipt = _execution_settings(
+        cfg.memory_budget_mib, progress)
     letkf_cfg = LetkfConfig(
         localization=cfg.localization,
         analysis_fields=tuple(cfg.analysis_fields),
@@ -1491,52 +1676,19 @@ def assimilate_radar_grid(checkpoints: Mapping[int, str | Path],
         prior_inflation=cfg.prior_inflation,
         relaxation=cfg.relaxation,
         chunk_points=cfg.chunk_points,
-        memory_budget_mib=cfg.memory_budget_mib,
+        memory_budget_mib=execution_budget,
         solve_dtype=cfg.solve_dtype,
         eigensolver=cfg.eigensolver)
-    solve_prior, solve_batches = prior, batches
-    stage_seconds = 0.0
-    unstage_seconds = 0.0
-    # Resolved ONCE, here, and used everywhere below.  Asking the question
-    # twice is how a receipt comes to name a device the solve did not use.
-    solve_device, solve_device_reason = resolve_solve_device(
-        cfg.solve_device)
-    t_stage = time.perf_counter()
-    if solve_device == "cuda":
-        import cupy as cp  # noqa: PLC0415
-
-        solve_prior = {name: cp.asarray(values)
-                       for name, values in prior.items()}
-        solve_batches = [
-            GriddedObs(name=batch.name,
-                       values=cp.asarray(np.asarray(batch.values,
-                                                    np.float64)),
-                       errors=cp.asarray(np.asarray(batch.errors,
-                                                    np.float64)),
-                       simulated=cp.asarray(np.asarray(batch.simulated,
-                                                       np.float64)),
-                       mask=cp.asarray(np.asarray(batch.mask, bool)),
-                       localization=batch.localization)
-            for batch in batches]
-        # The staging is the cuda arm's ENTRY FEE and is invisible in the
-        # filter's own three-way split, which starts once the arrays are
-        # already in the namespace they arrived in.  A device arm that
-        # wins the solve and loses the transfer is a real outcome, and a
-        # receipt that cannot show it cannot be used to choose a default.
-        try:
-            cp.cuda.runtime.deviceSynchronize()
-        except Exception:
-            pass
-        stage_seconds = time.perf_counter() - t_stage
-    increments = analyze(solve_prior, solve_batches,
-                         letkf_grid_geometry(grid), letkf_cfg, diagnostics)
-    if solve_device == "cuda":
-        import cupy as cp  # noqa: PLC0415
-
-        t_unstage = time.perf_counter()
-        increments = {name: cp.asnumpy(values)
-                      for name, values in increments.items()}
-        unstage_seconds = time.perf_counter() - t_unstage
+    solve_device, solve_device_reason = resolve_solve_device(cfg.solve_device)
+    namespace = np
+    if solve_device == 'cuda':
+        import cupy as namespace
+    solver = analyze if analysis_runner is None else analysis_runner
+    increments, completed_diagnostics, stage_seconds, unstage_seconds, storage, attempts = _execute_analysis(
+        solver, prior, batches, letkf_grid_geometry(grid), letkf_cfg,
+        namespace=namespace, device=solve_device, progress=progress, diagnostics=diagnostics)
+    # Failed attempts never contaminate the caller's success diagnostics.
+    vars(diagnostics).update(vars(completed_diagnostics))
 
     # -- positivity ----------------------------------------------------------
     # On the MASS-POINT increments, before restaggering, because the
@@ -1605,6 +1757,9 @@ def assimilate_radar_grid(checkpoints: Mapping[int, str | Path],
                       else f"mp_physics={cfg.mp_physics} H(x) floor")),
         },
         "cwp_assimilated": bool(cfg.cwp),
+        "extra_observation_batches": len(extra_batches),
+        "analysis_sources": list(analysis_sources(
+            cfg, extra_batches=len(extra_batches))),
         "cwp_thinning": cwp_thinning_receipt,
         "cwp_error_inflation": float(cfg.cwp_error_inflation),
         "cwp_localization_horizontal_m": (
@@ -1624,6 +1779,10 @@ def assimilate_radar_grid(checkpoints: Mapping[int, str | Path],
         # of last bits in the increments.
         "solve_device": cfg.solve_device,
         "solve_device_resolved": solve_device,
+        "analysis_storage": storage,
+        "analysis_attempts": attempts,
+        "solve_timing_scope": "successful attempt; failed attempt wall time is recorded separately",
+        "analysis_execution": execution_receipt,
         "solve_device_reason": solve_device_reason,
         # Host-to-device staging of the prior and the observation batches,
         # and the copy of the increments back.  Both are exactly zero on
@@ -1642,6 +1801,15 @@ def assimilate_radar_grid(checkpoints: Mapping[int, str | Path],
             "total_points": int(diagnostics.total_points),
             "max_local_obs": int(diagnostics.max_local_obs),
             "batches": int(diagnostics.batches),
+            "host_staging": bool(getattr(diagnostics, "host_staging", False)),
+            "host_geometry_bytes_per_point": int(getattr(diagnostics, "host_geometry_bytes_per_point", 0)),
+            "device_chunks": int(getattr(diagnostics, "device_chunks", 0)),
+            "staging_bytes": int(getattr(diagnostics, "staging_bytes", 0)),
+            "staging_peak_bytes": int(getattr(diagnostics, "staging_peak_bytes", 0)),
+            "geometry_evaluations": int(getattr(diagnostics, "geometry_evaluations", 0)),
+            "geometry_reuses": int(getattr(diagnostics, "geometry_reuses", 0)),
+            "driver_free_bytes": getattr(diagnostics, "driver_free_bytes", None),
+            "pool_reusable_bytes": getattr(diagnostics, "pool_reusable_bytes", None),
             "chunk_points": int(diagnostics.chunk_points),
             # The chunk the sizing chose up front, and how many times a
             # device allocation failure halved it mid-analysis.  Equal

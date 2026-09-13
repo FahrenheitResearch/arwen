@@ -156,43 +156,16 @@ pub fn radial_velocity_scale(half_range: f64) -> ColorScale {
     })
 }
 
-/// The NWS composite-reflectivity ladder, sub-5 dBZ transparent.
-///
-/// This is the fallback for an observation grid, which has no stored model
-/// variable and therefore no selector for
-/// `operational_style_for_store_variable` to resolve.  The steps are the
-/// 5 dBZ NWS breaks both matplotlib render modules in this repository
-/// already draw, so an observed panel and a forecast panel are read off the
-/// same colours.
+/// The shared production composite-reflectivity scale, also used by forecasts.
+/// Observations have the same physical quantity even without a model identity.
 pub fn reflectivity_scale() -> ColorScale {
-    const BREAKS: [f64; 15] = [
-        5.0, 10.0, 15.0, 20.0, 25.0, 30.0, 35.0, 40.0, 45.0, 50.0, 55.0, 60.0, 65.0, 70.0, 75.0,
-    ];
-    const COLORS: [[u8; 3]; 14] = [
-        [4, 233, 231],
-        [1, 159, 244],
-        [3, 0, 244],
-        [2, 253, 2],
-        [1, 197, 1],
-        [0, 142, 0],
-        [253, 248, 2],
-        [229, 188, 0],
-        [253, 149, 0],
-        [253, 0, 0],
-        [212, 0, 0],
-        [188, 0, 0],
-        [248, 0, 253],
-        [152, 84, 198],
-    ];
-    ColorScale::Discrete(DiscreteColorScale {
-        levels: BREAKS.to_vec(),
-        colors: COLORS
-            .iter()
-            .map(|[r, g, b]| Color::rgba(*r, *g, *b, 255))
-            .collect(),
-        extend: ExtendMode::Max,
-        mask_below: Some(5.0),
-    })
+    let recipe = rustwx_models::plot_recipe("composite_reflectivity")
+        .expect("the production composite-reflectivity recipe is registered");
+    rustwx_products::plot_design::operational_fill_scale_for_recipe(
+        recipe,
+        rustwx_core::FieldSelector::entire_atmosphere(
+            rustwx_core::CanonicalField::CompositeReflectivity),
+    )
 }
 
 fn ramp(stops: &[[u8; 3]], fraction: f64) -> Color {
@@ -255,10 +228,19 @@ mod tests {
     }
 
     #[test]
-    fn sub_five_dbz_is_transparent_as_both_render_modules_draw_it() {
+    fn observation_reflectivity_matches_the_forecast_scale() {
         let scale = discrete(&reflectivity_scale());
-        assert_eq!(scale.mask_below, Some(5.0));
-        assert_eq!(scale.levels[0], 5.0);
+        let expected = rustwx_products::viewer::operational_style_for_store_variable(
+            "composite_reflectivity",
+            &serde_json::to_value(rustwx_core::FieldSelector::entire_atmosphere(
+                rustwx_core::CanonicalField::CompositeReflectivity)).unwrap(),
+            "dBZ",
+            rustwx_core::ModelId::Hrrr,
+        ).expect("forecast reflectivity style").scale.resolved_discrete();
+        assert_eq!(scale.levels, expected.levels);
+        assert_eq!(scale.colors, expected.colors);
+        assert_eq!(scale.mask_below, expected.mask_below);
+        assert_eq!(scale.extend, expected.extend);
     }
 
     #[test]

@@ -166,15 +166,143 @@ def test_the_default_configuration_is_the_measured_anchor_and_is_priced_the_same
     assert fp.prepared_memory is not None
 
 
-def test_legacy_rrtmg_is_the_named_limit_of_the_itemization():
-    """The standalone storage is the RTE+RRTMGP solver's own; legacy RRTMG keeps
-    the fused price until its prepared factory is itemized (guard cites ENG-013)."""
+def test_legacy_rrtmg_is_itemized_from_its_own_call_pricing():
+    """Legacy RRTMG is priced from the legacy port's OWN function.
+
+    It replaces test_legacy_rrtmg_is_the_named_limit_of_the_itemization,
+    which asserted the opposite: that supported() declined and the run kept
+    the fused rung price measured 23 % low (ENG-013).  Nothing measured
+    RTE+RRTMGP storage against the legacy port, so charging one as a bound
+    on the other would be an invented basis; gpuwm/core/rrtmg_legacy.py's
+    legacy_radiation_vram_bytes is the recorded one, and
+    preflight.estimate_experiment already prices the resident run with it.
+    """
+    from gpuwm.core.rrtmg_legacy import legacy_radiation_vram_bytes
+
     exp = _with_run(experiment(), ra_rrtmg_variant="rrtmg_legacy")
     run = exp.root.run
-    assert not ptm.supported(exp, run, exp.tiles)
-    fp = st.radiation_footprint(run, exp.tiles)
-    assert fp.prepared_memory is None
-    assert fp.radiation_transient_bytes == ap.RADIATION_TRANSIENT_BYTES[fp.rung]
+    assert ptm.supported(exp, run, exp.tiles)
+    _, _, fp = priced(exp)
+    memory = fp.prepared_memory
+    assert memory is not None
+    columns = 37 * 37
+    assert memory.buffer_terms(columns * run.nz)["radiation_named_storage_bytes"] == \
+        legacy_radiation_vram_bytes(
+            ncol=columns, nz=run.nz, p_top=exp.vertical.p_top, column_chunk=None,
+            longwave=True, shortwave=True,
+            resident_threads=profile().resident_thread_capacity)
+    terms = memory.terms(columns * run.nz, 2)
+    assert "legacy RRTMG" in terms["basis"]
+    # The itemization is the price, so the rung's reserved transient is not
+    # charged a second time on top of it.
+    assert fp.radiation_transient_bytes == 0
+    # The two solvers are priced by their own functions, never one by the
+    # other's: the same geometry on RTE+RRTMGP reports a different figure.
+    modern = priced(experiment())[2].prepared_memory
+    assert modern.buffer_terms(columns * run.nz)["radiation_named_storage_bytes"] != \
+        memory.buffer_terms(columns * run.nz)["radiation_named_storage_bytes"]
+    assert "RTE+RRTMGP" in modern.terms(columns * run.nz, 2)["basis"]
+
+
+def test_the_model_prices_the_domain_it_is_given_not_the_root(tmp_path):
+    """Every geometry read follows the DOMAIN being priced.
+
+    The itemization read exp.root throughout, so the only thing it could
+    price was the root; a caller holding any other domain got the root's
+    geometry, boundary tables and nesting under that domain's name.  The
+    per-domain plumbing is what a tree arm needs, and supported() still
+    declines a tree for the reason its docstring states.
+    """
+    from gpuwm.experiment import load_experiment
+    from test_check_nested_mixed_road import _nested_auto_tiles
+
+    exp = load_experiment(_nested_auto_tiles(tmp_path))
+    assert len(exp.domains) > 1
+    child = exp.domains[1]
+    assert ptm.domain_of(exp, child.run) is child
+    options = st.options_for_domain(child, exp.tiles)
+    root_model = ptm.PreparedTileMemory(exp, profile(), 0)
+    child_model = ptm.PreparedTileMemory(exp, profile(), 0, domain=child,
+                                         options=options)
+    assert root_model.cfg == exp.root.run
+    assert child_model.cfg == child.run
+    cells = 37 * 37 * child.run.nz
+    assert child_model.terms(cells, 2)["domain"] == \
+        f"{child.run.nx}x{child.run.ny}x{child.run.nz}"
+    assert child_model.terms(cells, 2)["grid"] == f"d{child.grid_id:02d}"
+    assert root_model.terms(37 * 37 * exp.root.run.nz, 2)["grid"] == \
+        f"d{exp.root.grid_id:02d}"
+    assert child_model.buffer_terms(cells) != root_model.buffer_terms(cells)
+    # The tree arm itself is DEFERRED and says so: supported() declines a
+    # multi-domain experiment, and its docstring names what it cannot price.
+    assert not ptm.supported(exp, child.run, options)
+    assert "DOMAIN TREE" in ptm.supported.__doc__
+
+
+def test_cam_ozone_is_priced_rather_than_declined():
+    """The ozone arrays are one keyword of estimate_domain, not a gap."""
+    exp = experiment()
+    run = exp.root.run
+    plain = st.RadiationMemoryContext(column_chunk=exp.column_chunk,
+                                      p_top=exp.vertical.p_top, cam_ozone=False)
+    ozone = replace(plain, cam_ozone=True)
+    machine, estimate, _ = priced(exp)
+    with_ozone = st.radiation_footprint(
+        run, replace(exp.tiles, radiation_context=ozone),
+        resident_estimate=estimate, machine=machine)
+    without = st.radiation_footprint(
+        run, replace(exp.tiles, radiation_context=plain),
+        resident_estimate=estimate, machine=machine)
+    assert ptm.supported(exp, run, replace(exp.tiles, radiation_context=ozone))
+    assert with_ozone.prepared_memory is not None
+    window = replace(run, nx=37, ny=37)
+    delta = sum(math.prod(shape) * 4 for name, shape
+                in pf.physics_array_shapes(window, cam_ozone=True).items()
+                if name not in pf.physics_array_shapes(window, cam_ozone=False))
+    assert delta > 0
+    cells = 37 * 37 * run.nz
+    assert (with_ozone.prepared_memory.buffer_terms(cells)["resident_bytes"]
+            - without.prepared_memory.buffer_terms(cells)["resident_bytes"]) == delta
+
+
+def test_follower_slots_are_priced_rather_than_declined():
+    """A declared tracker carrier is a scratch plane per buffer, not a decline."""
+    exp = experiment()
+    run = exp.root.run
+    slots = ("follow_window_probe_a", "follow_window_probe_b")
+    context = st.FollowerWindowMemoryContext(by_domain=((1, slots),), slots=slots)
+    machine, estimate, _ = priced(exp)
+    followed = st.radiation_footprint(
+        run, replace(exp.tiles, follower_context=context),
+        resident_estimate=estimate, machine=machine)
+    plain = st.radiation_footprint(run, exp.tiles, resident_estimate=estimate,
+                                   machine=machine)
+    assert ptm.supported(exp, run, replace(exp.tiles, follower_context=context))
+    assert followed.prepared_memory is not None
+    cells = 37 * 37 * run.nz
+    assert (followed.prepared_memory.buffer_terms(cells)["resident_bytes"]
+            - plain.prepared_memory.buffer_terms(cells)["resident_bytes"]) \
+        == 4 * len(slots) * 37 * 37
+
+
+def test_a_device_store_keeps_the_itemization():
+    """store = 'device' is the same tile buffers plus a carrier store ON the card."""
+    pinned = dict(mode="on", tile_nx=64, tile_ny=64, nbuffers=1)
+    host = experiment(**pinned, store="host")
+    device = experiment(**pinned, store="device")
+    run = device.root.run
+    assert ptm.supported(device, run, device.tiles)
+    _, _, host_fp = priced(host)
+    _, _, device_fp = priced(device)
+    assert device_fp.prepared_memory is not None
+    cells = 37 * 37 * run.nz
+    carrier = ap.footprint_for(run).store_bytes(
+        int(run.nx) * int(run.ny) * int(run.nz))
+    assert carrier > 0
+    assert (device_fp.prepared_memory.vram_bytes(cells, 1)
+            - host_fp.prepared_memory.vram_bytes(cells, 1)) == int(carrier)
+    assert device_fp.prepared_memory.terms(cells, 1)["store/device_carrier_bytes"] == int(carrier)
+    assert host_fp.prepared_memory.terms(cells, 1)["store/device_carrier_bytes"] == 0
 
 
 def test_unfused_named_storage_contains_planck_optics_and_does_not_alias_streams():
@@ -308,3 +436,72 @@ def test_retained_forcing_inventory_prices_eager_factory_tables_at_actual_count(
     assert b.prepared_memory.forcing_intervals == 47
     assert b.prepared_memory.buffer_terms(37 * 37 * 49)["resident_bytes"] > a.prepared_memory.buffer_terms(37 * 37 * 49)["resident_bytes"]
     assert b.vram_bytes(37 * 37 * 49, 2) > a.vram_bytes(37 * 37 * 49, 2)
+
+
+def test_every_decline_states_its_basis_and_none_is_silent():
+    """No configuration gets a bare ``None`` back with the reason in a comment.
+
+    :func:`for_options` answers with a model or with ``None``; a caller that
+    reads ``None`` is entitled to know what the itemization declined on.
+    :func:`decline_basis` is that answer said in words, and it is the SAME
+    answer: it is ``None`` exactly where a model comes back.  The estimate
+    arm is the one that used to be silent -- the retained boundary count is
+    a term of the fixed floor, and assuming a cadence to fill it in would be
+    an invented basis.
+    """
+    from gpuwm.config import RunConfig
+
+    exp = experiment()
+    cfg = exp.root.run
+    options = replace(exp.tiles, resident_context=st.ResidentAdmissionContext(experiment=exp))
+    estimate = pf.estimate_experiment(exp, profile=profile())
+
+    # On the route with an estimate: a model, and nothing to state.
+    assert ptm.decline_basis(cfg, options, estimate=estimate) is None
+    assert ptm.for_options(cfg, options, profile=profile(), estimate=estimate) is not None
+
+    # THE ARM THAT WAS SILENT: no estimate, so no resolved forcing schedule.
+    stated = ptm.decline_basis(cfg, options, estimate=None)
+    assert isinstance(stated, str) and stated.strip()
+    assert 'forcing schedule' in stated and 'invented basis' in stated
+    assert ptm.for_options(cfg, options, profile=profile(), estimate=None) is None
+
+    # Every other decline is stated too, and each says its own reason.
+    resident = replace(st.OFF, resident_context=options.resident_context)
+    off_tiles = ptm.decline_basis(cfg, resident, estimate=estimate)
+    assert off_tiles is not None and '[tiles] is off' in off_tiles
+    assert ptm.for_options(cfg, resident, profile=profile(), estimate=estimate) is None
+
+    no_experiment = replace(exp.tiles, resident_context=None)
+    unknown = ptm.decline_basis(cfg, no_experiment, estimate=estimate)
+    assert unknown is not None and 'not a domain' in unknown
+
+    other = RunConfig(nx=50, ny=50, nz=49, dx=12000., dy=12000., ztop=18000.,
+                      dt=30., run_seconds=600., specified=True)
+    foreign = ptm.decline_basis(other, options, estimate=estimate)
+    assert foreign is not None and 'not a domain' in foreign
+
+    plain = _with_run(exp, ra_lw_physics=1, ra_sw_physics=1)
+    plain_options = replace(exp.tiles, resident_context=st.ResidentAdmissionContext(experiment=plain))
+    spectrum = ptm.decline_basis(plain.root.run, plain_options, estimate=estimate)
+    assert spectrum is not None and 'RRTMG spectrum' in spectrum
+    assert ptm.for_options(plain.root.run, plain_options, profile=profile(),
+                           estimate=estimate) is None
+
+    # The DEFERRED arm states what it cannot price, rather than declining
+    # in silence: a nest inside a live tree has no prepared store loader,
+    # so charging it that floor would be an invented basis.
+    tree = replace(exp, domains=(exp.root, exp.root))
+    tree_options = replace(exp.tiles, resident_context=st.ResidentAdmissionContext(experiment=tree))
+    nest = ptm.decline_basis(cfg, tree_options, estimate=estimate)
+    assert nest is not None and 'domain tree' in nest and 'invented basis' in nest
+    assert ptm.for_options(cfg, tree_options, profile=profile(), estimate=estimate) is None
+
+    # The bool door and the stated door are one answer, never two.
+    for candidate, opts in ((cfg, options), (cfg, resident), (other, options),
+                            (plain.root.run, plain_options),
+                            (cfg, tree_options), (cfg, no_experiment)):
+        context = getattr(opts, 'resident_context', None)
+        held = None if context is None else context.experiment
+        assert ptm.supported(held, candidate, opts) is (
+            ptm.route_decline(held, candidate, opts) is None)

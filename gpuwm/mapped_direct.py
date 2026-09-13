@@ -68,6 +68,7 @@ from gpuwm.mapped_source import (
     _snapshot_authority,
     load_mapping,
     read_input_list,
+    warn_regular_join_drops,
 )
 from gpuwm.native_wrf_contract import (
     canonical_noah_surface,
@@ -353,8 +354,16 @@ def _validate_target_contract(
         source=(
             "mapped hierarchy target"
             if hierarchy else "mapped target"))
+    # Plan review is where a declared field the target join has no consumer
+    # for is named: the mapping document and the experiment are both in hand
+    # here, ahead of every decode and fetch.  It is a notice, not a refusal.
+    # Carrying more than the target consumes is a drop, and the same
+    # function answers the question at the frame join.
+    dropped = warn_regular_join_drops(
+        mapping.get("fields") or (), subject="this mapping")
     return {
         "status": "PASS",
+        "regular_join_dropped_fields": list(dropped),
         "domain_count": domain_count,
         "domain_ids": [domain.grid_id for domain in exp.domains],
         "domain_start_times": {

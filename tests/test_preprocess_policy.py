@@ -9,7 +9,7 @@ import pytest
 
 from gpuwm.core import preflight as pf, streaming as st
 from gpuwm.preprocess_policy import resolve_preprocess_backend
-from tests.test_prepared_tile_memory import experiment, profile
+from test_prepared_tile_memory import experiment, profile
 from tilestream.autoplan import GIB, Machine
 
 
@@ -99,3 +99,43 @@ def test_explicit_auto_keeps_the_conservative_device_estimate():
 def test_bad_explicit_backend_cannot_zero_a_device_estimate():
     with pytest.raises(ValueError, match="backend"):
         pf.estimate_phases(experiment(), source="gfs", preprocess_backend="automatic")
+
+
+def test_the_met_em_preparation_road_follows_the_tiles_declaration():
+    """A host-store [tiles] declaration prepares met_em on the CPU, like GFS.
+
+    The per-source `if` this replaced short-circuited every source but one
+    BEFORE the [tiles] test, so a met_em run that asked to tile was priced
+    with its whole initialization resident on the card and refused on it.
+    The controls below are what keeps the table a table: another source
+    with the same experiment, and the same source with no host store.
+    """
+    tiled = experiment(874, 574, mode="on", store="host")
+    assert resolve_preprocess_backend(source="met_em", experiment=tiled) == "cpu"
+    assert resolve_preprocess_backend(source="MET_EM", experiment=tiled) == "cpu"
+    from gpuwm.preprocess_policy import CPU_PREPARED_SOURCES
+
+    assert "met_em" in CPU_PREPARED_SOURCES
+    # Controls in the same test: nothing became cpu wholesale.
+    assert resolve_preprocess_backend(source="era5", experiment=tiled) == "cuda"
+    assert resolve_preprocess_backend(source="hrrr", experiment=tiled) == "cuda"
+    assert resolve_preprocess_backend(
+        source="met_em", experiment=experiment(874, 574, mode="off")) == "cuda"
+    assert resolve_preprocess_backend(
+        source="met_em",
+        experiment=experiment(874, 574, mode="on", store="device")) == "cuda"
+    # An explicit request still wins on this source, as on every other.
+    assert resolve_preprocess_backend(
+        source="met_em", experiment=tiled, requested="cuda") == "cuda"
+
+
+def test_the_met_em_run_door_resolves_its_road_through_the_same_policy():
+    """The admission and the run ask one function (no 'cuda' literal)."""
+    import inspect
+
+    from gpuwm import metem_forecast
+
+    signature = inspect.signature(metem_forecast.prepare_metem_run)
+    assert signature.parameters["preprocess_backend"].default is None
+    source = inspect.getsource(metem_forecast.prepare_metem_run)
+    assert "gpuwm.preprocess_policy" in source

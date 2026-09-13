@@ -723,8 +723,18 @@ def require_template_menu_agreement(consumer: str, menu,
     the registry's template ids, each deliberately omitted template named
     in ``cited_absences`` (template id -> the reason it has no row), and a
     menu id that names no template is refused outright.
+
+    Skipped while ``tools/build_registry.py`` regenerates the registry
+    (:data:`REGISTRY_REBUILD_ENV`), exactly as the two agreement checks
+    above are, and for exactly their reason: the builder reaches this
+    module through the loader it derives the route declarations from, so
+    the disk copy it is about to replace is the stale side by
+    construction.  Without the guard, a registry that needs a rebuild
+    refuses the rebuild that would fix it.
     """
 
+    if os.environ.get(REGISTRY_REBUILD_ENV) == "1":
+        return
     templates = set(_REGISTRY.get("templates", {}))
     observed = set(menu)
     absences = dict(cited_absences or {})
@@ -945,10 +955,98 @@ def _templates_carrying(templates: Mapping[str, object], candidates,
     return carrying
 
 
-def _override_route_refusal(runner_id, source_id, templates, reachable,
+def _acknowledged(carrying, expert_templates, acknowledgement) -> str:
+    """Name an expert template's advisory acknowledgement without requiring it."""
+    if not acknowledgement or not any(
+            template_id in expert_templates for template_id in carrying):
+        return ""
+    return (f"; {acknowledgement!r} acknowledges the expert-template advisory "
+            "and is optional")
+
+
+def _deferred_parameter_clause(runner_id, deferred, route_parameter_keys) -> str:
+    """What a route says about a per-domain setting it does not take.
+
+    Three cases, and none of them is the bare "runner route does not
+    accept this per-domain setting" that used to be the whole message.
+    A route that DEFERS the knob published the component it belongs to
+    and the way to the value in ``deferred_parameter_keys``, and that
+    sentence is printed verbatim.  A route that takes some settings per
+    domain names the declaration that lists them.  A route that takes
+    none says so, because pointing a reader at an empty list is a way out
+    that goes nowhere.
+    """
+
+    if isinstance(deferred, str) and deferred:
+        return f": {deferred}"
+    if not isinstance(runner_id, str):
+        return ("; this plan names no runner route, so no per-domain "
+                "setting is accepted")
+    if not route_parameter_keys:
+        return (f"; runner_routes.{runner_id}.allowed_parameter_keys is "
+                "empty, so this route takes no per-domain setting at all "
+                "and the value belongs to the configuration its runner "
+                "replays rather than to one domain")
+    return (f"; the settings it does take per domain are "
+            f"runner_routes.{runner_id}.allowed_parameter_keys")
+
+
+def component_override_declaration(route: Mapping[str, object]) -> str:
+    """Describe declared override paths without inferring benchmark semantics."""
+
+    raw_free = route.get("allowed_component_overrides", [])
+    free = (sorted(value for value in raw_free if isinstance(value, str))
+            if isinstance(raw_free, list) else [])
+    raw_options = route.get("allowed_component_options", {})
+    scoped = sorted(
+        key for key, values in raw_options.items()
+        if isinstance(key, str) and isinstance(values, list) and values
+    ) if isinstance(raw_options, Mapping) else []
+    return (
+        f"this route declares whole-component override axes {free!r} and "
+        f"explicit option lists for {scoped!r}; all selections remain subject "
+        "to their option constraints. A different selection has no declared "
+        "plan-level override path. Choose an admitted option or a reachable "
+        "base template carrying it")
+
+
+def _route_override_reason(routes, runner_id, component_id) -> str:
+    """What THIS route says an override of THIS component would break.
+
+    ``tools/build_registry.py`` writes the breakage twice over: once per
+    component in ``component_override_refusal_reasons``, for a route whose
+    own lists exclude an implemented option, and once per route in
+    ``component_override_refusal_reason`` for a route where the refusal is
+    the same whatever component is named.  Both were written and read by
+    nothing, so every route printed one hard-coded clause -- "runs its
+    registered templates unchanged" -- which after the 2026-07-31 ruling
+    described only the benchmark route, while the single-domain route was
+    refusing land_surface noah-mp with it seconds after admitting a
+    cumulus, microphysics or turbulence override on the same plan.
+
+    The per-component key is read first because a refusal is delivered
+    about ONE component: a route-wide reason covering two exclusions told
+    a user who named land_surface what is wrong with an analytic radiation
+    scheme, which is a breakage that did not fire.
+    """
+
+    route = routes.get(runner_id) if isinstance(routes, Mapping) else None
+    if not isinstance(route, dict):
+        return ""
+    per_component = route.get("component_override_refusal_reasons")
+    if isinstance(per_component, Mapping):
+        reason = per_component.get(component_id)
+        if isinstance(reason, str) and reason.strip():
+            return reason.strip()
+    reason = route.get("component_override_refusal_reason")
+    return reason.strip() if isinstance(reason, str) and reason.strip() else ""
+
+
+def _override_route_refusal(runner_id, routes, source_id, templates, reachable,
                             template_id, template_components, component_id,
                             option_id, route_component_overrides,
-                            route_component_options) -> str:
+                            route_component_options, expert_templates=(),
+                            acknowledgement=None) -> str:
     """Why an experiment-per-domain route turns a component override away.
 
     The route declares which components may vary per domain and which
@@ -971,7 +1069,8 @@ def _override_route_refusal(runner_id, source_id, templates, reachable,
     if carrying:
         way_out = (
             f"Start from a registered template that carries {component_id} "
-            f"{option_id!r} on this route and source: {carrying!r}.")
+            f"{option_id!r} on this route and source: {carrying!r}"
+            + _acknowledged(carrying, expert_templates, acknowledgement) + ".")
     else:
         way_out = (
             f"No registered template reachable on this route for source "
@@ -980,22 +1079,38 @@ def _override_route_refusal(runner_id, source_id, templates, reachable,
             "(runner_routes in the physics registry), not by a runtime "
             "limit; widening the route's allowed_component_options or "
             "registering a template that carries it is the way to it.")
+    reason = _route_override_reason(routes, runner_id, component_id)
     return (
         f"option {option_id!r} of {component_id} cannot replace the base "
         f"template {template_id!r}'s {template_option!r} on this domain: "
         f"{declared}, so this plan would run a {component_id} the route "
-        f"has not declared runnable per domain. {way_out}")
+        f"has not declared runnable per domain."
+        + (f" The route states why: {reason.rstrip('.')}." if reason else "")
+        + f" {way_out}")
 
 
 def _fixed_template_override_refusal(runner_id, routes, templates, reachable,
                                      template_id, template_components,
-                                     component_id, option_id) -> str:
-    """Why a fixed-template route turns every component override away.
+                                     component_id, option_id,
+                                     expert_templates=(),
+                                     acknowledgement=None) -> str:
+    """Why THIS fixed-template route turns this component override away.
 
-    Such a route runs its registered templates unchanged so that the
-    measurements it publishes stay comparable per template id; the way to
-    the composition is a template that carries the option, or a runner
-    that admits per-domain overrides.
+    The reason is the route's own declared reason for THIS component
+    (``component_override_refusal_reasons``, falling back to the
+    route-wide ``component_override_refusal_reason``), because the two
+    fixed-template routes stopped refusing the same thing: the benchmark
+    route replays
+    an immutable template, and the prepared single-domain route declares
+    the tree route's component overrides (cumulus, microphysics and
+    turbulence vary freely; land surface, PBL, radiation and surface
+    layer resolve to any option it lists) and excludes exactly two
+    implemented options, each with a way out.  Printing "runs its
+    registered templates unchanged" for both told a user the route is
+    immutable moments after the same validator admitted four other
+    overrides on it, and pointed them away from the real reason.  A route
+    that declares no reason gets a description of its declared override
+    paths, not an inferred benchmark or comparison contract.
     """
 
     template_option = (template_components.get(component_id)
@@ -1010,7 +1125,8 @@ def _fixed_template_override_refusal(runner_id, routes, templates, reachable,
     if carrying:
         ways.append(
             f"select a registered template that carries {component_id} "
-            f"{option_id!r} on this route: {carrying!r}")
+            f"{option_id!r} on this route: {carrying!r}"
+            + _acknowledged(carrying, expert_templates, acknowledgement))
     if experiment_routes:
         ways.append(
             "run the composition on an experiment-per-domain runner "
@@ -1021,12 +1137,12 @@ def _fixed_template_override_refusal(runner_id, routes, templates, reachable,
             "no registered template carries it and no implemented runner "
             "admits per-domain overrides, so the option is unreachable by "
             "route declaration (runner_routes in the physics registry)")
+    reason = _route_override_reason(routes, runner_id, component_id) or (
+        component_override_declaration(routes.get(runner_id, {})))
     return (
-        f"runner {runner_id!r} runs its registered templates unchanged, so "
         f"{component_id} {option_id!r} cannot replace template "
-        f"{template_id!r}'s {template_option!r} here: the route publishes "
-        "its measurements per template id, and a per-domain override would "
-        "run a suite no template id names. Either "
+        f"{template_id!r}'s {template_option!r} on runner {runner_id!r}: "
+        + reason.rstrip(".") + ". Either "
         + ", or ".join(ways) + ".")
 
 
@@ -1138,6 +1254,16 @@ def _conditional_refusals(constraints: Mapping[str, object]) -> list[dict]:
         one of the listed values.  A setting the plan does not carry falls
         back to the registry's own declared default for that parameter, so
         a rule cannot be dodged by leaving the knob at its default.
+    ``sources``
+        ``[source_id, ...]`` -- the plan's ``context.source_id`` must be
+        one of them (audit R-005).  A per-source incompatibility is a
+        real thing -- native HRRR cannot retain its analyzed
+        QC/QR/QI/QS/QG with microphysics off, and no radiation-only
+        analyzed-cloud carrier is implemented -- and it was previously
+        spelled only in prose inside a runner, where plan review never
+        reached it and the run died in ``gpuwm/ingest/real.py``.  It is a
+        row now, so a source that gains such an incompatibility is table
+        work.
 
     A rule MAY also carry the way out, in both halves:
 
@@ -1165,7 +1291,8 @@ def _conditional_refusals(constraints: Mapping[str, object]) -> list[dict]:
         if isinstance(rule, dict)
         and isinstance(rule.get("reason"), str)
         and (isinstance(rule.get("components"), dict)
-             or isinstance(rule.get("settings"), dict))
+             or isinstance(rule.get("settings"), dict)
+             or isinstance(rule.get("sources"), list))
     ]
 
 
@@ -1221,9 +1348,14 @@ def _conditional_refusal_fires(
     resolved_components: Mapping[str, str],
     settings: Mapping[str, object],
     parameter_specs: Mapping[str, object],
+    source_id: object = None,
 ) -> bool:
     """Does every clause of one :func:`_conditional_refusals` rule hold?"""
 
+    required_sources = rule.get("sources")
+    if isinstance(required_sources, list):
+        if source_id not in required_sources:
+            return False
     required_components = rule.get("components")
     if isinstance(required_components, Mapping):
         for component_id, option_ids in required_components.items():
@@ -1683,9 +1815,22 @@ def validate_physics_plan(
     # acknowledgement through a source that simply had no list.
     route_source_templates: set[str] = set()
     route_expert_templates: set[str] = set()
+    # Template id -> the concrete breakage that keeps it off THIS route,
+    # with the way out, as tools/build_registry.py wrote it.  A route that
+    # publishes one of these is not merely silent about the template: it
+    # has stated that its runner refuses the template at the door, so plan
+    # review refuses it here instead, which is where a refusal belongs.
+    route_refused_templates: Mapping[str, str] = {}
     route_declares_templates = False
     route_expert_acknowledgement = None
     if isinstance(route, dict):
+        refused_templates = route.get("refused_template_ids", {})
+        if isinstance(refused_templates, Mapping):
+            route_refused_templates = {
+                template_id: reason
+                for template_id, reason in refused_templates.items()
+                if isinstance(template_id, str) and isinstance(reason, str)
+            }
         source_templates = route.get("source_template_ids", {})
         expert_templates = route.get("expert_template_ids", {})
         source_id = normalized_context.get("source_id")
@@ -1749,8 +1894,10 @@ def validate_physics_plan(
         for value in sorted(acknowledged)
     }
 
-    asset_domains: dict[str, tuple[dict[str, object], list[str]]] = {}
-    domain_template_ids: list[str] = []
+    # Keep issue anchors in domain-index space and aggregate requirements
+    # in public grid-id space.
+    asset_domains: dict[
+        str, tuple[dict[str, object], list[str], list[int]]] = {}
     resolved_domains: list[dict[str, object]] = result[  # type: ignore[assignment]
         "resolved_domains"
     ]
@@ -1787,8 +1934,24 @@ def validate_physics_plan(
                 )
             else:
                 template = templates[template_id]
-                domain_template_ids.append(template_id)
-                if route_declares_templates and template_id not in (
+                refusal = route_refused_templates.get(template_id)
+                if refusal is not None:
+                    # NOT the evidence warning below.  That one covers a
+                    # template the route says nothing about, which still
+                    # runs; this one covers a template the route has
+                    # declared its runner cannot build a product for, and
+                    # it fires at review rather than as a bare
+                    # ``unsupported physics profile`` after the operator
+                    # has paid for preparation.
+                    errors.append(
+                        _issue(
+                            "template-refused-on-route",
+                            f"{base_path}.template_id",
+                            f"runner {runner_id!r} does not offer template "
+                            f"{template_id!r}: {refusal}",
+                        )
+                    )
+                elif route_declares_templates and template_id not in (
                         route_source_templates | route_expert_templates):
                     warnings.append(
                         _issue(
@@ -1958,13 +2121,27 @@ def validate_physics_plan(
                 )
             )
 
+        # AUDIT R-059.  Both refusals named no breakage, and the message
+        # that sends a user here ("use expert_overrides.settings for
+        # passthrough") pointed at a door every route nailed shut.  The
+        # route now states what its empty list protects, and the sentence
+        # is printed verbatim so the refusal carries a reason and a way
+        # out rather than a restatement of itself.
+        expert_refusal = (
+            route.get("expert_override_refusal_reason")
+            if isinstance(route, dict) else None
+        )
+        expert_refusal = (
+            f" {expert_refusal}"
+            if isinstance(expert_refusal, str) and expert_refusal else "")
         for name in sorted(expert_selectors):
             if name not in route_expert_selectors:
                 errors.append(
                     _issue(
                         "expert-selector-route",
                         f"{base_path}.expert_overrides.selectors.{name}",
-                        "runner route does not accept this expert selector",
+                        "runner route does not accept this expert selector."
+                        + expert_refusal,
                     )
                 )
         for name in sorted(expert_settings):
@@ -1973,7 +2150,8 @@ def validate_physics_plan(
                     _issue(
                         "expert-setting-route",
                         f"{base_path}.expert_overrides.settings.{name}",
-                        "runner route does not accept this expert setting",
+                        "runner route does not accept this expert setting."
+                        + expert_refusal,
                     )
                 )
 
@@ -1984,45 +2162,63 @@ def validate_physics_plan(
         # component option to vary per domain" named none of the three
         # and left a reader to guess whether the scheme was missing, the
         # pairing illegal or the route closed by declaration.
+        #
+        # AUDIT R-021.  ONE question is asked for every route mode, of
+        # the route's own declaration, where a separate fixed-template
+        # branch used to refuse EVERY component key outright.  That
+        # blanket branch described no runner -- this route's runner had
+        # its profile whitelist removed by the 2026-07-31 ruling and runs
+        # any engine-valid suite -- and it refused a component map that
+        # merely RESTATED the base template's own composition, which
+        # overrides nothing and so can break nothing.  A route that
+        # declares no overrides still refuses them all; the two modes
+        # differ only in which sentence says what the closure protects.
         reachable_templates = (
             (route_source_templates | route_expert_templates)
             or set(templates))
-        if route_mode == "fixed-template":
+        if isinstance(template_components, dict):
             for component_id, option_id in sorted(requested_components.items()):
                 if not isinstance(option_id, str):
                     continue
+                component = components.get(component_id)
+                options = (component.get("options", {})
+                           if isinstance(component, dict) else {})
+                option = (options.get(option_id)
+                          if isinstance(options, dict) else None)
+                if (not isinstance(option, dict)
+                        or option.get("implemented") is not True):
+                    # Recognition and implementation have their own errors.
+                    # An unknown option cannot imply a route restriction.
+                    continue
+                if (
+                    template_components.get(component_id) == option_id
+                    or component_id in route_component_overrides
+                    or option_id in route_component_options.get(
+                        component_id, set())
+                ):
+                    continue
                 errors.append(
                     _issue(
-                        "fixed-template-components",
+                        "component-override-route",
                         f"{base_path}.components.{component_id}",
                         _fixed_template_override_refusal(
                             runner_id, routes, templates, reachable_templates,
                             template_id, template_components,
-                            component_id, option_id),
+                            component_id, option_id,
+                            route_expert_templates,
+                            route_expert_acknowledgement)
+                        if route_mode == "fixed-template"
+                        else _override_route_refusal(
+                            runner_id, routes,
+                            normalized_context.get("source_id"),
+                            templates, reachable_templates, template_id,
+                            template_components, component_id, option_id,
+                            route_component_overrides,
+                            route_component_options,
+                            route_expert_templates,
+                            route_expert_acknowledgement),
                     )
                 )
-        elif route_mode == "experiment-per-domain" and isinstance(
-            template_components, dict
-        ):
-            for component_id, option_id in requested_components.items():
-                if (
-                    template_components.get(component_id) != option_id
-                    and component_id not in route_component_overrides
-                    and option_id not in route_component_options.get(
-                        component_id, set())
-                ):
-                    errors.append(
-                        _issue(
-                            "component-override-route",
-                            f"{base_path}.components.{component_id}",
-                            _override_route_refusal(
-                                runner_id, normalized_context.get("source_id"),
-                                templates, reachable_templates, template_id,
-                                template_components, component_id, option_id,
-                                route_component_overrides,
-                                route_component_options),
-                        )
-                    )
 
         for component_id in sorted(components):
             component = components[component_id]
@@ -2044,7 +2240,9 @@ def validate_physics_plan(
                     _issue(
                         "unknown-option",
                         f"{base_path}.components.{component_id}",
-                        f"option {option_id!r} is not registered for {component_id}",
+                        f"option {option_id!r} is not registered for {component_id}. "
+                        f"Check its spelling against components.{component_id}.options "
+                        "in the physics registry; changing runner cannot register it.",
                     )
                 )
                 continue
@@ -2149,13 +2347,28 @@ def validate_physics_plan(
                 )
             )
             domain_parameters = {}
+        # A route that leaves a loader-accepted knob out of
+        # allowed_parameter_keys publishes WHY in deferred_parameter_keys,
+        # naming the component the knob belongs to and the way to the
+        # value.  The reason was written by tools/build_registry.py and
+        # read by nothing, so the refusal a user actually met was
+        # "runner route does not accept this per-domain setting" and
+        # stopped there, while the release surface promised the reason.
+        deferred_parameters = (
+            route.get("deferred_parameter_keys") if isinstance(route, dict)
+            else None)
+        if not isinstance(deferred_parameters, dict):
+            deferred_parameters = {}
         for name in sorted(domain_parameters):
             if name not in route_parameter_keys:
+                deferred = deferred_parameters.get(name)
                 errors.append(
                     _issue(
                         "parameter-route",
                         f"{base_path}.parameters.{name}",
-                        "runner route does not accept this per-domain setting",
+                        "runner route does not accept this per-domain setting"
+                        + _deferred_parameter_clause(
+                            runner_id, deferred, route_parameter_keys),
                     )
                 )
 
@@ -2210,9 +2423,11 @@ def validate_physics_plan(
                         continue
                     key = canonical_json(requirement)
                     if key not in asset_domains:
-                        asset_domains[key] = (deepcopy(requirement), [])
+                        asset_domains[key] = (deepcopy(requirement), [], [])
                     if domain_id not in asset_domains[key][1]:
                         asset_domains[key][1].append(domain_id)
+                    if index not in asset_domains[key][2]:
+                        asset_domains[key][2].append(index)
 
         for name, value in domain_parameters.items():
             spec = parameter_specs.get(name)
@@ -2269,6 +2484,80 @@ def validate_physics_plan(
         for name, value in expert_selectors.items():
             if name in selector_owners and _is_json_scalar(value):
                 settings[name] = value
+
+        # AUDIT R-005, and it runs HERE -- after every source of a setting
+        # and before the constraint battery below -- because the value it
+        # judges is part of the configuration the constraints are judged
+        # against.
+        #
+        # This pass first tried to RESOLVE the value: plan review set
+        # moist=true and warned that it had.  That was a resolution
+        # nothing performs.  This function reports -- its only product
+        # caller is gpuwm/source_cli.py --validate-physics-plan, and
+        # ``resolved_domains`` has no consumer -- while the RunConfig a
+        # runner builds takes moist from the microphysics-off option's own
+        # row (``moist: false``, the idealized reading) and from the
+        # experiment config.  Review would have called such a plan
+        # launchable and gpuwm/ingest/real.py:``real initialization
+        # requires cfg.moist=True`` would have raised before step 0, which
+        # is the same drift the audit exists to close with the refusal
+        # moved LATER rather than earlier.  So it stays an error, at
+        # review, where it fires before any work is done.
+        #
+        # What the resolution attempt got right is that a remedy must be
+        # expressible on the route it is prescribed to.  The old text
+        # prescribed one that two of the three routes could not express;
+        # each route now DECLARES where its moist value lives
+        # (runner_routes.<runner>.moist_declaration_site) and the refusal
+        # reads that declaration out rather than assuming a door.
+        if (
+            isinstance(route, dict)
+            and route.get("requires_moist_real_initialization") is True
+            and resolved_components.get("microphysics") == "off"
+        ):
+            site = route.get("moist_declaration_site")
+            if not isinstance(site, str) or not site:
+                site = "where this route accepts a physics value"
+            # EXPLICIT means the plan said it: a per-domain parameter or an
+            # expert setting.  The microphysics-off option's own row carries
+            # moist=false, so an unstated plan and a stated dry column reach
+            # the loader as the same RunConfig -- but they are different
+            # mistakes and get different sentences.
+            moist_setting = domain_parameters.get(
+                "moist", expert_settings.get("moist"))
+            if moist_setting is False:
+                errors.append(
+                    _issue(
+                        "real-source-mp-off-requires-moist",
+                        f"{base_path}.parameters.moist",
+                        "moist=false is refused with microphysics off on "
+                        "this real-source route: every source it registers "
+                        "enters gpuwm.ingest.real, which refuses a dry "
+                        "column outright (`real initialization requires "
+                        "cfg.moist=True`), and a dry column would drop the "
+                        "analyzed water vapour the source supplies. Set "
+                        f"moist=true {site}, or run a dry column on an "
+                        "idealized composition.",
+                    )
+                )
+            elif moist_setting is not True:
+                errors.append(
+                    _issue(
+                        "real-source-mp-off-requires-explicit-moist",
+                        f"{base_path}.parameters.moist",
+                        "microphysics off leaves this real-source plan "
+                        "without a moist carrier: the option's own row "
+                        "carries moist=false -- the idealized reading -- "
+                        "and nothing between plan review and the loader "
+                        "rewrites it, so gpuwm.ingest.real would refuse the "
+                        "run before step 0 (`real initialization requires "
+                        "cfg.moist=True`). Set moist=true "
+                        f"{site} -- it allocates qv/qc/qr carrier fields "
+                        "while microphysics stays off, and synthesizes no "
+                        "analyzed clouds, so source-absent cloud mass stays "
+                        "exact zero -- or select a microphysics scheme.",
+                    )
+                )
 
         for component_id, option_id in sorted(resolved_components.items()):
             component = components.get(component_id)
@@ -2400,11 +2689,20 @@ def validate_physics_plan(
                         )
             for rule in _conditional_refusals(constraints):
                 if _conditional_refusal_fires(
-                    rule, resolved_components, settings, parameter_specs
+                    rule, resolved_components, settings, parameter_specs,
+                    normalized_context.get("source_id"),
                 ):
+                    # A rule carrying a ``sources`` clause gets its OWN code
+                    # (audit R-005): a RunConfig carries no source identity,
+                    # so it is the one refusal in this battery that the
+                    # per-domain authority cannot mirror, and the agreement
+                    # gate has to be able to say so by name rather than
+                    # excusing the whole conditional-refusal class.
                     errors.append(
                         _issue(
-                            "component-conditional-refusal",
+                            "component-source-refusal"
+                            if isinstance(rule.get("sources"), list)
+                            else "component-conditional-refusal",
                             f"{base_path}.components.{component_id}",
                             f"option {option_id!r} is refused here: "
                             f"{conditional_refusal_sentence(rule)}",
@@ -2431,28 +2729,6 @@ def validate_physics_plan(
                     )
                 )
 
-        if (
-            isinstance(route, dict)
-            and route.get("requires_moist_real_initialization") is True
-            and resolved_components.get("microphysics") == "off"
-            and domain_parameters.get("moist") is not True
-        ):
-            errors.append(
-                _issue(
-                    "real-source-mp-off-requires-explicit-moist",
-                    f"{base_path}.parameters.moist",
-                    "microphysics off on this real-source route requires "
-                    "an explicit per-domain parameter moist=true. That "
-                    "setting allocates qv/qc/qr carrier fields while "
-                    "microphysics remains off; it does not synthesize "
-                    "analyzed clouds, so source-absent cloud mass stays "
-                    "exact zero. Native HRRR is still refused at "
-                    "preparation because MP off cannot faithfully retain "
-                    "its analyzed QC/QR/QI/QS/QG and no radiation-only "
-                    "analyzed-cloud carrier is implemented.",
-                )
-            )
-
         resolved_domains.append(
             {
                 "domain_id": domain_id,
@@ -2462,18 +2738,56 @@ def validate_physics_plan(
             }
         )
 
-    if (
-        isinstance(route, dict)
-        and route.get("template_policy") == "uniform-base-template"
-        and len(set(domain_template_ids)) > 1
-    ):
-        errors.append(
-            _issue(
-                "nonuniform-base-template",
-                "domains",
-                "runner route requires one uniform base template across domains",
+    # AUDIT R-058.  This compared template LABELS: two templates whose
+    # component maps are byte-identical and differ only in a key the
+    # loader accepts PER DOMAIN were refused for having different names,
+    # and the message ("requires one uniform base template") named no
+    # breakage at all.  The narrow constraint it stood in for is real and
+    # is now stated where it lives -- ``parameters.<name>.per_domain``,
+    # generated from the loader's own ``_DOMAIN_RUN_OVERRIDES`` -- and
+    # checked on RESOLVED VALUES, so the refusal names the two values and
+    # the one loader that cannot express them.
+    shared_only = sorted(
+        {
+            name for name, spec in parameter_specs.items()
+            if isinstance(spec, Mapping) and spec.get("per_domain") is False
+        }
+        | {
+            key
+            for component in components.values()
+            if isinstance(component, Mapping)
+            for key, per_domain in (
+                component.get("per_domain_selectors", {}) or {}).items()
+            if per_domain is False
+        }
+    )
+    if isinstance(route, dict) and len(resolved_domains) > 1:
+        for name in shared_only:
+            observed: dict[str, object] = {}
+            for resolved in resolved_domains:
+                if name in resolved["settings"]:
+                    observed.setdefault(
+                        canonical_json(resolved["settings"][name]),
+                        resolved["domain_id"])
+            if len(observed) < 2:
+                continue
+            pairs = ", ".join(
+                f"{domain_id} resolves {name}={value}"
+                for value, domain_id in sorted(observed.items())
             )
-        )
+            errors.append(
+                _issue(
+                    "nonuniform-shared-setting",
+                    "domains",
+                    f"{pairs}. gpuwm carries ONE value of {name} for the "
+                    "whole tree: the domain-tree loader's per-domain table "
+                    "(gpuwm/experiment.py _DOMAIN_RUN_OVERRIDES, which this "
+                    "registry's parameters.per_domain rows are generated "
+                    "from) does not carry it, so a [[domain]] table cannot "
+                    "express a second one. Select one value for every "
+                    "domain of the tree.",
+                )
+            )
 
     graph_constraints = (
         route.get("graph_setting_constraints", [])
@@ -2714,13 +3028,23 @@ def validate_physics_plan(
 
     asset_rows = []
     for key in sorted(asset_domains):
-        requirement, domain_list = asset_domains[key]
+        requirement, domain_list, domain_indices = asset_domains[key]
         resolution = resolve_asset_requirement(requirement)
         asset_rows.append({
             "requirement": requirement,
             "domain_ids": sorted(domain_list),
             "resolution": resolution,
         })
+        # ONE ROW PER DOMAIN, anchored at ``domains[<index>]``.  Every
+        # other per-domain issue in this module is anchored there and a
+        # reader takes the domain from the path; these two used to be
+        # written as ``plan.domains[<grid id>,<grid id>]``, a shape that
+        # matches no anchor and names no index, so a panel or a gate that
+        # asked which domain an unresolved table set was about got no
+        # answer for the one code that says a table is missing HERE.
+        anchors = [f"domains[{domain_index}].asset_requirements."
+                   f"{requirement.get('id')}"
+                   for domain_index in sorted(domain_indices)]
         if resolution["resolved"]:
             continue
         if not resolution["missing"]:
@@ -2733,35 +3057,37 @@ def validate_physics_plan(
             # tools/build_registry.py refuses to EMIT such a row; this is
             # the reader's half, so a registry from anywhere cannot buy a
             # vacuous pass.
-            errors.append(
+            for anchor in anchors:
+                errors.append(
+                    _issue(
+                        "asset-undeclared",
+                        anchor,
+                        "the option's required table set declares no files "
+                        f"({resolution['origin']}), so plan review cannot "
+                        "resolve it and would be reporting a check it never "
+                        "made; the requirement must name its members or a "
+                        "relative_path",
+                    )
+                )
+            continue
+        for anchor in anchors:
+            install_state.append(
                 _issue(
-                    "asset-undeclared",
-                    f"plan.domains[{','.join(sorted(domain_list))}]"
-                    f".asset_requirements.{requirement.get('id')}",
-                    "the option's required table set declares no files "
-                    f"({resolution['origin']}), so plan review cannot "
-                    "resolve it and would be reporting a check it never "
-                    "made; the requirement must name its members or a "
-                    "relative_path",
+                    "asset-unresolved",
+                    anchor,
+                    "the option's required table set is not installed "
+                    "HERE: "
+                    + ", ".join(str(name) for name in resolution["missing"])
+                    + " was not found under any declared root ("
+                    + "; ".join(str(entry)
+                                for entry in resolution["searched"])
+                    + "). The plan is unchanged by this; install or stage "
+                    "the set (`gpuwm fetch-tables`) or point the declared "
+                    "environment override at a byte-identical copy before "
+                    "the run, which refuses by name when the scheme loads "
+                    "its tables.",
                 )
             )
-            continue
-        install_state.append(
-            _issue(
-                "asset-unresolved",
-                f"plan.domains[{','.join(sorted(domain_list))}]"
-                f".asset_requirements.{requirement.get('id')}",
-                "the option's required table set is not installed HERE: "
-                + ", ".join(str(name) for name in resolution["missing"])
-                + " was not found under any declared root ("
-                + "; ".join(str(entry) for entry in resolution["searched"])
-                + "). The plan is unchanged by this; install or stage the "
-                "set (`gpuwm fetch-tables`) or point the declared "
-                "environment override at a byte-identical copy before the "
-                "run, which refuses by name when the scheme loads its "
-                "tables.",
-            )
-        )
     result["asset_requirements"] = asset_rows
     # ``install_state`` is deliberately not consulted: a machine short of
     # a table set has not made the plan wrong.
@@ -2975,6 +3301,7 @@ __all__ = [
     "VALIDATION_SCHEMA",
     "WSM6_TEMPLATE_ID",
     "canonical_json",
+    "component_override_declaration",
     "canonical_sha256",
     "conditional_refusal_remedy",
     "conditional_refusal_sentence",

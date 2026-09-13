@@ -322,6 +322,39 @@ def test_parse_index_preserves_optional_interp_default(tmp_path):
     assert idx.interp_option == "four_pt+average_4pt+search"
 
 
+def test_projected_index_refusal_names_breakage_and_way_out(tmp_path):
+    """A projection this reader cannot resolve is refused by name.
+
+    Real WPS_GEOG ships projected tile sets (albers_nad83 among them).
+    The reader is equirectangular by construction: ``latlon_to_xy``
+    divides a longitude difference by ``index.dx`` and the global axis
+    is inferred from 360/dx by 180/dy, so a projected index would
+    resolve the wrong source cells rather than fail.  The refusal has
+    to say that, and say the way out, or it reads as an internal error.
+    """
+    with pytest.raises(NotImplementedError) as excinfo:
+        _synthetic(tmp_path, projection="albers_nad83")
+    message = str(excinfo.value)
+    assert "albers_nad83" in message                 # what was declared
+    assert "equirectangular" in message              # the assumption
+    assert "wrong source cells" in message           # the breakage
+    assert "regular_ll" in message                   # the way out
+
+
+@pytest.mark.parametrize("projection", ["regular_ll", None])
+def test_equirectangular_indexes_still_construct(tmp_path, projection):
+    """NEGATIVE CONTROL: the refusal must not widen past its reason.
+
+    ``projection = regular_ll`` is what the trees in use declare, and an
+    index with no projection row at all defaults to it (parse_index),
+    so both stay readable.
+    """
+    ds = _synthetic(tmp_path, projection=projection)
+    assert ds.index.projection == "regular_ll"
+    assert ds.nx_global == 8 and ds.ny_global == 4
+    assert ds.read_window(1, 8, 1, 4).values(0)[0, 0] == 101  # x=1, y=1
+
+
 # ---------------------------------------------------------------------------
 # Mosaic reader (synthetic datasets)
 # ---------------------------------------------------------------------------

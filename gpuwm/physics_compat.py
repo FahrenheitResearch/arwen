@@ -547,311 +547,252 @@ MYNN_RUC_RTE_RRTMGP_PROFILE_ID = (
 MYNN_NOAHMP_RTE_RRTMGP_PROFILE_ID = (
     "wsm6-mynn-mynn-noahmp-rte-rrtmgp-expert-only-v1"
 )
-#: Every fixed single-domain template the front door can validate.  Expert
-#: templates remain in this discovery tuple: selection is accepted by the
-#: parser, then the registry-owned acknowledgement/capability checks below
-#: fail closed before preparation if consent or an implementation is absent.
-SINGLE_DOMAIN_PHYSICS_PROFILES = (
-    WSM6_PROFILE_ID,
-    KESSLER_PROFILE_ID,
-    THOMPSON_PROFILE_ID,
-    THOMPSON_LEGACY_RRTMG_PROFILE_ID,
-    THOMPSON_SHINHONG_LEGACY_RRTMG_PROFILE_ID,
-    MORRISON_PROFILE_ID,
-    NSSL2_PROFILE_ID,
-    NSSL2_LEGACY_RRTMG_PROFILE_ID,
-    # P3 closes the scheme-family block: one shipped composition, on the
-    # legacy RRTMG arm it was issued under (the RTE+RRTMGP pairing is
-    # coupled and config-selectable now, but no second profile row is
-    # invented for it), placed here so the discovery order keeps
-    # microphysics families together ahead of the PBL/land-surface
-    # families below.
-    P3_LEGACY_RRTMG_PROFILE_ID,
-    MYNN_PROFILE_ID,
-    # Each radiation-bearing twin sits immediately after the row it
-    # mirrors, the same way the Thompson and NSSL-2 legacy-RRTMG twins do.
-    # The order is not cosmetic: the HRRR runner publishes this tuple as
-    # its --physics-profile choice list and
-    # tests/test_physics_registry.py's live drift check compares it, in
-    # order, against the route's declared template list -- which the
-    # registry builds by inserting each twin after its own sibling.
-    MYNN_RTE_RRTMGP_PROFILE_ID,
-    RUC_PROFILE_ID,
-    MYNN_RUC_PROFILE_ID,
-    MYNN_RUC_RTE_RRTMGP_PROFILE_ID,
-    NOAHMP_PROFILE_ID,
-    MYNN_NOAHMP_PROFILE_ID,
-    MYNN_NOAHMP_RTE_RRTMGP_PROFILE_ID,
+
+# ---------------------------------------------------------------------------
+# The composition suites (audit R-067).
+#
+# Each of these is an implemented option's FIRST named suite: before them
+# the option was selectable only by hand-writing a component tuple, which
+# is the ship-only-what-users-can-reach rule failing quietly.  Each is its
+# base suite with the FEWEST components moved that reach the option, so a
+# paired run isolates the change, and each is implemented-unverified --
+# the registry owns that maturity and the warnings that go with it.
+#
+# None of them reads anything source-specific, which is why the route
+# declarations offer them on every source that declares any suite at all.
+#: Milbrandt-Yau two-moment (mp_physics=9) with New Tiedtke cumulus, on
+#: legacy RRTMG: the composition the mp9 radiation constraint admits.
+MILBRANDT2MOM_NTIEDTKE_PROFILE_ID = (
+    "milbrandt2mom-mp9-ysu-mm5-noah-ntiedtke-rrtmg-legacy-v1"
+)
+#: WDM6 (mp_physics=16) with Grell-Freitas cumulus on RTE+RRTMGP.
+WDM6_GRELL_FREITAS_PROFILE_ID = (
+    "wdm6-mp16-ysu-mm5-noah-grell-freitas-rte-rrtmgp-v1"
+)
+#: The SASE PBL on the revised MM5 surface layer, with the turbulence
+#: closure supplied by the PBL scheme (km_opt 0, bldt/khdif/kvdif 0).
+SASE_CLOSURE_SUPPLIED_PROFILE_ID = (
+    "wsm6-sase-revised-mm5-noah-closure-supplied-v1"
+)
+#: PBL off with the 1.5-order TKE closure (km_opt 2) -- the large-eddy row.
+TKE_1_5_ORDER_PROFILE_ID = (
+    "wsm6-pbl-off-mm5-noah-tke-1-5-order-v1"
+)
+#: PBL off with the 3D Smagorinsky closure (km_opt 4), which differs from
+#: the TKE row in exactly one component.
+SMAGORINSKY_3D_PROFILE_ID = (
+    "wsm6-pbl-off-mm5-noah-smagorinsky-3d-v1"
+)
+#: PBL off with the constant-K closure (km_opt 1), the fourth distinct
+#: turbulence closure and the one left without a front door until R-067.
+CONSTANT_K_PROFILE_ID = (
+    "wsm6-pbl-off-mm5-noah-constant-k-v1"
+)
+#: The six composition suites in the order every route declaration
+#: appends them, so a per-source list and the registry route it is
+#: checked against cannot disagree about their order.  The aerosol-aware
+#: seventh suite is NOT here: the fixed-template runners cannot resolve
+#: it by name (see _templates_outside_the_single_domain_menu).
+COMPOSITION_SUITE_PROFILE_IDS = (
+    MILBRANDT2MOM_NTIEDTKE_PROFILE_ID,
+    WDM6_GRELL_FREITAS_PROFILE_ID,
+    SASE_CLOSURE_SUPPLIED_PROFILE_ID,
+    TKE_1_5_ORDER_PROFILE_ID,
+    SMAGORINSKY_3D_PROFILE_ID,
+    CONSTANT_K_PROFILE_ID,
+)
+#: Option-identity knobs that are NOT part of a shipped profile's runtime
+#: product (audit R-067, deriving what used to be nineteen hand-typed
+#: rows).  Every name here is a value ``gpuwm.config.RunConfig`` pins
+#: unconditionally for the option that owns it, so a profile restating it
+#: could only drift from it -- which is the reason the hand-written rows
+#: gave for leaving the MYNN block, the RUC mosaic block, the Noah-MP
+#: option block, the Smagorinsky coefficient and the radiation cloud
+#: fraction out, one comment at a time.  ``nest_microphysics_transition``
+#: is here for a different reason: it is a nest-EDGE policy, and a
+#: single-domain product has no edge.
+#:
+#: The exclusion applies to what an OPTION declares -- its parameter block
+#: and the identity values its ``required_settings`` pin.  A value the
+#: TEMPLATE states is a choice about this composition rather than an
+#: option's identity, so it is always carried.
+_SWITCHES_OUTSIDE_THE_SINGLE_DOMAIN_PRODUCT = frozenset({
+    "c_s", "icloud", "icloud_bl", "iz0tlnd",
+    "bl_mynn_closure", "bl_mynn_cloudmix", "bl_mynn_cloudpdf",
+    "bl_mynn_edmf", "bl_mynn_edmf_mom", "bl_mynn_edmf_tke",
+    "bl_mynn_mixlength", "bl_mynn_mixqt", "bl_mynn_mixscalars",
+    "bl_mynn_output", "bl_mynn_tkeadvect",
+    "flag_sm_adj", "mosaic_lu", "mosaic_soil", "spp_lsm",
+    "dveg", "noahmp_acc_dt", "noahmp_output", "soiltstep",
+    "opt_alb", "opt_btr", "opt_crop", "opt_crs", "opt_frz", "opt_gla",
+    "opt_inf", "opt_infdv", "opt_irr", "opt_irrm", "opt_pedo", "opt_rad",
+    "opt_rsf", "opt_run", "opt_sfc", "opt_snf", "opt_soil", "opt_stc",
+    "opt_tbot", "opt_tdrn",
+    "nest_microphysics_transition",
+})
+
+#: Switches every prepared single-domain product pins, whether or not the
+#: composition names them.  A profile that leaves one unstated resolves it
+#: from the registry's own declared default for that parameter, which is
+#: what an unstated switch has always meant -- so this is a list of NAMES,
+#: never of values, and the values live in exactly one place.
+_SINGLE_DOMAIN_SWITCH_FLOOR = (
+    "moist", "moist_cq", "mp_physics", "top_lid", "epssm", "morr_rimed_ice",
+    "wsm6_hail_opt", "ra_physics", "ra_lw_physics", "ra_sw_physics", "radt",
+    "wrf_rrtmg_compatibility", "sf_sfclay_physics", "sf_surface_physics",
+    "bl_pbl_physics", "cu_physics", "cudt_minutes", "num_soil_layers",
+    "terrain_opt", "km_opt", "diff_6th_opt", "diff_6th_factor",
+    "diff_6th_slopeopt",
 )
 
-# Complete runtime products shared by every source-specific single-domain
-# launcher.  These are intentionally not bare microphysics selectors: each
-# profile fixes the surrounding surface/PBL/cumulus/radiation/diffusion
-# switches that were validated by the native HRRR runner.  Source adapters
-# may materialize these switches into a case-specific experiment descriptor,
-# but they must not reinterpret or partially apply them.
-_SINGLE_DOMAIN_RUNTIME_SWITCHES = MappingProxyType({
-    KESSLER_PROFILE_ID: MappingProxyType({
-        "moist": True, "moist_cq": False, "mp_physics": 1,
-        "top_lid": True, "epssm": 0.5, "morr_rimed_ice": 1,
-        "wsm6_hail_opt": 0, "ra_physics": 0,
-        "ra_lw_physics": 0, "ra_sw_physics": 1, "radt": 1.0,
-        "wrf_rrtmg_compatibility": "none",
-        "sf_sfclay_physics": 91, "sf_surface_physics": 2,
-        "bl_pbl_physics": 1, "cu_physics": 0, "cudt_minutes": 0.0,
-        "num_soil_layers": 4, "terrain_opt": 1,
-        "km_opt": 4, "diff_6th_opt": 2, "diff_6th_factor": 0.08,
-        "diff_6th_slopeopt": 1,
-    }),
-    MYNN_NOAHMP_PROFILE_ID: MappingProxyType({
-        "moist": True, "moist_cq": False, "mp_physics": 6,
-        "top_lid": True, "epssm": 0.5, "morr_rimed_ice": 1,
-        "wsm6_hail_opt": 0, "ra_physics": 0,
-        "ra_lw_physics": 0, "ra_sw_physics": 1, "radt": 1.0,
-        "wrf_rrtmg_compatibility": "none",
-        "sf_sfclay_physics": 5, "sf_surface_physics": 4,
-        "bl_pbl_physics": 5, "cu_physics": 0, "cudt_minutes": 0.0,
-        "num_soil_layers": 4, "terrain_opt": 1,
-        "km_opt": 4, "diff_6th_opt": 2, "diff_6th_factor": 0.08,
-        "diff_6th_slopeopt": 1,
-    }),
-    NOAHMP_PROFILE_ID: MappingProxyType({
-        "moist": True, "moist_cq": False, "mp_physics": 6,
-        "top_lid": True, "epssm": 0.5, "morr_rimed_ice": 1,
-        "wsm6_hail_opt": 0, "ra_physics": 0,
-        "ra_lw_physics": 0, "ra_sw_physics": 1, "radt": 1.0,
-        "wrf_rrtmg_compatibility": "none",
-        "sf_sfclay_physics": 91, "sf_surface_physics": 4,
-        "bl_pbl_physics": 1, "cu_physics": 0, "cudt_minutes": 0.0,
-        "num_soil_layers": 4, "terrain_opt": 1,
-        "km_opt": 4, "diff_6th_opt": 2, "diff_6th_factor": 0.08,
-        "diff_6th_slopeopt": 1,
-    }),
-    # Byte-for-byte the WSM6 row apart from the land surface:
-    # sf_surface_physics 2 -> 3 and the nine soil layers RUC's own level
-    # geometry needs.  Everything RUC pins that has no namelist field --
-    # XICE_THRESHOLD, seaice_albedo_default, isncovr_opt, c1sn, c2sn, myj,
-    # rdlai2d, FRACTIONAL_SEAICE -- is NOT restated here; it is published as
-    # data in gpuwm.core.ruc_runtime.RUC_RUNTIME_RESTRICTIONS, and a profile
-    # that repeated it could drift from it.
-    RUC_PROFILE_ID: MappingProxyType({
-        "moist": True, "moist_cq": False, "mp_physics": 6,
-        "top_lid": True, "epssm": 0.5, "morr_rimed_ice": 1,
-        "wsm6_hail_opt": 0, "ra_physics": 0,
-        "ra_lw_physics": 0, "ra_sw_physics": 1, "radt": 1.0,
-        "wrf_rrtmg_compatibility": "none",
-        "sf_sfclay_physics": 91, "sf_surface_physics": 3,
-        "bl_pbl_physics": 1, "cu_physics": 0, "cudt_minutes": 0.0,
-        "num_soil_layers": 9, "terrain_opt": 1,
-        "km_opt": 4, "diff_6th_opt": 2, "diff_6th_factor": 0.08,
-        "diff_6th_slopeopt": 1,
-    }),
-    MYNN_RUC_PROFILE_ID: MappingProxyType({
-        "moist": True, "moist_cq": False, "mp_physics": 6,
-        "top_lid": True, "epssm": 0.5, "morr_rimed_ice": 1,
-        "wsm6_hail_opt": 0, "ra_physics": 0,
-        "ra_lw_physics": 0, "ra_sw_physics": 1, "radt": 1.0,
-        "wrf_rrtmg_compatibility": "none",
-        "sf_sfclay_physics": 5, "sf_surface_physics": 3,
-        "bl_pbl_physics": 5, "cu_physics": 0, "cudt_minutes": 0.0,
-        "num_soil_layers": 9, "terrain_opt": 1,
-        "km_opt": 4, "diff_6th_opt": 2, "diff_6th_factor": 0.08,
-        "diff_6th_slopeopt": 1,
-    }),
-    WSM6_PROFILE_ID: MappingProxyType({
-        "moist": True, "moist_cq": False, "mp_physics": 6,
-        "top_lid": True, "epssm": 0.5, "morr_rimed_ice": 1,
-        "wsm6_hail_opt": 0, "ra_physics": 0,
-        "ra_lw_physics": 0, "ra_sw_physics": 1, "radt": 1.0,
-        "wrf_rrtmg_compatibility": "none",
-        "sf_sfclay_physics": 91, "sf_surface_physics": 2,
-        "bl_pbl_physics": 1, "cu_physics": 0, "cudt_minutes": 0.0,
-        "num_soil_layers": 4, "terrain_opt": 1,
-        "km_opt": 4, "diff_6th_opt": 2, "diff_6th_factor": 0.08,
-        "diff_6th_slopeopt": 1,
-    }),
-    THOMPSON_PROFILE_ID: MappingProxyType({
-        "moist": True, "moist_cq": True, "mp_physics": 8,
-        "top_lid": False, "epssm": 0.5, "morr_rimed_ice": 1,
-        "wsm6_hail_opt": 0, "ra_physics": 0,
-        "ra_lw_physics": 0, "ra_sw_physics": 1, "radt": 1.0,
-        "wrf_rrtmg_compatibility": "none",
-        "sf_sfclay_physics": 91, "sf_surface_physics": 2,
-        "bl_pbl_physics": 1, "cu_physics": 0, "cudt_minutes": 0.0,
-        "num_soil_layers": 4, "terrain_opt": 1,
-        "km_opt": 4, "diff_6th_opt": 2, "diff_6th_factor": 0.08,
-        "diff_6th_slopeopt": 1,
-    }),
-    # The Thompson row with the exact legacy RRTMG in place of
-    # no-radiation, every value transcribed from
-    # configs/battery/shape_3km_thompson_rrtmg_legacy.toml as registered
-    # (radt 12.0 and diff_6th_factor 0.12 are that config's values, not
-    # the validation row's 1.0/0.08).
-    THOMPSON_LEGACY_RRTMG_PROFILE_ID: MappingProxyType({
-        "moist": True, "moist_cq": True, "mp_physics": 8,
-        "top_lid": False, "epssm": 0.5, "morr_rimed_ice": 1,
-        "wsm6_hail_opt": 0, "ra_physics": 0,
-        "ra_lw_physics": 4, "ra_sw_physics": 4, "radt": 12.0,
-        "wrf_rrtmg_compatibility": WRF_RRTMG_LEGACY,
-        "ra_rrtmg_variant": RRTMG_VARIANT_LEGACY,
-        "sf_sfclay_physics": 91, "sf_surface_physics": 2,
-        "bl_pbl_physics": 1, "cu_physics": 0, "cudt_minutes": 0.0,
-        "num_soil_layers": 4, "terrain_opt": 1,
-        "km_opt": 4, "diff_6th_opt": 2, "diff_6th_factor": 0.12,
-        "diff_6th_slopeopt": 1,
-    }),
-    # The row above with ONE switch moved: bl_pbl_physics 1 -> 11, the
-    # divergence ledger's L3 edge (gpuwm/physics_mode.py).  Every other
-    # value is transcribed from that row rather than re-derived, because
-    # the pair's whole purpose is that a paired run isolates the closure;
-    # a second value moving here would make the comparison a composition
-    # comparison instead.  sf_sfclay_physics stays 91: WRF v4.6.1's
-    # SHINHONGSCHEME arm (phys/module_physics_init.F:3702-3704) requires
-    # isfc=1 exactly as YSU does, which the classic MM5 surface layer is.
-    THOMPSON_SHINHONG_LEGACY_RRTMG_PROFILE_ID: MappingProxyType({
-        "moist": True, "moist_cq": True, "mp_physics": 8,
-        "top_lid": False, "epssm": 0.5, "morr_rimed_ice": 1,
-        "wsm6_hail_opt": 0, "ra_physics": 0,
-        "ra_lw_physics": 4, "ra_sw_physics": 4, "radt": 12.0,
-        "wrf_rrtmg_compatibility": WRF_RRTMG_LEGACY,
-        "ra_rrtmg_variant": RRTMG_VARIANT_LEGACY,
-        "sf_sfclay_physics": 91, "sf_surface_physics": 2,
-        "bl_pbl_physics": 11, "cu_physics": 0, "cudt_minutes": 0.0,
-        "num_soil_layers": 4, "terrain_opt": 1,
-        "km_opt": 4, "diff_6th_opt": 2, "diff_6th_factor": 0.12,
-        "diff_6th_slopeopt": 1,
-    }),
-    MORRISON_PROFILE_ID: MappingProxyType({
-        "moist": True, "moist_cq": True, "mp_physics": 10,
-        "top_lid": False, "epssm": 0.5, "morr_rimed_ice": 1,
-        "wsm6_hail_opt": 0, "ra_physics": 0,
-        "ra_lw_physics": 4, "ra_sw_physics": 4, "radt": 12.0,
-        "wrf_rrtmg_compatibility": WRF_RRTMG_TO_RTE_RRTMGP,
-        "ra_rrtmg_variant": RRTMG_VARIANT_RTE_RRTMGP,
-        "sf_sfclay_physics": 91, "sf_surface_physics": 2,
-        "bl_pbl_physics": 1, "cu_physics": 1, "cudt_minutes": 5.0,
-        "num_soil_layers": 4, "terrain_opt": 1,
-        "km_opt": 4, "diff_6th_opt": 2, "diff_6th_factor": 0.12,
-        "diff_6th_slopeopt": 1,
-    }),
-    NSSL2_PROFILE_ID: MappingProxyType({
-        "moist": True, "moist_cq": True, "mp_physics": 18,
-        "top_lid": False, "epssm": 0.5, "morr_rimed_ice": 1,
-        "wsm6_hail_opt": 0, "ra_physics": 0,
-        "ra_lw_physics": 4, "ra_sw_physics": 4, "radt": 12.0,
-        "wrf_rrtmg_compatibility": WRF_RRTMG_TO_RTE_RRTMGP,
-        "ra_rrtmg_variant": RRTMG_VARIANT_RTE_RRTMGP,
-        "sf_sfclay_physics": 91, "sf_surface_physics": 2,
-        "bl_pbl_physics": 1, "cu_physics": 1, "cudt_minutes": 5.0,
-        "num_soil_layers": 4, "terrain_opt": 1,
-        "km_opt": 4, "diff_6th_opt": 2, "diff_6th_factor": 0.12,
-        "diff_6th_slopeopt": 1,
-    }),
-    NSSL2_LEGACY_RRTMG_PROFILE_ID: MappingProxyType({
-        "moist": True, "moist_cq": True, "mp_physics": 18,
-        "top_lid": False, "epssm": 0.5, "morr_rimed_ice": 1,
-        "wsm6_hail_opt": 0, "ra_physics": 0,
-        "ra_lw_physics": 4, "ra_sw_physics": 4, "radt": 12.0,
-        "wrf_rrtmg_compatibility": WRF_RRTMG_LEGACY,
-        "ra_rrtmg_variant": RRTMG_VARIANT_LEGACY,
-        "sf_sfclay_physics": 91, "sf_surface_physics": 2,
-        "bl_pbl_physics": 1, "cu_physics": 1, "cudt_minutes": 5.0,
-        "num_soil_layers": 4, "terrain_opt": 1,
-        "km_opt": 4, "diff_6th_opt": 2, "diff_6th_factor": 0.12,
-        "diff_6th_slopeopt": 1,
-    }),
-    # The THOMPSON_LEGACY_RRTMG row with ONE selector moved: mp_physics
-    # 8 -> 50.  Every other value is transcribed from that row rather
-    # than re-derived (the paired-run property the Shin-Hong row states
-    # above).  moist_cq stays True: P3's four moist species feed the same
-    # device cq path (gpuwm/core/acoustic.py prepare_moist_cq keys a
-    # mass-species row for 50), and a mixed P3 nest edge requires
-    # moist_cq=true on both sides.  ra_rrtmg_variant stays the legacy
-    # engine because that is the composition this id was issued under;
-    # the RTE+RRTMGP pairing carries P3's coupling now (rrtmgp's
-    # ``50: "p3"`` row) and is selectable by config, without relabeling
-    # this row.
-    P3_LEGACY_RRTMG_PROFILE_ID: MappingProxyType({
-        "moist": True, "moist_cq": True, "mp_physics": 50,
-        "top_lid": False, "epssm": 0.5, "morr_rimed_ice": 1,
-        "wsm6_hail_opt": 0, "ra_physics": 0,
-        "ra_lw_physics": 4, "ra_sw_physics": 4, "radt": 12.0,
-        "wrf_rrtmg_compatibility": WRF_RRTMG_LEGACY,
-        "ra_rrtmg_variant": RRTMG_VARIANT_LEGACY,
-        "sf_sfclay_physics": 91, "sf_surface_physics": 2,
-        "bl_pbl_physics": 1, "cu_physics": 0, "cudt_minutes": 0.0,
-        "num_soil_layers": 4, "terrain_opt": 1,
-        "km_opt": 4, "diff_6th_opt": 2, "diff_6th_factor": 0.12,
-        "diff_6th_slopeopt": 1,
-    }),
-    # Byte-for-byte the WSM6 row apart from the two MYNN selectors.  Keeping it
-    # that way is the point: a side-by-side run isolates the PBL/surface-layer
-    # change from the microphysics, radiation, cumulus and diffusion settings.
-    # The MYNN option identity (bl_mynn_*, icloud_bl, iz0tlnd) is NOT repeated
-    # here -- those are RunConfig defaults that validate_run_config pins
-    # unconditionally, so a profile that restated them could drift from them.
-    MYNN_PROFILE_ID: MappingProxyType({
-        "moist": True, "moist_cq": False, "mp_physics": 6,
-        "top_lid": True, "epssm": 0.5, "morr_rimed_ice": 1,
-        "wsm6_hail_opt": 0, "ra_physics": 0,
-        "ra_lw_physics": 0, "ra_sw_physics": 1, "radt": 1.0,
-        "wrf_rrtmg_compatibility": "none",
-        "sf_sfclay_physics": 5, "sf_surface_physics": 2,
-        "bl_pbl_physics": 5, "cu_physics": 0, "cudt_minutes": 0.0,
-        "num_soil_layers": 4, "terrain_opt": 1,
-        "km_opt": 4, "diff_6th_opt": 2, "diff_6th_factor": 0.08,
-        "diff_6th_slopeopt": 1,
-    }),
-    # --- the radiation-bearing MYNN family ------------------------------
-    # Each of the three rows below is the matching MYNN row above with the
-    # radiation block replaced -- ra_lw_physics 0 -> 4, ra_sw_physics 1 -> 4,
-    # radt 1.0 -> 12.0, the RTE+RRTMGP substitution token, and the explicit
-    # 4/4 implementation selector -- and EVERY other value transcribed from
-    # that row rather than re-derived.  Not top_lid, not moist_cq, not the
-    # diffusion ladder: the pair's whole purpose is that a paired run isolates
-    # radiation, and a second value moving here would make it a composition
-    # comparison instead.  See the block beside MYNN_RTE_RRTMGP_PROFILE_ID for
-    # why the family is RTE+RRTMGP rather than the exact legacy port.
-    MYNN_RTE_RRTMGP_PROFILE_ID: MappingProxyType({
-        "moist": True, "moist_cq": False, "mp_physics": 6,
-        "top_lid": True, "epssm": 0.5, "morr_rimed_ice": 1,
-        "wsm6_hail_opt": 0, "ra_physics": 0,
-        "ra_lw_physics": 4, "ra_sw_physics": 4, "radt": 12.0,
-        "wrf_rrtmg_compatibility": WRF_RRTMG_TO_RTE_RRTMGP,
-        "ra_rrtmg_variant": RRTMG_VARIANT_RTE_RRTMGP,
-        "sf_sfclay_physics": 5, "sf_surface_physics": 2,
-        "bl_pbl_physics": 5, "cu_physics": 0, "cudt_minutes": 0.0,
-        "num_soil_layers": 4, "terrain_opt": 1,
-        "km_opt": 4, "diff_6th_opt": 2, "diff_6th_factor": 0.08,
-        "diff_6th_slopeopt": 1,
-    }),
-    MYNN_RUC_RTE_RRTMGP_PROFILE_ID: MappingProxyType({
-        "moist": True, "moist_cq": False, "mp_physics": 6,
-        "top_lid": True, "epssm": 0.5, "morr_rimed_ice": 1,
-        "wsm6_hail_opt": 0, "ra_physics": 0,
-        "ra_lw_physics": 4, "ra_sw_physics": 4, "radt": 12.0,
-        "wrf_rrtmg_compatibility": WRF_RRTMG_TO_RTE_RRTMGP,
-        "ra_rrtmg_variant": RRTMG_VARIANT_RTE_RRTMGP,
-        "sf_sfclay_physics": 5, "sf_surface_physics": 3,
-        "bl_pbl_physics": 5, "cu_physics": 0, "cudt_minutes": 0.0,
-        "num_soil_layers": 9, "terrain_opt": 1,
-        "km_opt": 4, "diff_6th_opt": 2, "diff_6th_factor": 0.08,
-        "diff_6th_slopeopt": 1,
-    }),
-    MYNN_NOAHMP_RTE_RRTMGP_PROFILE_ID: MappingProxyType({
-        "moist": True, "moist_cq": False, "mp_physics": 6,
-        "top_lid": True, "epssm": 0.5, "morr_rimed_ice": 1,
-        "wsm6_hail_opt": 0, "ra_physics": 0,
-        "ra_lw_physics": 4, "ra_sw_physics": 4, "radt": 12.0,
-        "wrf_rrtmg_compatibility": WRF_RRTMG_TO_RTE_RRTMGP,
-        "ra_rrtmg_variant": RRTMG_VARIANT_RTE_RRTMGP,
-        "sf_sfclay_physics": 5, "sf_surface_physics": 4,
-        "bl_pbl_physics": 5, "cu_physics": 0, "cudt_minutes": 0.0,
-        "num_soil_layers": 4, "terrain_opt": 1,
-        "km_opt": 4, "diff_6th_opt": 2, "diff_6th_factor": 0.08,
-        "diff_6th_slopeopt": 1,
-    }),
-})
+
+def _route_declared_templates(route: Mapping[str, object]) -> tuple[str, ...]:
+    """Every template one route declares, in declaration order.
+
+    Sources are read from the route's OWN declaration rather than named
+    here: a route that serves one source and a route that serves
+    eighteen are the same walk, and adding a source is a registry row.
+    Normal templates come before expert ones for every source, which is
+    the order a route publishes and the order the doors report, so the
+    two remain comparable element for element.
+    """
+
+    declared: tuple[str, ...] = ()
+    for group in ("source_template_ids", "expert_template_ids"):
+        table = route.get(group) or {}
+        if not isinstance(table, Mapping):
+            continue
+        for source_id in sorted(table):
+            for template_id in table[source_id] or ():
+                if template_id not in declared:
+                    declared += (template_id,)
+    return declared
+
+
+def route_physics_profiles(route_id: str) -> tuple[str, ...]:
+    """The fixed templates ONE route offers, in its own declared order.
+
+    A runner asks this about itself.  Its per-profile tables -- a native
+    namelist contract, an initialization contract, a switch-forwarding
+    map -- are keyed by the profiles IT offers, and keying them off the
+    shared single-domain menu instead is what let one route's declaration
+    grow past another route's replay tables and refuse at the door what
+    plan review had accepted.
+    """
+
+    from gpuwm.physics_registry import physics_registry
+
+    route = physics_registry()["runner_routes"].get(route_id)
+    if not isinstance(route, Mapping):
+        raise ValueError(f"no registered runner route {route_id!r}")
+    return _route_declared_templates(route)
+
+
+def _derive_single_domain_profiles():
+    """The single-domain profile menu and its runtime products, DERIVED.
+
+    AUDIT R-067.  Eleven implemented options had no shipped template at
+    all, and the reason adding one was expensive is here: a template
+    needed a hand-typed row of two dozen switches in this module, and the
+    row had to be transcribed correctly from the registry that already
+    stated every one of them.  Nineteen rows, four hundred values, each
+    one a chance to disagree with the composition it claims to be.
+
+    The menu is EVERY template a fixed-template route declares, in route
+    order and then in declaration order.  It used to be one route's list
+    -- the native benchmark route's -- and that made one route's replay
+    table the menu authority for a different runner: a suite the other
+    fixed-template route offers was resolvable only if the benchmark
+    route happened to declare it too, and a suite the benchmark route
+    declares that its own per-profile tables cannot replay reached the
+    door as an offer and refused there.  The routes are selected by
+    ``mode``, not by id, so a third fixed-template route is a row in the
+    registry rather than an edit here.
+
+    Each product is resolved from the composition: the component's
+    selectors, its option's parameter block (less the identity knobs
+    above), whatever its ``required_settings`` demand, and the template's
+    own parameters, with the floor filled from the registry's declared
+    defaults.
+
+    MEASURED before the hand-written table was deleted: this derivation
+    reproduces all nineteen shipped rows exactly, key for key and value
+    for value, on the registry as built.
+    """
+
+    from gpuwm.physics_registry import physics_registry
+
+    registry = physics_registry()
+    components = registry["components"]
+    parameters = registry["parameters"]
+    menu: tuple[str, ...] = ()
+    for route_id in sorted(registry["runner_routes"]):
+        route = registry["runner_routes"][route_id]
+        if route.get("mode") != "fixed-template":
+            continue
+        menu += tuple(
+            template_id for template_id in _route_declared_templates(route)
+            if template_id not in menu)
+
+    products = {}
+    for template_id in menu:
+        template = registry["templates"][template_id]
+        switches: dict[str, object] = {}
+        for component_id, option_id in sorted(
+                template["components"].items()):
+            option = components[component_id]["options"][option_id]
+            switches.update(option.get("selectors") or {})
+            switches.update({
+                name: value
+                for name, value in (option.get("parameters") or {}).items()
+                if name not in _SWITCHES_OUTSIDE_THE_SINGLE_DOMAIN_PRODUCT
+            })
+            switches.update({
+                name: value
+                for name, value in (
+                    (option.get("constraints") or {}).get(
+                        "required_settings") or {}).items()
+                if name not in _SWITCHES_OUTSIDE_THE_SINGLE_DOMAIN_PRODUCT
+            })
+        switches.update({
+            name: value
+            for name, value in (template.get("parameters") or {}).items()
+            if name not in _SWITCHES_OUTSIDE_THE_SINGLE_DOMAIN_PRODUCT
+        })
+        floor = list(_SINGLE_DOMAIN_SWITCH_FLOOR)
+        if (switches.get("ra_lw_physics"), switches.get("ra_sw_physics")) == (
+                4, 4):
+            # The 4/4 option names the resolved spectral PAIR; which engine
+            # computes it is ra_rrtmg_variant, and the choice exists only
+            # for that pair.  A suite pinning the legacy port states it in
+            # its template parameters; one that does not runs the
+            # parameter's declared default, and the product says so
+            # instead of leaving the reader to infer it from silence.
+            floor.append("ra_rrtmg_variant")
+        for name in floor:
+            if name in switches:
+                continue
+            spec = parameters.get(name)
+            if isinstance(spec, Mapping) and "default" in spec:
+                switches[name] = spec["default"]
+        products[template_id] = MappingProxyType(
+            dict(sorted(switches.items())))
+    return menu, MappingProxyType(products)
+
+
+#: Every fixed single-domain template the front door can validate, in the
+#: order the benchmark route declares them.  Expert templates remain in
+#: this discovery tuple: selection is accepted by the parser, then the
+#: registry-owned acknowledgement/capability checks below fail closed
+#: before preparation if consent or an implementation is absent.
+#:
+#: Complete runtime products, not bare microphysics selectors: each
+#: profile fixes the surrounding surface/PBL/cumulus/radiation/diffusion
+#: switches of the composition it names.  Source adapters may materialize
+#: these switches into a case-specific experiment descriptor, but they
+#: must not reinterpret or partially apply them.
+SINGLE_DOMAIN_PHYSICS_PROFILES, _SINGLE_DOMAIN_RUNTIME_SWITCHES = (
+    _derive_single_domain_profiles())
 
 
 def single_domain_runtime_switches(profile: str) -> dict[str, object]:
@@ -1868,6 +1809,12 @@ def validate_physics_capabilities(
                 for name in named
                 if _selection_value_or_absent(settings, name) is not _ABSENT
             }
+            # A rule carrying a ``sources`` clause (audit R-005) cannot
+            # fire here and must not: a RunConfig carries no source
+            # identity, and inventing one would make this door refuse or
+            # admit by guess.  Those rules are evaluated at plan review,
+            # which has ``context.source_id``, and by the preparation door
+            # that reads the source itself.
             for rule in rules:
                 if _conditional_refusal_fires(
                         rule, resolved, observed, parameter_specs):
@@ -2446,6 +2393,10 @@ def single_domain_physics_selection(
 # per-source land-surface refusal must key on a runtime REQUIREMENT -- a
 # field the scheme reads that this source does not carry, named in the
 # message -- and never on template membership.
+#
+# The registry is the one authority on which land surfaces a route
+# offers: ``runner_routes.<route>.allowed_component_options.land_surface``,
+# read at plan review by ``validate_physics_plan`` (AUDIT R-022).
 
 
 def land_surface_component_for_selector(value) -> str | None:
@@ -2701,7 +2652,22 @@ def _tree_tuple_registry_governance(
             for component_id, option_ids in option_sets.items():
                 expanded = []
                 for candidate in candidates:
-                    for option_id in option_ids:
+                    # SEED WITH THE TEMPLATE'S OWN VALUE (audit R-022).
+                    # The expansion REPLACES this component, so a template
+                    # whose own option is absent from the route's allowed
+                    # list was deleted from the union -- the template
+                    # itself stopped being reachable through the route
+                    # that declares it.  Measured when land_surface gained
+                    # an option list: the expert Noah-MP templates
+                    # silently demoted to outside-declared-reachability
+                    # and lost the acknowledgement they publish.  No
+                    # template tripped it before, which is exactly why it
+                    # had to be fixed in the same pass as the list.
+                    own = candidate.get(component_id)
+                    seeded = list(option_ids)
+                    if isinstance(own, str) and own not in seeded:
+                        seeded.append(own)
+                    for option_id in seeded:
                         expanded.append({
                             **candidate, component_id: option_id})
                 candidates = expanded
@@ -2989,11 +2955,16 @@ def pending_wrf_physics_components(
     #     WIF climatology, default since lane/wif-default) with
     #     MP28_AEROSOL_SYNTHETIC_FALLBACK as its named fallback, and is
     #     carried in the namelist importer's printed receipt;
-    #   * the registry decides REACHABILITY.  mp=28 registers no template
-    #     and appears in no runner_routes source_template_ids (verified
-    #     against the shipped registry), so it is selectable only as a
-    #     per-domain component override -- never a default, never the
-    #     scheme a user gets by accident.
+    #   * the registry decides REACHABILITY.  Audit R-067 gave mp=28 its
+    #     first named suite -- ONE, thompson-aerosol-mp28-myj-eta-noah-
+    #     rte-rrtmgp-v1, declared on the experiment-per-domain route only,
+    #     because neither fixed-template runner can build a cold start for
+    #     the aerosol-aware boundary species (R-044 owns that arm).  It is
+    #     not the default template's microphysics and no route makes it a
+    #     default, so it is still never the scheme a user gets by
+    #     accident: it is reached by naming that suite or as a per-domain
+    #     component override.  (Verified against the shipped registry by
+    #     tests/test_mp28_runnable.py.)
     # Adding a blocker here instead would be the wrong shape twice over: it
     # would refuse the whole scheme for a limitation that is really about
     # the aerosol SOURCE, and it would hide the WRF citation that makes the
@@ -3019,9 +2990,10 @@ def pending_wrf_physics_components(
     #   * a run with no XLAND is refused by the adapter rather than given a
     #     fabricated land mask, because the mask picks the autoconversion
     #     threshold (module_mp_wdm6.F:607-614);
-    #   * the registry decides REACHABILITY.  mp=16 registers no template
-    #     and appears in no runner_routes source_template_ids, so it is
-    #     selectable only as a per-domain component override.
+    #   * the registry decides REACHABILITY.  Audit R-067 gave mp=16 its
+    #     first named suite (wdm6-mp16-ysu-mm5-noah-grell-freitas-rte-
+    #     rrtmgp-v1), which is where a user reaches it besides a per-domain
+    #     component override; it is no route's default.
     # The scheme's real limitation is EVIDENCE, not capability: no oracle
     # comparison against WRF's own module_mp_wdm6.F has been run.  That
     # belongs on the registry option's maturity and warning, where a user
@@ -3219,7 +3191,9 @@ __all__ = [
     "NOAHMP_EXPERT_COLUMN_BUDGET_ENV",
     "NOAHMP_MEASURED_COLUMN_CEILING",
     "NOAHMP_MEASURED_SLAB_CALL_SECONDS",
+    "COMPOSITION_SUITE_PROFILE_IDS",
     "SINGLE_DOMAIN_PHYSICS_PROFILES",
+    "route_physics_profiles",
     "MORRISON_PROFILE_ID",
     "MP28_REGISTRY_OPTION_ID",
     "MULTI_DOMAIN_SELECTION_SCHEMA",
@@ -3279,39 +3253,57 @@ __all__ = [
 # lists of template ids, and an implemented composition with no menu row
 # has no front door.  Each deliberate omission is cited, so the retirement
 # sweep is a grep (audit R-067 for the compositions with no template at
-# all, R-068 for the two templates the runtime-switch table never learned).
+# all, R-068 for the ONE template the runtime-switch derivation still
+# reaches no route for: the count was two until the menu became every
+# fixed-template route's own declaration, and the sibling citation is
+# retired below).
 def _templates_outside_the_single_domain_menu() -> dict[str, str]:
-    """The two R-068 omissions, named through the registry's own records.
+    """The omissions that remain, named through the registry's own records.
 
-    Neither is spelled as an id literal here: one template's id carries
-    the forcing source it was registered on, and this module is a
-    protected zone for source and case tokens.  The omission is a fact
-    about the template's COMPOSITION (the one WSM6 + KF template on the
-    aggregate RTE+RRTMGP radiation option) and about the registry's
-    default template, so both are resolved from the registry.
+    No id is spelled as a literal here: one template's id carries the
+    forcing source it was registered on, and this module is a protected
+    zone for source and case tokens.  Each omission is a fact about the
+    template's COMPOSITION or about the registry's default template, so
+    both are resolved from the registry.
+
+    RETIRED here, with the menu that replaced it: the R-068 citation for
+    the one WSM6 + KF template on the aggregate RTE+RRTMGP option.  The
+    menu is derived from the fixed-template routes' own declarations now,
+    that template is declared on one of them, and its runtime product is
+    resolved from the composition like every other row -- so there is no
+    omission left to cite.
     """
 
     from gpuwm.physics_registry import (
-        DEFAULT_TEMPLATE_ID, template_ids_with_components)
+        DEFAULT_TEMPLATE_ID, REGISTRY_REBUILD_ENV,
+        template_ids_with_components)
 
-    aggregate_kf = template_ids_with_components(
-        microphysics="wsm6-mp6", cumulus="kain-fritsch",
-        radiation="rte-rrtmgp-legacy-aggregate")
-    if len(aggregate_kf) != 1:
+    if os.environ.get(REGISTRY_REBUILD_ENV) == "1":
+        # tools/build_registry.py reaches this module while it REGENERATES
+        # the registry, so the templates these citations name may not exist
+        # on disk yet.  The agreement check these feed is skipped for the
+        # same reason and in the same window, so an empty map here refuses
+        # nothing that the rebuilt registry will not be held to.
+        return {}
+    aerosol = template_ids_with_components(
+        microphysics="thompson-aerosol-mp28")
+    if len(aerosol) != 1:
         raise RuntimeError(
-            "the audit R-068 citation names THE ONE WSM6 + KF template on "
-            "the aggregate RTE+RRTMGP radiation option and the registry now "
-            f"has {len(aggregate_kf)}: {list(aggregate_kf)}; give each its "
-            "_SINGLE_DOMAIN_RUNTIME_SWITCHES row or cite each omission")
+            "the audit R-067 citation names THE ONE aerosol-aware Thompson "
+            f"template and the registry now has {len(aerosol)}: "
+            f"{list(aerosol)}; give each its single-domain row or cite each "
+            "omission")
     return {
-        aggregate_kf[0]: (
-            "audit R-068: registered as the WSM6 + KF composition on the "
-            "aggregate RTE+RRTMGP option but never given a "
-            "_SINGLE_DOMAIN_RUNTIME_SWITCHES row, so the single-domain "
-            "runner refuses it as an unsupported profile"),
         DEFAULT_TEMPLATE_ID: (
             "audit R-068: the registry's DEFAULT_TEMPLATE_ID, registered for "
             "plan review, never given a _SINGLE_DOMAIN_RUNTIME_SWITCHES row"),
+        aerosol[0]: (
+            "audit R-067 with R-044 as the named blocker: "
+            "gpuwm/ingest/microphysics_cold_start.py source_absent_"
+            "microphysics has no arm for mp_physics=28, so the fixed-template "
+            "runner cannot build an initialization contract for this suite. "
+            "It is registered and reachable on the experiment-per-domain "
+            "route; this menu regains it when that arm lands"),
     }
 
 

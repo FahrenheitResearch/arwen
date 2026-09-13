@@ -9,7 +9,8 @@ from types import SimpleNamespace
 
 import numpy as np
 
-from gpuwm.ingest.metem import met_em_series, parse_met_em_name
+from gpuwm.ingest.metem import (met_em_series, met_em_source_top_pressure_pa,
+                                parse_met_em_name)
 from gpuwm.netcdf_bridge import open_dataset
 
 
@@ -24,6 +25,19 @@ class MetemRun:
     substitution_report: object
     interval_seconds: int
     controls: dict
+    #: How far the root domain's met_em series forces the run, in seconds
+    #: from ``experiment.start_time``.  This, and NOT the producing
+    #: namelist's ``run_seconds``, is what limits the window a caller may
+    #: ask for: a directory holding 48 h of forcing is a 48 h directory
+    #: whatever number the namelist that made it happened to carry.
+    #: Derived from file NAMES only (``parse_met_em_name``), so it is
+    #: available at plan review with no file read.
+    coverage_seconds: float = 0.0
+    #: The smallest analyzed pressure in the root series, in pascals.  A
+    #: requested model top above it is a ladder this source cannot
+    #: support, and carrying the number here is what lets that be refused
+    #: at plan review instead of inside the worker.
+    source_top_pressure_pa: float | None = None
 
 
 def _metadata(path):
@@ -93,11 +107,24 @@ def resolve_metem_run(directory, *, rrtmg_variant=None):
         if any((b-a).total_seconds() != interval for a,b in zip(times,times[1:])):
             raise ValueError(f'd{domain.grid_id:02d}: met_em times must follow interval_seconds={interval}')
         if domain.parent_id == 0 and times[-1] < exp.start_time + timedelta(seconds=exp.run_seconds):
-            raise ValueError(f'd{domain.grid_id:02d}: met_em stops at {times[-1]}; supply forcing through the requested end')
+            raise ValueError(f'd{domain.grid_id:02d}: met_em stops at {times[-1]:%Y-%m-%d_%H:%M:%S}, the last valid time in the series, but the namelist asks for {exp.run_seconds:.0f} s ending {exp.start_time+timedelta(seconds=exp.run_seconds):%Y-%m-%d_%H:%M:%S}; supply forcing through the requested end, or shorten the namelist duration')
         item = metadata[domain.grid_id]
         if (domain.run.nx, domain.run.ny) != (item.nx, item.ny):
             raise ValueError(f'd{domain.grid_id:02d}: namelist dimensions differ from met_em')
-    return MetemRun(directory, namelist, paths, metadata, exp, text, report, int(interval), parsed)
+    return MetemRun(directory, namelist, paths, metadata, exp, text, report, int(interval), parsed,
+                    metem_coverage_seconds(paths, exp.start_time),
+                    met_em_source_top_pressure_pa(paths[1][0]))
+
+
+def metem_coverage_seconds(paths, start_time):
+    """How far the root met_em series forces, from its file NAMES alone.
+
+    ``parse_met_em_name`` reads the name and nothing else
+    (gpuwm/ingest/metem.py:117-134), so this is a plan-review quantity: no
+    file is opened and no boundary array is decoded to learn it.
+    """
+    times = [parse_met_em_name(path)[1] for path in paths[1]]
+    return (times[-1] - start_time).total_seconds()
 
 
 def metgrid_initialization_controls(case, run, *, cfg=None):
@@ -132,20 +159,47 @@ def metgrid_initialization_controls(case, run, *, cfg=None):
 
 
 def check_analyzed_scalar_capability(attributes, cfg):
-    """Refuse only flagged state that the selected active package would lose."""
-    from gpuwm.core.nest_fields import nest_field_kinds
-    active = set(nest_field_kinds(cfg))
+    """Refuse only flagged state that the selected active package would lose.
+
+    QNWFA and QNIFA are rows of ``analyzed_numbers.METGRID_NUMBER_FIELDS``
+    now, so they need no arm here: a package that transports nwfa/nifa
+    keeps them through the same generic route as QNI/QNC/QNR, and a
+    package that does not discards them exactly like an inactive P_QN*.
+    QNBCA is the one gap that is real, and it was the one this function
+    could never reach: no package in this build declares an ``nbca``
+    species, so intersecting the alias with ``nest_field_kinds`` was
+    always empty.  It is tested directly instead.
+    """
     from gpuwm.ingest.analyzed_numbers import METGRID_NUMBER_FIELDS
-    for name in METGRID_NUMBER_FIELDS:
+    for name in (*METGRID_NUMBER_FIELDS, 'QNBCA'):
         if attributes.get('FLAG_'+name, 0) not in (0, 1):
             raise ValueError(f'FLAG_{name} must be 0 or 1')
-    aliases = {'QNWFA':('nwfa',), 'QNIFA':('nifa',), 'QNBCA':('nbca',)}
-    for name, fields in aliases.items():
-        value = attributes.get('FLAG_'+name, 0)
-        if value not in (0, 1):
-            raise ValueError(f'FLAG_{name} must be 0 or 1')
-        if value == 1 and active.intersection(fields):
-            raise ValueError(f'FLAG_{name}=1 declares analyzed state used by this microphysics package; native metgrid initialization does not yet interpolate {name}. Run WRF real.exe and use gpuwm run --wrfinput DIR to preserve that state')
+    if attributes.get('FLAG_QNBCA', 0) == 1 and int(cfg.mp_physics) == 28:
+        raise ValueError('FLAG_QNBCA=1 supplies an analyzed black-carbon number, and this build\'s mp=28 package carries no qnbca species (Registry/registry.new3d_wif:82; absent from core/moist.py:119 and core/state.py), so the field would be silently dropped. Regenerate met_em without QNBCA, or run mp=28 with the water/ice-friendly pair alone')
+
+
+def check_analyzed_scalar_capabilities(run, exp=None):
+    """Ask the capability question of every domain of a resolved run.
+
+    THE ONE FUNCTION BOTH DOORS CALL, and the reason it exists: the
+    per-domain check below was reachable only from
+    :func:`metgrid_initialization_controls` and
+    :func:`metgrid_memory_admission`, both of which run inside
+    ``prepare_metem_run`` -- after ``select_gpu``, after the GPU file lock
+    and after the output directory was created.  A refusal that fires
+    there fires after the run has started.  Everything it needs is in the
+    resolved ``MetemRun``, so ``run_metem_forecast`` asks it at plan
+    review and the worker asks the same function of the same bytes.
+
+    ``exp`` defaults to the run's own resolved experiment; the preparation
+    passes the experiment it rebuilt from the substituted TOML, so the
+    domains checked are the domains that will be built.
+    """
+
+    experiment = run.experiment if exp is None else exp
+    for domain in experiment.domains:
+        check_analyzed_scalar_capability(
+            run.metadata[domain.grid_id].global_attributes, domain.run)
 
 
 def metgrid_analysis_shapes(metadata):
@@ -172,24 +226,38 @@ def metgrid_analysis_shapes(metadata):
     return shapes
 
 
-def metgrid_memory_admission(run, exp):
-    """Cold-device admission prices preparation independently of forecast tiling."""
+def metgrid_memory_admission(run, exp, *, preprocess_backend=None):
+    """Validate analyzed fields and report advisory preparation memory estimates."""
     from gpuwm.core.preflight import (device_memory_probe_subprocess, device_memory_probe_reason,
         profile_from_device_probe, estimate_phases)
     inventory = {gid:metgrid_analysis_shapes(item) for gid,item in run.metadata.items()}
-    for domain in exp.domains:
-        check_analyzed_scalar_capability(run.metadata[domain.grid_id].global_attributes, domain.run)
+    check_analyzed_scalar_capabilities(run, exp)
     probe = device_memory_probe_subprocess()
+    free = None if probe is None else int(probe['free_bytes'])
+    profile = profile_from_device_probe(probe)
+    from gpuwm.core.streaming import planner_machine
+    from gpuwm.preprocess_policy import resolve_preprocess_backend
+    road = resolve_preprocess_backend(source='met_em', experiment=exp,
+                                     requested=preprocess_backend)
+    machine = planner_machine(vram_bytes=free, name='met_em estimate probe',
+                              device_profile=profile)
     phases = estimate_phases(exp,source='met_em',forcing_interval_seconds=run.interval_seconds,
         ingest_forcing_interval_seconds=run.interval_seconds,forcing_intervals=len(run.paths[1])-1,
         analysis_shapes_by_domain=inventory,sequential_domains=True,
-        profile=profile_from_device_probe(probe))
-    free = None if probe is None else int(probe['free_bytes'])
-    if free is not None and phases.peak_envelope_bytes > free:
-        raise ValueError(f"{phases.verdict(free)}. Reduce the domain/level count and regenerate met_em, or select a GPU with enough memory. Forecast tiling does not reduce native initialization memory")
-    if phases.streamed is not None and phases.streamed.host_budget_bytes is not None and phases.streamed.host_bytes > phases.streamed.host_budget_bytes:
-        raise ValueError('the streamed forecast host store exceeds available RAM; reduce the requested domain or use a machine with enough host memory')
-    return {'analysis_shapes_by_domain':inventory, 'forecast_peak_bytes':phases.forecast_envelope_bytes,
+        profile=profile, machine=machine, preprocess_backend=road)
+    device_over = free is not None and phases.peak_envelope_bytes > free
+    host = phases.streamed
+    host_over = host is not None and host.host_budget_bytes is not None and host.host_bytes > host.host_budget_bytes
+    warnings = []
+    if device_over:
+        warnings.append('The estimated preparation/forecast peak exceeds currently free VRAM. The requested settings are retained; allocation will report any actual memory failure. Free other memory or choose different settings if needed.')
+    if host_over:
+        warnings.append('The estimated streamed forecast store exceeds available host RAM. The requested settings are retained; allocation will report any actual memory failure. Free other memory or choose different settings if needed.')
+    return {'policy':'advisory', 'warnings':warnings, 'preprocess_backend':road,
+        'device_estimate_exceeds_available':device_over, 'host_estimate_exceeds_available':host_over,
+        'host_store_bytes':None if host is None else host.host_bytes,
+        'host_budget_bytes':None if host is None else host.host_budget_bytes,
+        'analysis_shapes_by_domain':inventory, 'forecast_peak_bytes':phases.forecast_envelope_bytes,
         'preparation_peak_bytes':phases.ingest_envelope_bytes,'available_device_bytes':free,
         'device_probe_note':None if probe is not None else device_memory_probe_reason(),
         'retained_boundary_intervals':len(run.paths[1])-1,'sequential_domain_preparation':True}

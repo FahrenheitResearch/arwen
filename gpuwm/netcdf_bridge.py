@@ -90,21 +90,36 @@ def netcdf_candidates() -> tuple[Path, ...]:
 
 
 def find_netcdf_bin() -> Path | None:
-    """First existing candidate, or None.
+    """First candidate that can supply numeric and character records, or None.
 
     An environment override naming a missing file is a hard error:
     explicit configuration must fail loudly, not fall through.
     """
 
     override = os.environ.get(NETCDF_ENV)
+    incompatible = []
     for candidate in netcdf_candidates():
         if candidate.is_file():
-            return accept_resolved(candidate.resolve())
+            resolved = accept_resolved(candidate.resolve())
+            from gpuwm.bridges import bridge_abi_matches
+            compatible, _ = bridge_abi_matches(NETCDF_NAME, resolved)
+            if not compatible:
+                incompatible.append(resolved)
+                if override and candidate == Path(override):
+                    break
+                continue
+            return resolved
         if override and candidate == Path(override):
             raise FileNotFoundError(
                 f"{NETCDF_ENV} names a missing file: {candidate}.  Point it "
                 f"at a built {NETCDF_NAME} binary, or unset {NETCDF_ENV} to "
                 f"use the resolution ladder.")
+    if incompatible:
+        raise NetcdfDecodeError(
+            f"The NetCDF reader at {incompatible[0]} cannot supply the numeric "
+            "and character records this input route requires, including "
+            "WRF Times. Replace it with this release's reader.\n"
+            + netcdf_remedy())
     return None
 
 
@@ -113,7 +128,8 @@ def netcdf_remedy() -> str:
 
     return artifact_remedy(
         env_var=NETCDF_ENV, filename=executable_name(NETCDF_NAME),
-        subject="the NetCDF decoder", crate_relative=RUSTWX_CRATE_RELATIVE)
+        subject="the NetCDF decoder", crate_relative=RUSTWX_CRATE_RELATIVE,
+        artifact=NETCDF_NAME)
 
 
 def resolve_netcdf_bin() -> Path:

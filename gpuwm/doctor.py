@@ -3393,6 +3393,15 @@ def _netcdf_decoder_check() -> Check:
                      group=_GROUP_ENGINES)
     try:
         found = netcdf_bridge.find_netcdf_bin()
+    except netcdf_bridge.NetcdfDecodeError:
+        return Check(
+            name, "missing",
+            "the staged reader cannot supply numeric and character records, "
+            f"including WRF Times -- {blocks}",
+            netcdf_bridge.netcdf_remedy(),
+            action=_build_action(bridges.RUSTWX_CRATE_RELATIVE),
+            brief="reader predates character records",
+            group=_GROUP_ENGINES)
     except FileNotFoundError as error:
         return Check(
             name, "missing", f"{error} -- {blocks}",
@@ -4305,7 +4314,7 @@ def _arbitrary_input_check() -> Check:
     try:
         from gpuwm import netcdf_bridge
         netcdf_decoder = netcdf_bridge.find_netcdf_bin()
-    except (ImportError, FileNotFoundError) as error:
+    except (ImportError, FileNotFoundError, RuntimeError) as error:
         return Check(
             "arbitrary input", "missing",
             f"NetCDF authoring is unreachable: the Rust NetCDF decoder is "
@@ -5053,6 +5062,52 @@ def _hrrr_fetch_path_check() -> Check:
         group=_GROUP_ROUTE)
 
 
+def _era5_fetch_path_check() -> Check:
+    """Probe local retrieval prerequisites without reading keys or contacting CDS."""
+    from gpuwm import fetch, zarr_bridge
+
+    cds_imports, cds_evidence = _import_probe("cdsapi", distribution="cdsapi")
+    try:
+        credentials = (bool(os.environ.get("CDSAPI_URL"))
+                       and bool(os.environ.get("CDSAPI_KEY"))) or fetch.cds_credentials_path().is_file()
+    except OSError:
+        credentials = False
+    with bridges.inspection_only():
+        try:
+            path = zarr_bridge.resolve_zarr_bin()
+            arco, arco_evidence = bridges.bridge_abi_matches("rw_zarr", path)
+        except (OSError, ValueError) as error:
+            arco, arco_evidence = False, type(error).__name__
+    cds_ready = cds_imports and credentials
+    detail = (
+        "CDS --retrieve: " + ("local prerequisites verified" if cds_ready else
+            "needs " + ", ".join(item for item, ready in
+                (("an importable cdsapi", cds_imports),
+                 ("a credential file or CDSAPI_URL/CDSAPI_KEY pair", credentials)) if not ready))
+        + f" ({cds_evidence}); --era5-provider arco: "
+        + ("keyless ARCO reader is locally available" if arco else
+           "native rw_zarr reader is missing or ABI-incompatible")
+        + f" ({arco_evidence}); request document fallback is always available. "
+          "Credential contents, authorization, provider availability and "
+          "live retrieval are not tested by this local report.")
+    return Check(
+        "era5 route fetch transport", "verified" if cds_ready else "info", detail,
+        # Every line of a remedy is a command that runs as printed or a `#`
+        # comment (the paste contract in tests/test_doctor.py); a prose
+        # sentence fused into a paste is the defect that contract exists
+        # for, and this check arrived carrying one.
+        None if cds_ready else
+            "# --retrieve needs an importable cdsapi and CDS credentials\n"
+            "pip install cdsapi\n"
+            "# then write ~/.cdsapirc, or set CDSAPI_URL and CDSAPI_KEY\n"
+            "# the keyless road instead, which stages the native zarr reader\n"
+            "gpuwm setup\n"
+            "# with neither, gpuwm fetch still writes the CDS request document",
+        brief=("CDS local prerequisites verified" if cds_ready else
+               "keyless ARCO locally available" if arco else "CDS request document available"),
+        group=_GROUP_ROUTE)
+
+
 def _gfs_fetch_path_check() -> Check:
     """Which byte transports ``gpuwm fetch --source gfs`` can use.
 
@@ -5190,18 +5245,7 @@ def _source_route_checks(source: str, engine: Check | None = None
     if source == "gfs":
         checks.append(_gfs_fetch_path_check())
     if source == "era5":
-        # No transport line, and that is the finding rather than an
-        # omission: this route has no gpuwm-driven download at all.
-        # `gpuwm fetch --source era5` writes a CDS request document for
-        # the user to submit; what doctor CAN answer is which decoder
-        # the preparation will launch, which is the line above.
-        checks.append(Check(
-            "era5 route fetch transport", "info",
-            "no gpuwm transport: `gpuwm fetch --source era5` writes a "
-            "CDS request document and the retrieval happens at the CDS, "
-            "so there is no byte transport here to report on",
-            brief="CDS request document; no gpuwm transport",
-            group=_GROUP_ROUTE))
+        checks.append(_era5_fetch_path_check())
     return checks
 
 

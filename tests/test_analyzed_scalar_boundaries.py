@@ -1,4 +1,5 @@
 """Supplied aerosol IC/BCs reach the common transport and identity owners."""
+import pathlib
 from dataclasses import replace
 from types import SimpleNamespace
 
@@ -9,7 +10,15 @@ import pytest
 from gpuwm.boundary_fields import external_scalar_fields, potential_external_scalar_fields
 from gpuwm.config import RunConfig
 from gpuwm.ingest import wrfinput as wi
+from gpuwm.netcdf_bridge import find_netcdf_bin
 from wrf_input_fixtures import _small_wrfinput
+
+#: Reading a wrfinput needs the Rust decoder this project decodes NetCDF
+#: with; where it is not built, a refusal raised past the read cannot be
+#: exercised at all.
+_requires_netcdf_decoder = pytest.mark.skipif(
+    find_netcdf_bin() is None,
+    reason='the Rust NetCDF decoder is not built in this environment')
 
 
 def _cfg(**changes):
@@ -112,6 +121,59 @@ def test_black_carbon_input_is_retained_when_inactive_and_names_missing_active_c
     np.testing.assert_array_equal(initial.raw['QNBCA'],123.)
     with pytest.raises(NotImplementedError,match='QNBCA.*wif_input_opt=2.*consumer'):
         _read(path,replace(cfg,wif_input_opt=2))
+
+
+@_requires_netcdf_decoder
+def test_the_black_carbon_refusal_names_the_canonical_reason_and_the_way_out(
+        tmp_path):
+    """The refusal stands, and now says what it prevents AND what to do.
+
+    Both sentences come from the table that owns the selector
+    (``gpuwm.config.MP28_AEROSOL_SOURCE_OPTIONS``), so the wrfinput door
+    and the namelist importer cannot describe one configuration in two
+    different ways.
+    """
+    from gpuwm.config import MP28_AEROSOL_SOURCE_OPTIONS
+
+    _only, _citation, why = MP28_AEROSOL_SOURCE_OPTIONS['wif_input_opt']
+    cfg=_cfg(); path=_input(tmp_path/'input',cfg)
+    with netCDF4.Dataset(path,'a') as ds:
+        ds['QNBCA'][:]=123.
+    with pytest.raises(NotImplementedError) as excinfo:
+        _read(path,replace(cfg,wif_input_opt=2))
+    message = str(excinfo.value)
+    assert why in message
+    assert 'wif_input_opt=1 with aer_init_opt=1' in message
+    assert 'remove QNBCA' in message
+
+
+def test_the_namelist_door_refuses_black_carbon_in_the_same_words(tmp_path):
+    """The importer's mirror of the same refusal, from the same table.
+
+    Runs without a NetCDF decoder, so it is the half of this pair that
+    can be demonstrated anywhere.
+    """
+    from gpuwm.config import MP28_AEROSOL_SOURCE_OPTIONS
+    from gpuwm.namelist_import import import_namelists
+
+    import sys as _sys
+    _sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+    from test_namelist_import import INPUT_TEXT, WPS_TEXT
+
+    _only, _citation, why = MP28_AEROSOL_SOURCE_OPTIONS['wif_input_opt']
+    inp = (INPUT_TEXT
+           .replace(' mp_physics = 55, 55,', ' mp_physics = 28, 28,')
+           .replace(' time_step = 60,',
+                    ' time_step = 60,\n wif_input_opt = 2,'))
+    wps_path = tmp_path/'namelist.wps'
+    wps_path.write_text(WPS_TEXT)
+    inp_path = tmp_path/'namelist.input'
+    inp_path.write_text(inp)
+    with pytest.raises(ValueError) as excinfo:
+        import_namelists(wps_path, inp_path, name='black-carbon')
+    message = str(excinfo.value)
+    assert why in message
+    assert 'aer_init_opt=1' in message
 
 
 @pytest.mark.parametrize('poison',['shape','declared_missing','nan'])

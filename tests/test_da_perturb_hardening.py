@@ -231,3 +231,67 @@ def test_a_dry_state_reports_no_pre_existing_supersaturation():
         {"name": "qv", "amplitude": 1.0e-6, "length_scale_km": 6.0}])
     provenance = perturb.apply_perturbations(state, 37, cfg)
     assert provenance["bounds"]["pre_existing_supersaturated_points"] == 0
+
+
+# ------------------------------------------------- the background's own pairs
+
+
+def _species_state(nz=6, ny=24, nx=24, mass=5.0e-4, number=0.0):
+    """A cold-start background: hydrometeor mass, no number concentration."""
+
+    import types
+
+    f32 = np.float32
+    state = _state(nz, ny, nx)
+    state.qc = np.full((nz, ny, nx), mass, f32)
+    state.nc = np.full((nz, ny, nx), number, f32)
+    return state
+
+
+def test_a_pair_the_background_carried_is_reported_and_not_refused():
+    """A cold start has mass with no number; the scheme closes it, not this.
+
+    The invariant this module owns is that its own strictly positive
+    common factor CREATES no depleted pair.  Counting the post-state
+    absolutely charged it with every pair the background arrived with,
+    and a real cold-start forecast was refused after its state had
+    already been perturbed.
+    """
+
+    state = _species_state()
+    cfg = _config(species=[{"mass_field": "qc", "amplitude": 0.4,
+                            "length_scale_km": 6.0,
+                            "threshold_kg_kg": 1.0e-8}])
+    report = perturb.apply_perturbations(state, 20260911, cfg)
+    record = report["species"][0]
+    assert record["species"] == "qc"
+    assert record["depleted_pairs_created"] == 0
+    assert record["negative_points"] == 0
+    assert record["depleted_pairs_in_background"] == state.qc.size
+    # Nothing was active, so the background came through untouched.
+    assert record["active_points"] == 0
+    assert np.array_equal(state.nc, np.zeros_like(state.nc))
+
+
+class _EmptiedOnWrite(np.ndarray):
+    """An array that comes out of its own assignment empty.
+
+    Fault injection for the one case the refusal is written for: a field
+    that does not hold the factor it was given.  Nothing in the package
+    behaves this way; that is the point of injecting it.
+    """
+
+    def __setitem__(self, key, value):
+        super().__setitem__(key, np.zeros_like(np.asarray(value)))
+
+
+def test_a_pair_this_call_would_create_is_still_refused():
+    """The refusal survives for what it was written for."""
+
+    state = _species_state(number=2.0e8)
+    state.nc = state.nc.view(_EmptiedOnWrite)
+    cfg = _config(species=[{"mass_field": "qc", "amplitude": 0.4,
+                            "length_scale_km": 6.0,
+                            "threshold_kg_kg": 1.0e-8}])
+    with pytest.raises(ValueError, match="CREATED"):
+        perturb.apply_perturbations(state, 20260911, cfg)

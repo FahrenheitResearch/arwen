@@ -502,19 +502,13 @@ def test_a_still_hrrr_tree_says_nothing_about_corridors(tmp_path):
                 if item.get("key") == "statics_corridor"]
 
 
-def test_only_the_staged_chain_refuses_a_moving_nest():
-    """The delivery table's current truth, stated as a test.
+def test_every_preparation_contract_supplies_moving_nest_statics():
+    """Mapped hierarchy uses the same sealed corridor as the other chains."""
+    from gpuwm.source_cli import preparation_runners, preparation_statics
 
-    The GFS and HRRR chains feed a moving nest; the staged mapped
-    chain cannot -- rw-wps's mapped arm refuses --statics-corridor by
-    name -- and so it is the one ``None`` entry, refusing a follow
-    config at resolve time rather than minutes downstream.
-    """
-    from gpuwm.runplan import _FOLLOW_STATICS_DELIVERY
-
-    assert [chain for chain, delivery
-            in _FOLLOW_STATICS_DELIVERY.items()
-            if delivery is None] == ["prepared:staged"]
+    assert all(row.moving_statics()["delivery"] == "statics_corridor"
+               for row in preparation_runners().values())
+    assert preparation_statics("prepared:staged")["delivery"] == "statics_corridor"
 
 
 # ---------------------------------------------------------------------------
@@ -530,7 +524,8 @@ def test_every_chain_declares_where_a_moving_nest_gets_its_statics():
     refuses.  Every key `_chain_key` can produce is checked here
     against the routes that actually exist.
     """
-    from gpuwm.runplan import ROUTES, _FOLLOW_STATICS_DELIVERY, _chain_key
+    from gpuwm.runplan import ROUTES, _chain_key
+    from gpuwm.source_cli import preparation_runners, preparation_statics
     from gpuwm.source_adapters import source_adapters
 
     reachable = set()
@@ -544,43 +539,31 @@ def test_every_chain_declares_where_a_moving_nest_gets_its_statics():
     # Explicit prepared_root bypasses source preparation and verifies an
     # already sealed corridor through the same tree runner.
     reachable.add("prepared:existing")
-    assert reachable == set(_FOLLOW_STATICS_DELIVERY)
+    assert reachable == {row.chain for row in preparation_runners().values()} | {"prepared:existing"}
+    assert all(preparation_statics(chain)["delivery"] is not None for chain in reachable)
 
 
-def test_every_refusing_chain_explains_itself_in_its_own_words():
-    """A refusal must not name another chain's tools.
+@pytest.mark.parametrize("missing", ["hierarchy_schema", "corridor_stage"])
+def test_missing_preparation_outputs_name_the_actual_requirement(missing):
+    from dataclasses import replace
+    from gpuwm.source_cli import preparation_runners
 
-    The generic half of the sentence is shared; the half that says WHY
-    this particular preparation cannot seal a corridor has to be
-    written per chain, or a second refusing chain would send its reader
-    to `tools.prepare_hrrr_wrf`.
-    """
-    from gpuwm.runplan import (_FOLLOW_STATICS_DELIVERY,
-                               _FOLLOW_UNSUPPORTED_DETAIL)
-
-    refusing = {chain for chain, delivery
-                in _FOLLOW_STATICS_DELIVERY.items() if delivery is None}
-    assert refusing == set(_FOLLOW_UNSUPPORTED_DETAIL)
+    row = next(iter(preparation_runners().values()))
+    answer = replace(row, **{missing: None}).moving_statics()
+    assert answer["delivery"] is None
+    assert "implementation" in answer["reason"]
+    assert ("hierarchy" if missing == "hierarchy_schema" else "corridor writer") in answer["reason"]
+    assert "supply a prepared hierarchy with verified corridors" in answer["reason"]
 
 
 def test_every_corridor_chain_names_the_stage_that_carries_the_flag():
-    """"The prepare stage" is only true on one of them.
+    from gpuwm.source_cli import preparation_runners, preparation_statics
 
-    GFS seals its corridor in rw-wps; HRRR seals it in the hierarchy
-    stage, because its root preparer never sees a child.  A resolution
-    note that named the wrong one would send a reader to a tool that
-    refuses the flag, which is how a chain-shaped sentence becomes a
-    support ticket.
-    """
-    from gpuwm.runplan import _CORRIDOR_STAGE, _FOLLOW_STATICS_DELIVERY
-
-    sealing = {chain for chain, delivery
-               in _FOLLOW_STATICS_DELIVERY.items()
-               if delivery == "statics_corridor"}
-    assert sealing == set(_CORRIDOR_STAGE)
-    # Each entry names its own tool and not its neighbour's.
-    assert "source_cli" in _CORRIDOR_STAGE["prepared:go"]
-    assert "hrrr_hierarchy_direct" in _CORRIDOR_STAGE["prepared:hrrr"]
+    chains = {row.chain for row in preparation_runners().values()} - {"experiment"}
+    assert all(preparation_statics(chain)["stage"] for chain in chains)
+    assert "source_cli" in preparation_statics("prepared:go")["stage"]
+    assert "hrrr_hierarchy_direct" in preparation_statics("prepared:hrrr")["stage"]
+    assert "mapped_direct" in preparation_statics("prepared:staged")["stage"]
 
 
 def test_the_retained_refusal_still_says_something_useful():
@@ -598,8 +581,8 @@ def test_the_retained_refusal_still_says_something_useful():
     assert "'prepared:someday' chain cannot supply the statics" in message
     assert "seals no child-resolution statics corridor" in message
     assert "remedy:" in message
-    # Both corridor-sealing chains, and both corridor-free routes out.
-    assert "gfs" in message and "hrrr" in message
+    # The remedy names the required preparation contract, independent of source.
+    assert "prepared chain that seals a corridor" in message
     assert "[case_data]" in message
     assert "bounds-only [relocation]" in message
 
@@ -615,7 +598,7 @@ def test_a_chain_with_no_declared_delivery_refuses_rather_than_guesses():
 
     with pytest.raises(PlanError) as refusal:
         follow_statics_decision(_Experiment(), chain="prepared:invented")
-    assert "delivery table" in str(refusal.value)
+    assert "preparation implementation in the dispatcher" in str(refusal.value)
 
 
 def test_the_dispatch_and_the_refusal_read_the_same_chain(tmp_path,

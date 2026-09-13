@@ -174,7 +174,7 @@ gpuwm prep --show-source era5
 gpuwm run-plan --physics-profiles
 ```
 
-The registry distinguishes acquisition, decoding, preparation, and simulation routes. A source can support one stage without an end-to-end forecast route. For example, the GDAS acquisition path does not imply a GDAS ingest route. Regional products have coverage limits, and source physics/cadence requirements still apply to aliases.
+The registry distinguishes acquisition, decoding, preparation, and simulation routes. A source can support one stage without an end-to-end forecast route: a row with an acquisition route but no preparation runner is fetchable and not runnable, and `gpuwm sources <id> --explain` says which stages a given row declares. Regional products have coverage limits, and source physics/cadence requirements still apply to aliases.
 
 ### Dates and forecast leads
 

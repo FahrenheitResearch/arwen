@@ -219,13 +219,19 @@ on AWS Open Data, 60 S to 84 N, and a legend small enough to crosswalk
 (tree cover, shrubland, grassland, cropland, built-up, bare/sparse, snow and
 ice, permanent water bodies, herbaceous wetland, mangroves, moss and lichen).
 
-The blocker is not the crosswalk. It is class 80, *permanent water bodies*,
-which — exactly like NLCD's class 11 — does not distinguish a lake from the
-sea. The existing United States path maps open water to WRF's inland lake
-category and therefore refuses any coastal domain outright. Wiring
-WorldCover on the same rule would ship a "global" land-cover path that
-refuses at every coastline, which in practice means most of Europe. The
-prerequisite is a coastline-aware water rule, not another raster.
+The obvious blocker used to be class 80, *permanent water bodies*, which,
+exactly like NLCD's class 11, does not distinguish a lake from the sea.
+That is no longer a blocker: the ocean/lake split is decided against the
+domain's own 30-arc-second baseline water field, which is already on the
+model grid and already separates WRF ocean category 17 from inland lakes,
+so a coastal domain runs and the receipt says how many cells took each
+branch. WorldCover would inherit the same rule unchanged.
+
+What remains is ordinary wiring: an AWS Open Data tile enumerator and
+fetcher for the WorldCover grid, a class-80-to-MODIS-21 crosswalk table
+alongside the NLCD one, and the reference-year handling (WorldCover is
+2020/2021, so pre-2020 cases carry the same named anachronism this path
+already records for NLCD).
 
 ## Configuration
 
@@ -359,14 +365,41 @@ It reads the 30-arc-second baseline from `$WPS_GEOG`, or from
   says water, and otherwise the run refuses naming the tile and the number
   of land cells underneath it. A footprint where *every* tile is absent is
   open ocean and refuses.
-- **Antimeridian.** A domain straddling 180° yields a bounding box that
-  claims the whole planet. It refuses rather than enumerating 64,800 tiles.
-- **Coast safety.** The coastal refusal exists because the land-cover
-  crosswalk's inland-water rule is not coast-safe. Terrain-only runs no
-  land-use rule at all — `LANDMASK`, `LU_INDEX` and `LANDUSEF` pass through
-  from the baseline untouched — so the ocean/lake distinction is never made
-  and the gate does not apply. It is skipped there deliberately, not by
-  oversight, and still enforced for `fields = "all"`.
+- **Antimeridian.** A domain straddling 180 degrees is a domain, not an
+  error. Its footprint is reported as a CONTINUED longitude range (for
+  example 179.25 to 180.75 rather than -180 to 180), the one-degree tile
+  enumerators read that frame directly and return the handful of tiles
+  either side of the line, and the near-global sources are marked as
+  published for every longitude so no coverage check reports a crossing as
+  an overshoot. One step is still outstanding: the derived mosaic window is
+  written in the cut -180..180 frame, so a continued footprint refuses
+  naming `dateline-window-unbuilt` rather than producing a shifted mosaic.
+  That refusal is made on the footprint, before the plan is resolved and
+  before one tile is enumerated or fetched, in both `fields` modes; the two
+  window writers call the same check as a backstop for a caller that
+  reaches them directly. Nothing is downloaded for a domain that is then
+  told its mosaic cannot be built.
+- **A domain wrapped around its projection pole.** A footprint whose
+  corners span 180 degrees of longitude or more has no continued range at
+  all and occupies every longitude: the polar-stereographic domain that
+  encloses the pole, and the conic domain whose corners fan more than half
+  a turn about the cone apex, both look like the whole band from a lat/lon
+  frame. It reaches the same unbuilt mosaic window, and it is refused
+  under the same name, but it is told its own fact and its own way out:
+  that footprint is not on 180 degrees, has no line with tiles either side
+  of it, and cannot be moved off one, so the refusal names the span and
+  asks for a smaller domain, or one further from the projection pole,
+  until the corners span less than 180 degrees. Both cases keep the second
+  way out, which is to leave `[static.highres]` disabled and run on the
+  30-arc-second baseline.
+- **Coast safety.** The land-cover crosswalk has one open water class and
+  cannot tell a lake from the sea, so the split is made against the
+  domain's own 30-arc-second baseline water field: open water on a cell the
+  baseline calls WRF ocean category 17 stays ocean, and everywhere else it
+  becomes lake category 21. The receipt carries both counts and names the
+  discriminating field. Terrain-only runs no land-use rule at all
+  (`LANDMASK`, `LU_INDEX` and `LANDUSEF` pass through from the baseline
+  untouched), so the distinction is never made there and nothing is split.
 - **Zero cells replaced is a refusal.** An enabled feature that changed
   nothing must never read afterwards as a feature that ran.
 

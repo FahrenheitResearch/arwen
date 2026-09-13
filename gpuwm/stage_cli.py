@@ -686,6 +686,33 @@ def _health_debug_flags(layout: str, enabled: bool) -> list[str]:
     return ["--health-debug"] if enabled else []
 
 
+def streaming_flags(layout: str, *, tiles=None,
+                    stream_init: str | None = None) -> list[str]:
+    """Validate and encode the owning runner's execution-only overrides."""
+    if tiles is None and stream_init is None:
+        return []
+    if layout != "single":
+        raise StageRefusal(
+            "prepared tree streaming uses the experiment's [tiles] table; "
+            "--tiles and --stream-init overrides belong to the single-domain "
+            "runner and cannot be silently applied to a tree")
+    from gpuwm import prepared_single_domain_forecast as single
+    from gpuwm.core.streaming import StreamingOptions
+    try:
+        if isinstance(tiles, StreamingOptions):
+            tiles = tiles.to_mapping()
+        raw = tiles if isinstance(tiles, str) else (
+            None if tiles is None else json.dumps(tiles, sort_keys=True))
+        options = single._streaming_options_argument(raw)
+        if stream_init is not None and stream_init not in single.STREAM_INIT_CHOICES:
+            raise ValueError(f"--stream-init must be one of {single.STREAM_INIT_CHOICES}")
+    except (TypeError, ValueError) as error:
+        raise StageRefusal(f"streaming --tiles/--stream-init: {error}") from error
+    return ([] if options is None else
+            ["--tiles", json.dumps(options.to_mapping(), sort_keys=True)]) + (
+        [] if stream_init is None else ["--stream-init", stream_init])
+
+
 def sim_command(bundle: dict, *, experiment_config: Path,
                 wps_namelist: Path | None, outdir: Path,
                 physics_profile: str | None = None,
@@ -696,7 +723,8 @@ def sim_command(bundle: dict, *, experiment_config: Path,
                 sealed_forcing_extension: bool = False,
                 health_debug: bool = False,
                 render_products: str | None = None,
-                render_dir: Path | None = None) -> list[str]:
+                render_dir: Path | None = None,
+                tiles=None, stream_init: str | None = None) -> list[str]:
     """The exact runner command this prepared tree needs.
 
     This is the seam's published boundary.  ``gpuwm sim
@@ -723,6 +751,9 @@ def sim_command(bundle: dict, *, experiment_config: Path,
     layout = bundle["layout"] if runner == "auto" else runner
     if layout not in {"single", "tree"}:
         raise StageRefusal(f"unknown runner arm {layout!r}")
+    stream_flags = streaming_flags(layout, tiles=tiles, stream_init=stream_init)
+    profile_flags = ([] if physics_profile is None else
+                     ["--physics-profile", str(physics_profile)])
     restart_flags = _restart_flags(layout, restart, sealed_forcing_extension)
     health_flags = _health_debug_flags(layout, health_debug)
     render_flags = ([] if render_products is None else
@@ -738,7 +769,7 @@ def sim_command(bundle: dict, *, experiment_config: Path,
                 digests["preparation_receipt"],
                 "--experiment-config", str(config),
                 "--experiment-config-sha256", digests["experiment_config"],
-                *restart_flags, *health_flags, *render_flags,
+                *profile_flags, *restart_flags, *health_flags, *render_flags,
                 *_progress_flags(progress_format),
                 "--io-mode", io_mode, "--outdir", str(outdir)]
     if wps_namelist is None:
@@ -755,8 +786,7 @@ def sim_command(bundle: dict, *, experiment_config: Path,
             "--prepared-content-sha256", digests["prepared_content"],
             "--experiment-config", str(config),
             "--wps-namelist", str(Path(wps_namelist)),
-            *([] if physics_profile is None
-              else ["--physics-profile", str(physics_profile)]),
+            *profile_flags, *stream_flags,
             *restart_flags, *health_flags, *render_flags,
             *_progress_flags(progress_format),
             "--io-mode", io_mode, "--outdir", str(outdir)]
@@ -862,8 +892,9 @@ def sim_main(args) -> int:
         # the --outdir in the printed line is the one this stage would
         # actually write to.  --print-command only NAMES it: that flag's
         # own contract is that asking the question spends nothing.
-        outdir = claim_run_dir(
-            args, bundle, claim=not getattr(args, "print_command", False))
+        # Compose and validate before allocating anything. Allocation may
+        # choose a different collision suffix; only that operand changes.
+        outdir = claim_run_dir(args, bundle, claim=False)
         command = sim_command(
             bundle,
             experiment_config=args.experiment_config,
@@ -877,7 +908,12 @@ def sim_main(args) -> int:
             sealed_forcing_extension=getattr(args, "sealed_forcing_extension", False),
             health_debug=getattr(args, "health_debug", False),
             render_products=getattr(args, "render_products", None),
-            render_dir=getattr(args, "render_dir", None))
+            render_dir=getattr(args, "render_dir", None),
+            tiles=getattr(args, "tiles", None),
+            stream_init=getattr(args, "stream_init", None))
+        if not getattr(args, "print_command", False):
+            outdir = claim_run_dir(args, bundle, claim=True)
+            command[command.index("--outdir") + 1] = str(outdir)
     except StageRefusal as refusal:
         print(render(str(refusal), explain=explain_enabled(args),
                      command="gpuwm sim"), file=sys.stderr)
@@ -986,6 +1022,14 @@ def register_cli(subparsers) -> None:
     sim.add_argument("--sealed-forcing-extension", action="store_true",
                      help="use the existing prepared-tree append-only forcing "
                           "prefix contract when writing or restoring checkpoints")
+    from gpuwm.prepared_single_domain_forecast import STREAM_INIT_CHOICES
+    sim.add_argument("--tiles", default=None, metavar="JSON",
+                     help="single-domain streaming override as a JSON [tiles] "
+                          "mapping; validated by the runner, without modifying "
+                          "the prepared configuration or its digests")
+    sim.add_argument("--stream-init", choices=STREAM_INIT_CHOICES, default=None,
+                     help="single-domain streamed initialization: auto prices "
+                          "both roads; resident or store forces that road")
     sim.add_argument("--physics-profile", default=None, metavar="ID",
                      dest="physics_profile",
                      help="optional assertion that the hash-bound "

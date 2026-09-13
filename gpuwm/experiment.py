@@ -64,6 +64,10 @@ from gpuwm.static.projection import footprint_contains_pole
 #: d04 against ratio 3 from 1 km) misses by ~0.5 and is a hard error.
 _REL_TOL = 1.0e-6
 
+# Shared by both experiment validators and the namelist support report.
+FEEDBACK_OPTIONS = (0, 1)
+SMOOTH_OPTION_OPTIONS = (0, 1, 2)
+
 #: WRF moving-nest namelist controls (Registry.EM_COMMON &domains).  Any
 #: appearance is still rejected loudly, and the reason is unchanged: every
 #: key here drives CONTINUOUS, per-step nest motion, which invalidates the
@@ -1160,11 +1164,11 @@ class ExperimentConfig:
     spectral_numerics: object | None = None
 
     def __post_init__(self):
-        if self.feedback not in (0, 1):
+        if self.feedback not in FEEDBACK_OPTIONS:
             raise ValueError(
                 "feedback must be 0 (one-way) or 1 (experimental "
                 f"two-way), got {self.feedback!r}.")
-        if self.smooth_option not in (0, 1, 2):
+        if self.smooth_option not in SMOOTH_OPTION_OPTIONS:
             raise ValueError(
                 "smooth_option must be 0 (none), 1 (sm121) or 2 (smdsm), "
                 f"got {self.smooth_option!r}.")
@@ -1994,7 +1998,10 @@ def _refuse_unservable_track(relocation, domains, source, *, root_dt,
 
 
 def _refuse_unservable_follow_cadence(relocation, domains, source,
-                                      *, root_dt) -> None:
+                                      *, root_dt,
+                                      table: str = "[relocation]",
+                                      follow_table: str = "[relocation.follow]",
+                                      ) -> None:
     """The reflectivity stash must be able to serve every evaluation.
 
     The tracker's composite-reflectivity plane is not a diagnostic it can
@@ -2017,6 +2024,13 @@ def _refuse_unservable_follow_cadence(relocation, domains, source,
     "reflectivity"``: the echo handoff is automatic, not opt-in, so a
     UH-primary tracker whose cadence the stash cannot serve is a run that
     refuses the first time rotation is absent.
+
+    ``table`` and ``follow_table`` name the tables the knobs actually
+    live in, because this refusal serves two shapes of configuration: a
+    whole-run ``[relocation]`` and a per-domain ``[[domain]].follow``.
+    Naming the wrong one sends the reader to a table their configuration
+    does not have, and since the per-domain followers are refused at load
+    this is the message most readers meet.
 
     The watched domain is the PARENT of ``grid_id``.  ``grid_id`` names
     the child that MOVES; ``RelocationRunner`` hands the provider
@@ -2059,7 +2073,7 @@ def _refuse_unservable_follow_cadence(relocation, domains, source,
            "does not exist and the run refuses mid-flight")
     if relocation.cadence_seconds is None:
         raise ValueError(
-            f"[relocation] of {source} configures a [relocation.follow] "
+            f"{table} of {source} configures a {follow_table} "
             f"tracker but no cadence_seconds, which means EVERY complete "
             f"cycle boundary (root dt = {float(root_dt)} s), and {where} "
             f"cannot serve that: {why}. Set cadence_seconds to a whole "
@@ -2071,7 +2085,7 @@ def _refuse_unservable_follow_cadence(relocation, domains, source,
             1.0, abs(multiples)):
         lower = max(1, int(multiples)) * stash
         raise ValueError(
-            f"cadence_seconds = {cadence} in [relocation] of {source} is "
+            f"cadence_seconds = {cadence} in {table} of {source} is "
             f"not a whole multiple of {where}: {why}. Use a whole multiple "
             f"of {stash} (nearest below/above: {lower} / "
             f"{lower + stash}), or set that domain's history_interval_s "
@@ -2592,13 +2606,13 @@ def build_experiment(raw: dict, source: str) -> ExperimentConfig:
             f"run_seconds in [experiment] of {source} must be a finite "
             f"positive duration in seconds, got {exp['run_seconds']!r}.")
     feedback = exp.get("feedback", 0)
-    if feedback not in (0, 1):
+    if feedback not in FEEDBACK_OPTIONS:
         raise ValueError(
             f"feedback = {feedback!r} in [experiment] of {source} is "
             "rejected: feedback must be 0 (one-way) or 1 "
             "(experimental two-way child-to-parent restriction).")
     smooth_option = exp.get("smooth_option", 0)
-    if smooth_option not in (0, 1, 2):
+    if smooth_option not in SMOOTH_OPTION_OPTIONS:
         raise ValueError(
             f"smooth_option = {smooth_option!r} in [experiment] of "
             f"{source} is rejected: WRF's post-feedback parent smoother "
@@ -3586,6 +3600,8 @@ def build_experiment(raw: dict, source: str) -> ExperimentConfig:
                 "or make the parent an ordinary domain.")
 
     relocation = _build_relocation(raw, source, domains, run_seconds)
+    from gpuwm.core.nest_lifecycle import validate_follow_tracks
+    domains = validate_follow_tracks(domains, relocation, source)
     from gpuwm.core.attribute_tracking import validate_attribute_domains
     validate_attribute_domains(domains, relocation)
     experiment = ExperimentConfig(

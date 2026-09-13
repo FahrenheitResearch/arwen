@@ -228,6 +228,11 @@ def test_adapter_composes_all_thompson_phases_independently_of_output_cadence(
         assert snow_kwargs["snow_melt_marker"] is warm_args[7]
         assert evap_kwargs["reference_density"] is state._scratch[
             "mp_thompson_rain_reference_density"]
+        assert evap_kwargs["source_density"] is state._scratch[
+            "mp_thompson_frozen_reference_density"]
+        _, _, adjust_kwargs = _named_call(calls, "launch_cloud_saturation_adjust")
+        assert adjust_kwargs["condensation_marker"] is state._scratch["mp_th"]
+        assert evap_kwargs["condensation_marker"] is adjust_kwargs["condensation_marker"]
         assert evap_kwargs["reference_density"] is not warm_args[6]
         assert cold_args[9] is owner
         assert cold_kwargs["graupel_number_shadow"] is shadow

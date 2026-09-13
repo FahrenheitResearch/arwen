@@ -1856,6 +1856,24 @@ def centre_over_levels(planes, config, box, radius_cells):
     return merged, level_fixes, declined
 
 
+def extremum_kind(config, field_used: str) -> str:
+    """``"minimum"`` or ``"maximum"``: which end of the field is the centre.
+
+    ONE answer, because three sites ask it -- the receipt's
+    ``extremum_kind`` column, the units that column is paired with, and
+    :func:`gpuwm.core.track_boundary.boundary_reason`, which has to know
+    which end of the plane to look for at the grid edge.  Read off the
+    CONFIG for a tracked attribute (its own ``extremum``) and off the
+    field otherwise, with ``field_used`` rather than ``config.field``
+    because the rotation tracker's automatic echo handoff changes the
+    field under it and the echo is a maximum either way.
+    """
+
+    if config.field == "attribute":
+        return "minimum" if config.extremum == "min" else "maximum"
+    return "minimum" if field_used == "pressure" else "maximum"
+
+
 def signal_extremum(found: dict, field: str) -> float:
     """The extremum in the FIELD'S OWN units and sign.
 
@@ -2335,7 +2353,7 @@ class StormTracker:
         if cfg.field == "attribute":
             evidence.update(attribute_metadata(cfg))
             evidence["signal"] = f"{cfg.attribute} {cfg.reduction} ({evidence['threshold_units']})"
-            evidence["extremum_kind"] = "minimum" if cfg.extremum == "min" else "maximum"
+            evidence["extremum_kind"] = extremum_kind(cfg, cfg.field)
             evidence["extremum_units"] = evidence["threshold_units"]
         # The box's own span, recorded whether or not it was a problem:
         # it is the one number that distinguishes "centred on the storm"
@@ -2368,6 +2386,28 @@ class StormTracker:
         if found is None:
             self.last_fix = blank
             return blank
+        # EVERY TRACKED FIELD, not just the pressure core.  A rotation,
+        # echo or attribute tracker whose signal has left the parent grid
+        # is in exactly the position the pressure tracker is in -- the
+        # centre it reports is the edge cell the search clipped to, and a
+        # row written from it says the storm stopped moving when what
+        # happened is that it left.  The end of the field that IS the
+        # centre comes from extremum_kind, so the test asks about the same
+        # extremum the receipt reports.
+        planes_used = ([(None, plane)] if field_used != cfg.field else
+                       [(level, p) for level, p in planes
+                        if level is None or (level in levels_of(cfg)
+                            and any(f.level_hpa == level for f in level_fixes))])
+        from gpuwm.core.track_boundary import boundary_reason
+        reasons = [boundary_reason(p, box, (found["ci"], found["cj"]),
+                                   radius_cells=radius_cells,
+                                   extremum=extremum_kind(cfg, field_used),
+                                   signal=evidence["signal"])
+                   for _level, p in planes_used]
+        # All steering surfaces must be boundary limited. A surviving
+        # interior circulation at another level keeps the track alive.
+        if reasons and all(reason is not None for reason in reasons):
+            evidence["track_end_reason"] = reasons[0]
         refined_on = None
         refined_cell_ij = None
         if cfg.refine_grid_id is not None:
@@ -2413,8 +2453,7 @@ class StormTracker:
             # wants to be looking.
             **{k: found[k] for k in ("iterations", "converged",
                                      "competing_centre") if k in found},
-            "extremum_kind": ("minimum" if field_used == "pressure"
-                              else "maximum"),
+            "extremum_kind": extremum_kind(cfg, field_used),
             "extremum_units": ("m" if (relative and field_used == "pressure")
                                else ("hPa" if field_used == "pressure"
                                      else "field")),
@@ -2425,7 +2464,6 @@ class StormTracker:
         })
         from dataclasses import replace as _replace
         if cfg.field == "attribute":
-            evidence["extremum_kind"] = "minimum" if cfg.extremum == "min" else "maximum"
             evidence["extremum_units"] = evidence["threshold_units"]
             evidence["max_value"] = signal_extremum(found, field_used)
         self.last_fix = _replace(blank, found=found,
@@ -2579,7 +2617,8 @@ __all__ = [
     "TRACKED_FIELDS", "TRACKER_STATE_KEYS", "TrackerRefusal", "UH_SLOT",
     "DEFAULT_CENTROID_RADIUS_KM", "RADIUS_KM_MAX", "RADIUS_KM_MIN",
     "is_minimum_signal", "locate_signal", "normalise_pressure_surface",
-    "pressure_surface_json", "radius_in_cells", "signal_extremum",
+    "extremum_kind", "pressure_surface_json", "radius_in_cells",
+    "signal_extremum",
     "build_follow_config",
     "make_plan_provider", "signal_plane", "weighted_centroid",
 ]

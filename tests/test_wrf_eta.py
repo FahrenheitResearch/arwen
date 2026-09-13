@@ -60,8 +60,10 @@ def test_eta_failure_does_not_modify_caller_output():
     assert call(None,80,2,5000,1000,50,1.3,1.1,290,None,0)==1
 
 
-def run_without_eta(*, controls=None):
-    return SimpleNamespace(controls=controls or {}, experiment=SimpleNamespace(
+def run_without_eta(*, controls=None, source_top_pressure_pa=None):
+    return SimpleNamespace(controls=controls or {},
+        source_top_pressure_pa=source_top_pressure_pa,
+        experiment=SimpleNamespace(
         vertical=SimpleNamespace(eta_levels=(),p_top=5000.),
         root=SimpleNamespace(run=SimpleNamespace(nz=79,base_temp=290.))))
 
@@ -94,8 +96,77 @@ def test_explicit_eta_keeps_exact_text_without_native_library(monkeypatch):
     text='[shared]\neta_levels = [1.0, 0.90000000000003, 0.0]\n'
     monkeypatch.setenv('GPUWM_CPU_PREPROCESS_BRIDGE','missing-library')
     assert resolve_metem_vertical(run,text)==(text,'explicit namelist eta_levels',None)
-    with pytest.raises(ValueError,match='eta_levels is explicit'):
-        resolve_metem_vertical(run,text,vertical_grid='native')
+
+
+def test_an_explicitly_passed_selector_wins_over_the_namelist_ladder(monkeypatch,capsys):
+    """A substitution the operator asked for, not a breakage.
+
+    This used to refuse: "namelist eta_levels is explicit; remove
+    --vertical-grid to preserve it".  met_em carries source-level data
+    that ``initialize_real`` interpolates onto whatever eta the resolved
+    config declares, so a namelist that happened to carry a ladder made
+    every other ladder unreachable for no physical reason.  The override
+    is announced on its own plan-review line and lands in the receipt's
+    existing vertical_coordinate / vertical_generation fields.
+    """
+    import tomllib
+    from gpuwm.core.grid import resample_eta_levels
+    from gpuwm.metem_forecast import resolve_metem_vertical
+    from gpuwm.native_wrf_contract import CERTIFIED_ETA_LEVELS
+    monkeypatch.setenv('GPUWM_CPU_PREPROCESS_BRIDGE','missing-library')
+    run=run_without_eta(controls={'domains':{'auto_levels_opt':[999]}})
+    run.experiment.vertical.eta_levels=(1.,.90000000000003,0.)
+    text='[shared]\neta_levels = [1.0, 0.90000000000003, 0.0]\n'
+    actual,policy,receipt=resolve_metem_vertical(run,text,vertical_grid='native')
+    decoded=tomllib.loads(actual)['shared']['eta_levels']
+    assert decoded==resample_eta_levels(CERTIFIED_ETA_LEVELS,79).tolist()
+    assert 'in place of the namelist eta_levels' in policy
+    assert receipt['algorithm']=='ArWen-native-profile'
+    assert 'replaces the' in capsys.readouterr().out
+
+
+def test_an_explicit_toml_ladder_is_a_table_row_and_not_a_branch(monkeypatch,tmp_path):
+    """``explicit:PATH`` reads the spelling --emit-toml prints."""
+    import tomllib
+    from gpuwm.core.grid import resample_eta_levels
+    from gpuwm.metem_forecast import METEM_VERTICAL_LADDERS, resolve_metem_vertical
+    from gpuwm.native_wrf_contract import CERTIFIED_ETA_LEVELS
+    monkeypatch.setenv('GPUWM_CPU_PREPROCESS_BRIDGE','missing-library')
+    assert set(METEM_VERTICAL_LADDERS)=={'wrf-auto','native','explicit'}
+    ladder=resample_eta_levels(CERTIFIED_ETA_LEVELS,79).tolist()
+    path=tmp_path/'ladder.toml'
+    path.write_text('eta_levels = ['+', '.join(repr(v) for v in ladder)+']\n',encoding='utf-8')
+    actual,policy,receipt=resolve_metem_vertical(
+        run_without_eta(),'[shared]\n',vertical_grid=f'explicit:{path}')
+    assert tomllib.loads(actual)['shared']['eta_levels']==ladder
+    assert receipt['algorithm']=='explicit-toml-ladder' and receipt['path']==str(path)
+    assert str(path) in policy
+    with pytest.raises(ValueError,match='names no ladder'):
+        resolve_metem_vertical(run_without_eta(),'[shared]\n',vertical_grid='stretched')
+    with pytest.raises(ValueError,match='carries no eta_levels array'):
+        (tmp_path/'empty.toml').write_text('nz = 79\n',encoding='utf-8')
+        resolve_metem_vertical(run_without_eta(),'[shared]\n',
+            vertical_grid=f"explicit:{tmp_path/'empty.toml'}")
+
+
+def test_a_ladder_above_the_source_atmosphere_is_refused_naming_both_pressures(monkeypatch):
+    """The one refusal this route needs, and it was not being made."""
+    from gpuwm.metem_forecast import resolve_metem_vertical
+    monkeypatch.setenv('GPUWM_CPU_PREPROCESS_BRIDGE','missing-library')
+    run=run_without_eta(source_top_pressure_pa=10000.)
+    with pytest.raises(ValueError,match='source atmosphere stops at') as refused:
+        resolve_metem_vertical(run,'[shared]\n',vertical_grid='native')
+    message=str(refused.value)
+    assert '10000' in message and '5000' in message
+    # Rule: a refusal names the concrete breakage and the way out. Two
+    # pressures and no consequence left the operator who meets this unable
+    # to tell which of the two numbers is the one to change.
+    assert 'extrapolating past the top of the analysis' in message
+    assert 'raise p_top to 10000 Pa or above' in message
+    assert 'supply a source reaching 5000 Pa' in message
+    # A source that reaches above the requested top is accepted.
+    resolve_metem_vertical(run_without_eta(source_top_pressure_pa=1000.),
+                           '[shared]\n',vertical_grid='native')
 
 
 def test_explicit_native_alternative_keeps_existing_profile_without_bridge(monkeypatch):

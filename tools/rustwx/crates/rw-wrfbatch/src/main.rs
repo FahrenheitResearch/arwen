@@ -1377,6 +1377,79 @@ fn write_georef_manifest(
 /// its own product list and silently omitted whole families, which is
 /// how generic `var:` rows stayed invisible).  This function only adds
 /// the WHY for rows the catalog does not carry.
+/// The parcel layer one heavy (ECAPE-class) recipe slug is about, worded
+/// the way the shared store lane words the same three parcels
+/// (`rustwx_products::derived::store`). `None` for the composites, which
+/// mix parcels.
+fn heavy_recipe_parcel_layer(slug: &str) -> Option<&'static str> {
+    if slug.starts_with("sb") {
+        Some("surface-based")
+    } else if slug.starts_with("ml") {
+        Some("0-90 mb mixed layer")
+    } else if slug.starts_with("mu") {
+        Some("0-255 mb most-unstable layer")
+    } else {
+        None
+    }
+}
+
+/// Why ONE heavy (ECAPE-class) recipe is not renderable from this store.
+///
+/// WHAT BREAKAGE THIS PREVENTS (gate law): the catalog used to print one
+/// literal for every excluded heavy row, so a permanent exclusion (the
+/// native-CAPE ratio pairs, which need the SOURCE model's own decoded CAPE
+/// plane and can never come off a wrfout) read exactly like a per-hour
+/// input gap that a re-import fixes. A reader could not tell which rows
+/// were worth re-running for. Every row now names the grid the catalog
+/// looked for, what computes it, and the route that does compute it.
+fn heavy_recipe_exclusion_reason(slug: &str, heavy_imported: bool) -> String {
+    if !heavy_imported {
+        return format!(
+            "no '{slug}' grid: this import ran without --heavy, so the ECAPE \
+             stage that computes it never ran. Re-run the import with --heavy."
+        );
+    }
+    let layer = heavy_recipe_parcel_layer(slug).unwrap_or("the ECAPE");
+    // The shared store lane already classifies these three as legitimately
+    // skippable (rustwx_products::derived::store, NATIVE_RATIO_SLUGS): they
+    // divide by the source model's OWN decoded CAPE plane. A wrfout carries
+    // no such message, and wrf-core's sbcape/mlcape/mucape are diagnostic,
+    // not native, so this is a named permanent exclusion on this lane.
+    if slug.ends_with("_ecape_native_cape_ratio") {
+        return format!(
+            "no '{slug}' grid: it divides {layer} ECAPE by the source model's own \
+             decoded CAPE plane, which a wrfout does not carry (wrf-core's CAPE is \
+             diagnostic, not native), so it stays excluded on this lane. Ingest a \
+             GRIB surface file that carries that CAPE message to get this pair."
+        );
+    }
+    let way_out = "Re-import with --heavy from a wrfout that carries the 3-D fields, \
+                   or ingest the same valid time through the GRIB heavy lane.";
+    if slug.ends_with("_ecape_derived_cape_ratio") {
+        return format!(
+            "no '{slug}' grid: it needs the {layer} ECAPE grid and the {layer} \
+             derived CAPE grid of one heavy solve, and this store has neither. \
+             {way_out}"
+        );
+    }
+    match slug {
+        "sbecape" | "mlecape" | "muecape" | "sbncape" | "sbecin" | "mlecin" => format!(
+            "no '{slug}' grid: it is a {layer} entraining-parcel grid, which the heavy \
+             stage solves from this hour's isobaric volumes plus the 2 m and 10 m \
+             surface planes. {way_out}"
+        ),
+        "ecape_scp" | "ecape_ehi_0_1km" | "ecape_ehi_0_3km" | "ecape_stp" => format!(
+            "no '{slug}' grid: it composes an ECAPE grid with 0-1 km / 0-3 km SRH and \
+             0-6 km bulk shear taken from the same isobaric volumes, and this store \
+             carries no such grid. {way_out}"
+        ),
+        _ => format!(
+            "no '{slug}' grid in this store, and the heavy stage reported none under \
+             that slug. {way_out}"
+        ),
+    }
+}
+
 fn list_products(
     store_root: &std::path::Path,
     model_slug: &str,
@@ -1471,15 +1544,12 @@ fn list_products(
         if renderable_slugs.contains(entry.slug) {
             rows.push((entry.slug.to_string(), kind, "renderable", entry.title.to_string()));
         } else if entry.heavy {
-            let reason = if heavy_imported {
-                "the wrfout lane's heavy (ECAPE) diagnostics do not produce \
-                 this recipe's grid (ml/mu parcels and the CAPE-ratio pairs \
-                 need import-side plumbing wrf-core does not expose yet)"
-            } else {
-                "heavy grid not computed at import; re-run with --heavy \
-                 to compute the ECAPE family"
-            };
-            rows.push((entry.slug.to_string(), kind, "excluded", reason.to_string()));
+            rows.push((
+                entry.slug.to_string(),
+                kind,
+                "excluded",
+                heavy_recipe_exclusion_reason(entry.slug, heavy_imported),
+            ));
         } else {
             rows.push((
                 entry.slug.to_string(),
@@ -1592,6 +1662,93 @@ fn list_products(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// WHAT BREAKAGE THIS PREVENTS (gate law): `--list-products` printed ONE
+    /// reason literal for every excluded heavy row, so a permanent exclusion
+    /// (the three native-CAPE ratio pairs, which divide by the source model's
+    /// own decoded CAPE plane and can never come off a wrfout) read exactly
+    /// like a per-hour input gap a re-import fixes. Seventeen rows asserted
+    /// one cause; the family has sixteen members and at least three causes.
+    #[test]
+    fn every_excluded_heavy_row_names_its_own_missing_grid_and_a_way_out() {
+        let heavy: Vec<&'static str> =
+            rustwx_products::derived::supported_derived_recipe_inventory()
+                .iter()
+                .filter(|entry| entry.heavy)
+                .map(|entry| entry.slug)
+                .collect();
+        assert!(
+            heavy.len() >= 13,
+            "the heavy family shrank to {}: re-check the reasons",
+            heavy.len()
+        );
+        for heavy_imported in [true, false] {
+            let reasons: Vec<String> = heavy
+                .iter()
+                .map(|slug| heavy_recipe_exclusion_reason(slug, heavy_imported))
+                .collect();
+            for (slug, reason) in heavy.iter().zip(reasons.iter()) {
+                assert!(
+                    reason.contains(slug),
+                    "the row must name the grid it is missing: {slug} -> {reason}"
+                );
+                assert!(
+                    reason.contains("--heavy") || reason.contains("GRIB"),
+                    "the row must name a way out: {slug} -> {reason}"
+                );
+                assert!(
+                    !reason.contains('\t') && !reason.contains('\n'),
+                    "a PRODUCT row is tab separated: {slug} -> {reason}"
+                );
+            }
+            // Distinct as WRITTEN, and still distinct once the slug is
+            // removed -- a single blanket literal with the slug pasted in
+            // would pass the first check and fail this one.
+            let written: std::collections::BTreeSet<&str> =
+                reasons.iter().map(String::as_str).collect();
+            assert!(
+                written.len() >= 3,
+                "heavy_imported={heavy_imported}: only {} distinct reason(s)",
+                written.len()
+            );
+            let shapes: std::collections::BTreeSet<String> = heavy
+                .iter()
+                .zip(reasons.iter())
+                .map(|(slug, reason)| reason.replace(slug, "<slug>"))
+                .collect();
+            let expected_shapes = if heavy_imported { 3 } else { 1 };
+            assert!(
+                shapes.len() >= expected_shapes,
+                "heavy_imported={heavy_imported}: {} distinct reason shape(s), want {expected_shapes}: {shapes:?}",
+                shapes.len()
+            );
+        }
+
+        // The permanent exclusion must not promise a re-import fixes it, and
+        // the per-hour gaps must not read as permanent.
+        for slug in [
+            "sb_ecape_native_cape_ratio",
+            "ml_ecape_native_cape_ratio",
+            "mu_ecape_native_cape_ratio",
+        ] {
+            let reason = heavy_recipe_exclusion_reason(slug, true);
+            assert!(
+                reason.contains("GRIB"),
+                "the permanent exclusion must name the route that does compute it: {reason}"
+            );
+            assert!(
+                !reason.contains("Re-import"),
+                "a permanent exclusion must not promise a re-import: {reason}"
+            );
+        }
+        for slug in ["mlecape", "muecape", "mlecin"] {
+            let reason = heavy_recipe_exclusion_reason(slug, true);
+            assert!(
+                reason.contains("--heavy"),
+                "a per-hour gap must name the import that fills it: {reason}"
+            );
+        }
+    }
 
     /// WHAT BREAKAGE THIS PREVENTS (gate law): the pair tool
     /// handed a section the MAP's size, so a 1800x1464 near-square map

@@ -338,6 +338,7 @@ Takes no options of its own.
 | option | what it does |
 |---|---|
 | `--accept-fit FIT_ID` | save only the exact reviewed proposal identified by fitting.fit_id |
+| `--advisory-position LAT,LON` | advisory center; bounds the field search and is the last fallback |
 | `--card` | a tier (12gb/16gb/24gb/32gb), a size ('10gb') or a model with a recorded size ('RTX 3080') |
 | `--cycle` | _(the parser declares no help text for this option)_ |
 | `--explain` | print the full reasoning, alternate routes and per-item evidence behind this command's output, instead of the default one-line-per-item summary |
@@ -345,9 +346,14 @@ Takes no options of its own.
 | `--hours` | _(the parser declares no help text for this option)_ |
 | `--json` | emit the JSON result (the default) |
 | `--latest-map` | _(the parser declares no help text for this option)_ |
-| `--name` | _(the parser declares no help text for this option)_ |
+| `--list-sources` | emit the planable sources with their members, cycle hours, forcing interval and coverage envelope |
+| `--member MEMBER` | ensemble member, in the selected source's own route grammar |
+| `--name` | configuration name (default: the selected source's own title) |
 | `--out` | _(the parser declares no help text for this option)_ |
 | `--point` | _(the parser declares no help text for this option)_ |
+| `--seed-fields NPZ` | canonical source-analysis arrays carrying that source's own cycle and member identity, to locate the center from |
+| `--seed-radius-km` | how far from the advisory position the field search may look |
+| `--source SOURCE` | forcing source to initialize from (default gfs); --list-sources prints the planable set |
 | `--target-host-memory-json` | _(the parser declares no help text for this option)_ |
 | `--tiles {off,auto,on}` | _(the parser declares no help text for this option)_ |
 | `--vram-gib` | _(the parser declares no help text for this option)_ |
@@ -367,10 +373,13 @@ Takes no options of its own.
 |---|---|
 | `--ack ID` | declare a governed experiment, written verbatim into the emitted [experiment].acknowledgements. Repeatable. This door used to write the nocturnal declaration for you, which silenced the load guard at check/run/go/run-plan and both prepared runners for the life of the file; it no longer does, and refuses instead. The id it accepts is asymmetric-radiation-nocturnal-window-v1: a longwave-OFF suite over a window that includes local night, which you are running deliberately as a daytime validation experiment |
 | `--buffer-km KM[,KM...]` | with --polygon, nonnegative geometry buffer in kilometres; one value applies to every domain, or supply exactly one outer-to-inner value per level. With --ladder auto, a multi-value list selects the preset of that depth (default: zero) |
+| `--cadence HOURS` | boundary spacing in whole hours, validated against the selected product |
 | `--card` | GPU to size for: a tier (12gb/16gb/24gb/32gb), a size ('10gb'), or a model with a recorded size ('RTX 3080', '5070 Ti'); sets the VRAM budget with no local probe. With no --card, --vram-gib or --hardware-json the wizard MEASURES the local card's capacity (short-lived probe, suppressed by GPUWM_NO_LOCAL_GPU) and refuses, naming both flags, when there is nothing to measure |
 | `--chain R1,R2,...` | custom nest refinement ratios, integers in [2, 8] (e.g. --root-dx 3 --chain 4 for 3 km -> 750 m); omit for a single domain at --root-dx. Sized by the same estimator fit loop as the presets |
-| `--cycle YYYY-MM-DDTHH\|latest` | the forcing CYCLE (UTC), which is the run's start time unless --forecast-start-hour moves it; 'latest' probes the public mirrors for the newest complete gfs/hrrr cycle covering the whole window and prints what it picked (needs network; era5 must name an explicit time) |
+| `--cycle YYYY-MM-DDTHH\|latest` | the forcing CYCLE (UTC), which is the run's start time unless --forecast-start-hour moves it; 'latest' probes the public mirrors for the newest complete gfs/hrrr cycle covering the whole window and prints what it picked; sources without a probe use their declared publication delay) |
 | `--data-dir DIR` | explicit forcing directory; automatic go launches otherwise manage request-specific downloads. Manual acquisition and ERA5 paths default to data/<name> |
+| `--era5-product {reanalysis,ensemble_members}` | explicit ERA5 product; default reanalysis has no member axis |
+| `--era5-provider {cds,arco}` | ERA5 provider; ensemble_members requires CDS |
 | `--explain` | print the full reasoning, alternate routes and per-item evidence behind this command's output, instead of the default one-line-per-item summary |
 | `--forcing GRIB` | era5: explicit forcing GRIB path(s) already on disk (default <data-dir>/era5-combined.grib) |
 | `--forecast-start-hour K` | gfs/gdas/hrrr: initialize the run from the cycle's f{K} FORECAST lead instead of its analysis, so start_time = cycle + K h and the boundaries come from f{K+i}. This is how a window deep in a forecast (say f174..f240) is reached without integrating from f000. The initial condition is then itself a K-hour forecast, and every receipt says so |
@@ -379,16 +388,17 @@ Takes no options of its own.
 | `--history-interval SECONDS` | how often the ROOT domain writes a wrfout, in seconds (default 3600). Must be a whole number of seconds and a whole number of that domain's time steps -- the loader checks both against the exact rational dt and refuses the emitted file otherwise, before it is written |
 | `--hours N` | forecast length (run_seconds = N*3600) |
 | `--ladder {12,12-3,12-3-1,12-3-1-0.5,auto}` | preset nest dx chain in km (default: 12 -- one 12 km domain, the shape `gpuwm go` runs end to end, same as the interactive session). Nest trees are explicit opt-in: a deeper preset, `auto` (the deepest preset that fits the card), or --root-dx / --chain for anything else; their closing block names the tree runner they route to |
+| `--member` | ensemble trajectory member; defaults to the route's control |
 | `--name` | experiment name (default derived from the center) |
 | `--nest-history-interval SECONDS` | the same, for every NESTED domain (default 900). Nests write more often than the root by default because resolving what the root cannot, over a shorter window, is the point of running one. Ignored for a single-domain ladder |
 | `--nz N` | vertical mass levels (default: 49); resamples the default eta ladder while preserving its stretching |
 | `--out TOML` | emitted experiment TOML path |
-| `--physics-profile {morrison-mp10-ysu-mm5-noah-kf-rte-rrtmgp-v1,nssl2-mp18-ysu-mm5-noah-kf-rte-rrtmgp-validation-candidate-v1,nssl2-mp18-ysu-mm5-noah-kf-rrtmg-legacy-validation-candidate-v1,thompson-mp8-ysu-mm5-noah-rrtmg-legacy-v1,thompson-mp8-shinhong-mm5-noah-rrtmg-legacy-v1,p3-mp50-ysu-mm5-noah-rrtmg-legacy-v1,wsm6-mynn-mynn-noah-rte-rrtmgp-implemented-unverified-v1,wsm6-mynn-mynn-ruc-rte-rrtmgp-implemented-unverified-v1,thompson-mp8-ysu-mm5-noah-validation-v1,wsm6-ysu-mm5-noah-no-radiation-v1,wsm6-mynn-mynn-noah-no-radiation-implemented-unverified-v1,wsm6-ysu-mm5-ruc-no-radiation-implemented-unverified-v1,wsm6-mynn-mynn-ruc-no-radiation-implemented-unverified-v1}` | shipped physics suite to emit; taken verbatim from the registry the prepared-forecast runner validates against, so the emitted config passes its guard as written. Read the names: the *-no-radiation-* and *-validation-* profiles run reduced physics with longwave OFF and are NOT nocturnally valid -- selecting one for a window that includes local night is REFUSED unless you declare it yourself with --ack. (--source era5, the default source, binds morrison-mp10-ysu-mm5-noah-kf-rte-rrtmgp-v1; every source has its own computed default and its own admissible set -- `gpuwm run-plan --physics-profiles` prints the whole table) |
+| `--physics-profile {morrison-mp10-ysu-mm5-noah-kf-rte-rrtmgp-v1,nssl2-mp18-ysu-mm5-noah-kf-rte-rrtmgp-validation-candidate-v1,nssl2-mp18-ysu-mm5-noah-kf-rrtmg-legacy-validation-candidate-v1,thompson-mp8-ysu-mm5-noah-rrtmg-legacy-v1,thompson-mp8-shinhong-mm5-noah-rrtmg-legacy-v1,p3-mp50-ysu-mm5-noah-rrtmg-legacy-v1,wsm6-mynn-mynn-noah-rte-rrtmgp-implemented-unverified-v1,wsm6-mynn-mynn-ruc-rte-rrtmgp-implemented-unverified-v1,thompson-mp8-ysu-mm5-noah-validation-v1,wsm6-ysu-mm5-noah-no-radiation-v1,wsm6-mynn-mynn-noah-no-radiation-implemented-unverified-v1,wsm6-ysu-mm5-ruc-no-radiation-implemented-unverified-v1,wsm6-mynn-mynn-ruc-no-radiation-implemented-unverified-v1,wsm6-ysu-mm5-noahmp-no-radiation-expert-only-v1,wsm6-mynn-mynn-noahmp-no-radiation-expert-only-v1,wsm6-mynn-mynn-noahmp-rte-rrtmgp-expert-only-v1,20crv3-wsm6-ysu-mm5-noah-kf-rte-rrtmgp-implemented-unverified-v1,milbrandt2mom-mp9-ysu-mm5-noah-ntiedtke-rrtmg-legacy-v1,wdm6-mp16-ysu-mm5-noah-grell-freitas-rte-rrtmgp-v1,wsm6-sase-revised-mm5-noah-closure-supplied-v1,wsm6-pbl-off-mm5-noah-tke-1-5-order-v1,wsm6-pbl-off-mm5-noah-smagorinsky-3d-v1,wsm6-pbl-off-mm5-noah-constant-k-v1}` | shipped physics suite to emit; taken verbatim from the registry the prepared-forecast runner validates against, so the emitted config passes its guard as written. Read the names: the *-no-radiation-* and *-validation-* profiles run reduced physics with longwave OFF and are NOT nocturnally valid -- selecting one for a window that includes local night is REFUSED unless you declare it yourself with --ack. (--source era5, the default source, binds morrison-mp10-ysu-mm5-noah-kf-rte-rrtmgp-v1; every source has its own computed default and its own admissible set -- `gpuwm run-plan --physics-profiles` prints the whole table) |
 | `--point LAT,LON` | domain center in decimal degrees. \|lat\| 90 is refused. A point carries no extent, so the fit chooses one: the largest layout the budget affords, capped at 6000 km per axis and kept clear of the projection pole, where lat-lon source interpolation and static-tile windowing do not work. Both caps SHRINK the domain rather than refuse it, and the plan summary states which one bound; the pole refusal is left for a center so close to one that even the smallest layout contains it. Draw a --polygon to ask for more ground than the cap. The projection is auto-selected from \|lat\| (<25 Mercator, 25-60 Lambert conformal, >60 polar stereographic) unless --projection is set. Negative (southern/western) values work in both forms: --point -33.87,151.21 and --point=-33.87,151.21 |
 | `--polygon GEOJSON` | local GeoJSON Polygon, MultiPolygon, Feature, or FeatureCollection; the minimum antimeridian-aware bounds supply the center and every emitted level is fitted around the geometry |
 | `--projection {auto,lambert,mercator,polar}` | map projection override (default: auto by center latitude; all three are oracle-gated against WRF v4.6.1 module_llxy) |
 | `--root-dx KM` | custom root grid spacing in km [0.05, 200]; use with --chain instead of --ladder |
-| `--source SOURCE` | forcing source: any registered source id or alias -- hrrr, hrrr-prs, gem-gdps, icon-eu, gfs, gdas, gefs, aigfs, aigefs, ecmwf-open-data, aifs, rap, rrfs, era5, era5-l137, 20crv3, 20crv3-cf today (`gpuwm prep --list-sources` lists the whole registry). It sets the boundary cadence written into the companion namelist.wps, bounds the domain by the source's own grid where that grid is regional, and (era5) declares [case_data]. A source `gpuwm fetch` cannot download yet emits the same geometry with the acquisition step named instead of a [fetch] table |
+| `--source SOURCE` | forcing source: any registered source id or alias -- hrrr, hrrr-prs, gem-gdps, icon-eu, gfs, gdas, gefs, aigfs, aigefs, ecmwf-open-data, aifs, rap, rrfs, era5, era5-l137, 20crv3, 20crv3-cf today (`gpuwm prep --list-sources` lists the whole registry). It sets the boundary cadence written into the companion namelist.wps, bounds the domain by the source's own grid where that grid is regional, and (era5) declares [case_data]. A source `gpuwm fetch` cannot download still emits the same geometry: one whose registry row declares a local input contract gets a [fetch] table (source, cycle, hours and its staging source_root) with the staging step named beside it, and any other has the acquisition step named in place of the table |
 | `--target-host-memory-json` | selected target host-memory snapshot for an explicit --card or --vram-gib budget; no local RAM sizing |
 | `--tiles {off,auto,on}` | streaming mode (bare --tiles means auto); sizes with the forecast planner using the selected target's GPU and RAM when supplied, otherwise local hardware or an explicit card budget; on forces streaming |
 | `--vram-gib N` | total VRAM in GiB (alternative to --card) |
@@ -510,17 +520,17 @@ Takes no options of its own.
 | `--author-front-door-manifest` | author the front-door input manifest for the fetched series; requires --wps-namelist and --experiment-config (--bridge defaults to the built decoder this install resolves) |
 | `--bridge EXE` | built gfs_grib2_bridge executable; omit it and the same resolver `gpuwm go` uses finds the one this install has (checkout build, libexec, then ~/.gpuwm/bridges -- see gpuwm doctor) |
 | `--cache-dir DIR` | --engine rust only (hrrr, gfs/gdas --mode full-file): wx-core disk cache root, keyed by URL and byte range, so a re-run or an overlapping window re-reads bytes instead of re-downloading them |
-| `--cadence {1,3,6}` | forecast-hour cadence: gfs 1 or 3 (default 3); gdas 1, 3, or 6 (default 3, and it does not apply to --hours 0, which is the analysis alone); era5 1, 3, or 6 (default 6); hrrr is hourly. On a table route the accepted cadences and the default are the row's own -- a cadence off the publisher's ladder refuses and names the ladder |
+| `--cadence HOURS` | forecast-hour cadence: gfs any positive whole-hour spacing whose requested leads are published (default 3); gdas any whole number of hours that divides --hours, on its hourly f000..f009 ladder (default 3, and it does not apply to --hours 0, which is the analysis alone); era5 any positive whole number of hours that divides --hours (default 6; the EDA product publishes 3-hourly, so it takes multiples of 3); hrrr is hourly. On a table route the accepted cadences and the default are the row's own -- a cadence off the publisher's ladder refuses and names the ladder |
 | `--cycle YYYY-MM-DDTHH\|latest` | model cycle (UTC); 'latest' resolves the newest cycle this source can serve, from the initialization grid and publication lag its registry row or route declares -- probed against the mirrors where the source publishes objects to probe, and taken from the declared lag where it does not (a reanalysis published on a delay has a latest, and it is that delay). A source that declares neither is refused by name |
 | `--engine {auto,rust,python}` | hrrr, and gfs/gdas --mode full-file: which downloader moves the bytes. 'rust' is the vendored rw_fetch backbone (16 MiB parallel range GETs, .idx coalescing, the cross-process NOMADS rate governor, a disk cache); 'python' is the stdlib transport and always works; 'auto' (default) uses the backbone when it is built |
-| `--era5-product {reanalysis,ensemble_members}` | ERA5 product: reanalysis (default), or ten-member EDA with explicit --member 0..9 --cadence 3 --retrieve |
+| `--era5-product {reanalysis,ensemble_members}` | ERA5 product: reanalysis (default), or ten-member EDA with explicit --member 0..9 --retrieve, on a cadence that is a whole multiple of its three-hourly clock |
 | `--era5-provider {cds,arco}` | ERA5 provider: cds uses Copernicus credentials; arco downloads Google's public hourly ERA5 Zarr archive without a key |
 | `--experiment-config TOML` | the experiment TOML the front door will consume |
 | `--explain` | print the full reasoning, alternate routes and per-item evidence behind this command's output, instead of the default one-line-per-item summary |
 | `--fetch-workers N` | how many FILES are in flight at once (default 6; every source but era5, which is a manual CDS retrieval). Bounded per host on top of the pool: NOMADS is capped at 2 in-flight requests and every request still passes the node-wide 2.5 s spacing governor, so concurrency overlaps service time without raising the request rate against a fragile public host. Every file keeps the exact serial verification -- envelope walk, record bar, sha256 -- and one failed file still refuses by name. 1 is the serial transport: a knob, not a workaround. The manifest receipts files, bytes, workers, wall and the effective speedup under 'concurrency' |
 | `--force-refetch` | move every existing file in --out aside (nothing is deleted) and re-download this request. The receipts go first -- fetch-manifest.json, SHA256SUMS, the series -- so an interrupted force can never leave a manifest behind claiming payloads it has already replaced; then payloads, .idx indexes, stale parts and anything else in the directory. Files already set aside by an earlier quarantine are left untouched, and subdirectories are yours. Required when re-fetching a different area/cycle into the same --out |
 | `--forecast-start-hour K` | every forecast source: the forecast lead the window BEGINS at (default f000, the analysis). --hours stays the window length, so --forecast-start-hour 174 --hours 66 fetches f174..f240 and nothing before it; an experiment whose start_time is cycle+K is then initialized from f{K} with its boundaries from f{K+i}. With --author-front-door-manifest on an already-fetched --out, this authors the manifest over that tail of the existing series instead of re-downloading it |
-| `--hours N` | forecast window length: hours 0..N are fetched. gdas is certified for fetch and decode through f009; native mapped GDAS preparation uses the complete pressure ladder and specific humidity. --hours 0 is the analysis alone, which gdas accepts and every table route accepts (its f000 is an initial state on its own, and it is also how a hybrid source's donor is fetched). A window past the cycle's own horizon refuses and names both the horizon and which cycles reach farther |
+| `--hours N` | forecast window length: hours 0..N are fetched. gdas is certified for fetch and decode through f009; native mapped GDAS preparation uses the complete pressure ladder and specific humidity. --hours 0 is one analysis on each acquisition route; it is also how a hybrid source's donor is fetched. Forecast preparation still needs at least two forcing times. A window past the cycle's own horizon refuses and names both the horizon and which cycles reach farther |
 | `--manifest-out JSON` | manifest path (default <out>/gfs-input-manifest.json) |
 | `--member ID` | ERA5 EDA: required encoded member 0..9. Ensemble routes (gefs, aigefs): which member to fetch (default the control). Member identity is a PATH component for these products, so the files land under their declared upstream-relative paths and `gpuwm-member-prep --inputs` reads the directory as published |
 | `--mode {auto,full-file,idx-subset}` | the byte transport. hrrr (--engine rust): 'full-file' is the default -- the whole object in parallel range GETs, which is the pipeline this product is built on; 'idx-subset' is the opt-in bandwidth saver: it selects records instead of taking the file, saves transfer volume, costs wall clock, and refuses rather than silently degrading when the index cannot carry the selection; 'auto' is the probe rule -- take the whole file when the .idx is absent, malformed, or provably shorter than the object -- which is what an install without the rust backbone falls back to. gfs/gdas: 'full-file' takes the whole pgrb2.0p25 objects from the S3 archive (either engine); omitted, the NOMADS grib-filter crop remains the default, and 'auto'/'idx-subset' refuse -- .idx record subsetting of the raw objects is not a certified GFS route |
@@ -619,6 +629,48 @@ Takes no options of its own.
 |---|---|
 | `--explain` | print the full reasoning, alternate routes and per-item evidence behind this command's output, instead of the default one-line-per-item summary |
 | `--output NPZ` | initialized-state NPZ output |
+
+## `gpuwm local-da`
+
+| option | what it does |
+|---|---|
+| `--budget-seconds` | advisory wall-time target for preparation, forecast and cycles; does not reduce cycles or impose a runtime deadline |
+| `--cadence-seconds` | exact requested whole-second cadence; otherwise derived from scale; never shortened to meet a cost estimate |
+| `--capabilities` | print the companion command and field contract without pricing |
+| `--card-name` | label recorded beside the timing basis so a review names the card it was priced for |
+| `--dry-run` | review only; no writes, downloads or device allocation |
+| `--epoch` | initial UTC timestamp on a whole-second boundary, including Z or an explicit offset |
+| `--explain` | print the full reasoning, alternate routes and per-item evidence behind this command's output, instead of the default one-line-per-item summary |
+| `--forcing-cadence-hours` | whole-hour source boundary spacing, separate from the whole-second analysis cadence |
+| `--forecast-seconds` | length of the forecast that follows the last analysis, in seconds |
+| `--free-gib` | free card memory in GiB when less than the whole card is available; defaults to the declared total |
+| `--host-gib` | declared host RAM in GiB for advisory comparison with estimated analysis arrays and observation tables |
+| `--json` | emit the review as one JSON document on stdout, which this door always does; accepted so a companion can state it |
+| `--launch` | launch or resume an existing local-da.json |
+| `--obs-table` | existing neutral observation table; repeatable |
+| `--out` | new directory to publish experiment.toml, ensemble.toml, experiment.namelist.wps and local-da.json into; refused if it exists |
+| `--point` | latitude,longitude |
+| `--prepared-config` | configuration authority consumed by the supplied prepared bundle |
+| `--prepared-namelist` | WPS authority consumed by the supplied prepared bundle |
+| `--prepared-root` | existing portable single-domain prepared bundle, verified by the ordinary forecast reader |
+| `--profile` | physics profile name resolved by the authoring authority; defaults to the profile that authority selects |
+| `--radar-grid` | existing radar-grid observation file; repeatable |
+| `--region` | west,south,east,north; east<west crosses the dateline |
+| `--request-json` | arwen.local-da-request.v1 file, or - for stdin |
+| `--run` | launch after publishing the reviewed configuration |
+| `--satellite-grid` | existing cloud-water-path grid; repeatable |
+| `--scale` | requested rung of the derived ladder; its domain, resolution, members and cycle count are preserved, with lower rungs shown as alternatives |
+| `--seed` | base seed for member perturbation and the static covariance samples; the same seed reproduces the same analysis |
+| `--source` | background source name resolved by its owner; defaults to the package background source |
+| `--source-cycle` | explicit source cycle in UTC; omitted selects one published cycle covering the entire window |
+| `--source-input` | ROLE=PATH for original source bytes needed to verify a supplied member identity; repeatable |
+| `--source-member` | one source member, separate from the regional ensemble member count |
+| `--source-product` | source product selector; source membership never changes the default product implicitly |
+| `--source-provider` | provider supported by the selected product owner |
+| `--source-root` | local source directory with the existing preparation handoff or native member inventory |
+| `--speed-factor` | compute speed relative to the printed reference card, not memory capacity |
+| `--supplement` | ROLE=PATH consumed by the preparation composition; repeatable |
+| `--vram-gib` | declared card memory in GiB; required unless a request document supplies the card |
 
 ## `gpuwm mesh`
 
@@ -915,15 +967,19 @@ Takes no options of its own.
 | `--expected-prepared-sha256` | refuse a prepared receipt changed since review |
 | `--expected-wps-sha256` | refuse inputs changed since the reviewed SHA-256 |
 | `--from` | latest valid checkpoint, or its absolute remote path |
+| `--geog-root` | existing absolute remote geography directory |
 | `--host` | existing SSH alias or user@host |
 | `--identity` | existing local SSH identity path; contents are never copied |
 | `--job` | job ID returned by start or list |
 | `--json` | one versioned JSON result line; exit 0 or 2 |
 | `--outdir` | new absolute remote output directory; existing paths are refused |
 | `--port` | SSH port (otherwise SSH configuration applies) |
+| `--prepared-root` | existing absolute remote prepared bundle; reuse it without fetch or preparation |
+| `--products` | render catalog selectors, all, or none |
 | `--python` | absolute remote Python path with ArWen installed |
 | `--ssh-config` | existing local OpenSSH configuration path |
 | `--workspace` | existing absolute remote workspace directory |
+| `--wps-namelist` | with --prepared-root: exact absolute remote WPS authority required by a single-domain bundle |
 
 ## `gpuwm remote review-plan`
 
@@ -1227,7 +1283,8 @@ Takes no options of its own.
 | `--rrtmg-variant {rrtmg_legacy,rte-rrtmgp}` | WRF inputs: preserve legacy RRTMG by default; choose rte-rrtmgp to change radiation |
 | `--run-seconds` | shorten a --wrfinput or --met-em run inside its forcing coverage |
 | `--supervisor-max-restarts N` | fresh-process recovery attempts (default 3) |
-| `--vertical-grid {native}` | met_em: explicitly use ArWen eta initialization when namelist eta_levels is absent |
+| `--vertical-grid` | met_em: native, wrf-auto, or explicit:PATH eta grid |
+| `--vertical-levels` | met_em: requested level count for the selected vertical grid |
 | `--wrfinput DIR` | WRF real.exe directory containing wrfinput_d0*, wrfbdy_d01 and producing namelist.input (instead of CONFIG) |
 
 ## `gpuwm run-plan`
@@ -1277,6 +1334,8 @@ Takes no options of its own.
 | `--run-stamp {on,off}` | put this run's wrfout, report.json and receipts in its own timestamped folder under --outdir (default on): --outdir/run-<YYYYMMDD>-<HHMMSS>Z_i<YYYYMMDD><HHMM>Z/ (launch instant UTC, then the model initialisation time; the _i part is omitted when the run's init time cannot be read). Successive runs of one configuration then never overwrite or interleave each other. 'off' writes straight into --outdir, which is what releases up to 2.4.1 did; it is kept only for a consumer still written against that and is a workaround, not a supported alternative |
 | `--runner {auto,single,tree}` | which runner arm to use. 'auto' (default) reads it off the bundle's own schema and domain count; the explicit values exist for a caller who knows better and wants to be refused precisely when they do not |
 | `--sealed-forcing-extension` | use the existing prepared-tree append-only forcing prefix contract when writing or restoring checkpoints |
+| `--stream-init {auto,resident,store}` | single-domain streamed initialization: auto prices both roads; resident or store forces that road |
+| `--tiles JSON` | single-domain streaming override as a JSON [tiles] mapping; validated by the runner, without modifying the prepared configuration or its digests |
 | `--wps-namelist WPS` | the namelist.wps this preparation consumed; required for a single-domain forecast, unused by the tree runner |
 
 ## `gpuwm sources`
@@ -1502,6 +1561,98 @@ Takes no options of its own.
 | `--offline` | accepted for older scripts; names the default (no PyPI lookup) and changes nothing |
 | `--pypi-timeout SECONDS` | seconds to wait for the index under --check-pypi (default 2.0) |
 
+## `gpuwm-carried-channel`
+
+Takes no options of its own.
+
+## `gpuwm-carried-channel candidate`
+
+| option | what it does |
+|---|---|
+| `--carried` | _(the parser declares no help text for this option)_ |
+| `--classified` | _(the parser declares no help text for this option)_ |
+| `--expected-release-id` | independent trusted id, not an id copied from received JSON |
+| `--manifest` | _(the parser declares no help text for this option)_ |
+| `--out` | new output path; otherwise allocate a new owned generation |
+| `--receiver` | _(the parser declares no help text for this option)_ |
+
+## `gpuwm-carried-channel classify`
+
+| option | what it does |
+|---|---|
+| `--decisions` | _(the parser declares no help text for this option)_ |
+| `--expected-review-id` | _(the parser declares no help text for this option)_ |
+| `--out` | new output path; otherwise allocate a new owned generation |
+| `--receiver` | _(the parser declares no help text for this option)_ |
+| `--review` | _(the parser declares no help text for this option)_ |
+
+## `gpuwm-carried-channel emit`
+
+| option | what it does |
+|---|---|
+| `--new` | _(the parser declares no help text for this option)_ |
+| `--new-version` | _(the parser declares no help text for this option)_ |
+| `--old` | _(the parser declares no help text for this option)_ |
+| `--old-repo` | read the old endpoint from a separate public mirror |
+| `--old-version` | _(the parser declares no help text for this option)_ |
+| `--out` | new output path; otherwise allocate a new owned generation |
+| `--repo` | _(the parser declares no help text for this option)_ |
+| `--scope` | _(the parser declares no help text for this option)_ |
+
+## `gpuwm-carried-channel feedback`
+
+| option | what it does |
+|---|---|
+| `--carried` | _(the parser declares no help text for this option)_ |
+| `--classified` | _(the parser declares no help text for this option)_ |
+| `--evidence` | _(the parser declares no help text for this option)_ |
+| `--expected-release-id` | independent trusted id, not an id copied from received JSON |
+| `--include-source` | explicit selected carried path whose whole bytes may be exported |
+| `--index` | _(the parser declares no help text for this option)_ |
+| `--manifest` | _(the parser declares no help text for this option)_ |
+| `--out` | new output path; otherwise allocate a new owned generation |
+| `--receiver` | _(the parser declares no help text for this option)_ |
+
+## `gpuwm-carried-channel review`
+
+| option | what it does |
+|---|---|
+| `--bootstrap` | no inherited classifications |
+| `--carried` | _(the parser declares no help text for this option)_ |
+| `--expected-release-id` | independent trusted id, not an id copied from received JSON |
+| `--manifest` | _(the parser declares no help text for this option)_ |
+| `--out` | new output path; otherwise allocate a new owned generation |
+| `--previous` | _(the parser declares no help text for this option)_ |
+| `--receiver` | _(the parser declares no help text for this option)_ |
+
+## `gpuwm-carried-channel scope`
+
+| option | what it does |
+|---|---|
+| `--out` | new output path; otherwise allocate a new owned generation |
+| `--receiver` | _(the parser declares no help text for this option)_ |
+
+## `gpuwm-carried-channel verify-feedback`
+
+| option | what it does |
+|---|---|
+| `--carried` | _(the parser declares no help text for this option)_ |
+| `--classified` | _(the parser declares no help text for this option)_ |
+| `--expected-feedback-id` | _(the parser declares no help text for this option)_ |
+| `--expected-release-id` | independent trusted id, not an id copied from received JSON |
+| `--feedback` | _(the parser declares no help text for this option)_ |
+| `--manifest` | _(the parser declares no help text for this option)_ |
+| `--receiver` | _(the parser declares no help text for this option)_ |
+| `--require-pairs` | _(the parser declares no help text for this option)_ |
+
+## `gpuwm-carried-channel verify-git`
+
+| option | what it does |
+|---|---|
+| `--manifest` | _(the parser declares no help text for this option)_ |
+| `--old-repo` | _(the parser declares no help text for this option)_ |
+| `--repo` | _(the parser declares no help text for this option)_ |
+
 ## `gpuwm-mapped-inspect`
 
 | option | what it does |
@@ -1589,6 +1740,7 @@ Takes no options of its own.
 | `--io-mode {history,none}` | _(the parser declares no help text for this option)_ |
 | `--no-frame-markers` | do not publish frame-ready markers |
 | `--outdir` | _(the parser declares no help text for this option)_ |
+| `--physics-profile ID` | assert every hash-bound domain uses the named suite; omit to preserve mixed per-domain physics |
 | `--preparation-receipt-sha256` | _(the parser declares no help text for this option)_ |
 | `--prepared-root` | _(the parser declares no help text for this option)_ |
 | `--progress-every N` | report every Nth model step (default 1, WRF's own cadence). The first and last step of every domain are always reported, and this thins ONLY `step` records -- output, restart and domain events are never thinned |

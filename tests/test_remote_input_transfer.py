@@ -87,7 +87,7 @@ def test_source_manifest_limits_and_duplicate_paths_are_checked(tmp_path):
 
 def test_binary_command_has_only_fixed_words_and_never_local_paths(monkeypatch):
     import shlex
-    monkeypatch.setattr(remote_cli.shutil, "which", lambda _: "ssh")
+    monkeypatch.setattr(remote_cli.shutil, "which", lambda *names, **options: "ssh")
     args = SimpleNamespace(host="node", python="/runtime with space/python", workspace="/owned/work",
                            port=None, identity=None, ssh_config=None)
     command = remote_cli.ssh_command(args, input_stream=True)

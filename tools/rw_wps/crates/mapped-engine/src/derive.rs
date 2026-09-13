@@ -710,6 +710,30 @@ mod tests {
     use super::*;
 
     #[test]
+    fn layer_mass_uses_declared_thickness_without_a_magnitude_guess_or_clip() {
+        let mut mass = constant_field("soil_water", &["soil", "y", "x"], &[2, 1, 2], 0.0);
+        mass.units = "kg m-2".to_owned();
+        mass.location = "soil".to_owned();
+        mass.values = ArrayD::from_shape_vec(IxDyn(&[2, 1, 2]), vec![5.0, 7.5, 10.0, 80.0]).unwrap();
+        let available = std::collections::BTreeMap::from([("soil_water".to_owned(), mass)]);
+        let operation = parse_node(r#"{
+            "operation": "volumetric_soil_moisture_from_layer_mass",
+            "layer_mass": "soil_water", "layer_bounds_m": [[0.0, 0.01], [0.01, 0.05]]
+        }"#);
+        let declaration = parse_node(r#"{
+            "source_axes": ["soil", "y", "x"], "target_axes": ["soil", "y", "x"],
+            "units": {"source": "m3 m-3", "target": "m3 m-3"},
+            "location": "soil", "missing": {"kind": "reject"}
+        }"#);
+        let field = FieldSpec { name: "soil_fraction".to_owned(), raw: &declaration };
+        let (values, axes, _) = evaluate_derivation(
+            &operation, &available, &hybrid_collection(), &field, "soil_fraction", &vertical_node(),
+        ).unwrap().unwrap();
+        assert_eq!(array::contiguous(&values), vec![0.5, 0.75, 0.25, 2.0]);
+        assert_eq!(axes, vec!["soil", "y", "x"]);
+    }
+
+    #[test]
     fn dewpoint_relative_humidity_is_the_unclipped_ungrib_relation() {
         // T = D means saturation: exactly 100 %, and the relation is NOT
         // clipped, so a dewpoint above the temperature exceeds 100.

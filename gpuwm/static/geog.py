@@ -137,6 +137,37 @@ def parse_index(path) -> GeogIndex:
     )
 
 
+#: Index projections this reader can actually resolve.  Everything else is
+#: refused by name, through the one predicate below, so the geography
+#: inventory and dataset construction cannot disagree about one tree.
+SUPPORTED_INDEX_PROJECTIONS: tuple[str, ...] = ("regular_ll",)
+
+
+def unsupported_projection_detail(projection: str | None) -> str | None:
+    """Why a declared index projection cannot be read, else ``None``.
+
+    One predicate, both doors: the geography inventory
+    (:func:`gpuwm.geog_assets.validate_dataset_dir`, reached by the
+    fetch listing, the pre-fetch skip decision and post-stage
+    validation) and :class:`GeogDataset` construction.  The detail names
+    the projection the index declared, the breakage it prevents and the
+    way out, because a refusal that names none of them is why a real
+    WPS_GEOG tree of projected tiles reads as an internal error.
+    """
+
+    name = (projection or "regular_ll").strip().lower()
+    if name in SUPPORTED_INDEX_PROJECTIONS:
+        return None
+    return (
+        f"index declares projection {name!r}; this reader is "
+        "equirectangular by construction, resolving a source cell by "
+        "dividing a longitude difference by the index dx and taking the "
+        "global axis from 360/dx by 180/dy, so a projected index would "
+        "resolve the wrong source cells rather than fail. Stage the "
+        "regular_ll variant of this dataset instead."
+    )
+
+
 @dataclass
 class GeogWindow:
     """A mosaicked window of source data in native (raw) storage.
@@ -181,9 +212,11 @@ class GeogDataset:
             declared.strip().lower() in _TRUE_STRINGS
             if sparse is None else bool(sparse)
         )
-        if self.index.projection != "regular_ll":
+        projection_detail = unsupported_projection_detail(
+            self.index.projection)
+        if projection_detail is not None:
             raise NotImplementedError(
-                f"projection {self.index.projection!r} not supported")
+                f"{self.path / 'index'}: {projection_detail}")
         self.tiles: dict[tuple[int, int], Path] = {}
         self._tile_cache: dict[tuple[int, int, bool], np.ndarray | None] = {}
         xs_min = ys_min = None

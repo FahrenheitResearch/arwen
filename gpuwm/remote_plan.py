@@ -535,7 +535,7 @@ def hardware_probe(*, sizing=None, measure_sizing=True):
 
 
 def memory_review(config, *, experiment=None, cadence=None):
-    """The existing launch gate, on this node, including the ingest phase."""
+    """Advisory sizing on this node, including the ingest phase."""
     from gpuwm.go_cli import memory_gate
     gate = memory_gate({"config": str(config), "cadence": cadence}, experiment=experiment)
     phases = gate["phases"]
@@ -576,7 +576,7 @@ def memory_review(config, *, experiment=None, cadence=None):
                          ("state", "physics", "scratch", "lbc", "nest", "diagnostic", "sase", "transient")}}
                     for domain in forecast.domains],
     }
-    return {"measured": gate.get("free_bytes") is not None,
+    return {"measured": gate.get("free_bytes") is not None, "advisory": True,
             "execution": {"schema": "arwen.execution-memory.v1", "configured_mode": options.mode,
                           "configured_tiles": options.to_mapping(), "streamed_forecast": bool(phases.streamed_forecast),
                           "selected_forecast_envelope_bytes": int(phases.forecast_envelope_bytes),
@@ -584,7 +584,8 @@ def memory_review(config, *, experiment=None, cadence=None):
                           "tree_road": road_json, "planner_refusal": None if road is None else road.refusal},
             "free_bytes": gate.get("free_bytes"), "budget_bytes": gate.get("budget_bytes"),
             "peak_envelope_bytes": int(phases.peak_envelope_bytes),
-            "refuse": bool(gate["refuse"]), "warn": bool(gate["warn"]),
+            "refuse": bool(gate["refuse"]),
+            "warn": bool(gate["warn"] or gate["refuse"] or gate.get("free_bytes") is None),
             "verdict": gate["verdict"], "probe_reason": gate.get("probe_reason"),
             "ingest_priced": bool(phases.ingest_priced), "breakdown": breakdown, "sizing": sizing,
             "measured_unix_ms": int(time.time() * 1000)}
@@ -641,9 +642,9 @@ def launch(request, workspace):
         expected = request.get(f"expected_{name}_sha256")
         if expected is None or expected != review_value[f"{name}_sha256"]:
             raise ValueError(f"remote {name} changed after review; review again")
-    memory = review_value["memory"]
-    if not memory["measured"] or memory["refuse"]:
-        raise ValueError("Remote memory review is not launch-ready: " + memory["verdict"])
+    # The review retains its sizing evidence. An estimate or an unavailable
+    # device measurement does not override the requested configuration;
+    # actual allocation and execution errors remain owned by the runner.
     snapshots = {entry["name"]: (directory / entry["name"]).read_bytes() for entry in bundle["files"]}
     sources = {str(directory / name): payload for name, payload in snapshots.items()}
     review_value.update({"argv": [os.sys.executable, "-I", "-u", "-m", "gpuwm.cli", "run-plan", str(directory / "plan.json")],

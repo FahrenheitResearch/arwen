@@ -50,6 +50,19 @@ command-line bins and their 9.8 MB test fixtures.
 
 ## Deliberate divergences from the source tree
 
+Colorbar unit annotations pass the already converted field units from
+`rustwx-render/src/lib.rs` into `RenderOpts` and the shared colorbar painter
+in `render.rs`. The label occupies the existing legend margin. No field
+conversion, palette, tick, map geometry or overlay changes accompany it.
+Both colorbar orientations and the no-colorbar control are exercised by
+the renderer tests; a retained native frame also verifies unchanged map
+pixels and georeferences for temperature, reflectivity and wind.
+Above-bar labels stay within the legend column, clear of right-aligned
+timestamps. If a complete horizontal label does not fit there, `text.rs`
+rotates its full glyph coverage into the side margin. The placement matrix
+verifies complete glyph counts and unchanged map, legend and header ink in
+both orientations, with and without titles and timestamps, at three sizes.
+
 0. `LICENSE`'s copyright line reads `2026 rustwx contributors` rather
    than upstream's entity name, matching the house convention every
    other notice in this repository follows. Same rights holder, same

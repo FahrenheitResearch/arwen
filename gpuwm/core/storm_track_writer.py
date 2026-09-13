@@ -828,6 +828,7 @@ class TrackWriter:
                               output_level=self.output_level, root=root,
                               path=path if path.is_absolute() else root / path)
         self.stream.open()
+        self.termination = None
 
     def valid_time(self, t: float):
         """Model seconds since the run's start -> the row's clock."""
@@ -852,6 +853,13 @@ class TrackWriter:
         caught, counted and reported on the stream's receipt.
         """
         stream = self.stream
+        if self.termination is not None:
+            return None
+        reason = (getattr(fix, "evidence", {}) or {}).get("track_end_reason")
+        if reason:
+            self.termination = {"status": "ended", "reason": str(reason), "t": float(t)}
+            return {"contract": TRACK_CONTRACT, "t": float(t), "emitted": False,
+                    **self.termination}
         if not stream.due(float(t)):
             return None
         stamp = self.valid_time(t)
@@ -1009,6 +1017,8 @@ class TrackWriter:
 
     def close(self) -> dict:
         receipt = self.stream.receipt()
+        if self.termination is not None:
+            receipt["termination"] = dict(self.termination)
         self.stream.close()
         return receipt
 

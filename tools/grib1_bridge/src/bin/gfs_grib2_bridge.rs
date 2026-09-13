@@ -1225,10 +1225,10 @@ fn parse_series(path: &Path) -> Result<Vec<SeriesInput>, Box<dyn Error>> {
     // f000.  Initializing from a forecast lead is ordinary practice, and
     // this anchor was one of the places that forced a user wanting the
     // f174..f240 window to decode from f000.  Everything that made the
-    // anchor look load-bearing is still enforced below and above: `hour`
+    // anchor appear necessary is still enforced below and above: `hour`
     // is unsigned, the process ID is declared per line and never inferred
     // (so an f000 row must still say 81 and a lead row must say 96), and
-    // the cadence must be positive, uniform and certified.
+    // the cadence must be positive, uniform and on published source leads.
     if result.len() < 2 {
         return Err("GFS series must contain at least two times".into());
     }
@@ -1246,8 +1246,11 @@ fn parse_series(path: &Path) -> Result<Vec<SeriesInput>, Box<dyn Error>> {
     {
         return Err("GFS series cadence must be positive and uniform".into());
     }
-    if !matches!(deltas[0], 1 | 3) {
-        return Err("GFS series cadence must be exactly 1 or 3 hours".into());
+    if let Some(input) = result.iter().find(|input| input.hour > 120 && input.hour % 3 != 0) {
+        return Err(format!(
+            "GFS does not publish f{:03}: leads are hourly through f120 and every 3 hours afterward; choose a published lead window",
+            input.hour
+        ).into());
     }
     Ok(result)
 }
@@ -3236,15 +3239,14 @@ mod tests {
         )
         .unwrap_err()
         .contains("at least two times"));
-        assert!(parsed_series(
+        let subsample = parsed_series(
             "cadence",
             &[
                 ("18\tf018.grib2\t96", "f018.grib2"),
                 ("20\tf020.grib2\t96", "f020.grib2"),
             ]
-        )
-        .unwrap_err()
-        .contains("exactly 1 or 3 hours"));
+        ).unwrap();
+        assert_eq!(subsample.iter().map(|input| input.hour).collect::<Vec<_>>(), vec![18, 20]);
         assert!(parsed_series(
             "horizon",
             &[
@@ -3255,4 +3257,33 @@ mod tests {
         .unwrap_err()
         .contains("f384"));
     }
+    #[test]
+    fn supported_uniform_subsets_preserve_their_source_leads() {
+        for (index, leads) in [
+            vec![0, 2, 4, 6], vec![0, 6, 12], vec![1, 3, 5],
+            vec![5, 9, 13], vec![120, 126, 132], vec![123, 135, 147],
+            vec![119, 123], vec![117, 123], vec![360, 384],
+        ].iter().enumerate() {
+            let owned: Vec<(String, String)> = leads.iter().map(|lead| {
+                let name = format!("f{lead:03}.grib2");
+                (format!("{lead}\t{name}\t{}", if *lead == 0 { 81 } else { 96 }), name)
+            }).collect();
+            let rows: Vec<(&str, &str)> = owned.iter().map(|(line, name)| (line.as_str(), name.as_str())).collect();
+            let parsed = parsed_series(&format!("subset-{index}"), &rows).unwrap();
+            assert_eq!(parsed.iter().map(|input| input.hour).collect::<Vec<_>>(), *leads);
+        }
+    }
+
+    #[test]
+    fn uniform_spacing_does_not_admit_an_unpublished_source_lead() {
+        for (index, leads) in [vec![120, 122, 124], vec![121, 124], vec![118, 122, 126]].iter().enumerate() {
+            let owned: Vec<(String, String)> = leads.iter().map(|lead| {
+                let name = format!("f{lead:03}.grib2");
+                (format!("{lead}\t{name}\t96"), name)
+            }).collect();
+            let rows: Vec<(&str, &str)> = owned.iter().map(|(line, name)| (line.as_str(), name.as_str())).collect();
+            assert!(parsed_series(&format!("missing-{index}"), &rows).unwrap_err().contains("does not publish"));
+        }
+    }
+
 }

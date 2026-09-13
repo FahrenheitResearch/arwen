@@ -7,6 +7,13 @@ import json
 import pytest
 
 from gpuwm.namelist_compat import analyze_namelists, require_supported_namelists
+from gpuwm.namelist_import import import_namelists
+
+#: The report's two issue severities, spelled here as the strings the
+#: report emits: BLOCKING decides the verdict, ADVISORY is stated and
+#: does not.
+SEVERITY_BLOCKING = "blocking"
+SEVERITY_ADVISORY = "advisory"
 from gpuwm.source_cli import EXIT_CONFIG, main as source_cli_main
 
 
@@ -319,8 +326,12 @@ def test_thompson_runtime_is_reported_runnable_without_env(
     }
 
 
-def test_omitted_use_theta_m_keeps_stock_export_but_fails_gpuwm_runtime(
+def test_the_compat_door_gives_the_same_theta_m_answer_as_the_importer(
         tmp_path):
+    """An omitted use_theta_m takes WRF's Registry default 1 on both
+    doors, and both book it as the same declared divergence: the importer
+    announces a Substitution, and this report states it without failing
+    the runtime verdict it used to fail."""
     wps, inp = _write_pair(tmp_path, mp=6)
     inp.write_text(
         inp.read_text(encoding="utf-8").replace(" use_theta_m = 0,\n", ""),
@@ -330,9 +341,17 @@ def test_omitted_use_theta_m_keeps_stock_export_but_fails_gpuwm_runtime(
     assert report["verdict"] == "PASS"
     assert report["required_state"]["stock_wrf_export"]["verdict"] == "PASS"
     runtime = report["required_state"]["gpuwm_runtime"]
-    assert runtime["verdict"] == "FAIL"
-    assert "WRF Registry default 1" in runtime["reasons"][0]
-    assert "use_theta_m = 0" in runtime["reasons"][0]
+    assert runtime["verdict"] != "FAIL"
+    assert not [reason for reason in runtime["reasons"]
+                if "requires the dry-theta branch" in reason]
+    issue = next(item for item in report["issues"]
+                 if item["code"] == "THETA_M_DRY_SUBSTITUTION")
+    assert issue["severity"] == SEVERITY_ADVISORY
+    assert "WRF Registry default 1" in issue["message"]
+    # The importer's own sentence, from the function both doors call.
+    from gpuwm.namelist_import import theta_m_decision
+
+    assert theta_m_decision(1).reason in issue["message"]
 
 
 @pytest.mark.parametrize(
@@ -342,11 +361,6 @@ def test_omitted_use_theta_m_keeps_stock_export_but_fails_gpuwm_runtime(
             " mix_full_fields = .true., .true., .true., .true., .true., .true.,\n",
             "WRF Registry default false",
             "mix_full_fields = .true.",
-        ),
-        (
-            " smooth_option = 0,\n",
-            "WRF Registry default 2",
-            "smooth_option = 0",
         ),
     ],
 )
@@ -575,23 +589,285 @@ def test_wrf_runner_runtime_io_keys_classify_without_unclassified(tmp_path):
     assert report["verdict"] == "PASS"
 
 
-def test_delayed_nest_input_stream_fails_precisely(tmp_path):
-    """fine_input_stream = 0, 2 (WRF's delayed-nest-start pattern, the
-    newest WRF-Runner feature) names the missing per-nest input file
-    rather than an unclassified-setting shrug."""
-    wps, inp = _write_pair(tmp_path)
-    text = inp.read_text(encoding="utf-8").replace(
-        " run_hours = 12,",
-        " run_hours = 12,\n fine_input_stream = 0, 2, 2, 2, 2, 2,",
-    )
-    inp.write_text(text, encoding="utf-8")
+def _delayed_nest_pair(tmp_path):
+    """A two-domain pair whose child starts an hour late on stream 2."""
+
+    wps, inp = _write_pair(tmp_path, max_dom=2, mp=6)
+    wps.write_text(
+        wps.read_text(encoding="utf-8").replace(
+            " start_date = '2020-05-01_00:00:00', '2020-05-01_00:00:00',",
+            " start_date = '2020-05-01_00:00:00', '2020-05-01_01:00:00',"),
+        encoding="utf-8")
+    inp.write_text(
+        inp.read_text(encoding="utf-8")
+        .replace(" start_hour = 0, 0,", " start_hour = 0, 1,")
+        .replace(" run_hours = 12,",
+                 " run_hours = 12,\n fine_input_stream = 0, 2,"),
+        encoding="utf-8")
+    return wps, inp
+
+
+def test_fine_input_stream_two_is_the_delayed_nest_route(tmp_path):
+    """fine_input_stream = 2 is WRF's delayed-nest-start pattern, and both
+    prepared routes satisfy it: the stock export writes wrfinput_d0N at
+    each domain's configured start, and the runtime initializes a delayed
+    child from its own analysis at activation.  Reported, not refused."""
+    wps, inp = _delayed_nest_pair(tmp_path)
+    report = analyze_namelists(wps, inp, source_top_pressure_pa=5000.0)
+    assert report["verdict"] == "PASS"
+    child = report["timing"]["domains"][1]
+    assert child["offset_seconds"] == 3600
+    assert child["parent_step_alignment"] == "PASS"
+    assert child["forcing_seam_alignment"] == "PASS"
+    issue = next(item for item in report["issues"]
+                 if item["code"] == "NEST_INPUT_STREAM_SUBSTITUTION")
+    assert issue["severity"] == SEVERITY_ADVISORY
+    assert "wrfinput_d0N" in issue["message"]
+    assert "at activation" in issue["message"]
+    assert not [item for item in report["issues"]
+                if item["code"] == "UNCLASSIFIED_NAMELIST_SETTING"]
+
+
+def test_the_two_doors_agree_about_the_delayed_nest_input_stream(tmp_path):
+    """One namelist, two doors, one answer.
+
+    The report PASSed ``fine_input_stream = 0, 2`` with an advisory
+    reading "Nothing to change", while gpuwm.namelist_import raised
+    "unmapped key(s) ['fine_input_stream']" on the identical pair -- and
+    every namelist-to-gpuwm route goes through import_namelists, so the
+    PASS was false for the stock export and the runtime alike.  Both
+    doors now read one function, and the report prints the sentence the
+    importer books.
+    """
+    wps, inp = _delayed_nest_pair(tmp_path)
+    report = analyze_namelists(wps, inp, source_top_pressure_pa=5000.0)
+    assert report["verdict"] == "PASS"
+    assert report["required_state"]["stock_wrf_export"]["verdict"] == "PASS"
+    assert report["required_state"]["gpuwm_runtime"]["verdict"] == "PASS"
+
+    _toml, substitution_report = import_namelists(
+        wps, inp, name="delayed-nest-pair")
+    entry = next(item for item in substitution_report.substitutions
+                 if item.key == "fine_input_stream")
+    assert (entry.wrf_value, entry.gpuwm_value) == (2, 0)
+    issue = next(item for item in report["issues"]
+                 if item["code"] == "NEST_INPUT_STREAM_SUBSTITUTION")
+    assert issue["message"] == entry.reason
+    assert issue["action"] == \
+        "Nothing to change: the delayed child starts at its declared " \
+        "start time. Set fine_input_stream = 0 to take every field from " \
+        "the child's own input instead."
+
+
+def test_the_two_doors_agree_about_the_delayed_nest_stream_format(tmp_path):
+    """The companion key of the delayed-nest route, on one namelist.
+
+    ``io_form_auxinput2`` names the on-disk format of the very stream
+    ``fine_input_stream = 2`` selects, so the two keys arrive together in
+    real namelists.  The support report classified it runtime-only and
+    PASSed the pair while gpuwm.namelist_import raised "unmapped key(s)
+    ['io_form_auxinput2']" on the identical files: one configuration,
+    two answers.  The importer consumes it beside the other io_form_*
+    keys now, so the doors agree on the pair as they already agreed on
+    the stream alone.
+    """
+    wps, inp = _delayed_nest_pair(tmp_path)
+    inp.write_text(
+        inp.read_text(encoding="utf-8").replace(
+            " fine_input_stream = 0, 2,",
+            " fine_input_stream = 0, 2,\n io_form_auxinput2 = 2,"),
+        encoding="utf-8")
+
+    report = analyze_namelists(wps, inp, source_top_pressure_pa=5000.0)
+    assert report["verdict"] == "PASS"
+    assert report["required_state"]["stock_wrf_export"]["verdict"] == "PASS"
+    assert report["required_state"]["gpuwm_runtime"]["verdict"] == "PASS"
+
+    # The other door takes the same files rather than refusing them, and
+    # says what it did with the key instead of dropping it silently.
+    _toml, substitutions = import_namelists(wps, inp, name="stream-format")
+    dropped = {entry.key: entry for entry in substitutions.dropped}
+    assert "io_form_auxinput2" in dropped
+    assert dropped["io_form_auxinput2"].section == "time_control"
+    assert dropped["io_form_auxinput2"].reason
+
+
+def test_the_two_doors_agree_about_the_runtime_only_io_keys(tmp_path):
+    """Every &time_control key the report calls runtime-only imports.
+
+    A key the report classifies as changing nothing that is prepared is
+    a key the importer must be able to consume; otherwise the report
+    PASSes a namelist no gpuwm door accepts.  ``io_form_auxinput2`` and
+    ``override_restart_timers`` were classified but unconsumed.
+    """
+    wps, inp = _write_pair(tmp_path, max_dom=2, mp=6)
+    inp.write_text(
+        inp.read_text(encoding="utf-8").replace(
+            " run_hours = 12,",
+            " run_hours = 12,\n"
+            " io_form_auxinput2 = 2,\n"
+            " override_restart_timers = .true.,\n"
+            " iofields_filename = 'iofields.txt',\n"
+            " ignore_iofields_warning = .true.,"),
+        encoding="utf-8")
+
+    report = analyze_namelists(wps, inp, source_top_pressure_pa=5000.0)
+    assert report["verdict"] == "PASS"
+
+    _toml, substitutions = import_namelists(wps, inp, name="runtime-io")
+    dropped = {entry.key: entry for entry in substitutions.dropped}
+    for key in ("io_form_auxinput2", "override_restart_timers",
+                "iofields_filename", "ignore_iofields_warning"):
+        assert key in dropped, key
+        assert dropped[key].reason, key
+
+
+def test_domain_tiling_keys_are_a_note_and_import(tmp_path):
+    """tile_sz_x/tile_sz_y state a CPU tile size, and nothing breaks.
+
+    The finding's own action says these keys change neither what is
+    prepared nor what is integrated, so it cannot be the reason a
+    namelist FAILs: a refusal has to name a breakage.  It is a note, and
+    the importer records the keys as dropped beside numtiles/nproc_x/
+    nproc_y rather than refusing them, so both doors take the file.
+    """
+    wps, inp = _write_pair(tmp_path, max_dom=2, mp=6)
+    inp.write_text(
+        inp.read_text(encoding="utf-8").replace(
+            " time_step = 60,",
+            " time_step = 60,\n tile_sz_x = 32,\n tile_sz_y = 16,"),
+        encoding="utf-8")
+
+    report = analyze_namelists(wps, inp, source_top_pressure_pa=5000.0)
+    assert report["verdict"] == "PASS"
+    assert report["required_state"]["stock_wrf_export"]["verdict"] == "PASS"
+    issue = next(item for item in report["issues"]
+                 if item["code"] == "DOMAIN_TILING_IGNORED")
+    assert issue["severity"] == SEVERITY_ADVISORY
+    assert issue["action"].startswith("Nothing to change")
+    # The keys are named, not swallowed: a reader still learns they are
+    # present and why they carry nothing.
+    assert "tile_sz_x" in issue["message"]
+    assert "tile_sz_y" in issue["message"]
+    assert not [item for item in report["issues"]
+                if item["code"] == "UNCLASSIFIED_NAMELIST_SETTING"]
+
+    _toml, substitutions = import_namelists(wps, inp, name="tiling")
+    dropped = {entry.key: entry for entry in substitutions.dropped}
+    for key in ("tile_sz_x", "tile_sz_y"):
+        assert key in dropped, key
+        assert dropped[key].section == "domains"
+        assert dropped[key].reason
+
+
+def test_a_moving_nest_still_fails_beside_the_tiling_note(tmp_path):
+    """Splitting tiling off the moving-nest set does not relax the moving
+    nest: a namelist carrying both gets the note AND the refusal, and the
+    refusal is what decides the verdict."""
+    wps, inp = _write_pair(tmp_path, max_dom=2, mp=6)
+    inp.write_text(
+        inp.read_text(encoding="utf-8").replace(
+            " time_step = 60,",
+            " time_step = 60,\n tile_sz_x = 32,\n num_moves = 2,"),
+        encoding="utf-8")
+
+    report = analyze_namelists(wps, inp, source_top_pressure_pa=5000.0)
+    assert report["verdict"] == "FAIL"
+    tiling = next(item for item in report["issues"]
+                  if item["code"] == "DOMAIN_TILING_IGNORED")
+    assert tiling["severity"] == SEVERITY_ADVISORY
+    moving = next(item for item in report["issues"]
+                  if item["code"] == "MOVING_NEST_UNSUPPORTED")
+    assert moving["severity"] == SEVERITY_BLOCKING
+    assert "num_moves" in moving["message"]
+    with pytest.raises(ValueError):
+        import_namelists(wps, inp, name="moving-plus-tiling")
+
+
+def test_an_over_long_input_stream_column_says_how_to_shorten_it(tmp_path):
+    """The way out has to answer the breakage the sentence names.
+
+    Too many values for max_dom is a length problem, and the refusal
+    used to end with "Set fine_input_stream to 0 or 2 on every domain",
+    which is the answer to a different question: a reader who does that
+    is refused again for the same reason.  Both doors still refuse the
+    column, so the verdicts agree; only the way out changed.
+    """
+    wps, inp = _write_pair(tmp_path, max_dom=2, mp=6)
+    inp.write_text(
+        inp.read_text(encoding="utf-8").replace(
+            " run_hours = 12,",
+            " run_hours = 12,\n fine_input_stream = 0, 0, 0,"),
+        encoding="utf-8")
+
+    report = analyze_namelists(wps, inp, source_top_pressure_pa=5000.0)
+    assert report["verdict"] == "FAIL"
+
+    with pytest.raises(ValueError) as raised:
+        import_namelists(wps, inp, name="over-long")
+    message = str(raised.value)
+    assert "declares 3 values but max_dom = 2" in message
+    assert "Declare at most 2 values" in message
+    # The way out that belongs to a different breakage is gone.
+    assert "0 or 2 on every domain" not in message
+
+
+def test_the_two_doors_agree_about_an_undefined_input_stream_index(tmp_path):
+    """The refused half of the same key: the report FAILs and the importer
+    raises, with the same sentence naming the two values WRF defines."""
+    wps, inp = _write_pair(tmp_path, max_dom=2, mp=6)
+    inp.write_text(
+        inp.read_text(encoding="utf-8").replace(
+            " run_hours = 12,",
+            " run_hours = 12,\n fine_input_stream = 0, 3,"),
+        encoding="utf-8")
     report = analyze_namelists(wps, inp, source_top_pressure_pa=5000.0)
     assert report["verdict"] == "FAIL"
     issue = next(item for item in report["issues"]
                  if item["code"] == "NEST_INPUT_STREAM_UNSUPPORTED")
-    assert "met_em-class input" in issue["message"]
-    assert not [item for item in report["issues"]
-                if item["code"] == "UNCLASSIFIED_NAMELIST_SETTING"]
+    with pytest.raises(ValueError) as raised:
+        import_namelists(wps, inp)
+    assert issue["message"] in str(raised.value)
+    assert issue["action"] in str(raised.value)
+
+
+def test_the_two_doors_agree_about_a_non_integer_input_stream(tmp_path):
+    """The shared decision is the type gate as well, so a Fortran logical
+    where a stream index belongs is refused by both doors in one
+    sentence rather than in each door's own words."""
+    wps, inp = _write_pair(tmp_path, max_dom=2, mp=6)
+    inp.write_text(
+        inp.read_text(encoding="utf-8").replace(
+            " run_hours = 12,",
+            " run_hours = 12,\n fine_input_stream = 0, .true.,"),
+        encoding="utf-8")
+    report = analyze_namelists(wps, inp, source_top_pressure_pa=5000.0)
+    assert report["verdict"] == "FAIL"
+    issue = next(item for item in report["issues"]
+                 if item["code"] == "NEST_INPUT_STREAM_UNSUPPORTED")
+    assert "Fortran integer tokens" in issue["message"]
+    with pytest.raises(ValueError) as raised:
+        import_namelists(wps, inp)
+    assert issue["message"] in str(raised.value)
+
+
+def test_undefined_fine_input_stream_index_still_fails(tmp_path):
+    """WRF defines 0 and 2 for this key and nothing else; an index with no
+    definition is named for what it is."""
+    wps, inp = _write_pair(tmp_path, max_dom=2, mp=6)
+    inp.write_text(
+        inp.read_text(encoding="utf-8").replace(
+            " run_hours = 12,",
+            " run_hours = 12,\n fine_input_stream = 0, 3,"),
+        encoding="utf-8")
+    report = analyze_namelists(wps, inp, source_top_pressure_pa=5000.0)
+    assert report["verdict"] == "FAIL"
+    issue = next(item for item in report["issues"]
+                 if item["code"] == "NEST_INPUT_STREAM_UNSUPPORTED")
+    assert issue["severity"] == SEVERITY_BLOCKING
+    assert "WRF defines two values" in issue["message"]
+    assert "0 (every field from" in issue["message"]
+    assert "2 (only the static and" in issue["message"]
 
 
 def test_active_grid_fdda_fails_as_missing_wrffdda(tmp_path):
@@ -813,3 +1089,246 @@ def test_an_unported_microphysics_selector_fails_the_runtime_row(tmp_path):
     assert runtime["verdict"] == "FAIL"
     assert len(runtime["reasons"]) == 6
     assert all("mp_physics=14" in reason for reason in runtime["reasons"])
+
+
+# ---------------------------------------------------------------------------
+# Capability gates: what the report says about shipped capabilities
+# ---------------------------------------------------------------------------
+
+def test_registry_default_feedback_passes_the_support_report(tmp_path):
+    """A namelist that never mentions feedback takes WRF's Registry
+    default 1, which is the engine's experimental two-way path -- a
+    shipped capability.  The report says so instead of failing."""
+    wps, inp = _write_pair(tmp_path, max_dom=2, mp=6)
+    inp.write_text(
+        inp.read_text(encoding="utf-8").replace(" feedback = 0,\n", ""),
+        encoding="utf-8")
+    report = analyze_namelists(wps, inp)
+    assert report["verdict"] == "PASS"
+    experimental = [item for item in report["issues"]
+                    if item["code"] == "TWO_WAY_NESTING_EXPERIMENTAL"]
+    assert len(experimental) == 1
+    issue = experimental[0]
+    assert issue["severity"] == SEVERITY_ADVISORY != SEVERITY_BLOCKING
+    assert "EXPERIMENTAL two-way" in issue["message"]
+    assert "gpuwm.experiment" in issue["message"]
+    assert not [item for item in report["issues"]
+                if item["code"] == "TWO_WAY_NESTING_UNSUPPORTED"]
+
+
+def test_the_two_doors_agree_about_feedback(tmp_path):
+    """One namelist, two doors, one answer: the importer emits
+    feedback = 1 and the support report passes the same pair."""
+    wps, inp = _write_pair(tmp_path, max_dom=2, mp=6)
+    inp.write_text(
+        inp.read_text(encoding="utf-8").replace(" feedback = 0,\n", ""),
+        encoding="utf-8")
+    toml_text, _report = import_namelists(wps, inp, name="two-way-pair")
+    assert "feedback = 1" in toml_text
+    assert analyze_namelists(wps, inp)["verdict"] == "PASS"
+
+
+def test_feedback_two_still_fails_naming_the_engine_validator(tmp_path):
+    """A value the engine's validator rejects still fails, and the message
+    names the validator and the set it admits."""
+    wps, inp = _write_pair(tmp_path, max_dom=2, mp=6)
+    inp.write_text(
+        inp.read_text(encoding="utf-8").replace(
+            " feedback = 0,", " feedback = 2,"),
+        encoding="utf-8")
+    report = analyze_namelists(wps, inp)
+    assert report["verdict"] == "FAIL"
+    issue = next(item for item in report["issues"]
+                 if item["code"] == "TWO_WAY_NESTING_UNSUPPORTED")
+    assert issue["severity"] == SEVERITY_BLOCKING
+    assert "gpuwm.experiment" in issue["message"]
+    assert "(0, 1)" in issue["message"]
+    assert "one-way only" not in issue["message"]
+
+
+def test_specified_moves_name_the_relocation_itinerary(tmp_path):
+    """WRF's specified-move keys are refused in the engine's own words and
+    answered with the [relocation] rows that reproduce the itinerary --
+    and they are classified, so they raise no unclassified-setting noise."""
+    wps, inp = _write_pair(tmp_path, max_dom=2, mp=6)
+    inp.write_text(
+        inp.read_text(encoding="utf-8").replace(
+            " feedback = 0,",
+            " num_moves = 2,\n move_id = 2, 2,\n"
+            " move_interval = 60, 120,\n move_cd_x = 1, 1,\n"
+            " move_cd_y = -1, 0,\n feedback = 0,"),
+        encoding="utf-8")
+    report = analyze_namelists(wps, inp)
+    assert not [item for item in report["issues"]
+                if item["code"] == "UNCLASSIFIED_NAMELIST_SETTING"]
+    moving = [item for item in report["issues"]
+              if item["code"] == "MOVING_NEST_UNSUPPORTED"]
+    assert len(moving) == 1
+    assert "SINT donor" in moving[0]["message"]
+    action = moving[0]["action"]
+    assert "[[relocation.move]]" in action
+    assert "grid_id = 2" in action
+    assert "at_seconds = 3600" in action
+    assert "di_parent_cells = 1" in action
+    assert "dj_parent_cells = -1" in action
+    assert "at_seconds = 7200" in action
+    assert "cycle boundaries" in action
+
+
+def test_vortex_following_keys_have_no_counterpart(tmp_path):
+    """The vortex controls are the half with no equivalent at all, and
+    they say so -- without five unclassified-setting shrugs beside it."""
+    wps, inp = _write_pair(tmp_path, max_dom=2, mp=6)
+    inp.write_text(
+        inp.read_text(encoding="utf-8").replace(
+            " feedback = 0,",
+            " vortex_interval = 15,\n max_vortex_speed = 40,\n"
+            " corral_dist = 8,\n track_level = 50000,\n feedback = 0,"),
+        encoding="utf-8")
+    report = analyze_namelists(wps, inp)
+    assert not [item for item in report["issues"]
+                if item["code"] == "UNCLASSIFIED_NAMELIST_SETTING"]
+    moving = [item for item in report["issues"]
+              if item["code"] == "MOVING_NEST_UNSUPPORTED"]
+    assert len(moving) == 1
+    assert "no counterpart" in moving[0]["action"]
+    assert "[relocation.follow]" in moving[0]["action"]
+
+
+def test_the_projection_gate_reads_the_static_projection_table(
+        tmp_path, monkeypatch):
+    """The implemented set is the projection module's declaration, read on
+    call -- not a fourth hand-typed tuple in a door."""
+    from gpuwm.static import projection as projection_module
+
+    patched = dict(projection_module.WRF_MAP_PROJ_CODES)
+    patched["rotated-lat-lon"] = 6
+    monkeypatch.setattr(projection_module, "WRF_MAP_PROJ_CODES", patched)
+    wps, inp = _write_pair(tmp_path, max_dom=2, mp=6)
+    wps.write_text(
+        wps.read_text(encoding="utf-8").replace(
+            "map_proj = 'lambert'", "map_proj = 'rotated-lat-lon'"),
+        encoding="utf-8")
+    report = analyze_namelists(wps, inp)
+    assert not [item for item in report["issues"]
+                if item["code"] == "UNSUPPORTED_PROJECTION"]
+    monkeypatch.undo()
+
+    # ... and with the table as it ships, both enumerations inside the
+    # messages name exactly the declared set, so one cannot be edited
+    # without the other.
+    import re
+
+    wps.write_text(
+        wps.read_text(encoding="utf-8").replace(
+            "map_proj = 'rotated-lat-lon'", "map_proj = 'lat-lon'"),
+        encoding="utf-8")
+    action = next(item for item in analyze_namelists(wps, inp)["issues"]
+                  if item["code"] == "UNSUPPORTED_PROJECTION")["action"]
+    wps.write_text(
+        wps.read_text(encoding="utf-8").replace(
+            "map_proj = 'lat-lon'", "map_proj = 6"),
+        encoding="utf-8")
+    message = next(item for item in analyze_namelists(wps, inp)["issues"]
+                   if item["code"] == "INVALID_PROJECTION")["message"]
+    declared = set(projection_module.WRF_MAP_PROJ_CODES)
+    for rendered in (action.split(". ")[0], message):
+        assert set(re.findall(r"'([a-z-]+)'", rendered)) == declared
+
+
+def test_above_the_stock_cap_the_report_still_answers_the_runtime_verdict(
+        tmp_path):
+    """WRF's compiled max_domains bounds the STOCK EXPORT verdict, not the
+    analysis: a 22-domain tree is still examined, so the runtime verdict
+    comes from what the namelist says instead of from an empty list."""
+    wps, inp = _write_pair(tmp_path, max_dom=22, mp=6)
+    report = analyze_namelists(wps, inp)
+    assert report["max_dom"] == 22
+    assert report["geometry"]["domain_count"] == 22
+    assert report["timing"] is not None
+    assert len(report["timing"]["domains"]) == 22
+    assert report["timing"]["gpuwm_runtime_verdict"] == "PASS"
+    assert {item["code"] for item in report["issues"]
+            if item["severity"] == SEVERITY_BLOCKING} == {"UNSUPPORTED_MAX_DOM"}
+    assert report["verdict"] == "FAIL"
+
+
+def test_the_domain_cap_names_wrfs_compiled_max_domains(tmp_path):
+    wps, inp = _write_pair(tmp_path, max_dom=22, mp=6)
+    issue = next(item for item in analyze_namelists(wps, inp)["issues"]
+                 if item["code"] == "UNSUPPORTED_MAX_DOM")
+    assert "compiled max_domains = 21" in issue["message"]
+    assert "unchanged WRF executable" in issue["message"]
+    assert "Reduce the tree" in issue["action"]
+    assert "rebuild WRF with a larger max_domains" in issue["action"]
+    assert "outside the compiled RW-WPS contract" not in issue["message"]
+
+
+def test_the_stock_cap_itself_still_passes(tmp_path):
+    """Regression beside the two above: 21 domains is inside the compiled
+    maximum and reports clean."""
+    report = analyze_namelists(*_write_pair(tmp_path, max_dom=21, mp=6))
+    assert report["verdict"] == "PASS"
+    assert report["geometry"]["domain_count"] == 21
+
+
+def test_an_active_fdda_block_fails_the_gpuwm_runtime_verdict_as_well_as_stock_export(
+        tmp_path):
+    """Two doors, one &fdda block, one answer: the importer refuses an
+    active nudging request and the runtime verdict now says the same
+    thing, while the stock-export question stays the separate one it is."""
+    wps, inp = _write_pair(tmp_path, mp=8)
+    inp.write_text(
+        inp.read_text(encoding="utf-8").replace(
+            "&dynamics",
+            "&fdda\n grid_fdda = 1, 1, 1, 1, 1, 1,\n/\n&dynamics"),
+        encoding="utf-8")
+    report = analyze_namelists(wps, inp)
+    runtime = report["required_state"]["gpuwm_runtime"]
+    assert runtime["verdict"] == "FAIL"
+    assert any("grid_fdda" in reason for reason in runtime["reasons"])
+    assert any("will not import an active nudging request" in reason
+               for reason in runtime["reasons"])
+    assert report["required_state"]["stock_wrf_export"]["verdict"] == "FAIL"
+    assert [item for item in report["issues"]
+            if item["code"] == "FDDA_INPUT_NOT_PRODUCED"]
+    # The refusal text itself is unchanged, and still fires.
+    with pytest.raises(ValueError,
+                       match="will not import an active nudging request"):
+        import_namelists(wps, inp)
+
+
+def test_the_parent_smoother_is_reported_not_refused(tmp_path):
+    """smooth_option takes WRF's Registry default 2 when omitted, and the
+    post-feedback parent smoother is implemented (gpuwm/core/nest.py: 0
+    none, 1 sm121, 2 smdsm).  The runtime verdict states it instead of
+    failing a namelist that never mentions the key."""
+    wps, inp = _write_pair(tmp_path, mp=6)
+    inp.write_text(
+        inp.read_text(encoding="utf-8").replace(" smooth_option = 0,\n", ""),
+        encoding="utf-8")
+    report = analyze_namelists(wps, inp)
+    runtime = report["required_state"]["gpuwm_runtime"]
+    assert runtime["verdict"] == "PASS"
+    assert not [reason for reason in runtime["reasons"]
+                if "smooth_option" in reason]
+    issue = next(item for item in report["issues"]
+                 if item["code"] == "PARENT_SMOOTHER_ACTIVE")
+    assert issue["severity"] == SEVERITY_ADVISORY
+    assert "WRF Registry default 2" in issue["message"]
+    assert "smdsm" in issue["message"]
+    assert "feedback = 1" in issue["message"]
+    assert report["verdict"] == "PASS"
+
+
+def test_a_smoother_the_engine_does_not_admit_still_fails_the_runtime_verdict(
+        tmp_path):
+    wps, inp = _write_pair(tmp_path, mp=6)
+    inp.write_text(
+        inp.read_text(encoding="utf-8").replace(
+            " smooth_option = 0,", " smooth_option = 3,"),
+        encoding="utf-8")
+    runtime = analyze_namelists(wps, inp)["required_state"]["gpuwm_runtime"]
+    assert runtime["verdict"] == "FAIL"
+    assert any("gpuwm.experiment does not admit (0, 1, 2)" in reason
+               for reason in runtime["reasons"])

@@ -61,7 +61,7 @@ pub enum Action {
     SelectTarget,
     /// A second desktop launch over the same output root asks the live
     /// controller to show its workspace instead of starting a duplicate.
-    OpenWorkspace,
+    OpenWorkspace { enable_local_da: bool },
 }
 /// One `launch_downscale` request, already checked field by field. Every
 /// value here becomes a Downscale guide answer, never a command token of
@@ -252,6 +252,7 @@ fn parse_request(value: &Value, id: &str, session: &str) -> Result<Request, Stri
         && !(name=="sync_processed_frame" && key=="sequence")
         && !(name=="sync_native_plots" && matches!(key.as_str(),"domain"|"sequence"))
         && !(name=="focus_logs" && key=="job_id")
+        && !(name=="open_workspace" && key=="enable_local_da")
         && !(name=="sync_processed_frame_v2" && matches!(key.as_str(),"domain"|"sequence"|"profile"|"products"|"expected_run_id"|"prefetch_sequences"|"reader_leases"|"cache_bytes"))
         && !(name=="artifact_index" && key=="after_sequence")
         && !(plan_action && ["plan_sha256","config_sha256"].contains(&key.as_str()))
@@ -333,7 +334,10 @@ fn parse_request(value: &Value, id: &str, session: &str) -> Result<Request, Stri
         "focus_nodes" => Action::FocusNodes,
         "focus_setup" => Action::FocusSetup,
         "select_target" => Action::SelectTarget,
-        "open_workspace" => Action::OpenWorkspace,
+        "open_workspace" => Action::OpenWorkspace { enable_local_da: match value.get("enable_local_da") {
+            None => false,
+            Some(value) => value.as_bool().ok_or("enable_local_da must be a boolean")?,
+        } },
         _ => Action::FocusLogs,
     };
     Ok(Request { id: id.into(), name: name.into(), action, target, plan_sha256, config_sha256, review_id, review_sha256 })
@@ -711,12 +715,12 @@ pub(crate) fn live_controller(parent: &Path, now: u128) -> Option<(String, PathB
 /// controller refused or did not answer and still lives: the newcomer must
 /// exit with that message, never become a second owner. An earlier terminal
 /// that does not know the request refuses it the same way.
-pub fn reopen_live_controller(output: &Path) -> Option<Result<String, String>> {
+pub fn reopen_live_controller(output: &Path, enable_local_da: bool) -> Option<Result<String, String>> {
     let parent = output.join(".arwen-tui");
     wait_for_starting_controllers(&parent);
     let (session_id, directory, status) = live_controller(&parent, now_ms())?;
     if let Some(pid) = status["tui_pid"].as_u64().and_then(|pid| u32::try_from(pid).ok()).filter(|pid| *pid > 0) { allow_foreground(pid); }
-    let outcome = request_open_workspace(&directory, &session_id, LIVE_CONTROLLER_HEARTBEAT);
+    let outcome = request_open_workspace(&directory, &session_id, LIVE_CONTROLLER_HEARTBEAT, enable_local_da);
     let reason = match outcome { Ok(message) => return Some(Ok(message)), Err(reason) => reason };
     // Only a controller that has since gone quiet leaves the root to the newcomer.
     match live_controller(&parent, now_ms()) {
@@ -744,9 +748,10 @@ fn allow_foreground(pid: u32) {
 
 /// Writes an `open_workspace` request the way the visual workspace writes its
 /// own (a temporary file renamed into `requests/`), then waits for the answer.
-fn request_open_workspace(directory: &Path, session_id: &str, wait: Duration) -> Result<String, String> {
+fn request_open_workspace(directory: &Path, session_id: &str, wait: Duration, enable_local_da: bool) -> Result<String, String> {
     let id = format!("open-workspace-{}-{}", std::process::id(), now_ms());
-    let request = json!({"schema": "arwen.companion-request.v1", "session_id": session_id, "id": id, "action": "open_workspace"});
+    let mut request = json!({"schema": "arwen.companion-request.v1", "session_id": session_id, "id": id, "action": "open_workspace"});
+    if enable_local_da { request["enable_local_da"] = json!(true); }
     atomic_json(&directory.join("requests").join(format!("{id}.json")), &request)
         .map_err(|error| format!("Cannot ask the running ArWen controller to reopen its workspace: {error}"))?;
     let response = directory.join("responses").join(format!("{id}.json"));
@@ -1458,9 +1463,15 @@ mod tests {
         value["config_path"]=json!("/unexpected.toml");assert!(parse_request(&value,"target-1","s").is_err());
     }
     #[test]
-    fn open_workspace_accepts_only_an_empty_typed_payload(){
+    fn open_workspace_accepts_only_typed_advanced_opt_in(){
         let value=json!({"schema":"arwen.companion-request.v1","session_id":"s","id":"open-1","action":"open_workspace"});
-        assert!(matches!(parse_request(&value,"open-1","s").unwrap().action,Action::OpenWorkspace));
+        assert!(matches!(parse_request(&value,"open-1","s").unwrap().action,Action::OpenWorkspace { enable_local_da: false }));
+        let mut opted_in=value.clone();opted_in["enable_local_da"]=json!(true);
+        assert!(matches!(parse_request(&opted_in,"open-1","s").unwrap().action,Action::OpenWorkspace { enable_local_da: true }));
+        for invalid in [json!("true"), json!(1), Value::Null] {
+            opted_in["enable_local_da"]=invalid;
+            assert!(parse_request(&opted_in,"open-1","s").is_err());
+        }
         for (key,extra) in [("target",json!({"kind":"local"})),("target",json!({"kind":"ssh","node_id":"node-1","connection_sha256":"a".repeat(64)})),
                             ("config_path",json!("/saved.toml")),("job_id",json!("job-1")),("plan_sha256",json!("a".repeat(64)))] {
             let mut other=value.clone();other[key]=extra;
@@ -1746,25 +1757,25 @@ mod tests {
         let (id,directory,_)=live_controller(&root.join(".arwen-tui"),now_ms()).unwrap();
         assert_eq!(id,session.id);
         let requests=directory.join("requests");
-        let asked=std::thread::spawn(move||request_open_workspace(&directory,&id,Duration::from_secs(10)));
+        let asked=std::thread::spawn(move||request_open_workspace(&directory,&id,Duration::from_secs(10),true));
         let deadline=Instant::now()+Duration::from_secs(10);
         let request=loop{
             if let Some(request)=session.requests().pop(){break request;}
             assert!(Instant::now()<deadline,"the reopen request never reached the controller queue");
             std::thread::sleep(Duration::from_millis(20));
         };
-        assert!(matches!(request.action,Action::OpenWorkspace),"{:?}",request.action);
+        assert!(matches!(request.action,Action::OpenWorkspace { enable_local_da: true }),"{:?}",request.action);
         assert_eq!(request.name,"open_workspace");
         session.respond(&request.id,&request.name,Ok("Visual workspace is already open.".into()),None).unwrap();
         assert_eq!(asked.join().unwrap().unwrap(),"Visual workspace is already open.");
         assert!(!fs::read_dir(requests).unwrap().filter_map(Result::ok).any(|entry|entry.path().extension().is_some_and(|extension|extension=="tmp")));
         // A refused reopen sends the newcomer on as a controller, as does a session it cannot reach.
-        let refused=std::thread::spawn({let directory=session.directory.clone();let id=session.id.clone();move||request_open_workspace(&directory,&id,Duration::from_secs(10))});
+        let refused=std::thread::spawn({let directory=session.directory.clone();let id=session.id.clone();move||request_open_workspace(&directory,&id,Duration::from_secs(10),false)});
         let request=loop{if let Some(request)=session.requests().pop(){break request;}assert!(Instant::now()<deadline);std::thread::sleep(Duration::from_millis(20));};
         session.respond(&request.id,&request.name,Err("Save or Save As before opening the visual workspace.".into()),None).unwrap();
         assert!(refused.join().unwrap().unwrap_err().contains("Save or Save As"));
         drop(session);
-        assert!(request_open_workspace(&root.join(".arwen-tui").join("no-such-session"),"none",Duration::from_millis(200)).is_err());
+        assert!(request_open_workspace(&root.join(".arwen-tui").join("no-such-session"),"none",Duration::from_millis(200),false).is_err());
         fs::remove_dir_all(root).unwrap();
     }
     #[test]

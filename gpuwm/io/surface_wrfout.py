@@ -37,7 +37,10 @@ written from the model state, which is what
 
 from __future__ import annotations
 
+import re
+from collections.abc import Mapping
 from pathlib import Path
+from types import MappingProxyType
 
 import numpy as np
 
@@ -47,25 +50,26 @@ VERTICAL_ATTR = "GPUWM_VERTICAL"
 #: Its value for a surface snapshot.
 SURFACE_SNAPSHOT = "surface-snapshot"
 
-#: Snapshot key -> wrfout variable, for the plain 2-D surface fields.
+#: Snapshot key -> wrfout variable, for the keys whose wrfout name is NOT
+#: their own.
 #:
-#: Only fields the renderer's import lane actually consumes are mapped: a
-#: variable it has no selector for lands in the store as a generic
-#: ``var:`` plane, which is useful, but a mapping table full of names
-#: nothing reads is a table nobody can audit.
-SURFACE_FIELDS: dict[str, str] = {
-    "T2": "T2",
-    "U10": "U10",
-    "V10": "V10",
-    "PSFC": "PSFC",
-    "RAINC": "RAINC",
-    "RAINNC": "RAINNC",
-    "SNOWNC": "SNOWNC",
-    "PBLH": "PBLH",
-    "HFX": "HFX",
-    "SWDOWN": "SWDOWN",
-    "TSK": "TSK",
-    "Q2": "Q2",
+#: THE SHAPE IS THE CONTRACT HERE, not this table.  Every other entry a
+#: snapshot carries reaches the file under its own key, by shape: see
+#: :func:`write_surface_wrfout`.  So a producing lane that grows a field
+#: publishes it without a row here, and this map holds only the renames,
+#: because a rename is the one thing a shape cannot state.
+#:
+#: What used to stand here was a row per plain surface field, on the
+#: premise that a name the renderer has no selector for is a name nothing
+#: reads.  That premise was wrong in both directions and the table drifted
+#: from both lanes: ``WrfoutWriter`` types an unknown ``(ny, nx)`` field
+#: as ``f4`` on its own (``_dims_for``'s ``(ny, nx)`` row) and the render
+#: door draws any 2-D plane a wrfout carries (``--products var:<name>``,
+#: ``--list-products``), so an unlisted name was not unread, it was
+#: DROPPED -- which is what happened to ``tilestream.bigdomain``'s
+#: ``COSZEN`` on every frame -- while the table carried a ``Q2`` row
+#: neither lane produces.
+RENAME: dict[str, str] = {
     # Column extremes of vertical velocity, under WRF's OWN names for
     # them.  A surface snapshot has no profile, so these are the only way
     # the updraft reaches a panel at all -- and they are what
@@ -114,6 +118,78 @@ GEOLOCATION_FIELDS: dict[str, str] = {
 }
 
 
+#: What a netCDF variable name may be, so a snapshot key that cannot be one
+#: is reported rather than handed to the library as an error with no name.
+#:
+#: A carrier label is free-form on the producing side: ``bigdomain.snapshot``
+#: builds ``LAT``/``LON`` out of ``radiation/latitude_deg``, and a future
+#: carrier could arrive with the slash still on it.
+_NETCDF_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+
+#: The concrete ``Path`` class on this platform, which is what
+#: :class:`SurfaceWrfoutWrite` extends.  ``pathlib.Path`` itself is the
+#: abstract front door and carries no flavour, so a subclass of it cannot
+#: be instantiated on every supported interpreter; its concrete form can.
+_PATH = type(Path())
+
+
+class SurfaceWrfoutWrite(_PATH):
+    """The file a write produced, and what did and did not reach it.
+
+    It IS the path.  ``os.fspath``, ``str()``, ``.name``, ``.stat()`` and
+    every other ``Path`` operation work on it unchanged, so a caller that
+    wants only the file keeps working without being edited -- which is the
+    difference between a writer that reports more and a signature change
+    that forces every call site in the tree to move at once.
+
+    ``passed_through`` is the snapshot keys published under their own name
+    by the shape rule; ``skipped`` maps a key that did NOT reach the file
+    to the reason, so a lane can say what it lost instead of losing it
+    quietly.  The ``*_units`` siblings and the bookkeeping scalars are in
+    neither: they are not fields, and naming them every frame would bury
+    the one entry that matters.
+
+    Both default to empty at CLASS level, so a derived path -- ``.parent``,
+    ``.with_suffix(...)``, anything ``pathlib`` builds by copying the type
+    -- answers them rather than raising for an attribute the copy never
+    got.  ``skipped`` defaults to a read-only mapping so the empty default
+    cannot be mutated into shared state.
+    """
+
+    passed_through: tuple[str, ...] = ()
+    skipped: Mapping[str, str] = MappingProxyType({})
+
+    @classmethod
+    def _record(cls, path, passed_through, skipped) -> "SurfaceWrfoutWrite":
+        """The written path, carrying what did and did not reach it."""
+
+        written = cls(path)
+        written.passed_through = tuple(passed_through)
+        written.skipped = MappingProxyType(dict(skipped))
+        return written
+
+    @property
+    def path(self) -> Path:
+        """This same file as a plain :class:`~pathlib.Path`.
+
+        For a caller that wants to hand the file on without the report
+        riding along with it.
+        """
+
+        return Path(str(self))
+
+    def skipped_report(self) -> str:
+        """One line naming what did not reach the file, or ``""``.
+
+        Every lane prints this rather than formatting its own, so two
+        doors cannot come to describe one write differently.
+        """
+
+        return ", ".join(f"{name} ({why})"
+                         for name, why in sorted(self.skipped.items()))
+
+
 class SurfaceSnapshotRefusal(ValueError):
     """A snapshot that cannot become a wrfout, with the reason named."""
 
@@ -134,13 +210,43 @@ def write_surface_wrfout(path, snapshot: dict, *, time_str: str,
                          grid_id: int | None = None,
                          start_time=None,
                          title: str = "gpuwm surface snapshot",
-                         composite_key: str = "REFL_COMPOSITE") -> Path:
-    """One wrfout frame from a 2-D snapshot; returns the path written.
+                         composite_key: str = "REFL_COMPOSITE"
+                         ) -> SurfaceWrfoutWrite:
+    """One wrfout frame from a 2-D snapshot; what reached it and what did not.
 
     ``snapshot`` is the lane's own dict.  ``XLAT``/``XLONG`` (or ``LAT``/
     ``LON``) are required -- without them the file has no geolocation and
     the renderer would have nothing to project -- and everything else is
     written when present.
+
+    ## What reaches the file
+
+    THE SHAPE DECIDES, not a table of names.  After the geolocation and
+    the composite are placed, every remaining entry that is a 2-D array of
+    this frame's own ``(ny, nx)`` grid is published under its own key
+    (:data:`RENAME` supplies the name for the two keys whose wrfout
+    spelling differs).  ``WrfoutWriter`` types an unknown ``(ny, nx)``
+    field as ``f4`` and the render door draws any 2-D plane a wrfout
+    carries, so there is nothing a per-field row would add -- and a lane
+    that grows a carrier gets it in the wrfout without editing this file.
+
+    Everything else is REPORTED, not dropped in silence:
+    :class:`SurfaceWrfoutWrite` carries ``passed_through`` and a
+    ``skipped`` map of key to reason, and the lanes print the second.
+    The ``*_units`` siblings and the bookkeeping scalars (``elapsed_s``,
+    ``nx``, ``ny``, ``nz``, ``dx``, ``dt``, and any other 0-d entry) are
+    in neither: they are not fields, and naming them on every frame would
+    bury the entry that matters.
+
+    ``T`` and ``MU`` are placed BEFORE the shape rule and the other three
+    placeholders after it, because those two are the file's structure
+    rather than a stand-in for a measurement: a snapshot entry of the same
+    name is reported as already written instead of replacing the mass
+    coordinate with a surface plane.
+
+    A 2-D array on a grid that is not this frame's is the one refusal, and
+    it is :func:`_plane`'s, unchanged: it names a field placed where it
+    was not computed.
 
     The RUN ORIGIN is required too, and by the same argument.  Either
     ``global_attrs`` already carries one of :data:`ORIGIN_ATTRS` (which is
@@ -153,14 +259,25 @@ def write_surface_wrfout(path, snapshot: dict, *, time_str: str,
     The composite reflectivity, if the snapshot has one, becomes the
     single ``REFL_10CM`` level; see the module docstring for why that is
     exact rather than approximate.
+
+    ## What comes back
+
+    The written path, and nothing a caller has to unwrap:
+    :class:`SurfaceWrfoutWrite` extends ``Path``, so a caller that wants
+    only the file uses the return value as the file, unchanged, and one
+    that wants the report reads ``passed_through``/``skipped`` off the
+    same object.
     """
 
     from gpuwm.io.wrfout import WrfoutWriter
 
     path = Path(path)
     resolved: dict[str, np.ndarray] = {}
-    latitude = _first_present(snapshot, ("XLAT", "LAT"))
-    longitude = _first_present(snapshot, ("XLONG", "LON"))
+    # Snapshot keys already published under some name, so the shape rule
+    # below does not publish them a second time.
+    consumed: set[str] = set()
+    latitude_key, latitude = _first_present(snapshot, ("XLAT", "LAT"))
+    longitude_key, longitude = _first_present(snapshot, ("XLONG", "LON"))
     if latitude is None or longitude is None:
         raise SurfaceSnapshotRefusal(
             f"{path.name}: the snapshot carries no latitude/longitude "
@@ -178,30 +295,51 @@ def write_surface_wrfout(path, snapshot: dict, *, time_str: str,
     ny, nx = latitude.shape
     resolved["XLAT"] = latitude
     resolved["XLONG"] = longitude
+    consumed.update({latitude_key, longitude_key})
 
-    for key, name in SURFACE_FIELDS.items():
+    for key, name in RENAME.items():
         if key in snapshot:
             resolved[name] = _plane(snapshot[key], ny, nx, key)
+            consumed.add(key)
     for key, name in GEOLOCATION_FIELDS.items():
         if name in resolved or key not in snapshot:
             continue
         resolved[name] = _plane(snapshot[key], ny, nx, key)
+        consumed.add(key)
+
+    composite = snapshot.get(composite_key)
+    if composite is not None:
+        resolved["REFL_10CM"] = _plane(
+            composite, ny, nx, composite_key)[None, :, :]
+        consumed.add(composite_key)
+
+    # The importer's preflight wants the mass-coordinate pair; a surface
+    # snapshot has no profile, so these are the stated zeros of a file that
+    # says it is surface-only, rather than invented values.
+    #
+    # These two go in BEFORE the shape rule, unlike the three below: they
+    # are STRUCTURAL, and ``T`` in particular is the one field here whose
+    # shape is (1, ny, nx) rather than (ny, nx).  A snapshot that happened
+    # to carry a 2-D ``T`` would otherwise replace the mass coordinate
+    # with a surface plane and the preflight would read a profile variable
+    # that is not one.  Placed first, such an entry is REPORTED in
+    # ``skipped`` as already written instead, so the lane is told.
+    resolved.setdefault("T", np.zeros((1, ny, nx), np.float32))
+    resolved.setdefault("MU", np.zeros((ny, nx), np.float32))
+
+    passed_through, skipped = _pass_through(
+        snapshot, resolved, consumed, ny, nx)
+
+    # These three go in LAST, so a snapshot that carries one of them
+    # itself wins over the stand-in rather than being overwritten by it.
+    # They are stand-ins for a measurement, not structure: a lane that
+    # knows its terrain or its grid rotation should publish it.
     resolved.setdefault("HGT", np.zeros((ny, nx), np.float32))
     # The wrfout import reads these two to rotate grid-relative winds into
     # earth-relative ones.  A snapshot that does not carry the rotation is
     # declaring an unrotated grid, which is what the identity pair says.
     resolved.setdefault("SINALPHA", np.zeros((ny, nx), np.float32))
     resolved.setdefault("COSALPHA", np.ones((ny, nx), np.float32))
-
-    composite = snapshot.get(composite_key)
-    if composite is not None:
-        resolved["REFL_10CM"] = _plane(
-            composite, ny, nx, composite_key)[None, :, :]
-    # The importer's preflight wants the mass-coordinate pair; a surface
-    # snapshot has no profile, so they are the honest zeros of a file that
-    # declares itself surface-only rather than invented values.
-    resolved.setdefault("T", np.zeros((1, ny, nx), np.float32))
-    resolved.setdefault("MU", np.zeros((ny, nx), np.float32))
 
     attrs = dict(global_attrs or {})
     attrs[VERTICAL_ATTR] = SURFACE_SNAPSHOT
@@ -228,14 +366,66 @@ def write_surface_wrfout(path, snapshot: dict, *, time_str: str,
                       dy=float(dy if dy is not None else dx),
                       title=title, global_attrs=attrs) as writer:
         writer.write_frame(time_str, resolved)
-    return path
+    return SurfaceWrfoutWrite._record(path, passed_through, skipped)
+
+
+def _pass_through(snapshot: dict, resolved: dict, consumed: set, ny: int,
+                  nx: int) -> tuple[list[str], dict[str, str]]:
+    """Publish every remaining 2-D grid-shaped entry under its own key.
+
+    Returns the keys published and a map of key to why-not for the rest.
+    A 0-d entry is a bookkeeping scalar (``elapsed_s``, ``nx``, ``dx``;
+    and they come back 0-d, not Python floats, because
+    ``tilestream/bigdomain_render.py`` reloads a snapshot with
+    ``dict(np.load(...))``) and a ``*_units`` sibling is a colour-bar
+    label, so neither is reported: they were never candidates.
+
+    A 2-D entry is placed by :func:`_plane`, which means a 2-D array on a
+    grid that is not this frame's is REFUSED by name rather than reported.
+    That is the same check the named fields have always had and the same
+    breakage it has always named: a field placed where it was not
+    computed.  It also keeps an odd shape away from ``WrfoutWriter``'s
+    dimension table, which indexes by shape and would raise a bare
+    ``KeyError`` with no field name attached.
+    """
+
+    passed_through: list[str] = []
+    skipped: dict[str, str] = {}
+    for key, value in snapshot.items():
+        if key in consumed or key.endswith("_units"):
+            continue
+        array = np.asarray(value)
+        if array.ndim == 0:
+            continue
+        target = RENAME.get(key, GEOLOCATION_FIELDS.get(key, key))
+        if target in resolved:
+            skipped[key] = f"already written as {target}"
+        elif _NETCDF_NAME.fullmatch(key) is None:
+            skipped[key] = "not a netCDF variable name"
+        elif array.dtype.kind not in "biuf":
+            skipped[key] = f"dtype {array.dtype} is not a numeric field"
+        elif array.ndim != 2:
+            skipped[key] = (f"is {array.ndim}-D {array.shape}, not a 2-D "
+                            f"field on this frame's ({ny}, {nx}) grid; "
+                            "this file declares itself surface-only")
+        else:
+            resolved[key] = _plane(array, ny, nx, key)
+            passed_through.append(key)
+    return passed_through, skipped
 
 
 def _first_present(snapshot: dict, keys: tuple[str, ...]):
+    """The first of ``keys`` the snapshot has, as ``(key, value)``.
+
+    The key comes back too because the caller has to record which spelling
+    it consumed: ``LAT`` and ``XLAT`` are the same field, and the one that
+    lost must not then be published a second time by the shape rule.
+    """
+
     for key in keys:
         if key in snapshot:
-            return snapshot[key]
-    return None
+            return key, snapshot[key]
+    return None, None
 
 
 def snapshot_wrfout_path(npz_path) -> Path:

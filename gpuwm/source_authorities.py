@@ -15,6 +15,7 @@ mapping is shipped is not a code path.
 from __future__ import annotations
 
 import hashlib
+import json
 from pathlib import Path
 from types import MappingProxyType
 from typing import Mapping
@@ -554,6 +555,32 @@ def packaged_authorities(profile_id: str) -> Mapping[str, Path]:
     return MappingProxyType(resolved)
 
 
+#: Parsing is cached by the verified bytes, never by mutable filesystem times.
+_COMPOSITIONS: dict[str, tuple[str, Mapping[str, object]]] = {}
+
+
+def packaged_composition(profile_id: str) -> Mapping[str, object]:
+    """Verify every authority and parse the exact verified composition bytes."""
+    profile = packaged_profile(profile_id)
+    names = profile["files"]
+    expected = profile["sha256"]
+    composition = None
+    for role in PROFILE_ROLES:
+        path = (_AUTHORITY_ROOT / names[role]).resolve()
+        data = path.read_bytes()
+        observed = hashlib.sha256(data).hexdigest()
+        if observed != expected[role]:
+            raise RuntimeError(f"packaged {profile_id} {role} authority hash differs: "
+                               f"expected {expected[role]}, got {observed}")
+        if role == "composition":
+            composition = data
+    digest = hashlib.sha256(composition).hexdigest()
+    cached = _COMPOSITIONS.get(profile_id)
+    if cached is None or cached[0] != digest:
+        _COMPOSITIONS[profile_id] = (digest, MappingProxyType(json.loads(composition)))
+    return _COMPOSITIONS[profile_id][1]
+
+
 def packaged_contributing_mappings(profile_id: str) -> Mapping[str, Path]:
     """Resolve and byte-verify one profile's contributing mapping documents.
 
@@ -665,6 +692,7 @@ def packaged_gfs_vtable_sha256() -> str:
 
 __all__ = [
     "PROFILE_ROLES", "packaged_authorities", "packaged_authority_sha256",
+    "packaged_composition",
     "packaged_contributing_mappings", "packaged_contributing_sha256",
     "packaged_gfs_vtable", "packaged_gfs_vtable_sha256",
     "packaged_member_grammar", "packaged_member_grammar_ids",

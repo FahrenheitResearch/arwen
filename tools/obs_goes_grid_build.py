@@ -87,13 +87,13 @@ def build_parser() -> argparse.ArgumentParser:
     errors.add_argument("--err-floor-ice-g-m2", type=float, required=True)
     errors.add_argument(
         "--err-thin-inflation", type=float, default=1.0,
-        help="multiply sigma_o where the DCOMP thin-cloud bit (256) is "
+        help="multiply sigma_o where the DCOMP thin-cloud bit (512) is "
              "set. Needs a gpuwm-obs.goes-cwp.v2 pack; >1.0 against a v1 "
              "pack is refused rather than silently skipped. 1.0 (the "
              "default) is the v1-equivalent behaviour")
     errors.add_argument(
         "--err-thick-inflation", type=float, default=1.0,
-        help="the same for the thick-cloud bit (512). Measured on a live "
+        help="the same for the thick-cloud bit (256). Measured on a live "
              "CONUS scan, 20.7%% of pixels carry it")
 
     policy = parser.add_argument_group("superob gates")

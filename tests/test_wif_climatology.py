@@ -384,6 +384,31 @@ def test_an_explicit_climatology_request_refuses_when_nothing_resolves(
             env={"GPUWM_WIF_DATA_ROOT": str(tmp_path / "no-staged-wif")})
 
 
+def test_the_strict_refusal_names_the_selector_that_actually_asked(
+        tmp_path, monkeypatch):
+    """There are two spellings of the strict request, and only one is a field.
+
+    A namelist carrying ``(aer_init_opt, wif_input_opt) = (1, 1)`` reaches
+    this resolver with ``mp28_aerosol_source`` at its default 'auto'
+    (gpuwm/ingest/real.py resolves the pair to 'climatology'), so a refusal
+    that named the field would report a setting the operator never touched.
+    """
+    from gpuwm.ingest import wif_climatology
+    from gpuwm.ingest.analyzed_numbers import WIF_CLIMATOLOGY_NAMELIST_PHRASE
+
+    monkeypatch.delenv(wif_climatology.WIF_CLIMATOLOGY_PATH_ENV, raising=False)
+    monkeypatch.delenv(wif_climatology.WIF_CLIMATOLOGY_ROOT_ENV, raising=False)
+    with pytest.raises(wif_climatology.MissingWifClimatologyDataset) as named:
+        wif_climatology.resolve_wif_climatology(
+            cwd=tmp_path, explicit_required=True,
+            requested_by=WIF_CLIMATOLOGY_NAMELIST_PHRASE,
+            env={"GPUWM_WIF_DATA_ROOT": str(tmp_path / "no-staged-wif")})
+    said = str(named.value)
+    assert said.startswith(
+        "(aer_init_opt, wif_input_opt) = (1, 1) requires the dataset")
+    assert "mp28_aerosol_source" not in said.split("Searched")[0]
+
+
 def test_a_dataset_path_the_selection_would_not_read_is_refused():
     """RE-BASELINED.  The old pin refused a path under the 0/0 selectors.
 

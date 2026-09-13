@@ -1129,8 +1129,8 @@ def test_the_restart_identity_names_the_scheme_and_its_provenance():
         value for key, value in restart.MICROPHYSICS_ALGORITHM_IDENTITIES.items()
         if key != 16}
     assert restart.MICROPHYSICS_ALGORITHM_IDENTITIES[8] == (
-        "classic-thompson-wrf-v4.6.1-experimental-v3-cloud-fallout-"
-        "refl10cm-ng-shadow-snow-rime-mass-number-velocity")
+        "classic-thompson-wrf-v4.6.1-v4-cloud-fallout-"
+        "refl10cm-ng-shadow-snow-rime-mass-number-velocity-rain-density-condensation-history")
 
 
 @requires_gpu

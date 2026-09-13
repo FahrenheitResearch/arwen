@@ -862,3 +862,184 @@ def test_the_streamed_lane_s_updraft_reaches_a_production_panel(tmp_path):
     produced = sorted(p.name for p in out.rglob("*.png"))
     assert any("w_up_max" in name for name in produced), produced
     assert any("w_dn_max" in name for name in produced), produced
+
+
+# ---------------------------------------------------------------------------
+# The schema, not a table of names: what a snapshot carries is what the
+# wrfout gets
+# ---------------------------------------------------------------------------
+#
+# The writer used to publish a curated list of surface names and drop
+# everything else without a word.  Nothing needed the curation --
+# ``WrfoutWriter`` types an unknown ``(ny, nx)`` field as ``f4`` on its
+# own and the render door draws any 2-D plane a wrfout carries -- so the
+# list was doing only one thing: losing fields.  It drifted in both
+# directions, carrying a ``Q2`` row neither lane produces while
+# ``tilestream.bigdomain``'s ``COSZEN`` carrier was dropped from every
+# tile-streamed frame ever written.
+#
+# These two are CPU-only on purpose: the loss happens in the writer, so
+# it is provable without a renderer binary.
+
+def test_every_2d_snapshot_field_reaches_the_wrfout(tmp_path, monkeypatch):
+    """A 2-D grid-shaped carrier is published under its own name.
+
+    ``COSZEN`` is the real case: a ``tilestream.bigdomain`` carrier with
+    no row in the writer's old table and no Registry metadata either.  It
+    has to reach the file on its SHAPE, or adding a field to a lane means
+    editing a table in another package.
+
+    And what does not reach the file is named rather than dropped: the
+    ``*_units`` siblings and the bookkeeping scalars are not fields and
+    are not reported, but a 3-D array in a file that declares itself
+    surface-only is a real loss and the caller is told.
+    """
+
+    netCDF4 = pytest.importorskip("netCDF4")
+    from gpuwm.io.surface_wrfout import write_surface_wrfout
+    from gpuwm.io.wrfout import REGISTRY_VAR_META, WRFOUT_WRITER_ENV
+
+    # The tape container is not what is under test here and the default
+    # Rust writer needs a built cdylib, so this asks for the documented
+    # netCDF4 engine and stays CPU-only.  What IS under test -- which
+    # snapshot entries reach the file -- is decided before either engine
+    # sees a byte.
+    monkeypatch.setenv(WRFOUT_WRITER_ENV, "python")
+
+    # The premise, stated rather than assumed: this field is unknown to
+    # the writer's metadata, so nothing but its shape can carry it.
+    assert "COSZEN" not in REGISTRY_VAR_META
+
+    ny, nx = 6, 7
+    snapshot = {
+        "XLAT": np.full((ny, nx), 35.0, np.float32),
+        "XLONG": np.full((ny, nx), -97.0, np.float32),
+        "T2": np.full((ny, nx), 288.0, np.float32),
+        "COSZEN": np.linspace(0.0, 1.0, ny * nx,
+                              dtype=np.float32).reshape(ny, nx),
+        "COSZEN_units": "1",
+        "W_PROFILE": np.zeros((3, ny, nx), np.float32),
+        "elapsed_s": 1200.0,
+        "nx": nx, "ny": ny, "nz": 3,
+        "dx": 3000.0, "dt": 15.0,
+    }
+    report = write_surface_wrfout(
+        tmp_path / "wrfout_d01_x.nc", snapshot, time_str=_STAMP, dx=3000.0,
+        start_time=datetime.datetime(2026, 7, 28, 20))
+
+    with netCDF4.Dataset(report) as dataset:
+        assert "COSZEN" in dataset.variables, sorted(dataset.variables)
+        assert np.allclose(dataset.variables["COSZEN"][0],
+                           snapshot["COSZEN"])
+        # A colour-bar label and the bookkeeping scalars are not fields.
+        for name in ("COSZEN_units", "elapsed_s", "nx", "ny", "nz", "dt"):
+            assert name not in dataset.variables, name
+
+    assert "COSZEN" in report.passed_through, report.passed_through
+    assert "T2" in report.passed_through, report.passed_through
+    assert "W_PROFILE" in report.skipped, report.skipped
+    assert "surface-only" in report.skipped["W_PROFILE"]
+    # The loss is what the lanes print, and only the loss.
+    assert "W_PROFILE" in report.skipped_report()
+    for quiet in ("COSZEN_units", "elapsed_s", "dx", "XLAT"):
+        assert quiet not in report.skipped, report.skipped
+
+    # The report IS the file, so a caller that wants only the path is not
+    # forced to move when the writer starts reporting more.  These are
+    # exactly the operations the producing lanes do with the return value:
+    # name it, size it, interpolate it into a render command.
+    assert isinstance(report, Path)
+    assert report == tmp_path / "wrfout_d01_x.nc"
+    assert report.name == "wrfout_d01_x.nc"
+    assert report.stat().st_size > 0
+    assert f"{report}".endswith("wrfout_d01_x.nc")
+    assert report.path == tmp_path / "wrfout_d01_x.nc"
+    assert type(report.path) is type(Path("."))
+
+
+def test_a_structural_placeholder_survives_a_same_named_surface_field(
+        tmp_path, monkeypatch):
+    """A 2-D ``T`` does not become the file's mass coordinate.
+
+    Publishing by shape means a snapshot key reaches the file under its
+    own name, and ``T``/``MU`` are the two names where that would collide
+    with STRUCTURE rather than with a stand-in: the importer's preflight
+    reads ``T`` as a ``(1, ny, nx)`` mass coordinate, and a 2-D surface
+    plane put there would be read as a profile it is not.  So those two
+    are placed before the shape rule and a snapshot entry of the same name
+    is reported as already written rather than silently winning.
+
+    ``HGT``/``SINALPHA``/``COSALPHA`` are the opposite case and stay
+    after: they stand in for a measurement, so a lane that knows its
+    terrain or its grid rotation overrides them.
+    """
+
+    netCDF4 = pytest.importorskip("netCDF4")
+    from gpuwm.io.surface_wrfout import write_surface_wrfout
+    from gpuwm.io.wrfout import WRFOUT_WRITER_ENV
+
+    monkeypatch.setenv(WRFOUT_WRITER_ENV, "python")
+
+    ny, nx = 4, 5
+    snapshot = {
+        "XLAT": np.full((ny, nx), 35.0, np.float32),
+        "XLONG": np.full((ny, nx), -97.0, np.float32),
+        "T": np.full((ny, nx), 301.0, np.float32),
+        "SINALPHA": np.full((ny, nx), 0.25, np.float32),
+    }
+    report = write_surface_wrfout(
+        tmp_path / "wrfout_d01_t.nc", snapshot, time_str=_STAMP, dx=3000.0,
+        start_time=datetime.datetime(2026, 7, 28, 20))
+
+    with netCDF4.Dataset(report) as dataset:
+        # Structure held: Time, bottom_top, south_north, west_east.
+        assert dataset.variables["T"].shape == (1, 1, ny, nx)
+        assert np.allclose(dataset.variables["T"][:], 0.0)
+        # A stand-in yielded to the lane's own measurement.
+        assert np.allclose(dataset.variables["SINALPHA"][0], 0.25)
+
+    assert "T" in report.skipped, report.skipped
+    assert "already written" in report.skipped["T"]
+    assert "SINALPHA" in report.passed_through, report.passed_through
+
+
+def test_the_two_tilestream_carrier_tables_reach_the_writer(tmp_path,
+                                                            monkeypatch):
+    """Every ``SURFACE_CARRIERS`` label survives a write, by name.
+
+    The two tables are in different packages -- ``tilestream.bigdomain``
+    decides what a frame carries, ``gpuwm.io.surface_wrfout`` decides what
+    a wrfout gets -- and nothing made them agree, so ``COSZEN`` was
+    carried and dropped.  This is the join, and it is a shape rule now
+    rather than a second list to keep in step.
+    """
+
+    netCDF4 = pytest.importorskip("netCDF4")
+    from gpuwm.io.surface_wrfout import write_surface_wrfout
+    from gpuwm.io.wrfout import WRFOUT_WRITER_ENV
+    from tilestream.bigdomain import SURFACE_CARRIERS, snapshot as build
+
+    monkeypatch.setenv(WRFOUT_WRITER_ENV, "python")
+
+    ny, nx, nz = 6, 7, 4
+    store = {key: np.full((ny, nx), 1.5, np.float32)
+             for _, (key, _units) in SURFACE_CARRIERS.items()}
+    store["state/w"] = np.zeros((nz, ny, nx), np.float32)
+    geo_store = {
+        "setup/ht": np.full((ny, nx), 350.0, np.float32),
+        "radiation/latitude_deg": np.full((ny, nx), 35.0, np.float32),
+        "radiation/longitude_deg": np.full((ny, nx), -97.0, np.float32),
+    }
+    cfg = SimpleNamespace(nx=nx, ny=ny, nz=nz, dx=3000.0, dt=15.0)
+    snap = build(store, geo_store, cfg, elapsed_s=1200.0, refl=False)
+
+    report = write_surface_wrfout(
+        tmp_path / "wrfout_d01_bigdom.nc", snap, time_str=_STAMP,
+        dx=float(snap["dx"]), grid_id=1,
+        start_time=datetime.datetime(1970, 1, 1))
+
+    with netCDF4.Dataset(report) as dataset:
+        missing = sorted(label for label in SURFACE_CARRIERS
+                         if label not in dataset.variables)
+        assert not missing, missing
+    assert not report.skipped, report.skipped

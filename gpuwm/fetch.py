@@ -311,27 +311,27 @@ GFS_MAX_FORECAST_HOUR = 384
 #: sent a reader off to wait for data no cycle will ever carry.
 GFS_HOURLY_MAX_FORECAST_HOUR = 120
 
+#: Native publication intervals, not a whitelist of requested subsets.
+GFS_PUBLISHED_CADENCES_H = (1, 3)
+
 
 def gfs_cadence_break_refusal(start: int, last: int, cadence: int) -> str:
-    """Why an hourly GFS window may not cross f120, and what does work."""
-
+    """Name a requested lead absent from the published source ladder."""
+    later_spacing = GFS_PUBLISHED_CADENCES_H[-1]
+    missing = next(lead for lead in range(start, last + 1, cadence)
+                   if lead > GFS_HOURLY_MAX_FORECAST_HOUR and lead % later_spacing)
     return layered(
-        f"--cadence {cadence} reaches f{last:03d}, and the GFS "
-        f"0.25-degree pgrb2 product is published every hour only through "
-        f"f{GFS_HOURLY_MAX_FORECAST_HOUR:03d}.\n"
-        "  What to do: end the window at "
-        f"f{GFS_HOURLY_MAX_FORECAST_HOUR:03d} or earlier, or use "
-        "--cadence 3, which is published all the way to "
-        f"f{GFS_MAX_FORECAST_HOUR}"
-        + ("" if start % 3 == 0 else
-           f" (--forecast-start-hour {start} is not on the 3 h grid "
-           f"either, so a 3 h window would have to begin at "
-           f"f{start - start % 3:03d} or f{start + 3 - start % 3:03d})"),
-        "  Why: this is NCEP's publication cadence, not a delay.  f121, "
-        "f122 and f124 return 404 from the archive today and will still "
-        "return 404 tomorrow; f120 and f123 return 200.  Probing for "
-        "them would report a permanent structural gap as a cycle that "
-        "has not finished uploading.")
+        f"--cadence {cadence} requests f{missing:03d}, which GFS does not publish: "
+        f"the product is published every hour only through f{GFS_HOURLY_MAX_FORECAST_HOUR:03d} "
+        f"and every {later_spacing} hours afterward through f{GFS_MAX_FORECAST_HOUR}.\n"
+        f"  What to do: end at f{GFS_HOURLY_MAX_FORECAST_HOUR:03d} or earlier, or use "
+        f"--cadence {later_spacing} with start/end leads on the {later_spacing} h grid"
+        + (f" (near this start: f{start - start % later_spacing:03d} or "
+           f"f{start + later_spacing - start % later_spacing:03d})"
+           if start % later_spacing else "") + ".",
+        "  Why: this is an absent source object, not a late cycle. Positive uniform "
+        "subsets of the published leads are accepted without changing their spacing.")
+
 
 #: GDAS is the GFS assimilation cycle's own output, in the *same*
 #: pgrb2.0p25 container: same 0.25-degree regular lat/lon grid, same
@@ -360,16 +360,14 @@ def gfs_cadence_break_refusal(start: int, last: int, cadence: int) -> str:
 #: undeclared analysis-only policy).  So the fetch/decode span is
 #: f000..f009 again.
 #:
-#: What is still not certified is INGEST: the ``gdas`` adapter declares
-#: no field/level/cadence mapping and ``rw-wps --source gdas`` refuses.
-#: The container is the certified GFS container and the mapping is
-#: expected to be reusable wholesale, but that has not been run end to
-#: end, so no ``next:`` step here points at it.
+#: The packaged composed profile supplies the preparation mapping.
+#: Container acquisition publishes its ordered inputs and bound surface
+#: role in the same structured handoff as the table acquisition paths.
 GDAS_MAX_FORECAST_HOUR = 9
 
 #: The GDAS forecast-hour ladder this ArWen is certified for: NOMADS
 #: publishes the assimilation cycle's short forecast hourly.
-GDAS_CERTIFIED_HOURS = tuple(range(GDAS_MAX_FORECAST_HOUR + 1))
+GDAS_PUBLISHED_HOURS = tuple(range(GDAS_MAX_FORECAST_HOUR + 1))
 
 #: Sources that ride the certified GFS pgrb2.0p25 container.
 GFS_CONTAINER_SOURCES = ("gfs", "gdas")
@@ -667,6 +665,53 @@ def fetch_accepts_area(source: str) -> bool:
         fetch_routes.LEGACY_ROUTE_SOURCES)
 
 
+def fetch_accepts_cadence(source: str) -> bool:
+    """Can ``gpuwm fetch --source SOURCE`` be handed a ``--cadence``?
+
+    The third question in the same seam as
+    :func:`fetch_front_door_sources` and :func:`fetch_accepts_area`, and
+    asked by everything that writes or reads a ``cadence``: the fetch's
+    own argument validation, the ``[fetch]`` table's config-load check,
+    and the front door that emits such a table.
+    """
+
+    row = source_adapters.get_source_adapter(fetch_routes.canonical_source(source))
+    return (not row.fetch_entire_window or
+            (row.forcing_interval_seconds is not None and row.forcing_interval_seconds % 3600 == 0))
+
+
+def validate_fetch_cadence(source: str, cadence: int | None) -> None:
+    """Keep native complete-window acquisition on its declared frame spacing."""
+    if cadence is None:
+        return
+    row = source_adapters.get_source_adapter(fetch_routes.canonical_source(source))
+    if row.fetch_entire_window and cadence * 3600 != row.forcing_interval_seconds:
+        raise ValueError(cadence_inapplicable_refusal(source))
+
+
+def cadence_inapplicable_refusal(source: str) -> str:
+    """Why a cadence cannot apply to SOURCE, and what to write instead.
+
+    The publisher's spacing is read off the registry row rather than
+    written here, so the sentence stays true for the next source that
+    declares acquisition of its entire native window.
+    """
+
+    spacing_h = int(
+        source_adapters.source_forcing_interval_seconds(source) // 3600)
+    spacing = "hourly" if spacing_h == 1 else f"{spacing_h}-hourly"
+    return layered(
+        f"{source} is {spacing} and the fetch takes every frame it "
+        "publishes inside the window.\n"
+        f"  What to do: use cadence {spacing_h}, or omit cadence and set the window with --hours.",
+        "  Why: a cadence is the spacing this fetch would subsample the "
+        "publisher's ladder at, and a preparation reads boundary "
+        "conditions at every frame this source publishes inside the "
+        "window.  Skipping any of them would hand the preparation a "
+        "series with holes in it, so there is no spacing to accept here "
+        "and the value is refused rather than ignored.")
+
+
 def area_bounds_inward(envelope: tuple[float, float, float, float],
                        decimals: int = AREA_HINT_DECIMALS
                        ) -> tuple[float, float, float, float]:
@@ -776,55 +821,114 @@ def gfs_forecast_hours(hours: int, cadence: int,
     described the same way wherever it begins.
     """
 
-    if cadence not in (1, 3):
-        raise ValueError("GFS cadence must be 1 or 3 hours")
-    if hours < cadence or hours % cadence:
+    if type(cadence) is not int or cadence <= 0:
+        raise ValueError("--cadence must be a positive whole number of hours")
+    if type(hours) is not int or hours < 0 or hours % cadence:
         raise ValueError(
-            f"--hours must be a positive multiple of the {cadence} h cadence")
-    start = _forecast_start_hour(start, cadence)
+            f"--hours must be a nonnegative integer multiple of the {cadence} h cadence")
+    # A uniform window can start on any actual source lead, even when the
+    # lead is not a multiple of the chosen spacing (for example f001/f003).
+    start = _forecast_start_hour(start, 1)
     if start + hours > GFS_MAX_FORECAST_HOUR:
         raise ValueError(
-            f"--hours {hours} beginning at f{start:03d} reaches "
-            f"f{start + hours:03d}, past the GFS "
-            f"f{GFS_MAX_FORECAST_HOUR} horizon")
-    if cadence == 1 and start + hours > GFS_HOURLY_MAX_FORECAST_HOUR:
-        # Refused HERE, before any probe.  The availability probe cannot
-        # tell a permanent publication gap from a cycle still uploading,
-        # so it reported f121/f122/f124 as "not published yet" and
-        # advised passing an explicit --cycle the caller had already
-        # passed.  The cadence break is a property of the product.
-        raise ValueError(
-            gfs_cadence_break_refusal(start, start + hours, cadence))
-    return tuple(range(start, start + hours + 1, cadence))
+            f"The GFS publication horizon is f{GFS_MAX_FORECAST_HOUR}; this window ends "
+            f"at f{start + hours:03d}. Shorten the window or start earlier.")
+    leads = tuple(range(start, start + hours + 1, cadence))
+    if any(lead > GFS_HOURLY_MAX_FORECAST_HOUR
+           and lead % GFS_PUBLISHED_CADENCES_H[-1] for lead in leads):
+        raise ValueError(gfs_cadence_break_refusal(start, start + hours, cadence))
+    return leads
 
 
 def gdas_capability_refusal(requested_hour: int) -> str:
-    """Why a GDAS request past f009 is refused, and what to do.
+    """Why a GDAS request past the published ladder is refused, and what to do.
 
-    Capability wording on purpose: it names what this ArWen is certified
-    to serve, why the boundary is where it is, and the source that does
-    cover a full forecast.  It is not a statement about GDAS itself --
-    it is a statement about what has been proved here.
+    Publication wording: the limit is the assimilation cycle's own
+    output, not a claim about what has been proved here.  Written in the
+    two halves this project layers everywhere -- ``What to do`` is the
+    action, ``Why`` is the mechanism -- so the remedy reaches a reader at
+    the default width and the mechanism waits for ``--explain`` instead
+    of arriving on top of it.
     """
 
-    # Already written in the two halves this project now layers
-    # everywhere: `What to do` is the action, `Why` is the mechanism.
-    # Composing them with `layered` only changes which one prints
-    # first and which one waits for the flag.
     return layered(
-        "GDAS is certified in this ArWen for fetch and decode through "
-        f"f{GDAS_MAX_FORECAST_HOUR:03d}: the assimilation cycle's "
-        "analysis and its short forecast, and nothing past it.  "
-        f"f{requested_hour:03d} was requested.\n"
-        "  What to do: stay inside "
-        f"--hours 0..{GDAS_MAX_FORECAST_HOUR}, or use --source gfs, "
-        f"which is certified through f{GFS_MAX_FORECAST_HOUR}.",
-        "  Why: the certified corpus is real NOMADS f000/f003/f006/f009 "
-        "subsets, and the fail-closed gfs_grib2_bridge downstream "
-        "selects by exact field identity -- it admits the declared "
-        "analysis and forecast generating processes and nothing else.  "
-        "Fetching hours the bridge has never seen would just move the "
-        "failure later, so the refusal is here.")
+        f"GDAS publishes f{GDAS_PUBLISHED_HOURS[0]:03d}.."
+        f"f{GDAS_MAX_FORECAST_HOUR:03d}: the assimilation cycle's analysis "
+        "and the short forecast that carries it to the next cycle.  "
+        f"f{requested_hour:03d} names no object it publishes.\n"
+        f"  What to do: stay inside --hours 0..{GDAS_MAX_FORECAST_HOUR}, or "
+        f"use --source gfs, which publishes leads through "
+        f"f{GFS_MAX_FORECAST_HOUR}.",
+        f"  Why: a lead past f{GDAS_MAX_FORECAST_HOUR:03d} is not a cycle "
+        "still uploading -- the object is never written, on this cycle or "
+        "any other.  Starting the fetch anyway would move the same refusal "
+        "behind a download that cannot complete, so it is made here, before "
+        "any bytes.")
+
+
+def gdas_cadence_refusal(hours: int, cadence: int, start: int) -> str:
+    """Why a GDAS window and its cadence cannot both be served.
+
+    What is accepted is derived from :data:`GDAS_PUBLISHED_HOURS`, so a
+    ladder change moves this refusal with it rather than leaving a
+    literal behind to contradict it.
+    """
+
+    published = set(GDAS_PUBLISHED_HOURS)
+    accepted = tuple(
+        step for step in range(1, hours + 1)
+        if not hours % step
+        and set(range(start, start + hours + 1, step)) <= published)
+    last = start + (hours // cadence) * cadence
+    return layered(
+        f"--cadence {cadence} does not divide --hours {hours}, so the "
+        f"f{start:03d}..f{start + hours:03d} window would stop at "
+        f"f{last:03d} and the run would be bounded by a shorter series "
+        "than the one requested.\n"
+        "  What to do: pass --hours a whole multiple of the cadence, or "
+        + (f"--cadence {' or '.join(str(step) for step in accepted)}."
+           if accepted else
+           f"a window inside f{GDAS_PUBLISHED_HOURS[0]:03d}.."
+           f"f{GDAS_MAX_FORECAST_HOUR:03d}."),
+        "  Why: the cadence is the spacing of the boundary frames and the "
+        "window's final hour is a frame like any other, so a cadence that "
+        "does not divide the window drops it in silence -- the fetch "
+        "succeeds, the manifest is complete for what it holds, and the "
+        "forecast simply ends early.  GDAS publishes "
+        f"f{GDAS_PUBLISHED_HOURS[0]:03d}..f{GDAS_MAX_FORECAST_HOUR:03d} at "
+        f"{GDAS_PUBLISHED_HOURS[1] - GDAS_PUBLISHED_HOURS[0]}-hour spacing, "
+        "so every whole-hour cadence that divides the window is on its "
+        "ladder.")
+
+
+def container_handoff_binding(source: str) -> str:
+    """The in-band surface role a container source's prep handoff binds.
+
+    ONE function for both doors: the fetch's own plan review calls it
+    before a byte moves, and the publisher calls it again as it writes
+    the handoff, so the two can never disagree about whether this source
+    is preparable from what the fetch brings.  It used to be asked only
+    inside the publisher, which put the refusal after the whole download.
+    """
+
+    role = fetch_routes.in_band_supplement_role(source)
+    if role is None:
+        raise ValueError(layered(
+            f"{source} declares no in-band surface binding, so a fetch "
+            "would bring its bytes and then have no preparation handoff to "
+            "publish with them.\n"
+            f"  What to do: prepare it explicitly -- `gpuwm prep --source "
+            f"{source}` with the ordered --input-list and one --supplement "
+            "ROLE=PATH for each role its contract names -- or fetch a "
+            "source whose packaged composition binds its surface fields in "
+            "band.",
+            "  Why: this container writes its preparation arguments from "
+            "the packaged composition's terrain role, and that role is "
+            "bindable here only when it selects its fields from the same "
+            "input files this fetch downloads.  A composition naming a "
+            "separate donor leaves the publisher nothing to bind, and the "
+            "refusal belongs before the transfer rather than after it."))
+    return role
 
 
 #: What NOMADS keeps, roughly, for the 0.25-degree pgrb2 product.
@@ -879,16 +983,61 @@ def nomads_reach_refusal(source: str, cycle: datetime, hour: int,
 
 def gdas_forecast_hours(hours: int, cadence: int = 3,
                         start: int | None = None) -> tuple[int, ...]:
-    """The GDAS ladder inside the certified span, or a capability refusal."""
+    """The GDAS ladder inside the published span, or a refusal.
 
-    if cadence < 1:
-        raise ValueError("--cadence must be a positive number of hours")
+    The cadence is checked the way :func:`gfs_forecast_hours` checks its
+    own -- a whole number of hours that divides the window -- because a
+    cadence that does not divide it truncated the series in silence: the
+    fetch succeeded, the manifest was internally complete, and the run
+    was bounded by a window shorter than the one asked for.  What is
+    accepted is derived from :data:`GDAS_PUBLISHED_HOURS` rather than
+    written here as a literal, so the ladder stays the only place the
+    publisher's spacing is recorded.
+    """
+
+    if isinstance(cadence, bool) or not isinstance(cadence, int) or cadence < 1:
+        raise ValueError("--cadence must be a positive whole number of hours")
+    if isinstance(hours, bool) or not isinstance(hours, int) or hours < 0:
+        raise ValueError("--hours must be a nonnegative integer")
     start = _forecast_start_hour(start, cadence)
     if start + hours > GDAS_MAX_FORECAST_HOUR:
         raise ValueError(gdas_capability_refusal(start + hours))
     if hours == 0:
         return (start,)
-    return tuple(range(start, start + hours + 1, cadence))
+    if hours < cadence or hours % cadence:
+        raise ValueError(gdas_cadence_refusal(hours, cadence, start))
+    ladder = tuple(range(start, start + hours + 1, cadence))
+    off = [hour for hour in ladder if hour not in GDAS_PUBLISHED_HOURS]
+    if off:
+        raise ValueError(gdas_capability_refusal(off[0]))
+    return ladder
+
+
+def container_forecast_hours(source: str, hours: int,
+                             cadence: int | None = None,
+                             start: int | None = None) -> tuple[int, ...]:
+    """The published ladder for one GFS-container window.
+
+    The dispatcher BOTH doors call: ``gpuwm fetch``'s own argument
+    validation and the ``[fetch]`` table's config-load check ask this
+    one function, so a window accepted when a config is loaded cannot be
+    refused when it is fetched.  The config door used to plan every
+    container source on the GFS ladder, and only when the cadence was
+    one of two values it named itself, so a GDAS table carrying any
+    other cadence reached the download unplanned.
+    """
+
+    if source not in GFS_CONTAINER_SOURCES:
+        raise ValueError(f"container_forecast_hours serves "
+                         f"{GFS_CONTAINER_SOURCES}, not {source!r}")
+    if source == "gdas":
+        if cadence is not None and hours == 0:
+            raise ValueError(
+                "--hours 0 fetches the f000 analysis alone; --cadence "
+                "does not apply to a single time")
+        return gdas_forecast_hours(hours, 3 if cadence is None else cadence,
+                                   start)
+    return gfs_forecast_hours(hours, 3 if cadence is None else cadence, start)
 
 
 def hrrr_forecast_hours(hours: int, cycle: datetime,
@@ -908,11 +1057,11 @@ def hrrr_forecast_hours(hours: int, cycle: datetime,
 
     from gpuwm.hrrr_forecast import validate_hrrr_source_forecast_hours
 
-    if hours < 1:
-        raise ValueError("--hours must be at least 1 (two hourly frames)")
+    if isinstance(hours, bool) or not isinstance(hours, int) or hours < 0:
+        raise ValueError("--hours must be a nonnegative integer")
     start = _forecast_start_hour(start, 1)
     return validate_hrrr_source_forecast_hours(
-        range(start, start + hours + 1), cycle=cycle)
+        range(start, start + hours + 1), cycle=cycle, allow_single_frame=True)
 
 
 # ---------------------------------------------------------------------------
@@ -1097,26 +1246,27 @@ def cycle_is_probeable(source: str) -> bool:
 
 
 def _route_probe_urls(source: str, cycle: datetime, last_hour: int,
-                      transport: str | None) -> tuple[str, ...]:
-    """Probe URLs for a TABLE-ROUTE source, derived from its own row.
+                      transport: str | None, *, cadence: int | None = None,
+                      start_hour: int = 0, member: str | None = None) -> tuple[str, ...]:
+    """The selected member's final objects on ONE endpoint.
 
-    Nothing here knows a model name.  ``resolve_request`` is the same
-    offline planner ``gpuwm fetch`` runs, so the objects probed are the
-    objects that would be downloaded -- which is the property that makes
-    the probe mean what it says, and the reason adding a producer is a
-    route row rather than a branch in this function.
+    The caller walks endpoints. Flattening all mirror URLs here would require
+    every mirror to have caught up before treating the primary as published.
     """
-
     plan = fetch_routes.resolve_request(
-        source, cycle=cycle, hours=last_hour, host=transport)
+        source, cycle=cycle, hours=last_hour - start_hour, host=transport,
+        cadence=cadence, start_hour=start_hour, member=member)
     final = plan.leads[-1]
-    return tuple(
-        url for obj in plan.objects if obj.lead == final
-        for url in obj.urls(plan.ladder))
+    urls = tuple(obj.url for obj in plan.objects if obj.lead == final or obj.lead is None)
+    if not urls:
+        raise ValueError(f"{source}: no publication objects declared for f{final:03d}")
+    return urls
 
 
 def cycle_probe_urls(source: str, cycle: datetime, last_hour: int,
-                     transport: str | None = None) -> tuple[str, ...]:
+                     transport: str | None = None, *,
+                     cadence: int | None = None, start_hour: int = 0,
+                     member: str | None = None) -> tuple[str, ...]:
     """The objects whose existence proves one cycle covers ``last_hour``.
 
     ``transport`` names the endpoint to ask.  It defaults to the head of
@@ -1148,7 +1298,8 @@ def cycle_probe_urls(source: str, cycle: datetime, last_hour: int,
                 hrrr_object_url(cycle, last_hour, "wrfprs",
                                 transport=transport))
     if cycle_is_probeable(source):
-        return _route_probe_urls(source, cycle, last_hour, transport)
+        return _route_probe_urls(source, cycle, last_hour, transport,
+                                 cadence=cadence, start_hour=start_hour, member=member)
     raise ValueError(layered(
         f"{source!r} publishes no object a completeness probe can ask "
         "for, so this cycle's publication cannot be settled by probing.",
@@ -1160,45 +1311,121 @@ def cycle_probe_urls(source: str, cycle: datetime, last_hour: int,
         "could not serve."))
 
 
+def probe_cycle_window(source: str, cycle: datetime, leads, *,
+                       now: datetime | None = None, probe=None,
+                       transport: str | None = None, cadence: int | None = None,
+                       member: str | None = None) -> dict:
+    """Check the exact requested lead set through the declared URL owners.
+
+    One endpoint must contain the complete requested set. The final lead is
+    checked first, followed by every preceding required frame and invariant.
+    This proves object availability only; preparation still verifies payload,
+    source member, field inventory and donor identity before integration.
+    """
+    values = tuple(leads)
+    if (not values or any(type(hour) is not int or hour < 0 for hour in values)
+            or tuple(sorted(set(values))) != values):
+        raise ValueError('The publication probe requires sorted unique nonnegative forecast leads')
+    if not cycle_is_probeable(source):
+        return dict(probeable=False, available=None, checks=[])
+    probe = _head_ok if probe is None else probe
+    checks = []
+    for endpoint in fetch_endpoints.serving_ladder(source, cycle=cycle, now=now, pinned=transport):
+        seen = set()
+        complete = True
+        for lead in (values[-1], *values[:-1]):
+            urls = cycle_probe_urls(source, cycle, lead, transport=endpoint.name,
+                                    cadence=cadence, start_hour=values[0], member=member)
+            for url in urls:
+                if url in seen:
+                    continue
+                seen.add(url)
+                available = bool(probe(url))
+                checks.append(dict(endpoint=endpoint.name, lead=lead, url=url, available=available))
+                if not available:
+                    complete = False
+                    break
+            if not complete:
+                break
+        if complete and seen:
+            return dict(probeable=True, available=True, endpoint=endpoint.name, checks=checks)
+    return dict(probeable=True, available=False, checks=checks)
+
+
 def require_published_cycle(source: str, cycle: datetime, last_hour: int, *,
                             now: datetime | None = None,
-                            probe=_head_ok, progress=print) -> None:
-    """Refuse a NAMED cycle the mirrors have not finished publishing.
+                            probe=_head_ok, progress=print,
+                            transport: str | None = None,
+                            cadence: int | None = None, start_hour: int = 0,
+                            member: str | None = None) -> None:
+    """Check a named cycle's requested member/end before moving payload bytes.
 
-    ``--cycle 2026-07-30T00`` an hour before that cycle exists used to
-    produce twenty lines of ``urllib.error.HTTPError: HTTP Error 404``
-    from inside the downloader -- in a product that names the remedy for
-    almost everything else.  The probe is the same one ``--cycle latest``
-    already runs; the only new thing is running it before we start
-    downloading, and saying which cycle IS complete.
+    One complete endpoint is sufficient. An explicitly pinned endpoint is the
+    only one asked; a control member or a different mirror cannot authorize
+    downloading the selected member from a still-incomplete pinned endpoint.
     """
-
     if not cycle_is_probeable(source):
-        # Nothing to ask.  The gate this function is exists to close --
-        # a named cycle the mirrors have not finished publishing -- can
-        # only be closed by a server that answers HEAD, and a source
-        # acquired over a job API has none.  Returning is not a silent
-        # pass: the acquisition itself refuses what it cannot serve, and
-        # inventing a refusal here would refuse cycles that are fine.
-        return
-    urls = cycle_probe_urls(source, cycle, last_hour)
-    if all(probe(url) for url in urls):
-        return
+        return  # A keyed job API has no public object to HEAD.
+    options = dict(cadence=cadence, start_hour=start_hour, member=member)
+    ladder = fetch_endpoints.serving_ladder(source, cycle=cycle, now=now, pinned=transport)
+    for endpoint in ladder:
+        urls = cycle_probe_urls(source, cycle, last_hour, transport=endpoint.name, **options)
+        if urls and all(probe(url) for url in urls):
+            return
     try:
-        newest = resolve_latest_cycle(source, last_hour, now=now, probe=probe)
+        newest = resolve_latest_cycle(source, last_hour, now=now, probe=probe,
+                                       transport=transport, **options)
         remedy = (f"the newest complete {source.upper()} cycle covering "
                   f"f{last_hour:03d} is {newest:%Y-%m-%dT%H}Z -- pass that, "
                   "or --cycle latest to resolve it automatically")
     except (RuntimeError, ValueError) as error:
         remedy = f"and no complete cycle could be resolved either ({error})"
+    selection = f" member {member}" if member is not None else ""
     raise RuntimeError(
-        f"{source.upper()} cycle {cycle:%Y-%m-%dT%H}Z is not published "
+        f"{source.upper()}{selection} cycle {cycle:%Y-%m-%dT%H}Z is not published "
         f"through f{last_hour:03d} yet; {remedy}")
+
+
+def analysis_window_reference(source: str, grid, last_hour: int,
+                             now: datetime) -> datetime:
+    """The instant one window's worth of analyses is resolved at.
+
+    An analysis source publishes no forecast leads, so an ``last_hour``
+    hour window is that many hours of successive ANALYSES: the newest
+    start it can have is the newest published analysis minus the window,
+    and a later start asks for valid times the provider has not published
+    yet.  A forecast source covers its window with leads from one cycle,
+    so its reference is the caller's own instant, unchanged.
+
+    Two doors resolve the same latest and must agree about one request:
+    :func:`resolve_latest_cycle`, which serves ``--cycle latest`` and
+    every planner that calls it, and :mod:`gpuwm.source_availability`,
+    whose calendar publishes ``latest_candidate`` and resolves the Latest
+    button.  Each used to subtract the window itself, so on that path it
+    came off twice: an era5 240-hour window selected a cycle ten days
+    before the same document's own ``latest_candidate``, silently.
+
+    The subtraction happens AFTER ``newest()``, because a rolling
+    publication delay and a closed archive's ``record_end`` both bound
+    the LAST analysis requested and only ``newest()`` applies both;
+    subtracting from ``now`` alone gets a closed archive wrong.  The
+    delay is added back so the answer is a reference INSTANT rather than
+    a cycle: ``grid.newest()`` of it is the newest usable start, and
+    ``grid.candidates()`` of it walks the same search window back from
+    there, which is what a probing route needs.
+    """
+
+    if _source_reaches_forecast_leads(source):
+        return now
+    return (grid.newest(now) - timedelta(hours=last_hour)
+            + timedelta(hours=grid.delay_hours))
 
 
 def resolve_latest_cycle(source: str, last_hour: int, *,
                          now: datetime | None = None,
-                         probe=_head_ok) -> datetime:
+                         probe=_head_ok, transport: str | None = None,
+                         cadence: int | None = None, start_hour: int = 0,
+                         member: str | None = None) -> datetime:
     """Newest cycle whose final requested objects are actually published.
 
     A cycle qualifies only when every probed object for forecast hour
@@ -1218,9 +1445,30 @@ def resolve_latest_cycle(source: str, last_hour: int, *,
     the operational server yields no complete cycle at all.
     """
 
+    if isinstance(last_hour, bool) or not isinstance(last_hour, int) or last_hour < 0:
+        raise ValueError("the final requested hour must be a nonnegative integer")
+    if (isinstance(start_hour, bool) or not isinstance(start_hour, int)
+            or not 0 <= start_hour <= last_hour):
+        raise ValueError("the start hour must be an integer between zero and the final hour")
+    route = None
+    if source in fetch_routes.route_ids():
+        route = fetch_routes.route_for(source)
+        fetch_routes.resolve_member(route, member)
+        if transport is not None:
+            route.host(transport)
     if now is None:
         now = datetime.now(timezone.utc).replace(tzinfo=None)
+    elif now.tzinfo is not None:
+        now = now.astimezone(timezone.utc).replace(tzinfo=None)
     grid = require_cycle_grid(source)
+    # ONE owner of the analysis back-off, for every door that resolves a
+    # latest cycle.  When the calendar applied it too, a 240-hour era5
+    # window resolved ten days before the same document's own
+    # latest_candidate, with nothing said about it.
+    now = analysis_window_reference(source, grid, last_hour, now)
+    if (not cycle_is_probeable(source)
+            and not _source_reaches_forecast_leads(source)):
+        return grid.newest(now)
     # A cycle that does not reach the end of the window is not a
     # candidate at all -- it is a cycle that cannot serve the request.
     # The rule is the row's or the route's; nothing here knows which
@@ -1236,6 +1484,18 @@ def resolve_latest_cycle(source: str, last_hour: int, *,
             f"(cycle hours, through-hour), and this window needs "
             f"f{last_hour:03d}.  Shorten --hours, or name a cycle whose "
             "own ladder reaches it."))
+    if route is not None:
+        admitted, errors = [], []
+        for cycle in candidates:
+            try:
+                fetch_routes.resolve_leads(route, cycle, last_hour - start_hour,
+                                           cadence=cadence, start_hour=start_hour)
+                admitted.append(cycle)
+            except ValueError as error:
+                errors.append(error)
+        if not admitted:
+            raise errors[-1]
+        candidates = tuple(admitted)
     if not cycle_is_probeable(source):
         # No file server to ask, so the declared publication delay IS
         # the answer.  Reported as resolved rather than refused: the
@@ -1244,12 +1504,13 @@ def resolve_latest_cycle(source: str, last_hour: int, *,
         # reports a delay that turned out optimistic.
         return candidates[0]
     ladder = fetch_endpoints.serving_ladder(
-        source, cycle=candidates[0], now=now)
+        source, cycle=candidates[0], now=now, pinned=transport)
     for endpoint in ladder:
         for cycle in candidates:
             urls = cycle_probe_urls(source, cycle, last_hour,
-                                    transport=endpoint.name)
-            if all(probe(url) for url in urls):
+                                    transport=endpoint.name, cadence=cadence,
+                                    start_hour=start_hour, member=member)
+            if urls and all(probe(url) for url in urls):
                 return cycle
     tried = " or ".join(endpoint.name for endpoint in ladder)
     raise RuntimeError(
@@ -2606,7 +2867,17 @@ def _write_gfs_front_door_files(out: Path, *, source: str, cycle: datetime,
            f"f{files[-1]['forecast_hour']:03d}" if files else ""),
         "#",
     ]
-    if source == "gfs":
+    handoff = None
+    # Fork on the CAPABILITY, not on the container's name.  A caller asks
+    # `fetch_routes.publishes_prep_handoff` whether this path publishes
+    # bound prep arguments, and that predicate reads the packaged
+    # composition; a second test written here as a source name answers
+    # differently the moment a composition binds its surface fields in
+    # band, and the predicate would then promise a document nothing had
+    # written.  A container that HAS a composed profile but binds no
+    # in-band role still reaches `container_handoff_binding` below, which
+    # is where that refusal belongs.
+    if not fetch_routes.prepares_through_packaged_composition(source):
         header.extend((
             "# The prep door authors and digest-binds the input manifest",
             "# itself when --source-manifest is omitted (it binds this",
@@ -2623,22 +2894,27 @@ def _write_gfs_front_door_files(out: Path, *, source: str, cycle: datetime,
             f"  --cycle {cycle:%Y-%m-%d_%H:%M:%S}",
         ]
     else:
-        header.extend((
-            f"# Native mapped preparation: gpuwm prep --source {source}.",
-            "# Supply an ordered --input-list, the full pressure ladder,",
-            "# and --supplement gdas_pgrb2_in_band_surface=FILE for each input.",
-            f"# See gpuwm prep --show-source {source} for the complete contract.",
-        ))
-        body = []
+        role = container_handoff_binding(source)
+        tokens = ["--source", source, "--input-list", str(inputs.resolve())]
+        for item in files:
+            tokens += ["--supplement", f"{role}={(out / item['name']).resolve()}"]
+        tokens += ["--author-input-manifest", str(out.resolve() / "inputs.json")]
+        handoff = fetch_routes.write_prep_arguments(
+            out, source=source, prep_source=source, cycle=cycle, tokens=tokens)
+        header += ["# Supply --wps-namelist, --experiment-config,",
+                   "# --geog-root and --output-root."]
+        body = ["gpuwm prep " + shlex.join(tokens)]
     _atomic_write_text(command_path,
                        "\n".join(header + ([""] if body else []) + body)
                        + "\n")
+    published = [("checksums", sums), ("input-list", inputs),
+                 ("prep-command", command_path)]
+    if handoff is not None:
+        published.append(("prep-arguments", handoff))
     return [{"name": path.name, "role": role, "forecast_hour": None,
              "bytes": path.stat().st_size, "sha256": sha256_file(path),
              "url": None}
-            for role, path in (("checksums", sums),
-                               ("input-list", inputs),
-                               ("prep-command", command_path))]
+            for role, path in published]
 
 
 def author_gfs_front_door_manifest(
@@ -2692,6 +2968,13 @@ def author_gfs_front_door_manifest(
             or not all(isinstance(hour, int) for hour in hours)):
         raise ValueError(
             f"fetch manifest in {out} lacks a forecast-hour inventory")
+    if len(hours) < 2:
+        raise ValueError(
+            "a forecast manifest needs at least two forcing times: lateral "
+            "boundaries are interpolated BETWEEN frames, so one frame leaves "
+            "every boundary interval empty and the run has nothing to force "
+            "its edges with.  Fetch one more forcing time, or use the "
+            "analysis on its own without a manifest.")
     prefix = GFS_CONTAINER_PREFIX[source]
     # Author over a TAIL of what was fetched, when asked.  A directory
     # already holding f000..f240 does not have to be re-downloaded for a
@@ -3903,33 +4186,42 @@ def _fetch_hrrr_locked(*, cycle: datetime, hours: tuple[int, ...],
 
 def _era5_times(cycle: datetime, hours: int,
                 cadence: int) -> tuple[datetime, ...]:
-    if hours < cadence or hours % cadence:
+    from gpuwm.era5_member import validate_selection
+
+    validate_selection(cadence=cadence)
+    if (isinstance(hours, bool) or not isinstance(hours, int)
+            or hours < 0 or hours % cadence):
         raise ValueError(
-            f"--hours must be a positive multiple of the {cadence} h "
+            f"--hours must be a nonnegative integer multiple of the {cadence} h "
             "cadence")
+    if not isinstance(cycle, datetime):
+        raise ValueError("ERA5 cycle must be a UTC date and hour")
+    if cycle.tzinfo is not None:
+        cycle = cycle.astimezone(timezone.utc).replace(tzinfo=None)
+    if cycle.minute or cycle.second or cycle.microsecond:
+        raise ValueError("ERA5 cycle must fall on an exact UTC hour")
     return tuple(cycle + timedelta(hours=lead)
                  for lead in range(0, hours + 1, cadence))
 
 
 def era5_request_template(*, cycle: datetime, hours: int, area: Area,
                           cadence: int = 6, out: Path | None = None) -> dict:
-    """The exact two-part cdsapi request gpuwm's ERA5 ingest expects.
+    """Exact CDS pressure/surface requests for the requested valid times.
 
-    ``out`` binds the retrieval's targets to the directory the fetch was
-    asked for.  Without it the targets are bare leaf names, and cdsapi
-    resolves those against ITS working directory -- so the two GRIB
-    files land wherever the retrieval happened to be run from, not where
-    the config that consumes them looks.
+    CDS combines every date with every clock time in one request. Split by
+    day so partial days, and cadences that do not divide 24, cannot acquire
+    extra times. Each response has its own target, bound to ``out`` rather
+    than the retrieval process's working directory.
     """
 
     times = _era5_times(cycle, hours, cadence)
-    dates = sorted({when.strftime("%Y-%m-%d") for when in times})
-    clock = sorted({when.strftime("%H:00") for when in times})
+    by_day: dict[str, list[str]] = {}
+    for moment in times:
+        by_day.setdefault(moment.strftime("%Y-%m-%d"), []).append(
+            moment.strftime("%H:%M"))
     shared = {
         "product_type": "reanalysis",
         "data_format": "grib",
-        "date": dates,
-        "time": clock,
         "area": area.as_cds(),
     }
     pressure = dict(shared)
@@ -3955,17 +4247,23 @@ def era5_request_template(*, cycle: datetime, hours: int, area: Area,
     def target(name: str) -> str:
         return name if out is None else str((out / name).resolve())
 
+    requests = []
+    for day, clock in by_day.items():
+        # Keep the existing names for a one-day request. More than one day
+        # needs distinct files so retrieval cannot overwrite an earlier day.
+        suffix = "" if len(by_day) == 1 else "-" + day
+        for dataset, leaf, selection in (
+                ("reanalysis-era5-pressure-levels", "pressure", pressure),
+                ("reanalysis-era5-single-levels", "single", single)):
+            requests.append({"dataset": dataset,
+                "target": target(f"era5-{leaf}{suffix}.grib"),
+                "request": dict(selection, date=[day], time=clock)})
     combined = target(ERA5_COMBINED_NAME)
     return {
         "schema": "gpuwm-era5-cds-request-v1",
         "requires": "CDS account + ~/.cdsapirc key; pip install cdsapi",
-        "requests": [
-            {"dataset": "reanalysis-era5-pressure-levels",
-             "target": target("era5-pressure.grib"), "request": pressure},
-            {"dataset": "reanalysis-era5-single-levels",
-             "target": target("era5-single.grib"), "request": single},
-        ],
-        "combine": ("concatenate the two GRIB1 targets into one file "
+        "requests": requests,
+        "combine": ("concatenate all GRIB1 targets into one file "
                     "(byte concatenation preserves every message): "
                     f"{combined}"),
         "combine_target": combined,
@@ -4116,9 +4414,9 @@ def era5_retrieve_commands(script: Path) -> tuple[str, str | None]:
 def write_era5_request(*, cycle: datetime, hours: int, area: Area,
                        out: Path, cadence: int = 6,
                        progress=print) -> Path:
-    out.mkdir(parents=True, exist_ok=True)
     template = era5_request_template(
         cycle=cycle, hours=hours, area=area, cadence=cadence, out=out)
+    out.mkdir(parents=True, exist_ok=True)
     path = out / ERA5_REQUEST_NAME
     _atomic_write_text(
         path, json.dumps(template, indent=2, sort_keys=True) + "\n")
@@ -4599,53 +4897,58 @@ _LEGACY_ONLY_FLAGS = {
 
 
 def _route_fetch_main(args, source: str) -> int:
-    """``gpuwm fetch`` for a source whose acquisition is table data."""
-
+    """Fetch a table route with the same cycle/member/window used by its probe."""
     supplied = []
     for flag, owner in _LEGACY_ONLY_FLAGS.items():
         value = getattr(args, flag.lstrip("-").replace("-", "_"), None)
-        if value:
+        if value is not None and value is not False and value != []:
             supplied.append((flag, owner))
     if supplied:
         raise ValueError(
-            f"{', '.join(flag for flag, _ in supplied)}: --source {source} "
-            "is a table-driven route.\n"
-            f"  why: {supplied[0][0]} belongs to {supplied[0][1]}, which "
-            "this route does not use -- it takes whole published objects "
-            "over the stdlib transport, in parallel, and composes them "
-            "into the files its packaged profile declares.\n"
-            "  see: `gpuwm fetch --source " + source + " --help`.")
+            f"{', '.join(flag for flag, _ in supplied)}: --source {source} is a table-driven route.\n"
+            f"  why: {supplied[0][0]} belongs to {supplied[0][1]}, which this route does not use; "
+            "it transfers whole published objects and composes the declared profile inputs.")
+    author_roles = ("bridge", "wps_namelist", "experiment_config", "static_input", "static_receipt", "manifest_out")
+    extras = ["--" + key.replace("_", "-") for key in author_roles if getattr(args, key, None) is not None]
+    if extras:
+        raise ValueError(f"{', '.join(extras)} belong to --author-front-door-manifest; "
+                         f"{source} writes its table-route preparation handoff instead")
     if args.fetch_workers is not None:
         fetch_pool.resolve_file_workers(args.fetch_workers)
     fetch_routes.resolve_mode(source, args.mode)
     if args.cycle is None or args.hours is None or args.out is None:
-        raise ValueError(
-            f"fetch --source {source} requires --cycle, --hours and --out")
+        raise ValueError(f"fetch --source {source} requires --cycle, --hours and --out")
+    # Dry validation precedes publication probes, locks, directories and bytes.
+    hints = {"source": source, "cycle": args.cycle, "hours": args.hours}
+    for key in ("cadence", "forecast_start_hour", "member", "area", "point", "radius_km"):
+        value = getattr(args, key, None)
+        if value is not None:
+            hints[key] = value
+    validate_fetch_hints(hints, source=COMMAND_LINE_HINTS)
+    route = fetch_routes.route_for(source)
+    if args.transport is not None:
+        route.host(args.transport)
+    start = 0 if args.forecast_start_hour is None else args.forecast_start_hour
+    options = dict(cadence=args.cadence, start_hour=start, member=args.member, transport=args.transport)
+    last = start + args.hours
     if args.cycle == "latest":
-        raise ValueError(
-            f"--cycle latest: --source {source} resolves no latest cycle.\n"
-            "  why: this route reads a packaged cycle grammar, not a live "
-            "listing, so 'latest' would have to guess how far behind the "
-            "wall clock the publisher is -- and that lag differs by hours "
-            "between these producers (GDAS is about +7 h, ICON-EU about "
-            "+2 h).  Name the cycle you want with --cycle.")
-    cycle = parse_cycle(args.cycle, source)
-    plan = fetch_routes.resolve_request(
-        source, cycle=cycle, hours=args.hours, cadence=args.cadence,
-        start_hour=(args.forecast_start_hour or 0),
-        host=args.transport, member=args.member,
-        area=(args.area if args.area is not None else args.point),
-        out=args.out)
-
+        cycle = resolve_latest_cycle(source, last, **options)
+        evidence = ("publication probe confirmed" if cycle_is_probeable(source)
+                    else "declared publication delay; not probed")
+        print(f"fetch {source}: latest complete cycle is {cycle:%Y-%m-%dT%H}Z ({evidence})")
+    else:
+        cycle = parse_cycle(args.cycle, source)
+        # The transfer owner verifies every cached object under the request
+        # lock, then probes and fetches only missing or changed objects. A
+        # named historical cycle can outlive the provider's retention while
+        # its complete byte-verified local inventory remains usable.
+    plan = fetch_routes.resolve_request(source, cycle=cycle, hours=args.hours,
+        cadence=args.cadence, start_hour=start, host=args.transport, member=args.member, out=args.out)
     with fetch_guard.hold("fetch-out", args.out):
-        fetch_routes.run_plan(
-            plan, out=args.out, force=args.force_refetch,
-            file_workers=args.fetch_workers)
+        fetch_routes.run_plan(plan, out=args.out, force=args.force_refetch, file_workers=args.fetch_workers)
         donor_files = _fetch_route_donors(plan, args)
         fetch_routes.write_handoff(plan, args.out, donor_files=donor_files)
-
-    print(f"fetch {source}: manifest "
-          f"{args.out / fetch_routes.MANIFEST_NAME}")
+    print(f"fetch {source}: manifest {args.out / fetch_routes.MANIFEST_NAME}")
     for line in fetch_routes.handoff_lines(plan, args.out):
         print(line)
     return 0
@@ -4701,6 +5004,14 @@ def fetch_main(args) -> int:
     if era5_product is not None and source != "era5":
         raise ValueError("--era5-product applies to --source era5 only")
     era5_product = era5_product or "reanalysis"
+    hints = {"source": source}
+    for key in FETCH_HINT_KEYS - {"source", "source_root"}:
+        if key in {"era5_provider", "era5_product", "retrieve"} and source != "era5":
+            continue
+        value = getattr(args, key, None)
+        if value is not None:
+            hints[key] = str(value) if isinstance(value, Path) else value
+    validate_fetch_hints(hints, source=COMMAND_LINE_HINTS)
     if source in fetch_routes.route_ids():
         return _route_fetch_main(args, source)
     if getattr(args, "member", None) is not None and source != "era5":
@@ -4892,24 +5203,37 @@ def fetch_main(args) -> int:
             "nor --hours)")
     if args.hours < 0:
         raise ValueError("--hours cannot be negative")
-    if args.hours < 1 and source != "gdas":
+    if args.hours == 0 and args.author_front_door_manifest:
         raise ValueError(
-            "--hours must be a positive forecast window; only "
-            "--source gdas takes --hours 0, because its f000 is an "
-            "analysis and is useful on its own")
+            "--hours 0 fetches one analysis, and a forecast manifest needs at "
+            "least two forcing times: lateral boundaries are interpolated "
+            "BETWEEN frames, so one frame leaves every boundary interval "
+            "empty.  Raise --hours to one cadence step, or drop "
+            "--author-front-door-manifest and keep the analysis.")
+    validate_fetch_cadence(source, args.cadence)
+    if args.cadence is not None and not fetch_accepts_cadence(source):
+        # Plan review, and through the same function the [fetch] table's
+        # config-load check asks, so the flag and the table cannot hold
+        # two answers about one source.  It used to live inside the HRRR
+        # dispatch branch, which is after every other source's plan
+        # review and reachable only by name.
+        raise ValueError(cadence_inapplicable_refusal(source))
 
     if source == "era5":
         if area is None:
             raise ValueError("era5 fetch requires --area or --point")
-        if args.cycle == "latest":
-            raise ValueError(
-                "--cycle latest is not meaningful for ERA5: the reanalysis "
-                "is published with a delay of several days; pass an "
-                "explicit --cycle")
         cadence = args.cadence if args.cadence is not None else 6
+        # Validate the duration before selecting a date or creating a template.
+        _era5_times(datetime(2000, 1, 1), args.hours, cadence)
+        cycle = (resolve_latest_cycle(source, args.hours) if args.cycle == "latest"
+                 else parse_cycle(args.cycle, source))
         from gpuwm.era5_member import validate_selection
         member = validate_selection(product_type=era5_product, member=getattr(args, "member", None),
-            provider=era5_provider, cadence=cadence, cycle=parse_cycle(args.cycle, source))
+            provider=era5_provider, cadence=cadence, cycle=cycle)
+        if args.cycle == "latest":
+            end = cycle + timedelta(hours=args.hours)
+            print(f"fetch era5: latest analysis window {cycle:%Y-%m-%dT%H}Z..{end:%Y-%m-%dT%H}Z "
+                  "from the declared publication delay, not a live completeness probe")
         if member is not None and not getattr(args, "retrieve", False):
             raise ValueError("ERA5 EDA requires --retrieve so native member verification runs before publication")
         if getattr(args, "retrieve", False) or era5_provider == "arco":
@@ -4917,12 +5241,12 @@ def fetch_main(args) -> int:
                 from gpuwm.era5_arco import retrieve_era5_arco as retrieve
             else:
                 from gpuwm.era5_acquisition import retrieve_era5 as retrieve
-            retrieve(cycle=parse_cycle(args.cycle, source), hours=args.hours,
+            retrieve(cycle=cycle, hours=args.hours,
                 area=area, out=args.out, cadence=cadence, force=args.force_refetch,
                 **({"product_type": era5_product, "member": member} if era5_provider == "cds" else {}))
         else:
             write_era5_request(
-                cycle=parse_cycle(args.cycle, source), hours=args.hours,
+                cycle=cycle, hours=args.hours,
                 area=area, out=args.out, cadence=cadence)
         return 0
 
@@ -4933,19 +5257,17 @@ def fetch_main(args) -> int:
                 "the NOMADS subsetter needs a subregion (--mode full-file "
                 "takes the whole-globe objects instead, and there --area "
                 "is optional request identity)")
-        if source == "gdas":
-            if args.cadence is not None and args.hours == 0:
-                raise ValueError(
-                    "--hours 0 fetches the f000 analysis alone; --cadence "
-                    "does not apply to a single time")
-            hours = gdas_forecast_hours(
-                args.hours,
-                3 if args.cadence is None else args.cadence,
-                args.forecast_start_hour)
-        else:
-            cadence = args.cadence if args.cadence is not None else 3
-            hours = gfs_forecast_hours(
-                args.hours, cadence, args.forecast_start_hour)
+        hours = container_forecast_hours(
+            source, args.hours, args.cadence, args.forecast_start_hour)
+        if fetch_routes.prepares_through_packaged_composition(source):
+            # Plan review for the preparation handoff this fetch will
+            # publish.  Asked here, before the transfer, because the
+            # publisher asks the same question after it and a refusal
+            # that arrives then has already spent the download -- and
+            # asked through the SAME predicate the publisher forks on, so
+            # a container that gains a composed profile cannot have its
+            # review skipped here while the writer still demands one.
+            container_handoff_binding(source)
         if hours[0]:
             print(f"fetch {source}: window begins at forecast lead "
                   f"f{hours[0]:03d}; a model initialized there starts from "
@@ -5019,8 +5341,6 @@ def fetch_main(args) -> int:
                     all_levels=args.all_levels,
                     file_workers=args.fetch_workers)
     elif source == "hrrr":
-        if args.cadence is not None:
-            raise ValueError("HRRR is hourly; --cadence does not apply")
         if args.wait_timeout_minutes is not None and not args.wait_for:
             raise ValueError(
                 "--wait-timeout-minutes belongs to --wait-for")
@@ -5066,8 +5386,6 @@ def fetch_main(args) -> int:
         # be refused.  --hours stays the window LENGTH on every source,
         # so the window's final lead is lead + length.
         start_hour = _forecast_start_hour(args.forecast_start_hour, 1)
-        if args.hours < 1:
-            raise ValueError("--hours must be at least 1 (two hourly frames)")
         last_hour = start_hour + args.hours
         if start_hour:
             print(f"fetch hrrr: window begins at forecast lead "
@@ -5245,7 +5563,7 @@ def _resolve_manifest_bridge(source: str) -> Path:
 #: strict experiment schema runs.
 FETCH_HINT_KEYS = frozenset({
     "source", "cycle", "hours", "area", "point", "radius_km", "out",
-    "cadence", "forecast_start_hour",
+    "cadence", "forecast_start_hour", "source_root",
     "era5_provider", "era5_product", "member", "retrieve",
 })
 def _fetch_hint_sources() -> tuple[str, ...]:
@@ -5258,7 +5576,10 @@ def _fetch_hint_sources() -> tuple[str, ...]:
     hand-written ``[fetch]`` table naming one of them failed to load.
     """
 
-    return fetch_front_door_sources()
+    from gpuwm.source_drivability import intent_drivability
+    local = {name for name, verdict in intent_drivability().items()
+             if verdict.get("requires_source_root")}
+    return tuple(sorted(set(fetch_front_door_sources()) | local))
 
 
 def _source_reaches_forecast_leads(source: str) -> bool:
@@ -5278,135 +5599,153 @@ def _source_reaches_forecast_leads(source: str) -> bool:
         return False
 
 
-def validate_fetch_hints(table: dict, *, source: str) -> None:
-    """Fail-loud validation of an advisory ``[fetch]`` hints table.
+#: What a caller passes as ``source`` when the hints came from FLAGS.  The
+#: same validator serves the ``[fetch]`` table and the command line so the
+#: two doors cannot disagree about one window, and it names where the hints
+#: came from; naming a table on a command line reads as a diagnostic about a
+#: file the user never wrote.
+COMMAND_LINE_HINTS = "command line"
 
-    ``source`` names the config file for error messages.  The hints are
-    documentation for a human (and future fetch sugar); validation keeps
-    them from rotting silently: unknown keys, an unknown data source, or
-    non-scalar values are hard errors at config load.
+
+def validate_fetch_hints(table: dict, *, source: str) -> None:
+    """Validate advisory acquisition hints without network or filesystem I/O.
+
+    Partial hints remain legal, but every supplied window must have a possible
+    interpretation on the source's actual ladder. A named cycle is checked
+    exactly; `latest` or an omitted cycle may use any declared cycle hour.
     """
+    prefix = ("the fetch command line" if source == COMMAND_LINE_HINTS
+              else f"[fetch] of {source}")
     if not isinstance(table, dict):
-        raise ValueError(
-            f"[fetch] of {source} must be a table of scalar hint keys")
+        raise ValueError(f"{prefix} must be a table of scalar hint keys")
     unknown = sorted(set(table) - FETCH_HINT_KEYS)
     if unknown:
-        raise ValueError(
-            f"unknown key(s) {unknown} in [fetch] of {source}; known "
-            f"keys: {sorted(FETCH_HINT_KEYS)}")
+        raise ValueError(f"unknown key(s) {unknown} in {prefix}; known keys: {sorted(FETCH_HINT_KEYS)}")
+    # Common spellings precede every source, product and local-input branch.
+    for key, minimum in (("hours", 0), ("forecast_start_hour", 0), ("cadence", 1)):
+        value = table.get(key)
+        if value is not None and (type(value) is not int or value < minimum):
+            example = minimum or 6
+            try:
+                numeric = float(value)
+                if math.isfinite(numeric) and numeric.is_integer() and numeric >= minimum:
+                    example = int(numeric)
+            except (ValueError, TypeError, OverflowError):
+                pass
+            raise ValueError(f"{key} = {value!r} in {prefix} must be a whole number of hours, "
+                "written without quotes or a decimal point. "
+                f"The window requires {'positive' if minimum else 'nonnegative'} integers; "
+                f"what to do: write {key} = {example}.")
     known = _fetch_hint_sources()
+    local_source = False
+    if isinstance(table.get("source"), str):
+        from gpuwm.source_drivability import drivability_for
+        local_source = bool(drivability_for(table["source"]).get("requires_source_root"))
     if "source" not in table:
-        raise ValueError(
-            f"[fetch] of {source} must carry source = "
-            f"{'|'.join(known)}")
-    if table["source"] not in known:
-        raise ValueError(
-            f"source = {table['source']!r} in [fetch] of {source} is not "
-            f"one of {known}")
-    for key, value in table.items():
-        if key == "retrieve" and isinstance(value, bool):
-            continue
-        if isinstance(value, bool) or not isinstance(
-                value, (str, int, float)):
-            raise ValueError(
-                f"{key} = {value!r} in [fetch] of {source} must be a "
-                "scalar (string or number)")
-    if "retrieve" in table and not isinstance(table["retrieve"], bool):
-        raise ValueError(f"retrieve in [fetch] of {source} must be a boolean")
-    era5_keys = {"era5_provider", "era5_product", "member", "retrieve"} & table.keys()
-    if era5_keys and table["source"] != "era5":
-        raise ValueError(f"{sorted(era5_keys)} in [fetch] of {source} apply to ERA5 only")
-    if table["source"] == "era5":
-        from gpuwm.era5_member import validate_selection
-        raw_cycle = table.get("cycle")
-        validate_selection(product_type=table.get("era5_product", "reanalysis"), member=table.get("member"),
-            provider=table.get("era5_provider", "cds"), cadence=table.get("cadence", 6),
-            cycle=parse_cycle(raw_cycle, "era5") if raw_cycle is not None else None)
-    # A hint table that advertises a fetch this ArWen would refuse is a
-    # rotten hint: catch it at config load, in the same words the CLI
-    # would use, rather than at the download.
-    area = table.get("area")
-    crop_keys = sorted(k for k in ("area", "point", "radius_km")
-                       if table.get(k) is not None)
-    if crop_keys and not fetch_accepts_area(table["source"]):
-        raise ValueError(
-            f"[fetch] of {source}: {', '.join(crop_keys)} names a crop "
-            f"`gpuwm fetch --source {table['source']}` refuses.\n"
-            "  why: this source publishes whole objects and there is no "
-            "subsetting service in front of them, so a fetch given a box "
-            "exits 2 and this config's first step could never be run.\n"
-            "  where the crop happens: `gpuwm prep` maps the source onto "
-            "your domain, so the namelist geometry is the crop.")
-    if area is not None:
-        # The hint the fetch reads as a box, through the REAL parser and
-        # the per-source coverage gate.  The field defect class this
-        # closes: `gpuwm domain --source hrrr` printed an --area its own
-        # fetch refused, because the wizard and the guard held two
-        # definitions of HRRR coverage.  Both now derive from the native
-        # grid (source_coverage_envelope), and every emission round-trips
-        # through this check before the file is written.
-        try:
-            validate_fetch_area(table["source"], parse_area(str(area)))
-        except ValueError as error:
-            raise ValueError(f"[fetch] of {source}: {error}") from error
-    point, radius = table.get("point"), table.get("radius_km")
-    if point is not None and radius is not None:
-        # The --point/--radius-km spelling of the same box, same gate.
-        try:
-            validate_fetch_area(
-                table["source"], area_from_point(str(point), float(radius)))
-        except (TypeError, ValueError) as error:
-            raise ValueError(f"[fetch] of {source}: {error}") from error
-    start_hour = table.get("forecast_start_hour", 0)
-    if not isinstance(start_hour, int) or start_hour < 0:
-        raise ValueError(
-            f"forecast_start_hour = {start_hour!r} in [fetch] of {source} "
-            "must be a nonnegative forecast lead")
-    if start_hour and not _source_reaches_forecast_leads(table["source"]):
-        raise ValueError(
-            f"[fetch] of {source}: forecast_start_hour applies to a source "
-            f"that publishes forecast leads, and {table['source']} declares "
-            "max_forecast_hour = 0 -- every time it publishes is an "
-            "analysis, so there is no lead to begin at")
-    if table["source"] == "gdas":
-        hours = table.get("hours")
-        if isinstance(hours, (int, float))                 and start_hour + hours > GDAS_MAX_FORECAST_HOUR:
-            raise ValueError(
-                f"[fetch] of {source}: "
-                f"{gdas_capability_refusal(int(start_hour + hours))}")
-    if table["source"] in GFS_CONTAINER_SOURCES:
-        # The window this table describes, planned by the planner that
-        # would run it.  A hand-written (or 1.4.0-emitted) table pairing
-        # `cadence = 3` with `forecast_start_hour = 4` names a download
-        # `gpuwm fetch` refuses -- and a lead that would cross the f120
-        # hourly publication break names one NCEP never published.
-        hours = table.get("hours")
+        raise ValueError(f"{prefix} must carry source = {'|'.join(known)}")
+    name = (fetch_routes.canonical_source(str(table["source"]))
+            if local_source else table["source"])
+    if name not in known or (name not in fetch_front_door_sources() and not local_source):
+        raise ValueError(f"source = {name!r} in {prefix} is not one of {known}")
+    try:
+        for key, value in table.items():
+            if key == "retrieve" and isinstance(value, bool):
+                continue
+            if isinstance(value, bool) or not isinstance(value, (str, int, float)):
+                raise ValueError(f"{key} = {value!r} must be a scalar (string or number)")
+        if "retrieve" in table and not isinstance(table["retrieve"], bool):
+            raise ValueError("retrieve must be a boolean")
         cadence = table.get("cadence")
-        if (isinstance(hours, int) and hours >= 1 and not isinstance(hours, bool)
-                and isinstance(cadence, int) and not isinstance(cadence, bool)
-                and cadence in (1, 3)):
-            try:
-                gfs_forecast_hours(hours, cadence, start_hour)
-            except ValueError as error:
-                raise ValueError(f"[fetch] of {source}: {error}") from error
-    if table["source"] == "hrrr":
-        # Same rotten-hint rule as GDAS above, for the bound a lead can
-        # now cross: a 13Z cycle stops at f18, so `forecast_start_hour =
-        # 12` with `hours = 9` describes a window NOAA never published.
-        # Caught at config load, in the words the fetch itself would use.
-        hours = table.get("hours")
+        for key in ("cycle", "area", "point", "out", "source_root"):
+            if key in table and (not isinstance(table[key], str) or not table[key].strip()):
+                raise ValueError(f"{key} must be a nonempty string")
         raw_cycle = table.get("cycle")
-        if isinstance(hours, int) and hours >= 1 and isinstance(raw_cycle, str):
-            try:
-                cycle = parse_cycle(raw_cycle, "hrrr")
-            except ValueError:
-                cycle = None
-            if cycle is not None:
+        cycle = parse_cycle(raw_cycle, name) if raw_cycle not in (None, "latest") else None
+        era5_keys = {"era5_provider", "era5_product", "retrieve"} & table.keys()
+        if era5_keys and name != "era5":
+            raise ValueError(f"{sorted(era5_keys)} apply to ERA5 only")
+        if name == "era5":
+            from gpuwm.era5_member import validate_selection
+            validate_selection(product_type=table.get("era5_product", "reanalysis"),
+                member=table.get("member"), provider=table.get("era5_provider", "cds"),
+                cadence=6 if cadence is None else cadence, cycle=cycle)
+            if table.get("era5_product") == "ensemble_members" and table.get("retrieve") is not True:
+                raise ValueError("ERA5 EDA requires retrieve = true (--retrieve) so native member "
+                                 "verification checks the selected payload before publication.")
+        elif name in fetch_routes.route_ids():
+            fetch_routes.resolve_member(fetch_routes.route_for(name), table.get("member"))
+        elif "member" in table:
+            raise ValueError(f"{name} has no acquisition member axis. Omit member or select an ensemble product.")
+
+        area, point, radius = (table.get(key) for key in ("area", "point", "radius_km"))
+        crop_keys = sorted(key for key in ("area", "point", "radius_km") if key in table)
+        if local_source:
+            if crop_keys:
+                raise ValueError(f"{', '.join(crop_keys)} names a crop on {name} local inputs. "
+                    "what to do: remove these keys from [fetch]; gpuwm prep maps the files onto the namelist geometry.")
+            if "out" in table:
+                raise ValueError("out names a download destination but these inputs are already local. "
+                    "what to do: remove out and set source_root to the input directory.")
+        elif "source_root" in table:
+            raise ValueError("source_root names local inputs but this source is downloaded. "
+                "what to do: remove source_root and use out or --data-dir for the download destination.")
+        validate_fetch_cadence(name, cadence)
+        if cadence is not None and not fetch_accepts_cadence(name):
+            raise ValueError(cadence_inapplicable_refusal(name))
+        if crop_keys and not fetch_accepts_area(name):
+            raise ValueError(f"{', '.join(crop_keys)} names a crop `gpuwm fetch --source {name}` refuses. "
+                "This source publishes whole objects without a subsetting service; "
+                "`gpuwm prep` maps them onto the namelist geometry.")
+        if area is not None and (point is not None or radius is not None):
+            raise ValueError("--area and --point/--radius-km are mutually exclusive")
+        if (point is None) != (radius is None):
+            raise ValueError("--point requires --radius-km, and --radius-km requires --point")
+        if area is not None:
+            validate_fetch_area(name, parse_area(area))
+        elif point is not None:
+            validate_fetch_area(name, area_from_point(point, float(radius)))
+
+        hours = table.get("hours")
+        start = table.get("forecast_start_hour", 0)
+        if start and not _source_reaches_forecast_leads(name):
+            raise ValueError(f"forecast_start_hour applies to forecast leads; {name} declares "
+                             "max_forecast_hour = 0 and publishes analyses, not forecasts")
+        if name in fetch_routes.route_ids():
+            route = fetch_routes.route_for(name)
+            # Pure grammar only. resolve_request's host/retention decision is
+            # deliberately left to acquisition, when a real cycle is selected.
+            cycles = (cycle,) if cycle is not None else tuple(
+                datetime(2000, 1, 1, hour) for hour in route.cycle_hours)
+            errors = []
+            for candidate in cycles:
                 try:
-                    hrrr_forecast_hours(hours, cycle, start_hour)
+                    fetch_routes.resolve_cycle(route, candidate)
+                    fetch_routes.resolve_leads(route, candidate, 0 if hours is None else hours,
+                                               cadence=cadence, start_hour=start)
+                    break
                 except ValueError as error:
-                    raise ValueError(
-                        f"[fetch] of {source}: {error}") from error
+                    errors.append(error)
+            else:
+                raise errors[-1]
+        elif name == "era5":
+            step = 6 if cadence is None else cadence
+            if hours is not None:
+                _era5_times(cycle or datetime(2000, 1, 1), hours, step)
+        elif name in GFS_CONTAINER_SOURCES:
+            step = 3 if cadence is None else cadence
+            if name == "gdas":
+                if hours == 0 and cadence is not None:
+                    raise ValueError("--hours 0 fetches the analysis alone; --cadence does not apply")
+                gdas_forecast_hours(step if hours is None else hours, step, start)
+            else:
+                gfs_forecast_hours(step if hours is None else hours, step, start)
+        elif name == "hrrr":
+            if cadence is not None and cadence != 1:
+                raise ValueError("HRRR is hourly; --cadence must be 1 or omitted")
+            # A latest/unspecified request may select a long synoptic cycle.
+            hrrr_forecast_hours(1 if hours is None else hours, cycle or datetime(2000, 1, 1), start)
+    except (ValueError, TypeError, OverflowError) as error:
+        raise ValueError(f"{prefix}: {error}") from error
 
 
 def source_argument(value: str) -> str:
@@ -5448,7 +5787,7 @@ def register_cli(subparsers) -> None:
     parser.add_argument("--era5-provider", choices=("cds", "arco"), default=None,
         help="ERA5 provider: cds uses Copernicus credentials; arco downloads Google's public hourly ERA5 Zarr archive without a key")
     parser.add_argument("--era5-product", choices=("reanalysis", "ensemble_members"), default=None,
-        help="ERA5 product: reanalysis (default), or ten-member EDA with explicit --member 0..9 --cadence 3 --retrieve")
+        help="ERA5 product: reanalysis (default), or ten-member EDA with explicit --member 0..9 --retrieve, on a cadence that is a whole multiple of its three-hourly clock")
     parser.add_argument(
         "--source", required=True, type=source_argument, metavar="MODEL",
         help="public data source: "
@@ -5480,9 +5819,9 @@ def register_cli(subparsers) -> None:
              "certified for fetch and decode through "
              f"f{GDAS_MAX_FORECAST_HOUR:03d}; native mapped GDAS preparation "
              "uses the complete pressure ladder and specific humidity. --hours 0 is "
-             "the analysis alone, which gdas accepts and every table "
-             "route accepts (its f000 is an initial state on its own, and "
-             "it is also how a hybrid source's donor is fetched).  A "
+             "one analysis on each acquisition route; it is also how a "
+             "hybrid source's donor is fetched. Forecast preparation still "
+             "needs at least two forcing times. A "
              "window past the cycle's own horizon refuses and names both "
              "the horizon and which cycles reach farther")
     parser.add_argument(
@@ -5504,13 +5843,18 @@ def register_cli(subparsers) -> None:
         help="output directory (created; complete files are skipped on "
              "re-run)")
     parser.add_argument(
-        "--cadence", type=int, default=None, choices=(1, 3, 6),
-        help="forecast-hour cadence: gfs 1 or 3 (default 3); gdas 1, 3, "
-             "or 6 (default 3, and it does not apply to --hours 0, which "
-             "is the analysis alone); era5 1, 3, or 6 "
-             "(default 6); hrrr is hourly.  On a table route the accepted "
-             "cadences and the default are the row's own -- a cadence off "
-             "the publisher's ladder refuses and names the ladder")
+        "--cadence", type=int, default=None, metavar="HOURS",
+        help="forecast-hour cadence: gfs any positive whole-hour spacing whose "
+             "requested leads are published (default 3); gdas any "
+             "whole number of hours that divides --hours, on its hourly "
+             f"f{GDAS_PUBLISHED_HOURS[0]:03d}..f{GDAS_MAX_FORECAST_HOUR:03d} "
+             "ladder (default 3, and it does not apply to --hours 0, which "
+             "is the analysis alone); era5 any positive whole number of "
+             "hours that divides --hours (default 6; the EDA product "
+             "publishes 3-hourly, so it takes multiples of 3); hrrr is "
+             "hourly.  On a table route the accepted cadences and the "
+             "default are the row's own -- a cadence off the publisher's "
+             "ladder refuses and names the ladder")
     parser.add_argument(
         "--validate", type=Path, nargs="+", default=None, metavar="GRIB",
         help="era5 only: validate user-supplied GRIB1 file(s) against "
@@ -5710,6 +6054,7 @@ __all__ = [
     "select_fetch_engine", "resolve_hrrr_transport",
     "cycle_probe_urls",
     "require_published_cycle",
+    "analysis_window_reference",
     "resolve_latest_cycle",
     "sha256_file", "validate_era5_files", "write_era5_request",
     "read_grib1_grid", "wsl_path", "era5_retrieve_commands", "Grib1Grid",

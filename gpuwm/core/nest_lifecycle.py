@@ -8,6 +8,10 @@ schedule: it changes the domain set used to build the *next* leg.
 from __future__ import annotations
 
 import math
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from gpuwm.core.storm_track_writer import TrackConfig
 from dataclasses import dataclass
 
 import numpy as np
@@ -35,7 +39,7 @@ RETIRE_KEYS = frozenset({
 })
 REARM_KEYS = frozenset({"max_firings", "cooldown_s"})
 DOMAIN_FOLLOW_EXTRA_KEYS = frozenset({
-    "cadence_seconds", "max_move_parent_cells", "min_overlap_fraction",
+    "cadence_seconds", "max_move_parent_cells", "min_overlap_fraction", "track",
 })
 
 
@@ -191,6 +195,7 @@ class DomainFollowConfig:
     cadence_seconds: float
     max_move_parent_cells: int | None = None
     min_overlap_fraction: float | None = None
+    track: TrackConfig | None = None
 
     def __post_init__(self) -> None:
         if not math.isfinite(float(self.cadence_seconds)) or float(self.cadence_seconds) <= 0.0:
@@ -206,6 +211,7 @@ class DomainFollowConfig:
             "cadence_seconds": float(self.cadence_seconds),
             "max_move_parent_cells": self.max_move_parent_cells,
             "min_overlap_fraction": self.min_overlap_fraction,
+            **({"track": self.track.to_json()} if self.track is not None else {}),
         }
 
 
@@ -220,9 +226,11 @@ def build_domain_follow_config(table: dict, source: str, *, grid_id: int) -> Dom
     if "cadence_seconds" not in extras:
         raise ValueError(f"{label} of {source} requires cadence_seconds; each follower owns its own evaluation window")
     tracker = build_follow_config(tracker_table, source)
+    from gpuwm.core.storm_track_writer import build_track_config
+    track = (build_track_config(extras["track"], source) if "track" in extras else None)
     try:
         return DomainFollowConfig(
-            tracker=tracker, cadence_seconds=float(extras["cadence_seconds"]),
+            tracker=tracker, cadence_seconds=float(extras["cadence_seconds"]), track=track,
             max_move_parent_cells=(None if extras.get("max_move_parent_cells") is None else int(extras["max_move_parent_cells"])),
             min_overlap_fraction=(None if extras.get("min_overlap_fraction") is None else float(extras["min_overlap_fraction"])))
     except ValueError as err:
@@ -401,9 +409,106 @@ def admit_restart_with_lifecycle(exp, restart) -> bool:
 
 
 __all__ = [
-    "REARM_CONTRACT", "REARM_KEYS", "RETIRE_CONTRACT", "RETIRE_KEYS",
-    "RETIRE_TRIGGERS", "DomainFollowConfig", "RearmConfig", "RetireConfig",
-    "RetirementWatch", "admit_restart_with_lifecycle",
+    "FOLLOWER_TABLE", "REARM_CONTRACT", "REARM_KEYS", "RETIRE_CONTRACT",
+    "RETIRE_KEYS", "RETIRE_TRIGGERS", "DomainFollowConfig", "RearmConfig",
+    "RetireConfig", "RetirementWatch", "admit_restart_with_lifecycle",
     "build_domain_follow_config", "build_rearm_config",
-    "build_retire_config", "declares_lifecycle", "output_episode",
+    "build_retire_config", "declares_lifecycle", "follower_label",
+    "output_episode", "validate_follow_tracks",
 ]
+
+
+#: The table a per-domain follower's knobs are actually in.
+#:
+#: ONE spelling, for the same reason :func:`follower_label` is one
+#: spelling: the configuration load and the runner build hand the SAME
+#: follower to the SAME refusals, and a table name that changed between
+#: them would send one of the two readers to a table their configuration
+#: does not have.  A whole-run follower keeps ``[relocation]``, which is
+#: the default those refusals carry.
+FOLLOWER_TABLE = "[[domain]].follow"
+
+
+def follower_label(grid_id, source=None) -> str:
+    """How a per-domain follower names ITSELF in a refusal.
+
+    ONE spelling, because the two doors that admit a follower -- the
+    configuration load and the runner build -- pass it to the same
+    refusals, and a subject that changed between them would read as two
+    different rules to whoever met it twice.  The follower is named, not
+    the file, because ``[[domain]].follow`` is the table the reader has to
+    edit.  ``source`` is the file that carried it, appended where the
+    caller knows it; the runner build does not, because an experiment is
+    no longer a path by then.
+    """
+
+    label = f"d{int(grid_id):02d} follow"
+    return label if source is None else f"{label} of {source}"
+
+
+def validate_follow_tracks(domains, relocation, source):
+    """Apply the existing track admission contract to each independent follower.
+
+    AT LOAD, which is the point.  The per-domain followers went through
+    their own cadence check inside the runner build, so a config whose
+    follow cadence the parent stash cannot serve was accepted by
+    ``gpuwm check``, accepted by a dry run, and refused only once the
+    runners were being built.  The refusal itself is unchanged and so is
+    the way out it names -- set ``cadence_seconds`` to a whole multiple of
+    the watched parent's ``history_interval_s`` -- it simply arrives while
+    the configuration is still the thing in front of the reader.  Both
+    doors call THIS function's refusals, so neither can admit what the
+    other refuses.
+    """
+    from dataclasses import replace
+    from pathlib import Path
+    from gpuwm.experiment import (RelocationConfig, _refuse_unservable_track,
+                                   _refuse_unservable_follow_cadence,
+                                   _with_report_levels, _REL_TOL)
+
+    root_dt = float(domains[0].run.dt)
+    base = Path(source).resolve().parent
+    used = {}
+
+    def reserve(track, owner):
+        if track is None:
+            return
+        path = (base / track.path).resolve()
+        if path in used:
+            raise ValueError(f"{owner} and {used[path]} write the same track path {path}; choose one unique path per follower")
+        used[path] = owner
+
+    reserve(getattr(relocation, "track", None), "relocation")
+    resolved = []
+    for dc in domains:
+        follow = dc.follow
+        if follow is not None:
+            label = follower_label(dc.grid_id, source)
+            reserve(follow.track, label)
+            policy = RelocationConfig(enabled=True, grid_id=dc.grid_id,
+                follow=follow.tracker, track=follow.track,
+                cadence_seconds=follow.cadence_seconds,
+                max_move_parent_cells=follow.max_move_parent_cells,
+                min_overlap_fraction=follow.min_overlap_fraction)
+            # The knobs this refusal names live in the follower's own
+            # tables here, not in a [relocation] the configuration may
+            # not have at all.
+            _refuse_unservable_follow_cadence(policy, domains, label,
+                                              root_dt=root_dt,
+                                              table=FOLLOWER_TABLE,
+                                              follow_table=FOLLOWER_TABLE)
+            # ONLY WHERE THERE IS A TRACK.  The track refusals read the
+            # block they are about -- output_level, the emission interval
+            # -- so asking them about a follower that declares no
+            # [[domain]].follow.track is not a stricter check, it is an
+            # attribute read on None: every storm-following configuration
+            # without a track table died here with an AttributeError
+            # instead of loading.  Same shape as the [relocation] path in
+            # gpuwm/experiment.py, which asks only when track is present.
+            if follow.track is not None:
+                _refuse_unservable_track(policy, domains, label, root_dt=root_dt,
+                    whole_root_steps=lambda t: abs(t/root_dt-round(t/root_dt)) <= _REL_TOL*max(1.,abs(t/root_dt)))
+                policy = _with_report_levels(policy, label)
+            dc = replace(dc, follow=replace(follow, tracker=policy.follow))
+        resolved.append(dc)
+    return resolved

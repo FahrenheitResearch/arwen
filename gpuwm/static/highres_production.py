@@ -15,15 +15,20 @@ never inferred by the reader:
 - ``fields = "all"`` replaces terrain, land use and soil.  It needs the
   United States collections (3DEP terrain, Annual NLCD land cover) and
   refuses outside their joint envelope, naming the source and the
-  overshoot.  A footprint whose 30-arc-second baseline land use reports
-  WRF ocean category anywhere also refuses, because the crosswalk's
-  inland-water rule (NLCD open water -> WRF lake 21) is not coast-safe.
+  overshoot.  A coastal footprint is BUILT, not refused: the crosswalk's
+  single open-water class lands on WRF lake 21, and the domain's own
+  30-arc-second water field then moves the sea back to WRF ocean 17
+  (:func:`gpuwm.static.highres._split_ocean_from_lake`), with both
+  discriminated cell counts in the receipt.
 - ``fields = "terrain"`` replaces terrain ONLY, from a near-global source
   (Copernicus DEM GLO-30 by default, SRTM 1 arc-second on request), and
   leaves land use, soil and every climatology on the 30-arc-second
-  baseline.  It works internationally.  Because it runs no land-use rule
-  it never makes the ocean/lake distinction, so the coast gate does not
-  apply to it and is deliberately not run.
+  baseline.  It works internationally.  It runs no land-use rule at all,
+  so the ocean/lake split does not arise for it.
+- A domain whose footprint is continued past 180 degrees is refused
+  before anything is fetched, because the mosaic window writer still
+  emits the cut -180..180 frame; tile enumeration and source coverage
+  already cross the line, the window writer does not yet.
 - Coverage is per source, not per program: each source declares its own
   envelope (:data:`gpuwm.static.highres_fetch.TERRAIN_SOURCES`) and the
   footprint is checked against the source actually selected, so a refusal
@@ -48,7 +53,8 @@ from pathlib import Path
 import numpy as np
 
 from .build import HALO
-from .highres import (BoundRaster, NLCD_TO_MODIS21_INLAND,
+from .highres import (BoundRaster, MODIS21_ISLAKE, MODIS21_ISWATER,
+                      NLCD_TO_MODIS21_INLAND, baseline_ocean_mask,
                       build_highres_overrides, build_terrain_override,
                       merge_highres_overrides, merge_terrain_override)
 from .highres_fetch import (ANNUAL_NLCD_SOURCE_URL, ANNUAL_NLCD_LICENSE,
@@ -67,8 +73,8 @@ from .highres_fetch import (ANNUAL_NLCD_SOURCE_URL, ANNUAL_NLCD_LICENSE,
                             fetch_copernicus_dem_tiles,
                             fetch_soilgrids, fetch_three_dep_tiles,
                             nlcd_year_for, terrain_source_coverage,
-                            FootprintBBox)
-from .lambert import LambertGrid
+                            FootprintBBox, _require_cut_frame_window)
+from .projection import ProjectedGrid
 
 RECEIPT_SCHEMA = "gpuwm-static-highres-receipt-v1"
 
@@ -96,8 +102,9 @@ _REPLACED_FIELDS_TERRAIN = ("HGT_M",)
 
 #: The crosswalk targets WRF's MODIS 21-category inventory with these two
 #: water categories; a baseline using any other inventory cannot be merged.
-_MODIS21_ISWATER = 17
-_MODIS21_ISLAKE = 21
+#: They are the crosswalk module's own numbers, not a second copy.
+_MODIS21_ISWATER = MODIS21_ISWATER
+_MODIS21_ISLAKE = MODIS21_ISLAKE
 
 _REPLACED_FIELDS = ("HGT_M", "LANDUSEF", "LANDMASK", "LU_INDEX",
                     "SOILCTOP", "SCT_DOM", "SOILCBOT", "SCB_DOM")
@@ -272,13 +279,27 @@ def parse_static_table(raw, *, source: str, base_dir
 # Refusal gates
 # ---------------------------------------------------------------------------
 
-def _require_lambert(grid) -> None:
-    if not isinstance(grid, LambertGrid):
+def _require_projected_grid(grid) -> None:
+    """Refuse an object that is not a WPS projected grid at all.
+
+    This is a type fact, not a projection policy: the overlay's whole
+    geometry is a PROJ CRS plus an affine transform built from the grid's
+    projection parameters (:func:`gpuwm.static.highres._grid_crs`), and
+    every grid class this tree can build -- lambert, mercator, polar --
+    supplies them.  Nothing narrower is refused here, because
+    :func:`gpuwm.static.projection.projection_class` has already refused
+    every other ``map_proj`` at grid construction, i.e. at configuration
+    load, long before static production.
+    """
+    if not isinstance(grid, ProjectedGrid):
         raise HighresRefusal(
             "unsupported-projection",
-            f"the production high-resolution path is proven on WRF "
-            f"spherical Lambert grids only; this domain uses "
-            f"{getattr(grid, 'map_proj', type(grid).__name__)!r}")
+            f"the high-resolution overlay resamples through the grid's own "
+            f"map projection, so it needs a projected WPS grid object; it "
+            f"was handed {type(grid).__name__!r}, which carries no "
+            f"projection parameters.  Build the domain through "
+            f"gpuwm.static.projection.projection_class (lambert, mercator "
+            f"or polar)")
 
 
 def _require_modis21(landuse_attrs) -> None:
@@ -299,27 +320,6 @@ def _require_modis21(landuse_attrs) -> None:
             f"(ISWATER={_MODIS21_ISWATER}, ISLAKE={_MODIS21_ISLAKE}); the "
             f"selected baseline dataset declares ISWATER={iswater}, "
             f"ISLAKE={islake}")
-
-
-def _require_single_lobe(bbox: FootprintBBox) -> None:
-    """Refuse an antimeridian wrap, which a min/max bbox cannot express.
-
-    A domain straddling 180 degrees yields lon_min ~ -180 and lon_max ~
-    +180 from the corner mesh, i.e. a bounding box that claims the whole
-    planet.  Inside the United States that was unreachable; with a global
-    source it is one Pacific domain away, and a silently enormous fetch is
-    exactly the failure this program refuses.
-    """
-    span = bbox.lon_max - bbox.lon_min
-    if span > 180.0:
-        raise HighresRefusal(
-            "antimeridian-footprint",
-            f"domain+halo footprint {bbox.as_dict()} spans {span:.1f} "
-            "degrees of longitude, which is a bounding box wrapped across "
-            "the antimeridian rather than a domain.  High-resolution "
-            "statics cannot enumerate tiles for it; move the domain off "
-            "180 degrees, or leave [static.highres] disabled and run on "
-            "the 30-arc-second baseline, which has no such limit")
 
 
 def _resolve_plan(config: HighresStaticConfig, bbox: FootprintBBox
@@ -357,34 +357,6 @@ def _resolve_plan(config: HighresStaticConfig, bbox: FootprintBBox
     except CoverageError as error:
         raise HighresRefusal("outside-source-coverage", str(error)) from error
     return mode, coverage
-
-
-def _require_coast_free(bbox: FootprintBBox, baseline, *,
-                        iswater: int) -> None:
-    """Refuse a coastal footprint -- for the LAND-USE replacement only.
-
-    This gate belongs to the land-cover leg, not to the overlay as a whole:
-    it exists because the crosswalk maps NLCD open water to WRF lake
-    category 21, which is wrong at an ocean coast.  The terrain-only mode
-    runs no land-use rule at all -- LANDUSEF, LANDMASK and LU_INDEX come
-    through from the 30-arc-second baseline untouched, so the ocean/lake
-    distinction is never made and there is nothing for this gate to
-    protect.  It is therefore applied in ``fields = "all"`` and skipped in
-    ``fields = "terrain"``, deliberately.
-    """
-    lu_index = np.asarray(baseline["LU_INDEX"])
-    ocean_cells = int(np.count_nonzero(lu_index == float(iswater)))
-    if ocean_cells:
-        raise HighresRefusal(
-            "coastal-footprint",
-            f"{ocean_cells} cell(s) of the domain's own 30-arc-second "
-            f"baseline LU_INDEX carry WRF ocean category {iswater} "
-            "(coast-detection method: the baseline's water field, which "
-            "separates ocean from inland lakes).  The high-resolution "
-            "inland-water rule maps NLCD open water to WRF lake category "
-            f"{_MODIS21_ISLAKE} and is not coast-safe: at a coast the "
-            "ocean/lake split needs a coastline-aware rule this path does "
-            "not implement")
 
 
 # ---------------------------------------------------------------------------
@@ -756,15 +728,19 @@ def _apply_terrain_only(baseline, grid, *, config: HighresStaticConfig,
 
 def _apply(baseline, grid, *, config: HighresStaticConfig,
            case_date: date, landuse_attrs, urlopen=None):
-    _require_lambert(grid)
+    _require_projected_grid(grid)
     bbox = domain_footprint(grid, HALO)
-    _require_single_lobe(bbox)
+    # Plan review, before a single byte is requested: the window writers
+    # still emit the cut -180..180 frame, so a continued footprint has no
+    # mosaic and the run must stop here rather than after enumerating and
+    # downloading its tiles.  Both modes pass through this line, and the
+    # writers call the same function as a backstop.
+    _require_cut_frame_window(bbox)
     mode, coverage = _resolve_plan(config, bbox)
     if mode == "all":
-        # Both gates below belong to the land-use leg: the crosswalk targets
-        # one inventory, and its inland-water rule is not coast-safe.
+        # The land-use leg targets one inventory: the crosswalk's category
+        # numbers are only meaningful against MODIS 21.
         _require_modis21(landuse_attrs)
-        _require_coast_free(bbox, baseline, iswater=_MODIS21_ISWATER)
 
     if mode == "terrain":
         return _apply_terrain_only(baseline, grid, config=config,
@@ -781,10 +757,16 @@ def _apply(baseline, grid, *, config: HighresStaticConfig,
 
     soil_fallback = {"SOILCTOP": np.asarray(baseline["SOILCTOP"]),
                      "SOILCBOT": np.asarray(baseline["SOILCBOT"])}
+    # The crosswalk maps NLCD open water to the inland lake category; the
+    # domain's own 30-arc-second water field is what separates the sea from
+    # a lake, so it is handed over as the discriminator.  The pilot door
+    # derives it from the same function.
+    baseline_ocean = baseline_ocean_mask(baseline, iswater=_MODIS21_ISWATER)
     overrides, source_audit = build_highres_overrides(
         grid, terrain=terrain, landcover=landcover,
         soil_sources=soil_sources, soil_fallback=soil_fallback,
-        landcover_mapping=NLCD_TO_MODIS21_INLAND, halo=HALO)
+        landcover_mapping=NLCD_TO_MODIS21_INLAND,
+        baseline_ocean=baseline_ocean, halo=HALO)
     merged, merge_audit = merge_highres_overrides(baseline, overrides)
 
     counts = _replacement_counts(baseline, merged)

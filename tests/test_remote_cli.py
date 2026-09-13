@@ -28,7 +28,7 @@ def test_only_quoted_python_and_fixed_protocol_words_enter_remote_shell(monkeypa
     config.write_text("Host weather-node\n")
     key = tmp_path / "identity"
     key.write_bytes(b"fixture placeholder, not read by this test")
-    monkeypatch.setattr(rc.shutil, "which", lambda name: "ssh-fixture")
+    monkeypatch.setattr(rc.shutil, "which", lambda *names, **options: "ssh-fixture")
     options = args(ssh_config=str(config), identity=str(key), port=2222)
     command = rc.ssh_command(options)
     assert command[-3:-1] == ["--", "weather-node"]
@@ -53,8 +53,7 @@ def test_windows_prefers_the_system_openssh_client_and_the_record_names_it(monke
     # Without the system client, PATH order decides, as before.
     openssh.unlink()
     assert Path(rc.ssh_executable(environ=environ, windows=True)) == git_bin / "ssh.EXE"
-    # Linux never consults SystemRoot.
-    assert Path(rc.ssh_executable(environ=environ, windows=False)) == git_bin / "ssh.EXE"
+    openssh.write_bytes(b"")
     # The resolved client rides on every record, including a refusal.
     monkeypatch.setattr(rc, "ssh_executable", lambda: str(openssh))
     command = rc.ssh_command(args())
@@ -86,7 +85,7 @@ def test_records_and_ssh_level_failures_name_the_client_that_ran(monkeypatch, ca
 def test_relative_ssh_config_and_identity_paths_are_refused(monkeypatch, tmp_path, field):
     (tmp_path / "sshconf").write_text("Host *\n  ProxyCommand planted\n")
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(rc.shutil, "which", lambda name: "ssh-fixture")
+    monkeypatch.setattr(rc.shutil, "which", lambda *names, **options: "ssh-fixture")
     with pytest.raises(ValueError, match="absolute local path"):
         rc.ssh_command(args(**{field: "sshconf"}))
     command = rc.ssh_command(args(**{field: str(tmp_path / "sshconf")}))
@@ -97,9 +96,84 @@ def test_relative_ssh_config_and_identity_paths_are_refused(monkeypatch, tmp_pat
     ("/bin/python\nnext", "/srv/x", None), ("/bin/python", "relative", None),
     ("/bin/python", "/srv/x", 0), ("/bin/python", "/srv/x", 65536)])
 def test_transport_profile_validation(monkeypatch, python, workspace, port):
-    monkeypatch.setattr(rc.shutil, "which", lambda name: "ssh")
+    monkeypatch.setattr(rc.shutil, "which", lambda *names, **options: "ssh")
     with pytest.raises(ValueError):
         rc.ssh_command(args(python=python, workspace=workspace, port=port))
+
+
+def test_windows_client_search_is_independent_of_host_platform(tmp_path):
+    """Inspect Windows PATH/PATHEXT on either test host.
+
+    shutil.which reads the path separator and PATHEXT from the interpreter's
+    own platform rather than from its arguments, so ssh_executable(windows=True)
+    used to answer for Windows in its first half and for the running host in
+    its second. A Windows PATH is separated by ';' and its entries carry an
+    extension from PATHEXT; neither survives a POSIX reading.
+    """
+    first = tmp_path / "Git" / "usr" / "bin"
+    first.mkdir(parents=True)
+    (first / "ssh.EXE").write_bytes(b"")
+    second = tmp_path / "OpenSSH"
+    second.mkdir()
+    (second / "ssh.exe").write_bytes(b"")
+    windows = {"PATH": ";".join([str(first), str(second)]), "PATHEXT": ".COM;.EXE"}
+    assert rc.ssh_executable(environ=windows, windows=True) == str(first / "ssh.EXE")
+    # PATHEXT decides which extensions count, and PATH order decides between them.
+    assert rc.ssh_executable(environ={**windows, "PATHEXT": ".COM"}, windows=True) is None
+    assert rc.ssh_executable(environ={**windows, "PATH": str(second)},
+                             windows=True) == str(second / "ssh.exe")
+    # An environment carrying no PATH has no PATH to search, on either platform.
+    assert rc.ssh_executable(environ={}, windows=True) is None
+    assert rc.ssh_executable(environ={}, windows=False) is None
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX executable lookup runs on POSIX hosts")
+def test_native_posix_client_search_ignores_windows_root_and_extensions(tmp_path, monkeypatch):
+    system = tmp_path / "Windows"
+    system_client = system / "System32" / "OpenSSH" / "ssh.exe"
+    system_client.parent.mkdir(parents=True)
+    system_client.write_bytes(b"")
+    posix_bin = tmp_path / "bin"
+    posix_bin.mkdir()
+    (posix_bin / "ssh").write_bytes(b"")
+    (posix_bin / "ssh").chmod(0o755)
+    windows_bin = tmp_path / "Git"
+    windows_bin.mkdir()
+    (windows_bin / "ssh.EXE").write_bytes(b"")
+    monkeypatch.chdir(tmp_path)
+    environ = {"PATH": "missing:bin", "SystemRoot": str(system), "PATHEXT": ".EXE"}
+    assert Path(rc.ssh_executable(environ=environ, windows=False)).resolve() == posix_bin / "ssh"
+    assert rc.ssh_executable(environ={**environ, "PATH": "Git"}, windows=False) is None
+
+
+def test_a_typed_option_is_refused_for_itself_not_for_a_missing_client(monkeypatch, tmp_path):
+    """Configuration is checked before this desktop is.
+
+    ssh_command used to resolve the OpenSSH client between the workspace check
+    and the port check, so on a machine without ssh a port of 65536 came back
+    as "OpenSSH client 'ssh' is unavailable", which names neither the mistake
+    nor the way out. The missing client answers only once the configuration is
+    whole.
+    """
+    monkeypatch.setattr(rc, "ssh_executable", lambda: None)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "sshconf").write_text("Host *\n")
+    for options, message in ((args(port=65536), "--port must be between 1 and 65535"),
+                             (args(port=0), "--port must be between 1 and 65535"),
+                             (args(workspace="relative"), "--workspace"),
+                             (args(python="python"), "--python"),
+                             (args(host="node;echo"), "--host"),
+                             (args(ssh_config="sshconf"), "absolute local path"),
+                             (args(identity="sshconf"), "absolute local path")):
+        with pytest.raises(ValueError, match=message):
+            rc.ssh_command(options)
+    # With nothing left to say about the configuration, the client refuses, and
+    # that refusal names the breakage and the way out.
+    with pytest.raises(ValueError, match="OpenSSH client 'ssh' is unavailable; install it and retry"):
+        rc.ssh_command(args())
+    # Both doors read one configuration through one function.
+    profile = rc.transport_profile(args(port=2222))
+    assert profile["host"] == "weather-node" and profile["port"] == 2222
 
 
 def _program(tmp_path, body):
@@ -169,12 +243,25 @@ def test_public_parser_has_review_and_reconnect_options():
     assert options.from_checkpoint == "latest" and options.dry_run and options.json
 
 
+def test_resume_parser_keeps_explicit_input_and_product_overrides():
+    from gpuwm.cli import build_parser
+    options = build_parser().parse_args([
+        "remote", "resume", "--host", "node", "--python", "/opt/python",
+        "--workspace", "/work", "--job", "old-job", "--outdir", "/new-output",
+        "--geog-root", "/new/geography", "--prepared-root", "/new/prepared",
+        "--wps-namelist", "/new/namelist.wps", "--products", "none"])
+    assert options.geog_root == "/new/geography"
+    assert options.prepared_root == "/new/prepared"
+    assert options.wps_namelist == "/new/namelist.wps"
+    assert options.products == "none"
+
+
 def test_artifact_parser_and_fixed_binary_stream_keep_selectors_off_the_shell(monkeypatch):
     from gpuwm.cli import build_parser
     options = build_parser().parse_args(["remote", "sync-artifacts", "--host", "node", "--python", "/opt/python",
         "--workspace", "/owned/work", "--job", "job-fixture", "--domain", "2", "--cache-root", "C:/owned/cache", "--json"])
     assert options.domain == 2 and options.cache_root == "C:/owned/cache"
-    monkeypatch.setattr(rc.shutil, "which", lambda _: "ssh-fixture")
+    monkeypatch.setattr(rc.shutil, "which", lambda *names, **options: "ssh-fixture")
     command = rc.ssh_command(options, artifact_stream=True)
     assert shlex.split(command[-1]) == [options.python, "-I", "-m", "gpuwm.remote_worker", "--artifact-stream"]
     assert options.job not in command[-1] and options.cache_root not in command[-1]

@@ -4911,9 +4911,577 @@ fn dewpoint_k_from_q_p(q: f64, p_pa: f64) -> f64 {
     td_c + 273.15
 }
 
+// ---------------------------------------------------------------------------
+// Shared heavy (ECAPE-class) recipe inputs for the wrfout lane.
+//
+// The heavy recipes live in ONE place: `rustwx_products::derived::
+// compute_store_heavy_grids`, the same entry point the GRIB ingest lane
+// calls. What the wrfout lane was missing is not a recipe, it is the pair
+// of products-side input structs that entry point takes: the import builds
+// rw-store surface planes plus the five `*_iso` volumes, and nothing turned
+// those into a `SurfaceFields` / `PressureFields` pair. That assembly is
+// what lives below. No ECAPE solve, no parcel code and no per-lane recipe
+// is written here, so the two lanes cannot drift apart.
+// ---------------------------------------------------------------------------
+
+/// Which store planes an assembled heavy input pair actually leaned on, and
+/// how many isobaric levels it carried. `substituted` names every plane that
+/// came from the `approx_*` lowest-model-level stand-in a split `wrf3d` file
+/// carries instead of a true 2 m / 10 m field: the heavy grids are computed
+/// from it rather than refused, and the caller states that basis once.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct WrfHeavyInputBasis {
+    pub(crate) substituted: Vec<String>,
+    pub(crate) levels: usize,
+}
+
+impl WrfHeavyInputBasis {
+    /// One line naming the conservative basis the hour was priced from, or
+    /// `None` when every input was the exact plane it claims to be.
+    pub(crate) fn note(&self) -> Option<String> {
+        if self.substituted.is_empty() {
+            return None;
+        }
+        Some(format!(
+            "shared heavy (ECAPE) recipe grids computed from lowest-model-level \
+             surface stand-ins for {}: this file carries no true 2 m / 10 m plane \
+             for them",
+            self.substituted.join(", ")
+        ))
+    }
+}
+
+/// One 2-D plane of an imported hour, by its canonical store name.
+fn wrf_plane_values<'a>(
+    canonical: &'a [(String, SelectedField2D)],
+    name: &str,
+) -> Option<&'a [f32]> {
+    canonical
+        .iter()
+        .find(|(store_name, _)| store_name == name)
+        .map(|(_, field)| field.values.as_slice())
+}
+
+/// One surface input for the heavy lane as f64: the exact plane when the
+/// import stored it, otherwise the named lowest-model-level stand-in (whose
+/// use is recorded on `basis`). A plane that is neither is a missing input,
+/// and the error names it and what produces it.
+fn wrf_heavy_surface_input(
+    canonical: &[(String, SelectedField2D)],
+    exact: &str,
+    substitute: Option<&str>,
+    produced_by: &str,
+    cells: usize,
+    basis: &mut WrfHeavyInputBasis,
+) -> Result<Vec<f64>, String> {
+    let (name, values) = match wrf_plane_values(canonical, exact) {
+        Some(values) => (exact, values),
+        None => {
+            let substitute = substitute.ok_or_else(|| {
+                format!("the heavy recipe inputs need the '{exact}' plane ({produced_by})")
+            })?;
+            let values = wrf_plane_values(canonical, substitute).ok_or_else(|| {
+                format!(
+                    "the heavy recipe inputs need the '{exact}' plane ({produced_by}); \
+                     this hour stored neither it nor its '{substitute}' stand-in"
+                )
+            })?;
+            basis.substituted.push(substitute.to_string());
+            (substitute, values)
+        }
+    };
+    if values.len() != cells {
+        return Err(format!(
+            "the '{name}' plane has {} values for a {cells}-cell grid",
+            values.len()
+        ));
+    }
+    Ok(values.iter().map(|value| f64::from(*value)).collect())
+}
+
+/// One isobaric volume of an imported hour, by its canonical store name.
+fn wrf_heavy_volume<'a>(volumes: &'a [IsoVolume], name: &str) -> Result<&'a IsoVolume, String> {
+    volumes
+        .iter()
+        .find(|volume| volume.name == name)
+        .ok_or_else(|| {
+            format!(
+                "the heavy recipe inputs need the '{name}' isobaric volume, which the \
+                 sounding volume build produces"
+            )
+        })
+}
+
+/// One f64 heavy-input volume buffer, reserved fallibly.
+fn try_heavy_volume_buffer(name: &str, elements: usize) -> Result<Vec<f64>, String> {
+    let mut values = Vec::new();
+    values.try_reserve_exact(elements).map_err(|err| {
+        format!("reserve the {elements}-element '{name}' heavy recipe input volume: {err}")
+    })?;
+    Ok(values)
+}
+
+/// Assemble the products-side `SurfaceFields` / `PressureFields` pair the
+/// SHARED heavy recipe lane takes, from the 2-D planes and `*_iso` volumes
+/// one imported wrfout hour already produced.
+///
+/// Conventions this has to match, because the shared lane assumes them:
+///
+/// * volumes are indexed `k * cells + ij`, bottom level first, which for the
+///   GRIB lane means DESCENDING pressure (`gridded.rs` sorts its records that
+///   way) and is what `compute_height_agl_3d`'s monotonic pass reads. The
+///   `*_iso` volumes are built ascending (100..=1000 hPa), so the level order
+///   is reversed here.
+/// * `temperature_c_3d` is Celsius; `temperature_iso` is K.
+/// * `qvapor_kgkg_3d` is a mixing ratio; the volumes carry dewpoint, so each
+///   level goes through the products lane's OWN `mixing_ratio_from_dewpoint_k`
+///   rather than a second formula written here.
+/// * levels outside a column's model range are NaN in the `*_iso` planes.
+///   That is exactly what the shared column builder drops (metrust's
+///   `push_ecape_level` refuses a non-finite level), so below-ground and
+///   above-top levels are skipped per column instead of being invented.
+///
+/// The three `*_ecape_native_cape_ratio` recipes divide by the SOURCE model's
+/// own decoded CAPE plane. A wrfout carries no such message, so the native
+/// planes are left `None` on purpose and the shared lane records those three
+/// as its documented skip rather than a failure.
+pub(crate) fn wrf_heavy_compute_inputs(
+    grid: &LatLonGrid,
+    projection: Option<GridProjection>,
+    canonical: &[(String, SelectedField2D)],
+    volumes: &[IsoVolume],
+) -> Result<
+    (
+        rustwx_products::gridded::SurfaceFields,
+        rustwx_products::gridded::PressureFields,
+        WrfHeavyInputBasis,
+    ),
+    String,
+> {
+    let cells = grid.shape.len();
+    if cells == 0 {
+        return Err("the heavy recipe inputs need a non-empty grid".to_string());
+    }
+    let mut basis = WrfHeavyInputBasis::default();
+
+    let orog_m = wrf_heavy_surface_input(
+        canonical,
+        "orography",
+        None,
+        "the WRF terrain field",
+        cells,
+        &mut basis,
+    )?;
+    let psfc_pa = wrf_heavy_surface_input(
+        canonical,
+        "surface_pressure",
+        Some("approx_surface_pressure"),
+        "WRF PSFC",
+        cells,
+        &mut basis,
+    )?;
+    let t2_k = wrf_heavy_surface_input(
+        canonical,
+        "temperature_2m",
+        Some("approx_temperature_2m"),
+        "the WRF 2 m temperature diagnostic",
+        cells,
+        &mut basis,
+    )?;
+    let dewpoint_2m_k = wrf_heavy_surface_input(
+        canonical,
+        "dewpoint_2m",
+        Some("approx_dewpoint_2m"),
+        "the WRF 2 m dewpoint diagnostic",
+        cells,
+        &mut basis,
+    )?;
+    let u10_ms = wrf_heavy_surface_input(
+        canonical,
+        "u_10m",
+        Some("approx_u_10m"),
+        "the earth-relative uvmet10 diagnostic",
+        cells,
+        &mut basis,
+    )?;
+    let v10_ms = wrf_heavy_surface_input(
+        canonical,
+        "v_10m",
+        Some("approx_v_10m"),
+        "the earth-relative uvmet10 diagnostic",
+        cells,
+        &mut basis,
+    )?;
+
+    let temperature = wrf_heavy_volume(volumes, "temperature_iso")?;
+    let dewpoint = wrf_heavy_volume(volumes, "dewpoint_iso")?;
+    let u_wind = wrf_heavy_volume(volumes, "u_iso")?;
+    let v_wind = wrf_heavy_volume(volumes, "v_iso")?;
+    let height = wrf_heavy_volume(volumes, "height_iso")?;
+
+    let reference: Vec<u16> = temperature.levels.iter().map(|(hpa, _)| *hpa).collect();
+    if reference.len() < 2 {
+        return Err(format!(
+            "the heavy recipe inputs need at least two isobaric levels, this hour has {}",
+            reference.len()
+        ));
+    }
+    for volume in [dewpoint, u_wind, v_wind, height] {
+        let levels: Vec<u16> = volume.levels.iter().map(|(hpa, _)| *hpa).collect();
+        if levels != reference {
+            return Err(format!(
+                "the '{}' volume's levels differ from 'temperature_iso'; the heavy \
+                 recipe inputs need one shared level set",
+                volume.name
+            ));
+        }
+    }
+
+    // Bottom level first, i.e. descending pressure: the order the shared
+    // height-AGL prep and the shared column builder both read.
+    let mut order: Vec<usize> = (0..reference.len()).collect();
+    order.sort_by(|a, b| reference[*b].cmp(&reference[*a]));
+    let nz = order.len();
+    basis.levels = nz;
+
+    let elements = nz
+        .checked_mul(cells)
+        .ok_or_else(|| "the heavy recipe input volume size overflows usize".to_string())?;
+    // Fallible reservation, the same shape `wrf_volumes` uses: these five
+    // f64 volumes are twice the size of the f32 `*_iso` set they come from,
+    // and on a large grid that is hundreds of megabytes each. A machine
+    // that cannot hold them degrades to a note through the caller instead
+    // of aborting the import.
+    let mut temperature_c_3d = try_heavy_volume_buffer("temperature_c_3d", elements)?;
+    let mut qvapor_kgkg_3d = try_heavy_volume_buffer("qvapor_kgkg_3d", elements)?;
+    let mut u_ms_3d = try_heavy_volume_buffer("u_ms_3d", elements)?;
+    let mut v_ms_3d = try_heavy_volume_buffer("v_ms_3d", elements)?;
+    let mut gh_m_3d = try_heavy_volume_buffer("gh_m_3d", elements)?;
+    for &level_index in &order {
+        let level_hpa = f64::from(reference[level_index]);
+        let temperature_plane = &temperature.levels[level_index].1;
+        let dewpoint_plane = &dewpoint.levels[level_index].1;
+        let u_plane = &u_wind.levels[level_index].1;
+        let v_plane = &v_wind.levels[level_index].1;
+        let height_plane = &height.levels[level_index].1;
+        for (name, plane) in [
+            ("temperature_iso", temperature_plane),
+            ("dewpoint_iso", dewpoint_plane),
+            ("u_iso", u_plane),
+            ("v_iso", v_plane),
+            ("height_iso", height_plane),
+        ] {
+            if plane.len() != cells {
+                return Err(format!(
+                    "the '{name}' {level_hpa} hPa plane has {} values for a {cells}-cell grid",
+                    plane.len()
+                ));
+            }
+        }
+        for cell in 0..cells {
+            let temperature_k = f64::from(temperature_plane[cell]);
+            temperature_c_3d.push(temperature_k - 273.15);
+            let dewpoint_k = f64::from(dewpoint_plane[cell]);
+            qvapor_kgkg_3d.push(if dewpoint_k.is_finite() {
+                rustwx_products::gridded::mixing_ratio_from_dewpoint_k(level_hpa, dewpoint_k)
+            } else {
+                f64::NAN
+            });
+            u_ms_3d.push(f64::from(u_plane[cell]));
+            v_ms_3d.push(f64::from(v_plane[cell]));
+            gh_m_3d.push(f64::from(height_plane[cell]));
+        }
+    }
+
+    let q2_kgkg = psfc_pa
+        .iter()
+        .zip(dewpoint_2m_k.iter())
+        .map(|(pressure_pa, dewpoint_k)| {
+            if pressure_pa.is_finite() && *pressure_pa > 0.0 && dewpoint_k.is_finite() {
+                rustwx_products::gridded::mixing_ratio_from_dewpoint_k(
+                    pressure_pa / 100.0,
+                    *dewpoint_k,
+                )
+            } else {
+                f64::NAN
+            }
+        })
+        .collect::<Vec<_>>();
+
+    let surface = rustwx_products::gridded::SurfaceFields {
+        lat: grid.lat_deg.iter().map(|value| f64::from(*value)).collect(),
+        lon: grid.lon_deg.iter().map(|value| f64::from(*value)).collect(),
+        nx: grid.shape.nx,
+        ny: grid.shape.ny,
+        projection,
+        psfc_pa,
+        orog_m,
+        // WRF terrain is the model's real orography, never a pressure-derived
+        // proxy, so the shared prep must not substitute one.
+        orog_is_proxy: false,
+        t2_k,
+        q2_kgkg,
+        u10_ms,
+        v10_ms,
+        // A wrfout carries no decoded CAPE message of its own; see the
+        // native-ratio note above.
+        native_sbcape_jkg: None,
+        native_mlcape_jkg: None,
+        native_mucape_jkg: None,
+        native_pblh_m: None,
+    };
+    let pressure = rustwx_products::gridded::PressureFields {
+        pressure_levels_hpa: order
+            .iter()
+            .map(|level_index| f64::from(reference[*level_index]))
+            .collect(),
+        pressure_3d_pa: None,
+        temperature_c_3d,
+        qvapor_kgkg_3d,
+        u_ms_3d,
+        v_ms_3d,
+        gh_m_3d,
+        omega_pa_s_3d: None,
+        absolute_vorticity_s_3d: None,
+        cloud_liquid_kgkg_3d: None,
+        cloud_ice_kgkg_3d: None,
+        rain_kgkg_3d: None,
+        snow_kgkg_3d: None,
+        graupel_kgkg_3d: None,
+    };
+    Ok((surface, pressure, basis))
+}
+
+/// Run the SHARED heavy (ECAPE-class) recipe lane over one imported wrfout
+/// hour: assemble its products-side inputs with [`wrf_heavy_compute_inputs`],
+/// then hand them to `rustwx_products::derived::compute_store_heavy_grids`.
+/// That call is the whole point: the ml/mu parcel grids and the ECAPE /
+/// derived-CAPE ratio pairs resolve here through the exact recipe code the
+/// GRIB heavy ingest runs, with no second ECAPE path on this lane.
+pub(crate) fn compute_wrf_heavy_store_grids(
+    grid: &LatLonGrid,
+    projection: Option<GridProjection>,
+    canonical: &[(String, SelectedField2D)],
+    volumes: &[IsoVolume],
+) -> Result<(rustwx_products::derived::StoreHeavyGrids, WrfHeavyInputBasis), String> {
+    let (surface, pressure, basis) =
+        wrf_heavy_compute_inputs(grid, projection, canonical, volumes)?;
+    let grids = rustwx_products::derived::compute_store_heavy_grids(&surface, &pressure)
+        .map_err(|err| format!("shared heavy recipe lane: {err}"))?;
+    Ok((grids, basis))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A four-cell wrfout hour: the six surface planes the shared heavy lane
+    /// reads plus the five `*_iso` volumes, built the way the import builds
+    /// them (levels ASCENDING, NaN where a level is outside the column).
+    /// Cell 3 has a NaN 1000 hPa row, the below-ground case.
+    fn synthetic_wrf_heavy_hour() -> (
+        LatLonGrid,
+        Vec<(String, SelectedField2D)>,
+        Vec<crate::wrf_volumes::IsoVolume>,
+    ) {
+        let shape = GridShape::new(2, 2).expect("2x2 grid");
+        let grid = LatLonGrid::new(
+            shape,
+            vec![35.0, 35.0, 35.5, 35.5],
+            vec![-97.5, -97.0, -97.5, -97.0],
+        )
+        .expect("grid");
+        let plane = |name: &str, selector: FieldSelector, units: &str, values: Vec<f32>| {
+            (
+                name.to_string(),
+                SelectedField2D::new(selector, units, grid.clone(), values).expect("plane"),
+            )
+        };
+        let canonical = vec![
+            plane(
+                "orography",
+                FieldSelector::surface(CanonicalField::GeopotentialHeight),
+                "m",
+                vec![10.0; 4],
+            ),
+            plane(
+                "surface_pressure",
+                FieldSelector::surface(CanonicalField::Pressure),
+                "Pa",
+                vec![100_000.0; 4],
+            ),
+            plane(
+                "temperature_2m",
+                FieldSelector::height_agl(CanonicalField::Temperature, 2),
+                "K",
+                vec![303.15; 4],
+            ),
+            plane(
+                "dewpoint_2m",
+                FieldSelector::height_agl(CanonicalField::Dewpoint, 2),
+                "K",
+                vec![297.15; 4],
+            ),
+            plane(
+                "u_10m",
+                FieldSelector::height_agl(CanonicalField::UWind, 10),
+                "m/s",
+                vec![2.0; 4],
+            ),
+            plane(
+                "v_10m",
+                FieldSelector::height_agl(CanonicalField::VWind, 10),
+                "m/s",
+                vec![1.0; 4],
+            ),
+        ];
+
+        // (hPa, T K, Td K, height m, u m/s, v m/s) -- ascending pressure, the
+        // order `build_iso_volumes` packs.
+        let profile: [(u16, f32, f32, f32, f32, f32); 5] = [
+            (300, 233.15, 213.15, 9_500.0, 32.0, 12.0),
+            (500, 263.15, 253.15, 5_800.0, 22.0, 9.0),
+            (700, 280.15, 274.15, 3_100.0, 14.0, 6.0),
+            (850, 290.15, 286.15, 1_500.0, 8.0, 3.0),
+            (1000, 300.15, 296.15, 110.0, 3.0, 1.0),
+        ];
+        let volume = |name: &str, units: &str, pick: fn(&(u16, f32, f32, f32, f32, f32)) -> f32| {
+            crate::wrf_volumes::IsoVolume {
+                name: name.to_string(),
+                units: units.to_string(),
+                levels: profile
+                    .iter()
+                    .map(|row| {
+                        let value = pick(row);
+                        let mut values = vec![value; 4];
+                        if row.0 == 1000 {
+                            // Below ground in this column: the import leaves the
+                            // level NaN and the shared column builder drops it.
+                            values[3] = f32::NAN;
+                        }
+                        (row.0, values)
+                    })
+                    .collect(),
+            }
+        };
+        let volumes = vec![
+            volume("temperature_iso", "K", |row| row.1),
+            volume("dewpoint_iso", "K", |row| row.2),
+            volume("u_iso", "m/s", |row| row.4),
+            volume("v_iso", "m/s", |row| row.5),
+            volume("height_iso", "gpm", |row| row.3),
+        ];
+        (grid, canonical, volumes)
+    }
+
+    /// WHAT BREAKAGE THIS PREVENTS (gate law): the wrfout lane built rw-store
+    /// surface planes and `*_iso` volumes and nothing else, so the shared
+    /// heavy recipe entry point -- which takes a products-side
+    /// SurfaceFields/PressureFields pair -- could not be called at all, and
+    /// the ml/mu parcel grids plus the ECAPE/derived-CAPE ratio pairs were
+    /// unreachable on this lane while running fine on the other one.
+    #[test]
+    fn the_assembled_wrfout_inputs_feed_the_shared_heavy_recipe_lane() {
+        let (grid, canonical, volumes) = synthetic_wrf_heavy_hour();
+        let (surface, pressure, basis) =
+            wrf_heavy_compute_inputs(&grid, None, &canonical, &volumes).expect("assembled inputs");
+
+        // Bottom level first (descending pressure), the order the shared
+        // height-AGL prep and column builder read.
+        assert_eq!(
+            pressure.pressure_levels_hpa,
+            vec![1000.0, 850.0, 700.0, 500.0, 300.0],
+            "the shared lane reads bottom level first"
+        );
+        assert_eq!(basis.levels, 5);
+        assert!(
+            basis.substituted.is_empty(),
+            "every plane was exact: {:?}",
+            basis.substituted
+        );
+        // Celsius, not K: `temperature_c_3d` is what the shared lane names.
+        assert!((pressure.temperature_c_3d[0] - 27.0).abs() < 1.0e-3);
+        // Moisture goes through the products lane's own converter, never a
+        // second formula written on this lane.
+        let expected_q =
+            rustwx_products::gridded::mixing_ratio_from_dewpoint_k(1000.0, 296.15_f32 as f64);
+        assert!((pressure.qvapor_kgkg_3d[0] - expected_q).abs() < 1.0e-9);
+        assert!(
+            pressure.qvapor_kgkg_3d[3].is_nan(),
+            "a below-ground level stays NaN instead of being invented"
+        );
+        // A wrfout carries no decoded CAPE message of its own.
+        assert!(surface.native_sbcape_jkg.is_none());
+        assert!(surface.native_mlcape_jkg.is_none());
+        assert!(surface.native_mucape_jkg.is_none());
+
+        let (heavy, _) = compute_wrf_heavy_store_grids(&grid, None, &canonical, &volumes)
+            .expect("shared heavy recipe lane");
+        let realized: Vec<&str> = heavy.grids.iter().map(|grid| grid.slug).collect();
+        for slug in ["mlecape", "muecape", "sbecin", "mlecin"] {
+            assert!(
+                realized.contains(&slug),
+                "the shared lane must realize '{slug}' on the wrfout lane: {realized:?}"
+            );
+        }
+        for slug in [
+            "sb_ecape_derived_cape_ratio",
+            "ml_ecape_derived_cape_ratio",
+            "mu_ecape_derived_cape_ratio",
+        ] {
+            assert!(
+                realized.contains(&slug),
+                "the derived-CAPE ratio pairs must resolve here too: {realized:?}"
+            );
+        }
+        let skipped: Vec<&str> = heavy.skipped.iter().map(|skip| skip.slug).collect();
+        assert_eq!(
+            skipped,
+            vec![
+                "sb_ecape_native_cape_ratio",
+                "ml_ecape_native_cape_ratio",
+                "mu_ecape_native_cape_ratio",
+            ],
+            "only the native-CAPE ratio pairs are skippable here"
+        );
+        for skip in &heavy.skipped {
+            assert!(
+                skip.reason.contains("native"),
+                "the skip must name its cause: {}",
+                skip.reason
+            );
+        }
+
+        // The assembled pair really solves: a column with a 30 C / 24 C
+        // surface under a -10 C 500 mb temperature has positive ECAPE.
+        let mlecape = heavy
+            .grids
+            .iter()
+            .find(|grid| grid.slug == "mlecape")
+            .expect("mlecape grid");
+        assert_eq!(mlecape.values.len(), 4);
+        assert!(
+            mlecape.values[0].is_finite() && mlecape.values[0] > 0.0,
+            "the assembled inputs must produce a real ML ECAPE value, got {:?}",
+            mlecape.values[0]
+        );
+    }
+
+    /// A missing surface plane is named, with what produces it, instead of
+    /// failing the hour or silently dropping the heavy family.
+    #[test]
+    fn a_missing_heavy_input_plane_names_itself_and_its_source() {
+        let (grid, canonical, volumes) = synthetic_wrf_heavy_hour();
+        let without_psfc: Vec<(String, SelectedField2D)> = canonical
+            .into_iter()
+            .filter(|(name, _)| name != "surface_pressure")
+            .collect();
+        let err = wrf_heavy_compute_inputs(&grid, None, &without_psfc, &volumes)
+            .expect_err("a missing surface plane must refuse");
+        assert!(err.contains("surface_pressure"), "{err}");
+        assert!(err.contains("PSFC"), "{err}");
+        assert!(err.contains("approx_surface_pressure"), "{err}");
+    }
 
     fn test_time_axis(reference_unix: Option<i64>, offsets: &[i64]) -> SourceTimeAxis {
         let origin = reference_unix.unwrap_or(1_700_000_000);

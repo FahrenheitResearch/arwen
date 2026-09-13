@@ -1,9 +1,8 @@
-"""Staged classic Thompson (WRF ``mp_physics=8``) CUDA implementation.
+"""Classic Thompson (WRF ``mp_physics=8``) CUDA implementation.
 
-Only independently admitted numerical slices live here until the full
-process/sedimentation driver passes the official-WRF column gates.  Importing
-this module does not make option 8 executable; configuration remains globally
-fail-closed until the complete driver, restart, and coupled gates land.
+The production adapter composes these source, adjustment, sedimentation and
+diagnostic launchers with canonical coefficient tables. Numerical reference
+checks establish their stated fixture coverage, not general forecast skill.
 """
 
 from __future__ import annotations
@@ -93,7 +92,7 @@ def launch_warm_saturation_adjust(temperature, pressure, qv, qc) -> None:
 
 def launch_cloud_saturation_adjust(
         temperature, pressure, qv, qc, *, reference_density=None,
-        reference_temperature=None) -> None:
+        reference_temperature=None, condensation_marker=None) -> None:
     """Apply WRF's liquid-cloud saturation adjustment at any temperature.
 
     When supplied, ``reference_density`` records the post-process,
@@ -101,6 +100,8 @@ def launch_cloud_saturation_adjust(
     ``reference_temperature`` additionally records the pre-adjustment
     temperature used by WRF's held snow-moment diagnostics and requires the
     density output to be supplied as well.
+    ``condensation_marker`` records a positive phase change before storage
+    rounding, retaining the decision that suppresses same-call rain evaporation.
     """
     fields = {
         "temperature": temperature,
@@ -115,10 +116,25 @@ def launch_cloud_saturation_adjust(
             raise ValueError(
                 "reference_temperature requires reference_density")
         fields["reference_temperature"] = reference_temperature
+    if condensation_marker is not None:
+        fields["condensation_marker"] = condensation_marker
     _, size = _validate_fields(fields)
+    if condensation_marker is not None:
+        for name, value in fields.items():
+            if name != "condensation_marker" and _arrays_overlap(condensation_marker, value):
+                raise ValueError(
+                    f"condensation_marker must not alias {name}: preserve "
+                    "the state and decision in separate storage")
     threads = 256
     blocks = (size + threads - 1) // threads
-    if reference_density is None:
+    if condensation_marker is not None:
+        get_kernel("thompson", "thompson_cloud_saturation_adjust_with_history")(
+            (blocks,), (threads,),
+            (temperature, pressure, qv, qc,
+             reference_density if reference_density is not None else np.uint64(0),
+             reference_temperature if reference_temperature is not None else np.uint64(0),
+             condensation_marker, np.int32(size)))
+    elif reference_density is None:
         get_kernel("thompson", "thompson_cloud_saturation_adjust")(
             (blocks,), (threads,),
             (temperature, pressure, qv, qc, np.int32(size)))
@@ -184,18 +200,22 @@ def launch_rain_self_collection(
 def launch_rain_evaporation(
         qr, nr, temperature, pressure, qv, dt: float,
         *, reference_density=None, reference_temperature=None,
-        graupel_melt_marker=None) -> None:
+        graupel_melt_marker=None, source_density=None,
+        condensation_marker=None) -> None:
     """Apply WRF's ordinary subsaturated-rain evaporation process.
 
     This admitted slice covers the Srivastava-Coen branch for an already
-    bounded two-moment rain distribution.  Cloud evaporation and concurrent
-    frozen-process tendencies remain outside its contract.  When supplied,
-    ``reference_density`` records WRF's pre-evaporation density for exact
-    composition with the admitted fallout launchers.  An optional
+    bounded two-moment rain distribution.  When supplied, ``source_density``
+    retains the rain mass and number concentrations formed before cloud
+    adjustment.  ``reference_density`` carries that density into fallout
+    unless rain evaporation executes and refreshes the concentrations with
+    its own incoming density.  An optional
     ``reference_temperature`` preserves held snow moments and requires the
     density output.  ``graupel_melt_marker`` carries WRF's held
     ``prr_gml > 0`` decision so rain evaporation is reduced where liquid is
     still coating melting graupel; it requires the density-only output form.
+    A positive ``condensation_marker`` suppresses this process, retaining
+    WRF's cloud-adjustment decision independently of saturation roundoff.
     """
     fields = {
         "qr": qr,
@@ -217,17 +237,44 @@ def launch_rain_evaporation(
                 "graupel_melt_marker requires reference_density and is "
                 "incompatible with reference_temperature")
         fields["graupel_melt_marker"] = graupel_melt_marker
+    if source_density is not None:
+        if reference_density is None or reference_temperature is not None:
+            raise ValueError(
+                "source_density requires the density-only output form: "
+                "pass reference_density without reference_temperature")
+        fields["source_density"] = source_density
+    if condensation_marker is not None:
+        if reference_density is None or reference_temperature is not None:
+            raise ValueError(
+                "condensation_marker requires the density-only output form: "
+                "pass reference_density without reference_temperature")
+        fields["condensation_marker"] = condensation_marker
     _, size = _validate_fields(fields)
     if (graupel_melt_marker is not None
             and _arrays_overlap(graupel_melt_marker, reference_density)):
         raise ValueError(
             "graupel_melt_marker must not alias reference_density: the "
             "CUDA kernel reads the held marker while writing RHOF")
+    for held in ("source_density", "condensation_marker"):
+        if held in fields:
+            for name in ("qr", "nr", "temperature", "qv", "reference_density"):
+                if _arrays_overlap(fields[held], fields[name]):
+                    raise ValueError(
+                        f"{held} must not alias {name}: retain its "
+                        "incoming state in separate storage")
     if not np.isfinite(dt) or dt <= 0.0:
         raise ValueError(f"dt must be finite and positive, got {dt}")
     threads = 256
     blocks = (size + threads - 1) // threads
-    if reference_density is None:
+    if source_density is not None or condensation_marker is not None:
+        get_kernel("thompson", "thompson_rain_evaporation_with_density_history")(
+            (blocks,), (threads,),
+            (qr, nr, temperature, pressure, qv, reference_density,
+             graupel_melt_marker if graupel_melt_marker is not None else np.uint64(0),
+             source_density if source_density is not None else np.uint64(0),
+             condensation_marker if condensation_marker is not None else np.uint64(0),
+             DTYPE(dt), np.int32(size)))
+    elif reference_density is None:
         get_kernel("thompson", "thompson_rain_evaporation")(
             (blocks,), (threads,),
             (qr, nr, temperature, pressure, qv,

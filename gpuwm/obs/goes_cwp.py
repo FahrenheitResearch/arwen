@@ -27,13 +27,10 @@ whose ``cwp`` plane does not reproduce is refused.  Then the superob
 gates: minimum valid pixels, minimum valid fraction, and phase-class
 uniformity.
 
-**The error model** (:class:`CwpErrorModel`) has *no defaults, by
-construction*.  There is no CWP observation-error covariance this project
-has measured and none it can honestly borrow, so the constants are
-required arguments in the same spirit as ``LetkfConfig.rtps_alpha``: a
-number nobody has calibrated must be visible at the call site, not
-inherited from a module that appears to know something.  Every value used
-is written into the product's receipt and labelled UNCALIBRATED.
+**The error model** (:class:`CwpErrorModel`) requires explicit constants.
+The automatic window caller supplies documented provisional values;
+explicit pack gridding can supply another policy. Every value used is
+written into the product's receipt and labelled UNCALIBRATED.
 
 Units are g m-2 throughout, the pack's own unit and the unit
 :func:`gpuwm.da.obsop_cwp.simulated_cloud_water_path` returns.
@@ -96,8 +93,10 @@ JOIN_METHODS = ("nearest", "bilinear")
 #: | twilight 16 | glint 64, measured on the live packs), so pixels
 #: carrying them arrive as observations and it is this stage's job to say
 #: they are worth less -- not to drop them.
-DCOMP_THIN_BIT = 256
-DCOMP_THICK_BIT = 512
+#: Numeric masks follow the COD/CPS CF ``flag_masks`` and
+#: ``flag_meanings``: 256 is thick cloud, 512 is thin cloud.
+DCOMP_THIN_BIT = 512
+DCOMP_THICK_BIT = 256
 
 #: Which products' DQF words carry those bits.  Both are DCOMP outputs and
 #: measured identical on the live granule, but the union is taken rather
@@ -148,8 +147,8 @@ class CwpErrorModel:
     floor_liquid_g_m2: float
     rel_ice: float
     floor_ice_g_m2: float
-    #: Multiply sigma_o for a pixel whose DCOMP thin-cloud (256) or
-    #: thick-cloud (512) bit is set.  1.0 -- the default -- is the v1
+    #: Multiply sigma_o for a pixel whose DCOMP thin-cloud (512) or
+    #: thick-cloud (256) bit is set.  1.0 -- the default -- is the v1
     #: behaviour: no inflation, because a v1 pack cannot support it.
     #: Requesting >1.0 against a pack with no per-pixel DQF plane is a
     #: refusal, not a silent no-op.  Like every other number here these

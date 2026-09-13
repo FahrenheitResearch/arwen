@@ -102,7 +102,14 @@ def test_native_plan_prices_declared_fetch_cadence(tmp_path, observed_device):
     path = _case(tmp_path)
     raw = tomllib.loads(path.read_text())
     raw.pop("case_data")
-    raw["fetch"] = {"source": "hrrr", "cycle": "1999-05-03T12", "hours": 6,
+    # A source whose fetch TAKES a cadence, and a declared cadence that
+    # differs from that source's own native spacing, so the assertion
+    # below proves the DECLARED value is what prices the plan.  It used
+    # to name a source whose fetch refuses a cadence outright, declaring
+    # a value equal to that source's registry interval: the table was
+    # one `gpuwm fetch` would not run, and the pricing it proved would
+    # have held with the key absent.
+    raw["fetch"] = {"source": "gfs", "cycle": "1999-05-03T12", "hours": 6,
                     "cadence": 1}
     path.write_text(render_tables(raw))
     plan = _plan(tmp_path, path, route="prepared")

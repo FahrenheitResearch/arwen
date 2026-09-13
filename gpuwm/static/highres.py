@@ -33,7 +33,8 @@ from .build import (
     lu_index_from_landusef,
     smth_desmth_special,
 )
-from .lambert import EARTH_RADIUS_M, LambertGrid
+from .lambert import EARTH_RADIUS_M
+from .projection import ProjectedGrid
 
 
 # ---------------------------------------------------------------------------
@@ -177,6 +178,12 @@ def _merge_via_rust(bridge, baseline, overrides_or_hgt, *, mode: str):
         if merged_handle.value:
             bridge.fieldset_free(int(merged_handle.value))
 
+
+#: WRF MODIS 21-category water numbers.  The crosswalk targets this
+#: inventory and nothing else, so every door that reads or writes a water
+#: category here reads these two names rather than a literal.
+MODIS21_ISWATER = 17
+MODIS21_ISLAKE = 21
 
 NLCD_TO_MODIS21_INLAND = {
     11: 21,  # open water -> inland lake for the scoped CONUS pilot
@@ -376,7 +383,7 @@ def _raster_spec(source: BoundRaster) -> dict[str, object]:
     return spec
 
 
-def resample_continuous(source: BoundRaster, grid: LambertGrid, *,
+def resample_continuous(source: BoundRaster, grid: ProjectedGrid, *,
                         method: str = "average") -> np.ndarray:
     """Reproject one continuous raster to mass points in south-north order.
 
@@ -432,7 +439,7 @@ def resample_continuous(source: BoundRaster, grid: LambertGrid, *,
 
 
 def _resample_category_array(values: np.ndarray, valid: np.ndarray, *,
-                             transform, crs, grid: LambertGrid,
+                             transform, crs, grid: ProjectedGrid,
                              category_count: int) -> np.ndarray:
     """Area fractions for already-classified source pixels."""
 
@@ -497,7 +504,7 @@ def _resample_category_array(values: np.ndarray, valid: np.ndarray, *,
 
 
 def resample_mapped_categories(
-        source: BoundRaster, grid: LambertGrid,
+        source: BoundRaster, grid: ProjectedGrid,
         mapping: Mapping[int, int], *, category_count: int) -> np.ndarray:
     """Map raw categories then compute target-cell area fractions.
 
@@ -674,7 +681,7 @@ def _soilgrids_categories(
 
 def soilgrids_category_fractions(
         sources: Mapping[tuple[str, str], BoundRaster],
-        depth_weights: Mapping[str, float], grid: LambertGrid, *,
+        depth_weights: Mapping[str, float], grid: ProjectedGrid, *,
         category_count: int = 16
         ) -> tuple[np.ndarray, dict[str, object]]:
     """One soil layer's target-cell category fractions, plus its audit.
@@ -734,14 +741,90 @@ def _require_coverage(name: str, values: np.ndarray) -> None:
         raise ValueError(f"high-resolution {name} lacks {count} target values")
 
 
+def baseline_ocean_mask(baseline: Mapping[str, np.ndarray], *,
+                        iswater: int = MODIS21_ISWATER) -> np.ndarray:
+    """The domain's own 30-arc-second ocean mask on the model grid.
+
+    One function, every door: the production overlay and the bounded
+    pilot both derive the ocean/lake discriminator here, so the two
+    cannot disagree about one footprint.  The baseline land-use index
+    already separates WRF ocean from inland lakes and is already on the
+    model grid, so no further source is needed.
+    """
+    try:
+        lu_index = baseline["LU_INDEX"]
+    except KeyError:
+        raise ValueError(
+            "the ocean/lake split reads the domain's own 30-arc-second "
+            "LU_INDEX, and the supplied baseline has no LU_INDEX field; "
+            "build the 30-arc-second baseline first and hand it over "
+            "whole") from None
+    return np.asarray(lu_index) == float(iswater)
+
+
+def _split_ocean_from_lake(luf, baseline_ocean, *, iswater: int,
+                           islake: int) -> dict[str, object]:
+    """Move crosswalked open water to ocean where the baseline says ocean.
+
+    ``luf`` is modified in place.  The NLCD crosswalk has exactly one open
+    water class and maps it to the inland lake category, so at a coast the
+    sea would arrive as a lake.  The discriminator is the domain's own
+    30-arc-second baseline water field, which already separates WRF ocean
+    from inland lakes, is on the model grid, and needs no further source.
+    """
+    lake = np.array(luf[islake - 1], copy=True)
+    if baseline_ocean is None:
+        raise ValueError(
+            "the ocean/lake split needs the domain's own 30-arc-second "
+            "ocean mask; without it the crosswalk's single open-water "
+            "class stays inland and the sea at a coast arrives as WRF "
+            f"lake {islake}.  Pass baseline_ocean=baseline_ocean_mask("
+            "baseline), or an explicit all-False array for a footprint "
+            "with no ocean in it")
+    ocean = np.asarray(baseline_ocean, dtype=bool)
+    if ocean.shape != lake.shape:
+        raise ValueError(
+            f"baseline ocean mask shape {ocean.shape} differs from the "
+            f"target land-use grid {lake.shape}")
+    moved = np.where(ocean, lake, 0.0)
+    luf[iswater - 1] = luf[iswater - 1] + moved
+    luf[islake - 1] = lake - moved
+    return {
+        "method": (
+            "crosswalked NLCD open water split by the domain's own "
+            "30-arc-second baseline LU_INDEX water field, which separates "
+            f"WRF ocean category {iswater} from inland lakes; open water "
+            f"on a baseline-ocean cell becomes category {iswater}, "
+            f"elsewhere it stays category {islake}"),
+        "ocean_cells_from_baseline_water": int(
+            np.count_nonzero(ocean & (moved > 0.0))),
+        "lake_cells": int(np.count_nonzero(~ocean & (lake > 0.0))),
+        "open_water_fraction_moved_to_ocean": float(moved.sum()),
+    }
+
+
 def build_highres_overrides(
-        grid: LambertGrid, *, terrain: BoundRaster,
+        grid: ProjectedGrid, *, terrain: BoundRaster,
         landcover: BoundRaster,
         soil_sources: Mapping[tuple[str, str], BoundRaster],
+        baseline_ocean: np.ndarray,
         soil_fallback: Mapping[str, np.ndarray] | None = None,
         landcover_mapping: Mapping[int, int] = NLCD_TO_MODIS21_INLAND,
         halo: int = HALO) -> tuple[dict[str, np.ndarray], dict[str, object]]:
-    """Build terrain, land-use, and soil fields for one Lambert domain."""
+    """Build terrain, land-use, and soil fields for one projected domain.
+
+    ``baseline_ocean`` is REQUIRED and has no default: it is the domain's
+    own 30-arc-second ocean mask on the model grid, which
+    :func:`baseline_ocean_mask` derives from the baseline the caller
+    already holds.  The NLCD crosswalk cannot tell a lake from the sea --
+    class 11 is *open water* and nothing else -- so it assigns every water
+    pixel to WRF lake category 21.  Where the mask says ocean, that
+    fraction is moved to WRF ocean category 17; everywhere else it stays a
+    lake.  The two discriminated cell counts and the method are recorded in
+    the returned audit.  The split is therefore what every caller gets; a
+    footprint with no ocean in it passes an all-False array and reads the
+    same audit saying so.
+    """
 
     extended = _extended_grid(grid, halo)
     crop = (slice(halo, halo + grid.e_sn - 1),
@@ -755,10 +838,13 @@ def build_highres_overrides(
     luf_extended = resample_mapped_categories(
         landcover, extended, landcover_mapping, category_count=21)
     _require_coverage("land cover", luf_extended)
-    luf = luf_extended[(slice(None),) + crop]
-    landmask = landmask_from_landusef(luf, iswater=17, islake=21)
+    luf = np.array(luf_extended[(slice(None),) + crop], copy=True)
+    water_split = _split_ocean_from_lake(
+        luf, baseline_ocean, iswater=MODIS21_ISWATER, islake=MODIS21_ISLAKE)
+    landmask = landmask_from_landusef(
+        luf, iswater=MODIS21_ISWATER, islake=MODIS21_ISLAKE)
     lu_index = lu_index_from_landusef(
-        luf, landmask, iswater=17, islake=21)
+        luf, landmask, iswater=MODIS21_ISWATER, islake=MODIS21_ISLAKE)
 
     soil_fields: dict[str, np.ndarray] = {}
     soil_audit = {}
@@ -821,6 +907,7 @@ def build_highres_overrides(
             "mean_m": float(hgt.mean()),
         },
         "land_fraction": float(landmask.mean()),
+        "water_split": water_split,
         "soil": soil_audit,
         "sources": [
             terrain.receipt(), landcover.receipt(),
@@ -830,7 +917,7 @@ def build_highres_overrides(
     return fields, audit
 
 
-def build_terrain_override(grid: LambertGrid, *, terrain: BoundRaster,
+def build_terrain_override(grid: ProjectedGrid, *, terrain: BoundRaster,
                            halo: int = HALO
                            ) -> tuple[dict[str, np.ndarray], dict[str, object]]:
     """Build ONLY the terrain field for one domain, from one bound raster.
@@ -1123,7 +1210,9 @@ def merge_highres_overrides(
 
 
 __all__ = [
-    "BoundRaster", "NLCD_TO_MODIS21_INLAND", "SOILGRIDS_DEPTH_WEIGHTS",
+    "BoundRaster", "MODIS21_ISLAKE", "MODIS21_ISWATER",
+    "NLCD_TO_MODIS21_INLAND", "SOILGRIDS_DEPTH_WEIGHTS",
+    "baseline_ocean_mask",
     "build_highres_overrides", "build_terrain_override",
     "merge_highres_overrides", "merge_terrain_override",
     "resample_continuous", "resample_mapped_categories", "sha256_file",

@@ -388,6 +388,25 @@ tests/test_attribute_tracking_gpu.py
 tests/test_model_stability_gpu.py
 tests/test_nssl2_gpu.py
 
+# SHARD 1l: the LETKF accelerator staging seam.
+#
+# WHAT HAPPENED.  gpuwm/da/radar_assimilation.py stages every observation
+# batch onto the device by rebuilding GriddedObs field by field, and the
+# rebuild dropped the batch's reach window.  A v2 windowed radar document,
+# which gpuwm/da/obs_radar.py builds with window-sized arrays, reached the
+# filter declaring window=None, and gpuwm/da/letkf.py -- which sizes every
+# batch array against the declaration -- raised on a shape it had produced
+# itself.  Windowed documents could not be assimilated on a card at all.
+# The CPU arm never rebuilds a batch and was never affected, which is
+# precisely why a CPU leg cannot ask this question.
+#
+# tests/test_local_da_integration.py pins the same contract with a stand-in
+# device namespace and runs on stage 1; it cannot show that the REAL
+# transfer preserves the declaration, and the transfer is the step that
+# dropped it.  Whole-module GPU by pytestmark, so on a CPU leg it would
+# collect and skip every row while the line read as coverage.
+tests/test_radar_staging_gpu.py
+
 # SHARD-2-BEGIN
 tests/test_gf_deep_cuda.py
 tests/test_gf_shallow_cuda.py

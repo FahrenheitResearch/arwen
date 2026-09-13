@@ -210,6 +210,70 @@ def test_declared_reachability_matches_the_templates_and_routes() -> None:
         "templates and routes make selectable:\n  " + "\n  ".join(wrong))
 
 
+def test_every_implemented_option_is_selected_by_a_registered_suite() -> None:
+    """AUDIT R-067: implemented, and offered by a NAMED suite.
+
+    ``reachability`` already says an option is selectable; this says
+    something narrower and, for a user, more useful -- that a registered
+    TEMPLATE selects it, so the option can be asked for by name instead of
+    only by hand-composing a tuple.  Eleven implemented schemes failed
+    that on 2026-09-10: Milbrandt-Yau, WDM6, aerosol-aware Thompson, New
+    Tiedtke, Grell-Freitas, MYJ, the Eta surface layer, SASE, the revised
+    MM5 surface layer and three of the five turbulence closures were each
+    ``implemented: true`` with no suite anywhere.  That is the
+    ship-only-what-users-can-reach rule failing quietly, and nothing said
+    so.
+
+    An option that deliberately has no suite names its reason here, so
+    retiring one is a grep rather than an argument.  The degradations do:
+    a run with no land surface, no surface layer, no microphysics or no
+    radiation is a thing a user asks for on purpose, and shipping a
+    PRESET for it would be recommending it.
+    """
+
+    registry = physics_registry()
+    selected = {
+        (component_id, option_id)
+        for template in registry["templates"].values()
+        for component_id, option_id in template["components"].items()
+    }
+    cited = {
+        ("land_surface", "off"): "a degradation, not a suite to recommend",
+        ("surface_layer", "off"): "a degradation, not a suite to recommend",
+        ("microphysics", "off"): "a degradation, not a suite to recommend",
+        ("radiation", "off"): "a degradation, not a suite to recommend",
+        ("radiation", "analytic-clear-sky"):
+            "not a forecast radiation scheme: no cloud, aerosol or gas "
+            "optics, so it stays behind the expert acknowledgement",
+        ("radiation", "wrf-rrtm-dudhia"):
+            "WRF's classic 1/1 pair; every verified run used a 4/4 or "
+            "Dudhia-shortwave suite, so no preset selects it and a config "
+            "asks for it directly",
+    }
+
+    missing = sorted(
+        f"{component_id}.{option_id}"
+        for component_id, component in registry["components"].items()
+        for option_id, option in component["options"].items()
+        if option.get("implemented") is True
+        and (component_id, option_id) not in selected
+        and (component_id, option_id) not in cited
+    )
+    assert missing == [], (
+        "these options are implemented and no registered template selects "
+        "them, so a user can only reach them by composing a tuple by hand: "
+        f"{missing}. Register a suite, or cite the reason it has none.")
+
+    stale = sorted(
+        f"{component_id}.{option_id}"
+        for (component_id, option_id) in cited
+        if (component_id, option_id) in selected
+    )
+    assert stale == [], (
+        "these citations claim no suite selects the option and one now "
+        f"does; retire the citation: {stale}")
+
+
 def test_an_unimplemented_option_is_refused_by_the_resolver() -> None:
     """The half of the biconditional that is not negotiable.
 
@@ -286,16 +350,10 @@ def test_an_unreachable_implemented_option_names_its_blocker() -> None:
         f"reachable options carrying a blocker: {spurious}")
 
 
-def test_an_expert_only_option_is_warned_and_acknowledged() -> None:
-    """Expert-only means the route says why and demands consent."""
-
+def test_expert_templates_keep_their_advisory_metadata() -> None:
+    """An expert preset retains its warning even when ordinary overrides exist."""
     registry = physics_registry()
-    computed = _computed_states(registry)
-    expert_options = {key for key, state in computed.items()
-                      if state == "expert-template"}
-    assert expert_options, (
-        "no option is expert-only, so this gate measured nothing")
-
+    assert any(route.get("expert_template_ids") for route in registry["runner_routes"].values())
     templates = registry["templates"]
     for route_id, route in registry["runner_routes"].items():
         expert = route.get("expert_template_ids", {}) or {}
@@ -304,7 +362,7 @@ def test_an_expert_only_option_is_warned_and_acknowledged() -> None:
         acknowledgement = route.get("expert_acknowledgement_id")
         assert isinstance(acknowledgement, str) and acknowledgement.strip(), (
             f"{route_id} offers expert templates with no "
-            "expert_acknowledgement_id, so consent cannot be required")
+            "expert_acknowledgement_id, so the advisory cannot be identified")
         warnings = route.get("expert_warnings") or []
         assert warnings and all(isinstance(text, str) and text.strip()
                                 for text in warnings), (
@@ -331,40 +389,42 @@ def _perturbed(mutate) -> list[str]:
 def test_the_gate_fails_when_a_template_makes_something_reachable() -> None:
     """A gate nobody has seen fail is not evidence, part one.
 
-    Revised MM5 is currently a component override.  Swap it into a registered
-    template and its easiest reachability becomes ``template``; the
-    recomputation must notice that undeclared promotion.
+    WRF's classic 1/1 RRTM+Dudhia pair is a component override that no
+    template selects.  Swap it into a registered template and its easiest
+    reachability becomes ``template``; the recomputation must notice that
+    undeclared promotion.
+
+    This probe used to be the revised MM5 surface layer, which the audit
+    R-067 templates now select -- an option that is already ``template``
+    cannot be promoted, so the control measured nothing and said so by
+    failing.  Retired here rather than deleted: the gate still needs an
+    option nobody has given a suite.
     """
 
     def mutate(registry: dict) -> None:
         registry["templates"]["wsm6-ysu-mm5-noah-no-radiation-v1"][
-            "components"]["surface_layer"] = "revised-mm5"
+            "components"]["radiation"] = "wrf-rrtm-dudhia"
 
     wrong = _perturbed(mutate)
-    assert "surface_layer.revised-mm5" in wrong, wrong
-    # classic-mm5 does NOT flip: four other templates still select it, which is
-    # the asymmetry a per-option declaration captures and a per-template one
-    # would not.
-    assert "surface_layer.classic-mm5" not in wrong, wrong
+    assert "radiation.wrf-rrtm-dudhia" in wrong, wrong
+    # dudhia-shortwave does NOT flip: other templates still select it, which
+    # is the asymmetry a per-option declaration captures and a per-template
+    # one would not.
+    assert "radiation.dudhia-shortwave" not in wrong, wrong
 
 
 def test_the_gate_fails_when_a_route_widens() -> None:
-    """Part two: a route override that nobody declared."""
-
+    """A future opaque option cannot acquire an undeclared selection path."""
     def mutate(registry: dict) -> None:
+        options = registry["components"]["pbl"]["options"]
+        options["opaque-option"] = copy.deepcopy(options["ysu"])
+        options["opaque-option"]["reachability"] = {
+            "state": "unreachable", "blocker": "No selection path exists before the route declaration changes."}
         route = registry["runner_routes"]["tools.prepared_domain_tree_forecast"]
-        route["allowed_component_overrides"] = sorted(
-            set(route["allowed_component_overrides"]) | {"land_surface"})
-
+        route["allowed_component_options"]["pbl"].append("opaque-option")
     wrong = _perturbed(mutate)
-    assert "land_surface.noah-mp" in wrong, wrong
-    assert "land_surface.off" in wrong, wrong
-    # ``ruc-lsm`` is deliberately NOT probed here.  It reaches ``template``
-    # through the RUC template on the era5/gfs single-domain routes, and
-    # ``_STATE_ORDER`` declares an option by its easiest path, so widening a
-    # different route cannot move it.  An option that is already reachable is
-    # the one case this control cannot speak about.
-    assert "land_surface.ruc-lsm" not in wrong, wrong
+    assert "pbl.opaque-option" in wrong, wrong
+    assert "land_surface.noah-mp" not in wrong, wrong
 
 
 def test_the_gate_fails_when_an_expert_template_loses_its_acknowledgement():
@@ -477,3 +537,85 @@ def test_the_mynn_suite_is_reachable_as_a_pair() -> None:
             f"template {template_id!r} selects half the MYNN suite; "
             "gpuwm/physics_compat.py refuses that at runtime, so a template "
             "offering it would be a launchable-looking dead end")
+
+
+def test_no_source_a_route_serves_is_published_as_reaching_nothing() -> None:
+    """A served source declares a suite list, or says why it names none.
+
+    ``source_template_ids`` is the reachability declaration a front end
+    reads, and an EMPTY list there is not a silence: a route that declares
+    any list at all is exhaustive, so the source reaches no named suite,
+    and ``expert_template_ids_for_source`` withholds the route-wide expert
+    list from it as well.  Completing a served-but-undeclared source with
+    an empty list for want of a measurement therefore takes every front
+    door away from a source the runner runs: it took the six composition
+    suites and the three Noah-MP expert suites from the single-domain
+    route's aigfs and era5-l137, which reach that runner through the same
+    generic mapped route as the siblings that declare all nine.
+
+    The one source that may name nothing is the caller-supplied
+    composition, whose physics the caller states.
+
+    Asked of FIXED-TEMPLATE routes, where a registered template is the
+    only door: an experiment-per-domain route composes from its own
+    component declaration instead, so a source with no template list there
+    still reaches the options the route lists per domain, which is a
+    different shape rather than an empty one.
+    """
+
+    registry = physics_registry()
+    names_no_suite = {"mapped"}
+    for runner_id, route in registry["runner_routes"].items():
+        if route.get("mode") != "fixed-template":
+            continue
+        declared = route.get("source_template_ids") or {}
+        if not declared:
+            # A route that declares no list anywhere is not exhaustive:
+            # every registered template is legal on it, so there is no
+            # emptiness to read.
+            continue
+        for source_id in route.get("source_ids", []) or []:
+            if source_id in names_no_suite:
+                assert not declared.get(source_id), (
+                    f"{runner_id} declares suites for {source_id}, whose "
+                    "composition is the caller's")
+                continue
+            offered = list(declared.get(source_id) or [])
+            offered += expert_template_ids_for_source(route, source_id)
+            assert offered, (
+                f"runner route {runner_id} serves {source_id} and publishes "
+                "no named suite for it at all, so every front door that "
+                "reads the declaration offers that source nothing")
+
+
+def test_the_generic_basis_carries_no_source_specific_evidence() -> None:
+    """What an unmeasured source is priced from names no other source.
+
+    The basis is the suites EVERY declared source of the route names, so a
+    row one source's own verification minted cannot survive it.  Asserted
+    against the two sources that are priced from it, because the first,
+    route-wide version of that completion handed a source another source's
+    evidence-scoped registrations.
+    """
+
+    registry = physics_registry()
+    route = registry["runner_routes"]["tools.prepared_single_domain_forecast"]
+    declared = route["source_template_ids"]
+    priced = ("aigfs", "era5-l137")
+    measured = [source_id for source_id in route["source_ids"]
+                if source_id not in priced and declared.get(source_id)]
+    assert len(measured) >= 2, measured
+    compared = 0
+    for source_id in priced:
+        # A priced source with an EMPTY list is the defect this pass
+        # exists to close, and it also made every assertion below
+        # iterate nothing: the guard passed on the tree where the
+        # emptiness lived.  A silent pass is not a pass.
+        assert declared[source_id], source_id
+        for template_id in declared[source_id]:
+            compared += 1
+            assert all(template_id in declared[other] for other in measured), (
+                f"{template_id} is priced onto {source_id} and is not a suite "
+                "every measured source of this route names, so it carries "
+                "another source's evidence")
+    assert compared, (priced, {s: declared[s] for s in priced})

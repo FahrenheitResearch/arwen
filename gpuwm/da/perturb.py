@@ -1322,7 +1322,13 @@ def _apply_species_perturbations(state, seed: int, cfg: PerturbationConfig,
     perturbation rests on as a MEASURED quantity, not an assertion:
     ``depleted_pairs_created`` is the number of cells that came out of
     this call holding mass above the activity threshold with a
-    non-positive number moment, and it is zero by construction.
+    non-positive number moment AND did not arrive that way, and it is
+    zero by construction.  Cells the background already carried that way
+    -- a cold start with hydrometeor mass and no number concentration is
+    the ordinary case -- are outside ``active``, are left exactly as
+    found, and are counted in ``depleted_pairs_in_background``.  They are
+    reported, never refused: this module neither made them nor can mend
+    them, and refusing on them stopped forecasts it had not harmed.
     """
     if not cfg.species:
         return []
@@ -1391,6 +1397,17 @@ def _apply_species_perturbations(state, seed: int, cfg: PerturbationConfig,
 
         applied = [spec.mass_field] + partners
         before_mass = float(xp.sum(mass.astype(np.float64)))
+        # What the BACKGROUND already carries, measured before a single
+        # array is scaled.  A cold start from a source with hydrometeor
+        # mass and no number concentration arrives here with pairs the
+        # scheme itself will close on its first call, and those cells are
+        # not active, so nothing below touches them.  Counting the
+        # post-state absolutely made the invariant read as violated by a
+        # condition this module neither created nor can repair, and every
+        # such forecast was refused after its state had been perturbed.
+        pre_negative = mass < 0
+        pre_depleted = (None if pair is None else
+                        (mass > threshold) & (getattr(state, pair.number) <= 0))
         for name in applied:
             target = getattr(state, name)
             scaled = target * factor.astype(target.dtype, copy=False)
@@ -1404,12 +1421,15 @@ def _apply_species_perturbations(state, seed: int, cfg: PerturbationConfig,
         # counted rather than claimed, because a claim in a docstring is
         # not a receipt.
         post_mass = getattr(state, spec.mass_field)
-        negative = int(xp.count_nonzero(post_mass < 0))
+        negative = int(xp.count_nonzero((post_mass < 0) & ~pre_negative))
+        carried_negative = int(xp.count_nonzero(pre_negative))
         depleted = 0
+        carried_depleted = 0
         if pair is not None:
             post_number = getattr(state, pair.number)
-            depleted = int(xp.count_nonzero(
-                (post_mass > threshold) & (post_number <= 0)))
+            offending = (post_mass > threshold) & (post_number <= 0)
+            depleted = int(xp.count_nonzero(offending & ~pre_depleted))
+            carried_depleted = int(xp.count_nonzero(pre_depleted))
         record = {
             "species": spec.mass_field,
             "fields_scaled": applied,
@@ -1441,14 +1461,22 @@ def _apply_species_perturbations(state, seed: int, cfg: PerturbationConfig,
             "mass_after_sum": after_mass,
             "negative_points": negative,
             "depleted_pairs_created": depleted,
+            #: Present in the BACKGROUND and left exactly as found: these
+            #: cells are outside ``active``, so no factor reached them.
+            #: Reported rather than refused, because the perturbation did
+            #: not make them and cannot mend them.
+            "negative_points_in_background": carried_negative,
+            "depleted_pairs_in_background": carried_depleted,
             "invariants": [
                 "positivity: the factor exp(.) is strictly positive, so a "
                 "non-negative field stays non-negative with no clipping and "
                 "no mass repair (negative_points is the measurement)",
                 "moment consistency: mass, number and volume take the SAME "
                 "factor, so q/N -- and with it the scheme's slope closure -- "
-                "is unchanged and no depleted pair can be created "
-                "(depleted_pairs_created is the measurement)",
+                "is unchanged and no depleted pair can be CREATED "
+                "(depleted_pairs_created is the measurement; pairs the "
+                "background already carried are counted separately in "
+                "depleted_pairs_in_background and are left untouched)",
                 "clear air: the factor is applied only where the background "
                 "pair is jointly active, so the ensemble carries spread in "
                 "the hydrometeors the model made and invents none where the "
@@ -1457,12 +1485,15 @@ def _apply_species_perturbations(state, seed: int, cfg: PerturbationConfig,
         }
         if negative or depleted:
             raise ValueError(
-                f"species perturbation of {spec.mass_field!r} produced "
+                f"species perturbation of {spec.mass_field!r} CREATED "
                 f"{negative} negative cell(s) and {depleted} depleted "
                 "moment pair(s), which a strictly positive common factor "
                 "cannot do. The background is not what this module assumed "
-                "-- a negative background mass, or a non-finite factor -- "
-                "and the state is now perturbed; do not use it")
+                "-- a non-finite factor, or a field that changed under it "
+                "-- and the state is now perturbed; do not use it. "
+                f"({carried_negative} negative cell(s) and "
+                f"{carried_depleted} depleted pair(s) the background "
+                "already carried are untouched and are not this refusal.)")
         records.append(record)
     return records
 

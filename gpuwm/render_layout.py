@@ -165,7 +165,7 @@ _DAY = re.compile(r"^(\d{4})-(\d{2})-(\d{2})(?:[T_ ]|$)")
 #: every frame of those runs was left flat under a front door printing
 #: ``layout nested``.
 _HEAD = (r"(?:arwen|rustwx)_(?P<model>.+?)_(?P<date>\d{8})"
-         r"_(?P<cycle>\d{1,2})z_f(?P<lead>\d{3})")
+         r"_(?P<cycle>\d{1,2})z_f(?P<lead>\d{3,})")
 
 #: The rust engine's output filename, as
 #: ``rustwx-products``/``derived.rs`` formats it and

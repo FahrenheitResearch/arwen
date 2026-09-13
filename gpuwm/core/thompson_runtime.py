@@ -4,9 +4,8 @@ The table parser in :mod:`gpuwm.core.thompson_contract` proves the bytes on
 disk.  This module closes the second half of that boundary: it checks the
 complete in-memory inventory, uploads every record without a precision or
 layout conversion, verifies a device round trip, and retains one process-local
-owner per CUDA device.  Merely importing this module does not make
-``mp_physics=8`` selectable; the production scheme remains fail-closed until
-the simultaneous process driver and coupled gates are complete.
+owner per CUDA device. The production ``mp_physics=8`` adapter loads this
+owner before its simultaneous source and fallout calls.
 """
 
 from __future__ import annotations

@@ -197,6 +197,10 @@ class LetkfError(ValueError):
     """Any refusal by this module.  Never raised for a merely hard problem."""
 
 
+class LetkfCapacityError(LetkfError):
+    """The selected storage mode cannot fit its smallest priced scratch."""
+
+
 #: Which batched symmetric eigensolver factors ``(R-1)I/rho + C Yb``.
 #:
 #: ``"auto"`` -- this project's own kernel
@@ -825,6 +829,16 @@ class LetkfDiagnostics:
     #: Largest number of valid observations any single gridpoint saw.
     max_local_obs: int = 0
     batches: int = 0
+    host_staging: bool = False
+    staging_bytes: int = 0
+    staging_peak_bytes: int = 0
+    sparse_neighbor_peak_bytes: int = 0
+    host_geometry_bytes_per_point: int = 0
+    device_chunks: int = 0
+    geometry_evaluations: int = 0
+    geometry_reuses: int = 0
+    driver_free_bytes: int | None = None
+    pool_reusable_bytes: int | None = None
     #: Gridpoints per batched solve actually in effect when the analysis
     #: finished.  Smaller than ``chunk_points_initial`` exactly when the
     #: solve hit a device allocation failure mid-analysis and shrank.
@@ -1179,23 +1193,36 @@ def reachable_slots_estimate(stencils, nz: int, ny: int, nx: int) -> int:
     return int(best)
 
 
-def _device_free_bytes(xp):
-    """Free device memory in bytes, or None off-device or unanswerable.
+def _packed_bytes_per_point(slots, members, itemsize, fields):
+    # Existing conservative transform accounting plus simultaneous field
+    # staging, result storage, and transfer buffers.
+    return solve_bytes_per_point(slots, members, itemsize) + 5*fields*members*itemsize
 
-    Frees the pool's idle blocks first, so memory the allocator is merely
-    hoarding between analyses is counted as free rather than as pressure.
-    An unanswerable card returns None -- sizing then rests on the budget
-    alone, which is the pre-device behaviour, not a failure.
+
+def _device_capacity(xp):
+    """Driver free and remaining reusable pool bytes, after releasing idle blocks.
+
+    Split pool blocks may remain reusable even when they cannot yet return
+    to the driver. These are disjoint from driver-free bytes. Neither is a
+    guarantee of a contiguous allocation; the chunk allocation retry remains
+    authoritative. Used pool blocks never count as available.
     """
-
     if xp is np:
-        return None
+        return None, None
     try:
-        xp.get_default_memory_pool().free_all_blocks()
+        pool = xp.get_default_memory_pool()
+        pool.free_all_blocks()
         free_b, _total = xp.cuda.runtime.memGetInfo()
-        return int(free_b)
+        reusable = max(0, int(pool.free_bytes()))
+        return max(0, int(free_b)), reusable
     except Exception:
-        return None
+        return None, None
+
+
+def _device_free_bytes(xp):
+    """Capacity available to pool allocations, or None when unreadable."""
+    driver, reusable = _device_capacity(xp)
+    return None if driver is None else driver + reusable
 
 
 #: Substrings that identify an allocation failure in a device library's
@@ -1606,14 +1633,16 @@ def analyze(
     grid: GridGeometry,
     config: LetkfConfig,
     diagnostics: LetkfDiagnostics | None = None,
+    *, solve_namespace=None, progress=None,
 ) -> dict:
     """One LETKF analysis.  Returns per-member increments, not the analysis.
 
     Parameters
     ----------
     prior
-        ``{field_name: array (R, nz, ny, nx)}``.  numpy or cupy; the whole
-        analysis runs in whichever namespace these arrive in.
+        ``{field_name: array (R, nz, ny, nx)}``. numpy or cupy. With
+        solve_namespace set, these remain on the host and only a bounded
+        compact gather and the float64 local transform use that namespace.
     obs
         Observation batches (:class:`GriddedObs`).  An empty sequence, or
         one whose masks are all False, is a legitimate no-observation
@@ -1629,6 +1658,13 @@ def analyze(
         See :class:`LetkfConfig`.
     diagnostics
         Optional; filled in place if given.
+    solve_namespace
+        Optional numerical namespace for a host-backed solve. Inputs and
+        increments remain numpy arrays. Every positive-weight neighbour is
+        retained, in batch and stencil order; only zero terms are removed.
+    progress
+        Optional callback receiving completed gridpoint/chunk counts. No
+        estimate of remaining time is inferred from these measurements.
 
     Returns
     -------
@@ -1654,6 +1690,25 @@ def analyze(
     probe = [prior[f] for f in fields if f in prior]
     probe += [o.values for o in obs]
     xp = _get_xp(*probe)
+    host_staging = solve_namespace is not None
+    if host_staging and xp is not np:
+        raise LetkfError("Bounded staging requires host input arrays; retain the input on the host before selecting a solve namespace.")
+    solve_xp = xp if solve_namespace is None else solve_namespace
+    diagnostics.host_staging = host_staging
+    last_progress = -float("inf")
+
+    def report_progress(done, chunks, active, *, phase="solve", force=False):
+        nonlocal last_progress
+        if progress is None:
+            return
+        now = time.perf_counter()
+        if force or now - last_progress >= 0.5:
+            progress({"schema": "gpuwm-da.analysis-progress.v1",
+                      "phase": phase, "gridpoints_done": int(done),
+                      "gridpoints_total": int(diagnostics.total_points),
+                      "chunks": int(chunks), "active_points": int(active),
+                      "elapsed_seconds": now - t_enter})
+            last_progress = now
 
     # dtype objects are namespace-agnostic (cupy reuses numpy's), so these
     # are np.dtype even when every array is on the device.
@@ -1687,7 +1742,7 @@ def analyze(
     # Resolved before anything is gathered, so an unsatisfiable request
     # refuses at the top and a satisfiable one is recorded even on a cycle
     # that turns out to have no active gridpoint and never reaches a solve.
-    eigensolver = _resolve_eigensolver(xp, members, solve_dtype, config)
+    eigensolver = _resolve_eigensolver(solve_xp, members, solve_dtype, config)
     diagnostics.eigensolver = eigensolver
 
     # Prior mean and perturbations, once, for the whole domain.  Xb is what
@@ -1749,6 +1804,7 @@ def analyze(
 
     if not checked:
         _finish(xp, fields, pri, increments, members, diagnostics)
+        report_progress(diagnostics.total_points, 0, 0, phase="complete", force=True)
         return increments
 
     # ---- the coordinates the localisation metric is measured in --------
@@ -1840,6 +1896,8 @@ def analyze(
             "hcut": float(spec.horizontal_m),
             "vcut": float(spec.vertical_m),
             "nslots": int(dj.size) * int(dk.size),
+            "geometry_key": (tuple(dk), tuple(dj), tuple(di),
+                             float(spec.horizontal_m), float(spec.vertical_m)),
             # The batch's storage extent, so the gather can turn a grid
             # index into an index into THESE arrays.  For an unwindowed
             # batch these are the grid's own numbers and every expression
@@ -1867,6 +1925,13 @@ def analyze(
     per_point = solve_bytes_per_point(
         sizing_slots, members, int(solve_dtype.itemsize))
     diagnostics.solve_bytes_per_point = per_point
+    device_budget = int(config.memory_budget_mib * (1 << 20))
+    device_limiter = "memory_budget_mib"
+    geometry_slots = sum({st['geometry_key']: st['nslots'] for st in stencils}.values())
+    # Worst-case positive-neighbour records and selection/packing scratch,
+    # plus geometric scratch for each distinct physical stencil.
+    host_per_point = 64*total_slots + 182*geometry_slots
+    diagnostics.host_geometry_bytes_per_point = host_per_point if host_staging else 0
     if config.chunk_points is not None:
         chunk = int(config.chunk_points)
     else:
@@ -1879,19 +1944,36 @@ def analyze(
         budget = int(config.memory_budget_mib * (1 << 20))
         ceiling = budget
         limiter = "memory_budget_mib"
-        free_bytes = _device_free_bytes(xp)
+        free_bytes = None
+        if host_staging:
+            driver, reusable = _device_capacity(solve_xp)
+            diagnostics.driver_free_bytes = driver
+            diagnostics.pool_reusable_bytes = reusable
+            free_bytes = None if driver is None else driver + reusable
+        else:
+            free_bytes = _device_free_bytes(solve_xp)
         if free_bytes is not None:
             device_ceiling = int(free_bytes * _DEVICE_FREE_FRACTION)
             if device_ceiling < ceiling:
                 ceiling = device_ceiling
-                limiter = (f"the card ({free_bytes // (1 << 20)} MiB free,"
-                           f" of which {int(_DEVICE_FREE_FRACTION * 100)}%"
-                           " may be promised to the solve)")
-        chunk = chunk_points_for_budget(
-            sizing_slots, members, int(solve_dtype.itemsize), ceiling, npts)
+                if host_staging:
+                    limiter = (f"current device capacity ({driver} driver-free bytes + "
+                               f"{reusable} reusable pool bytes after idle-block release; "
+                               f"{int(_DEVICE_FREE_FRACTION * 100)}% scratch allowance)")
+                else:
+                    limiter = (f"the card ({free_bytes // (1 << 20)} MiB free,"
+                               f" of which {int(_DEVICE_FREE_FRACTION * 100)}%"
+                               " may be promised to the solve)")
+        device_budget = ceiling
+        device_limiter = limiter
+        if host_staging:
+            chunk = min(npts, max(1, budget // max(1, host_per_point)))
+        else:
+            chunk = chunk_points_for_budget(
+                sizing_slots, members, int(solve_dtype.itemsize), ceiling, npts)
         if chunk < 1:
             need_mib = -(-per_point // (1 << 20))
-            raise LetkfError(
+            raise LetkfCapacityError(
                 "the batched solve cannot fit even ONE gridpoint under its"
                 f" memory ceiling: {sizing_slots} stencil slots x {members}"
                 f" members in {config.solve_dtype} costs {need_mib} MiB per"
@@ -1903,7 +1985,7 @@ def analyze(
             )
     diagnostics.chunk_points = chunk
     diagnostics.chunk_points_initial = chunk
-    ident = xp.eye(members, dtype=solve_dtype)
+    ident = solve_xp.eye(members, dtype=solve_dtype)
     scale = solve_dtype.type(members - 1) / solve_dtype.type(
         config.prior_inflation)
 
@@ -1921,167 +2003,79 @@ def analyze(
     weights_seconds = 0.0
     transform_seconds = 0.0
 
-    def _solve_chunk(start, stop, stencils):
-        """One chunk's analysis: ``(active_points, max_local_obs, sweeps)``.
-
-        ``stencils`` is the subset of observation batches that can reach
-        this span -- see :func:`_batch_reach_box`.  Shadowing the enclosing
-        name is deliberate: every use inside this function must go through
-        the filtered list, and shadowing makes an accidental use of the
-        full one impossible rather than merely discouraged.  The batches it
-        leaves out contribute identically zero weight, so the arithmetic
-        below is the same arithmetic on a shorter concatenation.
-
-        Idempotent by construction: everything it writes is a plain
-        assignment into ``incr_flat`` at the chunk's own gridpoints, and
-        every statistic is returned rather than accumulated.  That is what
-        makes the caller's out-of-memory retry safe -- an attempt that
-        died anywhere in here can be re-run over the same span, in any
-        number of smaller pieces, without double-counting a batch or
-        re-adding an increment.
-
-        Idempotent is not bit-invariant, and the difference was MEASURED
-        rather than assumed.  Each gridpoint's transform is mathematically
-        independent of how gridpoints are batched, and on numpy -- where
-        the batched eigensolve and the matmuls are per-matrix loops -- a
-        re-solve at a different chunk really is bitwise identical.  On the
-        device it is not: cuBLAS and the batched eigensolver pick work
-        partitionings from the batch extent, so the same gridpoint's
-        summations happen in a different order.  Measured on an RTX 3090
-        (sm_86, cupy 14.1.1, float64), re-solving the same analysis at
-        chunks of 16, 8 and 1 against a 32-point reference moved
-        increments by at most 3.1e-15 in absolute terms, a few ulp of the
-        values themselves.  So a run that took the degradation path is the
-        same analysis to rounding, not the same bytes, and
-        ``chunk_oom_shrinks`` in the receipt is what says which happened.
-        """
-        nonlocal weights_seconds, transform_seconds
-        t_weights = time.perf_counter()
-        pts = xp.arange(start, stop)
-        kk = pts // (ny * nx)
-        rem = pts - kk * (ny * nx)
-        jj = rem // nx
-        ii = rem - jj * nx
-
-        # ---- phase 1: weights only, no member axis --------------------
-        # Cheap enough to throw away: (G, P) versus the (R, G, P) gather it
-        # decides whether to do at all.  In a radar-sparse domain most
-        # gridpoints have no observation within the cutoff and this phase
-        # eliminates them before they cost anything.
-        #
-        # Both weights are evaluated from the coordinates of the two
-        # gridpoints being related, not from the offset between their
-        # indices.  Horizontally that is one distance per (analysis column,
-        # stencil column) pair; vertically it is one per full slot, because
-        # on terrain the height at a given model level is a property of the
-        # column.  A precomputed offset -> weight table is cheaper and is
-        # what this used to do, but it can only express a metric in which
-        # every column is identical, which is exactly the claim a
-        # terrain-following projected grid does not support.
-        ccol = jj * nx + ii                         # (G,) analysis column
-        w_parts = []
-        idx_parts = []
-        for st in stencils:
-            k2 = kk[:, None] + st["dk"][None, :]
-            inside_k = (k2 >= 0) & (k2 < nz)
-            k2 = xp.clip(k2, 0, nz - 1)
-            j2 = jj[:, None] + st["dj"][None, :]
-            i2 = ii[:, None] + st["di"][None, :]
-            inside_h = (j2 >= 0) & (j2 < ny) & (i2 >= 0) & (i2 < nx)
-            j2 = xp.clip(j2, 0, ny - 1)
-            i2 = xp.clip(i2, 0, nx - 1)
-            col = j2 * nx + i2                      # (G, n_h)
-            flat = (k2[:, :, None] * ny + j2[:, None, :]) * nx \
-                + i2[:, None, :]
-            shape3 = flat.shape
-            flat = flat.reshape(shape3[0], -1)
-            # Two index spaces from here, and keeping them apart is the
-            # whole correctness question.  ``flat`` addresses the GRID and
-            # is what the terrain heights below are read with -- a column's
-            # height is a property of the column, not of any batch's
-            # window.  ``local`` addresses THIS BATCH'S arrays, which for a
-            # windowed batch cover only its window.
-            if st["windowed"]:
-                jw = j2 - st["j0"]
-                iw = i2 - st["i0"]
-                # A stencil neighbour outside this batch's window holds no
-                # observation by construction -- the window covers the mask
-                # -- so it is treated exactly like a neighbour outside the
-                # grid: excluded from `inside`, and its index clamped to a
-                # valid slot that the zero weight then discards.  Clamping
-                # rather than branching keeps the gather rectangular.
-                inside_h = (inside_h & (jw >= 0) & (jw < st["nj"])
-                            & (iw >= 0) & (iw < st["ni"]))
-                jw = xp.clip(jw, 0, st["nj"] - 1)
-                iw = xp.clip(iw, 0, st["ni"] - 1)
-                local = ((k2[:, :, None] * st["nj"] + jw[:, None, :])
-                         * st["ni"] + iw[:, None, :]).reshape(flat.shape)
-            else:
-                local = flat
-            inside = (inside_k[:, :, None] & inside_h[:, None, :]).reshape(
-                flat.shape)
-            wh = gaspari_cohn(
-                _horizontal_distance(ccol[:, None], col), st["hcut"])
-            dz = xp.abs(zflat[flat] - zflat[pts][:, None])
-            w = (xp.asarray(gaspari_cohn(dz, st["vcut"])).reshape(shape3)
-                 * xp.asarray(wh)[:, None, :]).reshape(flat.shape)
-            w = xp.where(inside & st["mask"][local], w, 0)
-            w_parts.append(w.astype(solve_dtype))
-            # The batch-local index is what phase 2 gathers with.
-            idx_parts.append(local)
-
-        wloc = xp.concatenate(w_parts, axis=1) if len(w_parts) > 1 \
-            else w_parts[0]
-        gidx = xp.concatenate(idx_parts, axis=1) if len(idx_parts) > 1 \
-            else idx_parts[0]
-        nvalid = (wloc > 0).sum(axis=1)
-        active = xp.nonzero(nvalid > 0)[0]
-        ng = int(active.size)
-        if ng == 0:
-            _sync_namespace(xp)
-            weights_seconds += time.perf_counter() - t_weights
-            return 0, 0, 0
-        local_max = int(nvalid.max())
-
-        wloc = wloc[active]
-        gidx = gidx[active]
-        gpts = pts[active]
-
-        _sync_namespace(xp)
+    def _transform_chunk(gpts, gidx, wloc, stencils, local_max, sparse=None):
+        nonlocal transform_seconds
+        xp = solve_xp
+        ng = int(gpts.size)
         t_transform = time.perf_counter()
-        weights_seconds += t_transform - t_weights
-
         # ---- phase 2: the batched transform ---------------------------
         # yb: (G, P, R); d: (G, P); winv: (G, P) = localisation / error^2.
-        d_parts = []
-        yb_parts = []
-        off = 0
-        for st in stencils:
-            n = st["nslots"]
-            sub = gidx[:, off:off + n]
-            off += n
-            s = st["sim"][:, sub.reshape(-1)].reshape(
-                members, ng, n).astype(solve_dtype)
+        if host_staging:
+            # Remove only exactly zero-weight slots, retaining batch/slot
+            # order and every positive neighbour. Zero tails keep the batch
+            # rectangular without transferring a full stencil member cube.
+            packed_s = np.zeros((members, ng, local_max), dtype=solve_dtype)
+            packed_v = np.zeros((ng, local_max), dtype=solve_dtype)
+            packed_e = np.ones((ng, local_max), dtype=solve_dtype)
+            packed_w = np.zeros((ng, local_max), dtype=solve_dtype)
+            positions = np.zeros(ng, dtype=np.int64)
+            # gidx is the active tile-row roster here, not a dense
+            # all-stencil index matrix. Each batch retains row/slot order.
+            for st, (source_rows, source_indices, source_weights) in zip(stencils, sparse):
+                lo = np.searchsorted(source_rows, gidx[0], side='left')
+                hi = np.searchsorted(source_rows, gidx[-1], side='right')
+                rows = np.searchsorted(gidx, source_rows[lo:hi])
+                sub = source_indices[lo:hi]
+                weights = source_weights[lo:hi]
+                counts = np.bincount(rows, minlength=ng)
+                rank = np.arange(rows.size) - np.repeat(np.cumsum(counts)-counts, counts)
+                dest = positions[rows] + rank
+                packed_s[:, rows, dest] = st["sim"][:, sub]
+                packed_v[rows, dest] = st["values"][sub]
+                packed_e[rows, dest] = st["err2"][sub]
+                packed_w[rows, dest] = weights
+                positions += counts
+            assert np.array_equal(positions, wloc)
+            host_xb = np.stack([xb_flat[f][:, gpts] for f in fields]).astype(solve_dtype)
+            payloads = (packed_s, packed_v, packed_e, packed_w, host_xb)
+            staged_bytes = sum(v.nbytes for v in payloads)
+            diagnostics.staging_bytes += staged_bytes
+            diagnostics.staging_peak_bytes = max(diagnostics.staging_peak_bytes, staged_bytes)
+            xp = solve_xp
+            s, values, err2, wloc, chunk_xb = [xp.asarray(v) for v in payloads]
             sbar = s.mean(axis=0)
-            yb_parts.append(xp.moveaxis(s - sbar[None], 0, 2))   # (G, n, R)
-            d_parts.append(
-                st["values"][sub.reshape(-1)].reshape(ng, n).astype(
-                    solve_dtype) - sbar)
-        yb = xp.concatenate(yb_parts, axis=1) if len(yb_parts) > 1 \
-            else yb_parts[0]
-        dvec = xp.concatenate(d_parts, axis=1) if len(d_parts) > 1 \
-            else d_parts[0]
+            yb = xp.moveaxis(s-sbar[None], 0, 2)
+            dvec = values-sbar
+        else:
+            d_parts = []
+            yb_parts = []
+            off = 0
+            for st in stencils:
+                n = st["nslots"]
+                sub = gidx[:, off:off + n]
+                off += n
+                s = st["sim"][:, sub.reshape(-1)].reshape(
+                    members, ng, n).astype(solve_dtype)
+                sbar = s.mean(axis=0)
+                yb_parts.append(xp.moveaxis(s - sbar[None], 0, 2))   # (G, n, R)
+                d_parts.append(
+                    st["values"][sub.reshape(-1)].reshape(ng, n).astype(
+                        solve_dtype) - sbar)
+            yb = xp.concatenate(yb_parts, axis=1) if len(yb_parts) > 1 \
+                else yb_parts[0]
+            dvec = xp.concatenate(d_parts, axis=1) if len(d_parts) > 1 \
+                else d_parts[0]
 
-        err2_parts = []
-        off = 0
-        for st in stencils:
-            n = st["nslots"]
-            err2_parts.append(
-                st["err2"][gidx[:, off:off + n].reshape(-1)].reshape(
-                    ng, n).astype(solve_dtype))
-            off += n
-        err2 = xp.concatenate(err2_parts, axis=1) if len(err2_parts) > 1 \
-            else err2_parts[0]
+            err2_parts = []
+            off = 0
+            for st in stencils:
+                n = st["nslots"]
+                err2_parts.append(
+                    st["err2"][gidx[:, off:off + n].reshape(-1)].reshape(
+                        ng, n).astype(solve_dtype))
+                off += n
+            err2 = xp.concatenate(err2_parts, axis=1) if len(err2_parts) > 1 \
+                else err2_parts[0]
 
         good = wloc > 0
         winv = xp.where(good, wloc / err2, 0)
@@ -2134,8 +2128,9 @@ def analyze(
 
         # ---- apply to every analysis field ----------------------------
         alpha = solve_dtype.type(config.rtps_alpha)
-        for f in fields:
-            xbg = xb_flat[f][:, gpts].astype(solve_dtype)   # (R, G)
+        chunk_results = []
+        for field_index, f in enumerate(fields):
+            xbg = chunk_xb[field_index] if host_staging else xb_flat[f][:, gpts].astype(solve_dtype)   # (R, G)
             dbar = xp.einsum("mg,gm->g", xbg, wbar)         # mean increment
             xa = xp.einsum("mg,gmk->kg", xbg, wa)           # (R, G)
             if config.rtps_alpha > 0.0:
@@ -2157,11 +2152,208 @@ def analyze(
                     relax = xp.where(sa > 0, alpha * (sb - sa) / xp.where(
                         sa > 0, sa, 1) + 1, 1)
                     xa = xa * relax[None, :]
-            incr_flat[f][:, gpts] = (
-                dbar[None, :] + xa - xbg).astype(work_dtype)
-        _sync_namespace(xp)
+            result = (dbar[None, :] + xa - xbg).astype(work_dtype)
+            if host_staging:
+                chunk_results.append(result)
+            else:
+                incr_flat[f][:, gpts] = result
+        if host_staging:
+            results = xp.stack(chunk_results)
+            if xp is not np:
+                results = xp.asnumpy(results)
+            for field_index, f in enumerate(fields):
+                incr_flat[f][:, gpts] = results[field_index]
+        else:
+            _sync_namespace(xp)
         transform_seconds += time.perf_counter() - t_transform
         return ng, local_max, int(sweeps)
+
+    def _solve_chunk(start, stop, stencils):
+        """One chunk's analysis: ``(active_points, max_local_obs, sweeps)``.
+
+        ``stencils`` is the subset of observation batches that can reach
+        this span -- see :func:`_batch_reach_box`.  Shadowing the enclosing
+        name is deliberate: every use inside this function must go through
+        the filtered list, and shadowing makes an accidental use of the
+        full one impossible rather than merely discouraged.  The batches it
+        leaves out contribute identically zero weight, so the arithmetic
+        below is the same arithmetic on a shorter concatenation.
+
+        Idempotent by construction: everything it writes is a plain
+        assignment into ``incr_flat`` at the chunk's own gridpoints, and
+        every statistic is returned rather than accumulated.  That is what
+        makes the caller's out-of-memory retry safe -- an attempt that
+        died anywhere in here can be re-run over the same span, in any
+        number of smaller pieces, without double-counting a batch or
+        re-adding an increment.
+
+        Idempotent is not bit-invariant, and the difference was MEASURED
+        rather than assumed.  Each gridpoint's transform is mathematically
+        independent of how gridpoints are batched, and on numpy -- where
+        the batched eigensolve and the matmuls are per-matrix loops -- a
+        re-solve at a different chunk really is bitwise identical.  On the
+        device it is not: cuBLAS and the batched eigensolver pick work
+        partitionings from the batch extent, so the same gridpoint's
+        summations happen in a different order.  Measured on an RTX 3090
+        (sm_86, cupy 14.1.1, float64), re-solving the same analysis at
+        chunks of 16, 8 and 1 against a 32-point reference moved
+        increments by at most 3.1e-15 in absolute terms, a few ulp of the
+        values themselves.  So a run that took the degradation path is the
+        same analysis to rounding, not the same bytes, and
+        ``chunk_oom_shrinks`` in the receipt is what says which happened.
+        """
+        nonlocal weights_seconds, transform_seconds
+        t_weights = time.perf_counter()
+        xp = np if host_staging else solve_xp
+        pts = xp.arange(start, stop)
+        kk = pts // (ny * nx)
+        rem = pts - kk * (ny * nx)
+        jj = rem // nx
+        ii = rem - jj * nx
+
+        # ---- phase 1: weights only, no member axis --------------------
+        # Cheap enough to throw away: (G, P) versus the (R, G, P) gather it
+        # decides whether to do at all.  In a radar-sparse domain most
+        # gridpoints have no observation within the cutoff and this phase
+        # eliminates them before they cost anything.
+        #
+        # Both weights are evaluated from the coordinates of the two
+        # gridpoints being related, not from the offset between their
+        # indices.  Horizontally that is one distance per (analysis column,
+        # stencil column) pair; vertically it is one per full slot, because
+        # on terrain the height at a given model level is a property of the
+        # column.  A precomputed offset -> weight table is cheaper and is
+        # what this used to do, but it can only express a metric in which
+        # every column is identical, which is exactly the claim a
+        # terrain-following projected grid does not support.
+        ccol = jj * nx + ii                         # (G,) analysis column
+        w_parts = []
+        idx_parts = []
+        sparse_parts = []
+        nvalid = np.zeros(stop-start, dtype=np.int64) if host_staging else None
+        geometry = {}
+        for st in stencils:
+            key = st["geometry_key"]
+            if key not in geometry:
+                k2 = kk[:, None] + st["dk"][None, :]
+                inside_k = (k2 >= 0) & (k2 < nz)
+                k2 = xp.clip(k2, 0, nz - 1)
+                j2 = jj[:, None] + st["dj"][None, :]
+                i2 = ii[:, None] + st["di"][None, :]
+                inside_h = (j2 >= 0) & (j2 < ny) & (i2 >= 0) & (i2 < nx)
+                j2 = xp.clip(j2, 0, ny - 1)
+                i2 = xp.clip(i2, 0, nx - 1)
+                col = j2 * nx + i2                      # (G, n_h)
+                flat = (k2[:, :, None] * ny + j2[:, None, :]) * nx \
+                    + i2[:, None, :]
+                shape3 = flat.shape
+                flat = flat.reshape(shape3[0], -1)
+                wh = gaspari_cohn(
+                    _horizontal_distance(ccol[:, None], col), st["hcut"])
+                dz = xp.abs(zflat[flat] - zflat[pts][:, None])
+                geometric = (xp.asarray(gaspari_cohn(dz, st["vcut"])).reshape(shape3)
+                             * xp.asarray(wh)[:, None, :]).reshape(flat.shape)
+                geometry[key] = (k2, j2, i2, inside_k, inside_h, flat, geometric)
+                diagnostics.geometry_evaluations += 1
+            else:
+                diagnostics.geometry_reuses += 1
+            k2, j2, i2, inside_k, inside_h, flat, geometric = geometry[key]
+            # Two index spaces from here, and keeping them apart is the
+            # whole correctness question.  ``flat`` addresses the GRID and
+            # is what the terrain heights below are read with -- a column's
+            # height is a property of the column, not of any batch's
+            # window.  ``local`` addresses THIS BATCH'S arrays, which for a
+            # windowed batch cover only its window.
+            if st["windowed"]:
+                jw = j2 - st["j0"]
+                iw = i2 - st["i0"]
+                # A stencil neighbour outside this batch's window holds no
+                # observation by construction -- the window covers the mask
+                # -- so it is treated exactly like a neighbour outside the
+                # grid: excluded from `inside`, and its index clamped to a
+                # valid slot that the zero weight then discards.  Clamping
+                # rather than branching keeps the gather rectangular.
+                inside_h = (inside_h & (jw >= 0) & (jw < st["nj"])
+                            & (iw >= 0) & (iw < st["ni"]))
+                jw = xp.clip(jw, 0, st["nj"] - 1)
+                iw = xp.clip(iw, 0, st["ni"] - 1)
+                local = ((k2[:, :, None] * st["nj"] + jw[:, None, :])
+                         * st["ni"] + iw[:, None, :]).reshape(flat.shape)
+            else:
+                local = flat
+            inside = (inside_k[:, :, None] & inside_h[:, None, :]).reshape(
+                flat.shape)
+            if host_staging:
+                rows, cols = np.nonzero(inside & st["mask"][local] & (geometric > 0))
+                weights = geometric[rows, cols].astype(solve_dtype)
+                # The old count followed conversion to solve precision.
+                # Preserve that rule if a positive double underflows there.
+                positive = weights > 0
+                rows = rows[positive]
+                indices = local[rows, cols[positive]]
+                weights = weights[positive]
+                sparse_parts.append((rows, indices, weights))
+                nvalid += np.bincount(rows, minlength=stop-start)
+            else:
+                w = xp.where(inside & st["mask"][local], geometric, 0)
+                w_parts.append(w.astype(solve_dtype))
+                idx_parts.append(local)
+
+        if host_staging:
+            diagnostics.sparse_neighbor_peak_bytes = max(
+                diagnostics.sparse_neighbor_peak_bytes,
+                sum(array.nbytes for batch in sparse_parts for array in batch))
+        else:
+            wloc = xp.concatenate(w_parts, axis=1) if len(w_parts) > 1 \
+                else w_parts[0]
+            gidx = xp.concatenate(idx_parts, axis=1) if len(idx_parts) > 1 \
+                else idx_parts[0]
+            nvalid = (wloc > 0).sum(axis=1)
+        active = xp.nonzero(nvalid > 0)[0]
+        ng = int(active.size)
+        if ng == 0:
+            _sync_namespace(xp)
+            weights_seconds += time.perf_counter() - t_weights
+            return 0, 0, 0
+        local_max = int(nvalid.max())
+
+        if not host_staging:
+            wloc = wloc[active]
+            gidx = gidx[active]
+        gpts = pts[active]
+
+        _sync_namespace(xp)
+        t_transform = time.perf_counter()
+        weights_seconds += t_transform - t_weights
+
+        if not host_staging:
+            return _transform_chunk(gpts, gidx, wloc, stencils, local_max)
+        # Geometry is a bounded host tile. Device chunks depend on the
+        # actual positive neighbour roster, never the empty stencil slots.
+        offset = 0
+        sweeps = 0
+        while offset < ng:
+            row_bytes = _packed_bytes_per_point(
+                local_max, members, solve_dtype.itemsize, len(fields))
+            count = min(ng-offset, device_budget // row_bytes)
+            if count < 1:
+                remedy = ("Increase memory_budget_mib while retaining the same observations and domain."
+                          if device_limiter == "memory_budget_mib" else
+                          "Release other live device allocations and retry this unchanged analysis; increasing the configured budget cannot create card capacity.")
+                raise LetkfCapacityError(
+                    f"The smallest packed solve has {local_max} positive neighbours x "
+                    f"{members} members and needs {row_bytes} bytes under the conservative "
+                    f"scratch contract, exceeding {device_budget} bytes set by {device_limiter}. "
+                    + remedy)
+            end = offset + count
+            width = int(nvalid[active[offset:end]].max())
+            _n, _p, used_sweeps = _transform_chunk(
+                gpts[offset:end], active[offset:end], nvalid[active[offset:end]],
+                stencils, width, sparse=sparse_parts)
+            sweeps = max(sweeps, used_sweeps)
+            diagnostics.device_chunks += 1
+            offset = end
+        return ng, local_max, sweeps
 
     # ---- the chunk loop, with the budget enforced rather than hoped ----
     # Two enforcement mechanisms, because the measured failure had two
@@ -2182,10 +2374,10 @@ def analyze(
     # exists and the honest answer is the named remedy, not another retry.
     pool = None
     pool_cap = None
-    if xp is not np:
+    if solve_xp is not np:
         try:
-            pool = xp.get_default_memory_pool()
-            pool_cap = pool.used_bytes() + per_point * chunk
+            pool = solve_xp.get_default_memory_pool()
+            pool_cap = pool.used_bytes() + (device_budget if host_staging else per_point * chunk)
         except Exception:
             pool = None
     def _reaching(lo: int, hi: int):
@@ -2196,10 +2388,12 @@ def analyze(
 
     # After the reachability helper is built, so setup_seconds covers the
     # whole of setup and the solve clock starts where the solve does.
-    _sync_namespace(xp)
+    _sync_namespace(solve_xp)
     t_solve = time.perf_counter()
     diagnostics.setup_seconds = t_solve - t_enter
     start = 0
+    completed_chunks = 0
+    report_progress(0, 0, 0, force=True)
     while start < npts:
         if pool_cap is not None and pool.total_bytes() > pool_cap:
             pool.free_all_blocks()
@@ -2233,6 +2427,8 @@ def analyze(
             # skipping it here is the whole point of the reach box.
             diagnostics.reach_chunks_skipped += 1
             start = stop
+            completed_chunks += 1
+            report_progress(start, completed_chunks, nactive)
             continue
         diagnostics.reach_batches_evaluated += len(span)
         diagnostics.reach_batches_skipped += len(stencils) - len(span)
@@ -2265,7 +2461,7 @@ def analyze(
             # pool in there would return nothing.  Here the exception is
             # cleared, the attempt's arrays are dead, and the pool can
             # actually hand their blocks back before the smaller retry.
-            _release_device_scratch(xp)
+            _release_device_scratch(solve_xp)
             if pool_cap is not None:
                 # And the new entitlement is read HERE, after the release,
                 # for the same reason.  Inside the handler ``used_bytes()``
@@ -2274,7 +2470,7 @@ def analyze(
                 # shrink -- loosening the one control that is supposed to
                 # tighten, exactly when the card has said it is out of
                 # room.
-                pool_cap = pool.used_bytes() + per_point * chunk
+                pool_cap = pool.used_bytes() + (device_budget if host_staging else per_point * chunk)
             continue
         if ng:
             nactive += ng
@@ -2282,8 +2478,10 @@ def analyze(
             max_local = max(max_local, local_max)
             max_sweeps = max(max_sweeps, sweeps)
         start = stop
+        completed_chunks += 1
+        report_progress(start, completed_chunks, nactive)
 
-    _sync_namespace(xp)
+    _sync_namespace(solve_xp)
     t_finish = time.perf_counter()
     diagnostics.solve_seconds = t_finish - t_solve
 
@@ -2310,7 +2508,7 @@ def analyze(
     # the two are comparable by construction.
     if pool is not None:
         try:
-            free_b, total_b = xp.cuda.runtime.memGetInfo()
+            free_b, total_b = solve_xp.cuda.runtime.memGetInfo()
             used_b = int(total_b) - int(free_b)
             pool_b = int(pool.total_bytes())
             diagnostics.device_used_mib = used_b / (1 << 20)
@@ -2324,4 +2522,8 @@ def analyze(
     _finish(xp, fields, pri, increments, members, diagnostics)
     _sync_namespace(xp)
     diagnostics.finish_seconds = time.perf_counter() - t_finish
+    report_progress(npts, completed_chunks, nactive, phase="complete", force=True)
     return increments
+
+
+analyze.supports_host_staging = True

@@ -140,6 +140,95 @@ def _water_substance(state):
     return cp.asnumpy((total * rho * dz).sum(axis=0))
 
 
+def _warm_rain_column(seconds):
+    """Retained activating input: 40 layers over 2km, a 1g/kg rain slab."""
+    import cupy as cp
+    from gpuwm.core.grid import make_base_state, make_vertical_coord
+    from gpuwm.core.physics import initialize_physics
+    from gpuwm.verify.cases import moist_bubble
+
+    cfg = replace(moist_bubble.default_config(), nx=6, ny=4, nz=40,
+                  ztop=2000., dt=seconds, run_seconds=120., mp_physics=16,
+                  moist_cq=True, time_step_sound=4, km_opt=1,
+                  khdif=0., kvdif=0., diff_6th_opt=0, damp_opt=0)
+    coord = make_vertical_coord(cfg.nz)
+    base = make_base_state(coord, lambda z: np.full_like(z, 300.),
+                           p_surf=cfg.p_surf, ztop=cfg.ztop)
+    state = moist_bubble.build(cfg, coord, base)
+    state.thp[...] = 0.
+    for name in ("qv", "qc", "qr", "qi", "qs", "qg", "nc", "nr"):
+        getattr(state, name)[...] = 0.
+    _saturate_cloudy_volume(state, np.ones((40, 4, 6)), supersaturation=1.)
+    state.qr[12:15] = cp.float32(1.e-3)
+    state.nr[12:15] = cp.float32(1.e3)
+    initialize_physics(state, cfg, landmask=1.)
+    return cfg, state
+
+
+@requires_gpu
+@pytest.mark.parametrize("seconds", [1.5, 25., 60., 120.])
+def test_warm_rain_conserves_water_through_production_microphysics(seconds):
+    """The same small column crosses the previously lossy substep regime."""
+    import cupy as cp
+    from gpuwm.core.microphysics import apply
+
+    cfg, state = _warm_rain_column(seconds)
+    before = _water_substance(state)
+    # Hold the activating regime as well as the budget: a future fixture
+    # edit must not turn the failing column into another small-Courant smoke.
+    from gpuwm.core import constants as c
+    phb = state.phb if state.phb.ndim == 3 else state.phb[:, None, None]
+    dz = ((phb + state.php)[1:] - (phb + state.php)[:-1]) / np.float32(c.G)
+    rho = 1. / state.alt
+    radius = cp.minimum((rho * state.qr / cp.maximum(
+        np.float32(1.25663706e4) * state.nr, np.float32(1.e-30))) **
+        np.float32(1. / 3.), np.float32(1.e-3))
+    speed = np.float32(2.99849272e3) * radius ** np.float32(.8) * cp.sqrt(1.28 / rho)
+    courant = float(cp.max(speed * seconds / dz))
+    if seconds >= 25.:
+        assert courant > 3., "the retained rain column no longer activates the flux limit"
+    result = apply(state, cfg, seconds)
+    cp.cuda.runtime.deviceSynchronize()
+    residual = before - _water_substance(state) - cp.asnumpy(result.rainncv)
+    # Tighter than the existing mixed-phase smoke's 1e-3 kg/m2 budget.
+    # The old update loses 0.098 to 0.143 kg/m2 on this retained input.
+    assert np.isfinite(residual).all()
+    assert np.max(np.abs(residual)) < 1.e-5, residual
+
+
+@requires_gpu
+def test_device_rain_substep_accounts_for_surface_mass_and_number():
+    """Expose both budgets from the production helper on the device itself."""
+    from pathlib import Path
+    import cupy as cp
+
+    source = (Path(__file__).resolve().parents[1] / "gpuwm/core/kernels/wdm6.cu").read_text()
+    source += r'''
+extern "C" __global__ void rain_budget_probe(float*q,float*n,const float*rho,
+    const float*dz,const float*vr,const float*vn,float*out) {
+    auto budget=wdm6_rain_substep(q,n,rho,dz,vr,vn,40,10.0f);
+    out[0]=budget.mass; out[1]=budget.number;
+}
+'''
+    kernel = cp.RawKernel(source, "rain_budget_probe")
+    rho = np.linspace(.4, 1.2, 40, dtype=np.float32)
+    dz = np.linspace(20., 100., 40, dtype=np.float32)
+    q = np.linspace(.0001, .002, 40, dtype=np.float32)
+    n = np.linspace(100., 10000., 40, dtype=np.float32)
+    arrays = [cp.asarray(value) for value in (q, n, rho, dz,
+              np.full(40, .075, np.float32), np.full(40, .04, np.float32))]
+    surface = cp.zeros(2, np.float32)
+    kernel((1,), (1,), (*arrays, surface))
+    after_q, after_n = cp.asnumpy(arrays[0]), cp.asnumpy(arrays[1])
+    fallen = cp.asnumpy(surface)
+    for before, after, weight, out in ((q, after_q, rho.astype(float)*dz, fallen[0]),
+                                       (n, after_n, dz.astype(float), fallen[1])):
+        inventory = np.sum(before.astype(float) * weight)
+        residual = inventory - np.sum(after.astype(float) * weight) - out
+        assert abs(residual) <= 8. * np.finfo(np.float32).eps * inventory
+    np.testing.assert_allclose(fallen, [q[0]*rho[0]*dz[0]*.75, n[0]*dz[0]*.4], rtol=3.e-7)
+
+
 @requires_gpu
 @pytest.mark.parametrize("file_ccn", [0., 7.5e9])
 def test_shipped_wrfinput_ccn_restore_reaches_real_gpu_microphysics(tmp_path, file_ccn):
@@ -151,7 +240,7 @@ def test_shipped_wrfinput_ccn_restore_reaches_real_gpu_microphysics(tmp_path, fi
     from wrf_input_fixtures import _small_wrfinput
 
     cfg, state, _driver = _wdm6_case()
-    mapping = wrfinput._active_moisture_map(cfg)
+    mapping = wrfinput.active_moisture_map(cfg)
     original = {name: cp.asnumpy(getattr(state, name)).copy() for name in mapping.values()}
     path = tmp_path / "wrfinput_d01"
     _small_wrfinput(path, nz=cfg.nz, ny=cfg.ny, nx=cfg.nx, moisture_names=tuple(mapping))

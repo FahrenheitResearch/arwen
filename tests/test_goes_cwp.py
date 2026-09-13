@@ -447,7 +447,7 @@ def test_the_error_model_names_itself_uncalibrated():
     # it would have used rather than going silent.
     inflation = payload["thin_thick_inflation"]
     assert inflation["applied"] is False
-    assert inflation["thin_bit"] == 256 and inflation["thick_bit"] == 512
+    assert inflation["thin_bit"] == 512 and inflation["thick_bit"] == 256
     assert inflation["calibration"] == "UNCALIBRATED"
 
 
@@ -479,7 +479,8 @@ def test_a_v1_pack_refuses_the_thin_thick_inflation(tmp_path):
 
 def test_a_v2_pack_inflates_the_thin_and_thick_pixels(tmp_path):
     grid = _grid()
-    # Four cells: clean, thin (256), thick (512), and both.
+    # Independent numeric CF flags: clean, thick (256), thin (512), both.
+    # Do not derive these inputs from the production named constants.
     cells = [(5, 5), (5, 6), (5, 7), (5, 8)]
     lat, lon = _pixels_at(grid, cells)
     dqf = np.array([[0.0, 256.0, 512.0, 768.0]], np.float32)
@@ -498,13 +499,13 @@ def test_a_v2_pack_inflates_the_thin_and_thick_pixels(tmp_path):
     out = grid_cwp(read_cwp_pack(path), grid, error_model=inflating)
     # Every cell is liquid CWP 100 -> max(0.3*100, 40) = 40 before inflation.
     assert out.cwp_err[5, 5] == pytest.approx(40.0)
-    assert out.cwp_err[5, 6] == pytest.approx(80.0)     # thin  x2
-    assert out.cwp_err[5, 7] == pytest.approx(120.0)    # thick x3
+    assert out.cwp_err[5, 6] == pytest.approx(120.0)    # thick x3
+    assert out.cwp_err[5, 7] == pytest.approx(80.0)     # thin  x2
     assert out.cwp_err[5, 8] == pytest.approx(240.0)    # both  x6
     receipt = out.provenance["error_model"]["thin_thick_inflation"]
     assert receipt["applied"] is True
-    assert receipt["counts"]["pixels_thin"] == 2      # 256 and 768
-    assert receipt["counts"]["pixels_thick"] == 2     # 512 and 768
+    assert receipt["counts"]["pixels_thin"] == 2      # 512 and 768
+    assert receipt["counts"]["pixels_thick"] == 2     # 256 and 768
     assert receipt["counts"]["pixels_both"] == 1
     assert out.counts["cells_error_inflated"] == 3
     assert out.provenance["pack_schema_version"] == 2
@@ -517,7 +518,7 @@ def test_an_unreadable_dqf_pixel_is_never_read_as_a_bitfield(tmp_path):
     grid = _grid()
     cells = [(5, 5), (5, 6)]
     lat, lon = _pixels_at(grid, cells)
-    dqf = np.array([[np.nan, 512.0]], np.float32)
+    dqf = np.array([[np.nan, 256.0]], np.float32)
     path = write_cwp_pack(
         tmp_path / "v2nan.goespack",
         cod=np.full((1, 2), 10.0, np.float32),

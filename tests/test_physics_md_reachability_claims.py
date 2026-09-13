@@ -278,6 +278,43 @@ def test_every_registry_unreachable_option_is_published_with_what_it_does():
         + "; ".join(problems))
 
 
+def test_no_option_is_published_unreachable_after_it_stops_being_unreachable():
+    """The reverse leg: a published row must still describe the registry.
+
+    The check above walks the REGISTRY and demands a row for each
+    unreachable option, so a row that outlives its state passes it in
+    silence -- and three of them did.  Land surface off, surface layer
+    off and the analytic clear-sky proxy were flipped to
+    ``component-override`` (audit R-023, the reasons behind their
+    blockers having been retired), and the page went on printing them
+    under a heading that says no route selects them.  A reader following
+    that table types a config line they did not need, or concludes a
+    front door does not exist.  This asserts the direction the drift
+    actually took.
+    """
+    registry = _registry()
+    page = _page()
+
+    states = {
+        f"{group}/{name}": option["reachability"]["state"]
+        for group, body in registry["components"].items()
+        for name, option in body["options"].items()
+    }
+    published = {
+        key for key, state in states.items()
+        if any(line.startswith(
+            f"| {key.split('/', 1)[0].replace('_', ' ')} "
+            f"`{key.split('/', 1)[1]}` |")
+            for line in page.splitlines())
+    }
+    stale = sorted(
+        key for key in published if states[key] != "unreachable")
+    assert stale == [], (
+        "docs/public/PHYSICS.md still lists these under its registry-"
+        "'unreachable' table, and the registry no longer calls them "
+        f"unreachable: {[f'{key} is {states[key]}' for key in stale]}")
+
+
 def _distinct_accepted_matching(walk: dict, selectors: dict[str, int]) -> int:
     """Count unique receipt labels explicitly satisfying every selector."""
     from tools.report_physics_composition_walk import _TAG
@@ -311,6 +348,145 @@ def test_composition_overview_and_revised_mm5_counts_match_the_receipt():
     assert f"**{totals['refused']} refusals fall into {walk['distinct_refusal_rules']} distinct rules**" in page
     revised = _distinct_accepted_matching(walk, {"sf_sfclay_physics": 1})
     assert f"revised MM5 row's {revised} distinct accepted combinations" in page
+
+
+_NUMBER_WORDS = {
+    1: "one", 2: "two", 3: "three", 4: "four", 5: "five", 6: "six",
+    7: "seven", 8: "eight", 9: "nine", 10: "ten", 11: "eleven",
+    12: "twelve", 13: "thirteen", 14: "fourteen", 15: "fifteen",
+    16: "sixteen", 17: "seventeen", 18: "eighteen", 19: "nineteen",
+    20: "twenty",
+}
+
+#: The six suite-less compositions R-067 gave their first named template.
+#: Read off the registry by composition rather than spelled as ids, so a
+#: rename does not turn this gate into a false green.
+_COMPOSITION_SUITE_COMPONENTS = (
+    {"microphysics": "milbrandt2mom-mp9", "cumulus": "new-tiedtke"},
+    {"microphysics": "wdm6-mp16", "cumulus": "grell-freitas"},
+    {"pbl": "sase"},
+    {"turbulence": "tke-1.5-order"},
+    {"turbulence": "smagorinsky-3d"},
+    {"turbulence": "constant-k"},
+)
+
+
+def _composition_suite_ids(registry: dict) -> set[str]:
+    found = set()
+    for wanted in _COMPOSITION_SUITE_COMPONENTS:
+        matched = {
+            template_id
+            for template_id, template in registry["templates"].items()
+            if all(template.get("components", {}).get(key) == value
+                   for key, value in wanted.items())
+        }
+        assert len(matched) == 1, (wanted, sorted(matched))
+        found |= matched
+    return found
+
+
+def test_the_composition_suite_coverage_sentence_is_the_registry_s():
+    """The page's counts for the six composition suites, recomputed.
+
+    The sentence this checks replaced one that read "every prepared
+    single-domain source and every tree source names all six".  It was
+    wrong in both halves and nothing noticed: the prepared single-domain
+    route registers eighteen sources, and the tree route declares a list
+    for four of its eighteen.  A reader types a configuration from this
+    paragraph, so the numbers in it are recomputed here rather than read.
+    """
+
+    registry = _registry()
+    page = _squash(_page())
+    suites = _composition_suite_ids(registry)
+    assert len(suites) == 6
+
+    routes = registry["runner_routes"]
+    single = routes["tools.prepared_single_domain_forecast"]
+    tree = routes["tools.prepared_domain_tree_forecast"]
+
+    def _named_all_six(route: dict) -> tuple[int, int, int]:
+        declared = route.get("source_template_ids", {}) or {}
+        sources = route.get("source_ids", []) or []
+        naming_any = {
+            source_id: ids for source_id, ids in declared.items()
+            if ids and source_id in sources}
+        all_six = {
+            source_id for source_id, ids in naming_any.items()
+            if suites <= set(ids)}
+        return len(sources), len(naming_any), len(all_six)
+
+    single_sources, single_any, single_all = _named_all_six(single)
+    tree_sources, tree_any, tree_all = _named_all_six(tree)
+
+    # The claim itself: naming any suite at all means naming all six.
+    assert single_any == single_all, (single_any, single_all)
+    assert tree_any == tree_all, (tree_any, tree_all)
+
+    assert "every source that names any suite at all names all six" in page
+    assert (f"that is {_NUMBER_WORDS[single_all]} of its "
+            f"{_NUMBER_WORDS[single_sources]} sources") in page
+    assert (f"On the tree route it is the {_NUMBER_WORDS[tree_all]} sources "
+            "that declare a suite list") in page
+    # The remainder the page accounts for.  It used to include sources
+    # with no list at all, which is why the phrase is counted rather than
+    # spelled: a served source is now priced from the route's own generic
+    # declaration instead of being left empty, so the only source that
+    # names no suite is the caller-supplied composition row.
+    assert (f"the other {_NUMBER_WORDS[single_sources - single_all]}"
+            in page)
+
+
+def _nocturnal_table(page: str) -> list[tuple[str, str]]:
+    """(profile id, verdict) for every row of the nocturnal-validity table."""
+
+    lines = page.splitlines()
+    header = next(
+        index for index, line in enumerate(lines)
+        if line.startswith("| profile | radiation (lw / sw) |"))
+    rows = []
+    for line in lines[header + 2:]:
+        if not line.startswith("|"):
+            break
+        cells = [cell.strip() for cell in line.strip("|").split("|")]
+        rows.append((cells[0].strip("`"), cells[2]))
+    return rows
+
+
+def test_the_nocturnal_table_is_the_whole_single_domain_menu():
+    """The shipped table and the door's own choice list, both ways.
+
+    This is the drift nobody was checking.  The table matched the menu
+    exactly until the menu became a derivation over every fixed-template
+    route's declaration, and then it silently described seventeen of
+    twenty-four profiles while its own sentence still counted sixteen and
+    named a template as tree-only that the single-domain door had started
+    offering.  A reader picks a suite for a night window from this table,
+    so a profile missing from it reads as a profile that does not exist.
+
+    Set equality, the count word, and every verdict, all recomputed from
+    the door.  A suite added to any fixed-template route now fails here
+    until the page carries its row.
+    """
+
+    from gpuwm.physics_compat import SINGLE_DOMAIN_PHYSICS_PROFILES
+    from gpuwm.physics_menu import day_only
+
+    page = _page()
+    rows = _nocturnal_table(page)
+    listed = [profile for profile, _ in rows]
+    assert len(listed) == len(set(listed)), "a profile is tabled twice"
+    assert set(listed) == set(SINGLE_DOMAIN_PHYSICS_PROFILES), {
+        "missing from the page": sorted(
+            set(SINGLE_DOMAIN_PHYSICS_PROFILES) - set(listed)),
+        "on the page and not in the menu": sorted(
+            set(listed) - set(SINGLE_DOMAIN_PHYSICS_PROFILES)),
+    }
+    assert (f"all **{len(SINGLE_DOMAIN_PHYSICS_PROFILES)} shipped "
+            "single-domain profiles**") in _squash(page)
+    for profile, verdict in rows:
+        expected = "**no**" if day_only(profile) else "**yes**"
+        assert verdict.startswith(expected), (profile, verdict)
 
 
 def test_the_page_does_not_carry_the_retired_template_only_readings():

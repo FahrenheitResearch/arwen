@@ -108,6 +108,8 @@ def test_write_preserves_settings_and_outputs_matching_geometry(tmp_path):
             assert resolved["domain"][0][key] == value
     assert exp.run_seconds == 10800
     assert resolved["fetch"]["cycle"] == "2026-09-05T06"
+    assert type(resolved["fetch"]["hours"]) is int
+    assert resolved["fetch"]["hours"] == 3
     wps = out.with_suffix(".namelist.wps").read_text()
     assert f"e_we              = {exp.domains[0].run.nx + 1}" in wps
     from gpuwm.namelist_import import parse_namelist_text
@@ -532,6 +534,96 @@ def test_tiles_auto_prices_entire_nested_tree_without_changing_any_domain(
     assert receipt["peak_envelope_bytes"] <= receipt["budget_bytes"]
 
 
+def tile_starter_with_tiles(tmp_path, table):
+    """The ordinary single-domain tile starter plus a declared [tiles] table."""
+    path, raw = tile_starter(tmp_path)
+    raw["tiles"] = dict(table)
+    path.write_text(st.render_tables(raw), encoding="utf-8")
+    return path, raw
+
+
+def without_tiles(raw):
+    return {key: value for key, value in raw.items() if key != "tiles"}
+
+
+def test_tiles_copy_keeps_a_declared_budget_and_changes_only_the_mode(
+        tmp_path, tile_machine, capsys):
+    """A declared budget is merged, not refused: it binds the plan under auto."""
+    from gpuwm.cli import main
+    budget = 6 * dw.GIB
+    path, raw = tile_starter_with_tiles(tmp_path, {"vram_budget_bytes": int(budget)})
+    before = path.read_bytes()
+    out = tmp_path / "budgeted.toml"
+    assert main(["domain-tiles", str(path), "--out", str(out), "--mode", "auto",
+                 "--write"]) == 0, capsys.readouterr().err
+    copied = tomllib.loads(out.read_text(encoding="utf-8"))
+    assert copied.pop("tiles") == {"vram_budget_bytes": int(budget),
+                                   "mode": "auto", "store": "host"}
+    assert copied == without_tiles(raw)
+    assert path.read_bytes() == before
+    receipt = json.loads(out.with_suffix(".tiles.json").read_text())
+    assert receipt["peak_envelope_bytes"] <= receipt["budget_bytes"]
+    assert "Tile dimensions stay automatic" in capsys.readouterr().out
+
+
+def test_tiles_on_preserves_a_pinned_tiling_and_prices_that_tiling(
+        tmp_path, tile_machine, capsys):
+    """mode = 'on' is the mode the pins belong to, so the copy keeps them."""
+    from gpuwm.cli import main
+    path, raw = tile_starter_with_tiles(
+        tmp_path, {"mode": "on", "tile_nx": 64, "tile_ny": 64})
+    out = tmp_path / "pinned.toml"
+    assert main(["domain-tiles", str(path), "--out", str(out), "--mode", "on",
+                 "--write"]) == 0, capsys.readouterr().err
+    copied = tomllib.loads(out.read_text(encoding="utf-8"))
+    assert copied.pop("tiles") == {"mode": "on", "tile_nx": 64, "tile_ny": 64,
+                                   "store": "host"}
+    assert copied == without_tiles(raw)
+    receipt = json.loads(out.with_suffix(".tiles.json").read_text())
+    row = receipt["domains"][0]
+    assert (row["road"], row["tile_nx"], row["tile_ny"]) == ("streamed", 64, 64)
+    assert row["reason"] == "[tiles] pins the tiling"
+    assert receipt["peak_envelope_bytes"] <= receipt["budget_bytes"]
+    printed = capsys.readouterr().out
+    # The promise of automatic tile dimensions is not true of this copy.
+    assert "Tile dimensions stay automatic" not in printed
+    assert "pins is preserved and priced as written on grid(s) d01" in printed
+
+
+def test_tiles_refuses_a_device_store_and_leaves_auto_pins_to_the_streaming_door(
+        tmp_path, tile_machine, capsys):
+    """One door refusal, for the one setting this door would overwrite."""
+    from gpuwm.cli import main
+    path, _ = tile_starter_with_tiles(tmp_path, {"mode": "on", "store": "device"})
+    before = path.read_bytes()
+    out = tmp_path / "device-store.toml"
+    assert main(["domain-tiles", str(path), "--out", str(out), "--mode", "on",
+                 "--write"]) == 2
+    refusal = capsys.readouterr().err
+    assert "pinned host out-of-core store" in refusal
+    assert "store = 'host'" in refusal
+    # Which table, and which grid it governs, is the whole of the answer.
+    assert "the store key in the tree-wide [tiles] table" in refusal
+    assert "governing grid(s) d01" in refusal
+    assert not out.exists()
+    assert path.read_bytes() == before
+    # Both refusals land at plan review, before the card is ever observed.
+    assert tile_machine["calls"] == 0
+
+    # A pinned tiling asked to run under auto is refused by the [tiles] parser
+    # itself, which names the keys, not by a door that names a policy.
+    pinned, _ = tile_starter_with_tiles(
+        tmp_path, {"mode": "on", "tile_nx": 64, "tile_ny": 64})
+    auto_out = tmp_path / "pinned-auto.toml"
+    assert main(["domain-tiles", str(pinned), "--out", str(auto_out),
+                 "--mode", "auto", "--write"]) == 2
+    refused = capsys.readouterr().err
+    assert "while mode = " in refused
+    assert "tile_nx" in refused and "tile_ny" in refused
+    assert not auto_out.exists()
+    assert tile_machine["calls"] == 0
+
+
 @pytest.mark.parametrize("resource", ["vram", "host", "memory", "geometry", None])
 def test_tile_retry_classifies_only_typed_memory_refusals(tmp_path, tile_machine, monkeypatch, capsys, resource):
     from types import SimpleNamespace
@@ -590,22 +682,181 @@ def test_tiles_refuses_unavailable_memory_without_publishing(
     assert tile_machine["calls"] == 1
 
 
-@pytest.mark.parametrize("choice", ["pinned", "per-domain", "device-store"])
-def test_tiles_recovery_reports_existing_explicit_choices_before_any_probe(
-        tmp_path, tile_machine, capsys, choice):
+def without_domain_tiles(raw):
+    """``raw`` with every [tiles] table removed, tree-wide and per-domain."""
+    stripped = copy.deepcopy(without_tiles(raw))
+    for domain in stripped["domain"]:
+        domain.pop("tiles", None)
+    return stripped
+
+
+def test_tiles_changes_the_mode_on_a_domains_own_table_and_keeps_the_rest(
+        tmp_path, tile_machine, capsys):
+    """A domain's own table REPLACES the tree table, so the mode lands there too."""
     from gpuwm.cli import main
-    path, raw = tile_starter(tmp_path)
-    if choice == "pinned":
-        raw["tiles"] = dict(mode="on", tile_nx=64, tile_ny=64, nbuffers=2)
-    elif choice == "per-domain":
-        raw["domain"][0]["tiles"] = dict(mode="off")
-    else:
-        raw["tiles"] = dict(mode="on", store="device")
+    path, raw = tile_starter(tmp_path, nested=True)
+    raw["domain"][1]["tiles"] = dict(mode="off")
     path.write_text(st.render_tables(raw), encoding="utf-8")
     before = path.read_bytes()
-    out = tmp_path / "refused" / "tiles.toml"
-    assert main(["domain-tiles", str(path), "--out", str(out), "--write"]) == 2
-    assert "explicit streaming choices" in capsys.readouterr().err
+    out = tmp_path / "override.toml"
+    assert main(["domain-tiles", str(path), "--out", str(out),
+                 "--write"]) == 0, capsys.readouterr().err
+    copied = tomllib.loads(out.read_text(encoding="utf-8"))
+    assert copied["tiles"] == {"mode": "auto", "store": "host"}
+    # A table written only tree-wide would govern d01 and leave d02 exactly
+    # as it was, so the mode this door exists to change would miss a grid.
+    assert copied["domain"][1]["tiles"] == {"mode": "auto", "store": "host"}
+    assert without_domain_tiles(copied) == without_domain_tiles(raw)
+    assert path.read_bytes() == before
+    receipt = json.loads(out.with_suffix(".tiles.json").read_text())
+    assert [(row["grid_id"], row["mode"]) for row in receipt["domains"]] == [
+        (1, "auto"), (2, "auto")]
+    assert "domain[1].tiles.mode: 'off' -> 'auto'" in capsys.readouterr().out
+
+
+def test_tiles_changes_the_mode_on_a_single_domains_own_table(
+        tmp_path, tile_machine, capsys):
+    """One grid, its own table: the requested mode still reaches the run."""
+    from gpuwm.cli import main
+    from gpuwm.core import streaming
+    path, raw = tile_starter(tmp_path)
+    raw["domain"][0]["tiles"] = dict(mode="off")
+    path.write_text(st.render_tables(raw), encoding="utf-8")
+    out = tmp_path / "single-override.toml"
+    assert main(["domain-tiles", str(path), "--out", str(out), "--mode", "auto",
+                 "--write"]) == 0, capsys.readouterr().err
+    copied = tomllib.loads(out.read_text(encoding="utf-8"))
+    assert copied["domain"][0]["tiles"] == {"mode": "auto", "store": "host"}
+    assert without_domain_tiles(copied) == without_domain_tiles(raw)
+    exp = load_experiment(out)
+    assert streaming.options_for_domain(exp.root, exp.tiles).mode == "auto"
+    receipt = json.loads(out.with_suffix(".tiles.json").read_text())
+    row = receipt["domains"][0]
+    assert (row["mode"], row["road"]) == ("auto", "streamed")
+    assert receipt["peak_envelope_bytes"] <= receipt["budget_bytes"]
+
+
+def test_tiles_prices_a_single_domains_own_table_the_way_the_run_door_reads_it(
+        tmp_path, tile_machine, capsys):
+    """One grid with its own pinned table: priced from that table, not the tree."""
+    from gpuwm.cli import main
+    from gpuwm.core import streaming
+    path, raw = tile_starter(tmp_path)
+    raw["domain"][0]["tiles"] = dict(mode="on", tile_nx=64, tile_ny=64)
+    path.write_text(st.render_tables(raw), encoding="utf-8")
+    out = tmp_path / "single-pinned.toml"
+    assert main(["domain-tiles", str(path), "--out", str(out), "--mode", "on",
+                 "--write"]) == 0, capsys.readouterr().err
+    copied = tomllib.loads(out.read_text(encoding="utf-8"))
+    assert copied["domain"][0]["tiles"] == {"mode": "on", "tile_nx": 64,
+                                            "tile_ny": 64, "store": "host"}
+    assert without_domain_tiles(copied) == without_domain_tiles(raw)
+    # The run door resolves this grid's options through options_for_domain;
+    # the receipt is only true if this door priced that same table.
+    exp = load_experiment(out)
+    run_side = streaming.options_for_domain(exp.root, exp.tiles)
+    assert (run_side.mode, run_side.tile_nx, run_side.tile_ny) == ("on", 64, 64)
+    receipt = json.loads(out.with_suffix(".tiles.json").read_text())
+    row = receipt["domains"][0]
+    assert (row["mode"], row["tile_nx"], row["tile_ny"]) == (
+        run_side.mode, run_side.tile_nx, run_side.tile_ny)
+    assert (row["road"], row["reason"]) == ("streamed", "[tiles] pins the tiling")
+    # EVERY SIGNED NUMBER COMES FROM THAT TABLE TOO.  The host store is the
+    # pinned tiling's to the byte, and the verdict names the window those
+    # bytes belong to; the tree-wide table's planner tiling prices a
+    # different store and a different window entirely.
+    priced = streaming.streamed_envelope(exp.root.run, run_side)
+    window = (f"{row['nbuffers']} tile buffer(s) of "
+              f"{row['tile_nx'] + 2 * row['halo']}x"
+              f"{row['tile_ny'] + 2 * row['halo']}")
+    assert (priced.window_nx, priced.window_ny, priced.nbuffers) == (
+        row["tile_nx"] + 2 * row["halo"], row["tile_ny"] + 2 * row["halo"],
+        row["nbuffers"])
+    assert receipt["host_store_bytes"] == priced.host_bytes
+    assert receipt["host_store_bytes"] <= receipt["host_budget_bytes"]
+    assert window in receipt["verdict"]
+    printed = capsys.readouterr().out
+    # The tiling came off the table, so the line naming it cannot call it
+    # the planner's while the line below says this configuration pins it.
+    assert "pinned tile 64x64" in printed
+    assert window in printed
+    assert "pins is preserved and priced as written on grid(s) d01" in printed
+
+
+def test_tiles_refuses_a_pinned_tiling_whose_own_envelope_exceeds_the_budget(
+        tmp_path, tile_machine, capsys):
+    """The tiling on the row is the tiling admitted, so this one cannot pass."""
+    from gpuwm.cli import main
+    from gpuwm.core import streaming
+    path, raw = tile_starter(tmp_path)
+    raw["domain"][0]["tiles"] = dict(mode="on", tile_nx=192, tile_ny=192,
+                                     nbuffers=4)
+    path.write_text(st.render_tables(raw), encoding="utf-8")
+    before = path.read_bytes()
+    source = load_experiment(path)
+    priced = streaming.streamed_envelope(
+        source.root.run,
+        streaming.options_for_domain(source.root, source.tiles))
+    out = tmp_path / "over-budget" / "tiles.toml"
+    assert main(["domain-tiles", str(path), "--out", str(out), "--mode", "on",
+                 "--write"]) == 2
+    captured = capsys.readouterr()
+    refusal = json.loads(captured.out)
+    assert refusal["kind"] == "memory" and refusal["created"] is False
+    assert (refusal["memory"]["peak_envelope_bytes"]
+            > refusal["memory"]["budget_bytes"])
+    # The breakage is this tiling's own envelope, named by the window it
+    # holds, and the way out is the pin that produced it.
+    assert (f"{priced.nbuffers} tile buffer(s) of "
+            f"{priced.window_nx}x{priced.window_ny}") in captured.err
+    assert "EXCEEDS" in captured.err
+    assert "pinned on grid(s) d01" in captured.err
+    assert "drop tile_nx and tile_ny" in captured.err
+    assert not out.parent.exists()
+    assert path.read_bytes() == before
+
+
+def test_tiles_on_preserves_a_per_domain_pin_and_prices_that_tiling(
+        tmp_path, tile_machine, capsys):
+    """The pin a child grid declares is carried and priced on that child."""
+    from gpuwm.cli import main
+    path, raw = tile_starter(tmp_path, nested=True)
+    raw["domain"][1]["tiles"] = dict(mode="on", tile_nx=48, tile_ny=48)
+    path.write_text(st.render_tables(raw), encoding="utf-8")
+    tile_machine["probe"].update(total_bytes=16 * dw.GIB, free_bytes=15 * dw.GIB)
+    out = tmp_path / "child-pinned.toml"
+    assert main(["domain-tiles", str(path), "--out", str(out), "--mode", "on",
+                 "--write"]) == 0, capsys.readouterr().err
+    copied = tomllib.loads(out.read_text(encoding="utf-8"))
+    assert copied["domain"][1]["tiles"] == {"mode": "on", "tile_nx": 48,
+                                            "tile_ny": 48, "store": "host"}
+    assert without_domain_tiles(copied) == without_domain_tiles(raw)
+    receipt = json.loads(out.with_suffix(".tiles.json").read_text())
+    child = receipt["domains"][1]
+    assert (child["grid_id"], child["tile_nx"], child["tile_ny"]) == (2, 48, 48)
+    assert child["reason"] == "[tiles] pins the tiling"
+    assert receipt["peak_envelope_bytes"] <= receipt["budget_bytes"]
+    printed = capsys.readouterr().out
+    assert "Tile dimensions stay automatic" not in printed
+    assert "pins is preserved and priced as written on grid(s) d02" in printed
+
+
+def test_tiles_refuses_a_device_store_on_a_domains_own_table_by_grid_and_key(
+        tmp_path, tile_machine, capsys):
+    """The grid is the half of the answer only a per-domain table can give."""
+    from gpuwm.cli import main
+    path, raw = tile_starter(tmp_path, nested=True)
+    raw["domain"][1]["tiles"] = dict(mode="on", store="device")
+    path.write_text(st.render_tables(raw), encoding="utf-8")
+    before = path.read_bytes()
+    out = tmp_path / "child-device" / "tiles.toml"
+    assert main(["domain-tiles", str(path), "--out", str(out), "--mode", "auto",
+                 "--write"]) == 2
+    refusal = capsys.readouterr().err
+    assert "pinned host out-of-core store" in refusal
+    assert "the store key in the [[domain]] tiles table of grid d02" in refusal
+    assert "Set store = 'host' there" in refusal
+    # Plan review, before the card is observed and before anything is written.
     assert tile_machine["calls"] == 0
     assert not out.parent.exists()
     assert path.read_bytes() == before

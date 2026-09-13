@@ -431,6 +431,9 @@ def test_standalone_python_project_excludes_forecast_executor(tmp_path):
     } <= FORBIDDEN_WHEEL_PAYLOADS
     assert not (FORBIDDEN_WHEEL_PAYLOADS & files)
     assert not any(name.startswith("gpuwm/verify/") for name in files)
+    assert "gpuwm/source_drivability.py" in files
+    assert "gpuwm/core/track_boundary.py" in files
+    assert "gpuwm/obs/goes_window.py" not in files
     assert "gpuwm/source_cli.py" in files
     assert "gpuwm/physics_registry.py" in files
     assert "gpuwm/physics_registry_v2.json" in files
@@ -459,7 +462,9 @@ def test_standalone_python_project_excludes_forecast_executor(tmp_path):
                  "companion_setups",
                  "companion_forcing", "configuration_recovery", "remote_artifacts",
                  "remote_input_transfer", "remote_plan", "remote_processed",
-                 "render", "render_receipts"):
+                 "render", "render_receipts", "background_contract", "regional_preparation",
+                 "local_da", "local_da_fetch", "local_da_observations", "local_da_runtime",
+                 "cyclone_seed", "cyclone_sources"):
         assert f"gpuwm/{name}.py" not in files
     assert "gpuwm/ingest/case_store.py" not in files
     assert "gpuwm/ingest/relocation_continuation.py" not in files
@@ -541,6 +546,11 @@ sys.meta_path.insert(0, RejectExternalModules())
 root = Path(os.environ["RW_WPS_STAGED_ROOT"]).resolve()
 import gpuwm.source_cli
 import gpuwm.era5_direct
+from gpuwm.fetch import validate_fetch_hints
+from gpuwm.source_drivability import intent_drivability
+assert intent_drivability()["gfs"]["routes"]
+validate_fetch_hints({"source": "gfs", "hours": 3}, source="standalone control")
+assert "gpuwm.runplan" not in sys.modules
 import gpuwm.gfs_direct
 import gpuwm.hrrr_hierarchy_direct
 import gpuwm.mapped_direct
@@ -580,7 +590,7 @@ child = replace(exp.root, grid_id=2, parent_id=1, parent_grid_ratio=3,
                             ra_rrtmg_variant="rrtmg_legacy", o3input=2))
 assert cam_ozone_domain_ids(replace(exp, domains=(exp.root, child))) == {1, 2}
 assert metgrid_number_targets(replace(cfg, moist=True, mp_physics=28)) == {
-    'QNI': 'ni', 'QNC': 'nc', 'QNR': 'nr'}
+    'QNI': 'ni', 'QNC': 'nc', 'QNR': 'nr', 'QNWFA': 'nwfa', 'QNIFA': 'nifa'}
 raw = {'experiment': {'name': 'prepared'}, 'domain': [{'grid_id': 1}],
        'static': {'highres': {'path': "Drew's terrain", 'enabled': True}}}
 assert tomllib.loads(render_experiment_document(raw)) == raw

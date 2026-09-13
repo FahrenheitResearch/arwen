@@ -338,7 +338,8 @@ def test_cached_eda_keeps_exact_receipt_member_and_combined_file_together(saved,
     _selected_raw_case(saved)
     config, _plan = saved
     raw = tomllib.loads(config.read_text())
-    raw["fetch"].update(source="era5", cycle="2026-09-07T18", era5_provider="cds", era5_product="ensemble_members", member=7)
+    raw["fetch"].update(source="era5", cycle="2026-09-07T18", era5_provider="cds",
+                        era5_product="ensemble_members", member=7, retrieve=True)
     raw["fetch"].pop("forecast_start_hour")
     cache = Path(raw["fetch"]["out"])
     cache.mkdir()
@@ -495,14 +496,22 @@ def test_connection_probes_sizing_once_and_review_reuses_the_existing_measuremen
 
 
 @pytest.mark.parametrize("measured,refused", [(False, False), (True, True)])
-def test_launch_needs_measured_admitted_memory(monkeypatch, tmp_path, measured, refused):
+def test_launch_retains_settings_when_memory_estimate_warns(monkeypatch, tmp_path, measured, refused):
     review = {"memory": {"measured": measured, "refuse": refused, "verdict": "native refusal"},
               "plan_sha256": "a" * 64, "config_sha256": "b" * 64, "input_sha256": "c" * 64}
-    monkeypatch.setattr(rp, "review", lambda *_: (review, {}, tmp_path))
+    monkeypatch.setattr(rp, "review", lambda *_: (review, {"files": [], "geog_root": None}, tmp_path))
+    launched = []
+    monkeypatch.setattr(rw, "_launch_review", lambda *args:
+                        launched.append(args[2]) or {"job": {"id": "test-launch"}})
     request = {"expected_plan_sha256": "a" * 64, "expected_config_sha256": "b" * 64,
                "expected_input_sha256": "c" * 64}
-    with pytest.raises(ValueError, match="not launch-ready: native refusal"):
-        rp.launch(request, tmp_path)
+    assert rp.launch(request, tmp_path) == {"job": {"id": "test-launch"}}
+    assert launched[0]["memory"]["measured"] is measured
+    assert launched[0]["memory"]["refuse"] is refused
+    # Advisory sizing never weakens the reviewed-input binding.
+    with pytest.raises(ValueError, match="remote input changed after review"):
+        rp.launch({**request, "expected_input_sha256": "0" * 64}, tmp_path)
+    assert len(launched) == 1
     assert not (tmp_path / ".arwen-jobs").exists()
 
 

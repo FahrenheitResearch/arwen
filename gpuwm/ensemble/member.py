@@ -158,8 +158,13 @@ class MemberOutcome:
 def run_member(*, base_config, member_dir, index: int, seed: int,
                perturbation: str, perturbation_options: Mapping | None = None,
                run_seconds: float | None = None,
-               restart=None, progress_callback=None) -> MemberOutcome:
-    """Prepare, perturb, and integrate one member into ``member_dir``."""
+               restart=None, progress_callback=None, prepare=None) -> MemberOutcome:
+    """Prepare, perturb, and integrate one member into ``member_dir``.
+
+    ``prepare(base_config) -> (experiment, case_data, prepared_case)`` is
+    an optional source-neutral prepared-cache factory. Integration,
+    perturbation, restart checks and publication remain unchanged.
+    """
     from gpuwm import runtime
     from gpuwm.case_data import load_experiment_case
     from gpuwm.ingest.preflight import build_input_catalog
@@ -169,7 +174,12 @@ def run_member(*, base_config, member_dir, index: int, seed: int,
     outdir.mkdir(parents=True, exist_ok=True)
     hook = resolve_perturbation(perturbation)
 
-    exp, data = load_experiment_case(base_config)
+    started = time.perf_counter()
+    if prepare is None:
+        exp, data = load_experiment_case(base_config)
+        prepared = None
+    else:
+        exp, data, prepared = prepare(base_config)
     if len(exp.domains) != 1:
         raise ValueError(
             f"{base_config} declares {len(exp.domains)} domains; the "
@@ -182,13 +192,13 @@ def run_member(*, base_config, member_dir, index: int, seed: int,
     if length <= 0.0:
         raise ValueError(f"run_seconds must be positive, got {length}")
 
-    started = time.perf_counter()
     quarantine_orphan_wrfouts(outdir)
-    catalog = build_input_catalog(data)
-    snapshots = runtime.forcing_snapshots(data, catalog)
-    runtime.forcing_schedule(exp, data, snapshots)
-    prepared = runtime.prepare_experiment_case(
-        exp, data, input_catalog=catalog, forcing_by_time=snapshots)
+    if prepared is None:
+        catalog = build_input_catalog(data)
+        snapshots = runtime.forcing_snapshots(data, catalog)
+        runtime.forcing_schedule(exp, data, snapshots)
+        prepared = runtime.prepare_experiment_case(
+            exp, data, input_catalog=catalog, forcing_by_time=snapshots)
 
     state = prepared.initial_result.state
     prepared_sha = live_state_sha256(state)
@@ -294,6 +304,7 @@ def run_member(*, base_config, member_dir, index: int, seed: int,
         output_title=data.output_title, domain_id=data.output_domain,
         run_seconds=length, history_interval_s=dc.history_interval_s,
         restart_interval_s=exp.restart_interval_s, restart_path=restart,
+        write_final_output=True,
         progress_callback=progress_callback)
     wall_seconds = time.perf_counter() - started
 

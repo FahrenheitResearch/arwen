@@ -7,6 +7,7 @@ import re
 import subprocess
 import sys
 
+import gpuwm
 import pytest
 
 from gpuwm.physics_registry import (
@@ -25,6 +26,7 @@ from gpuwm.physics_registry import (
     validate_physics_plan,
 )
 from gpuwm.physics_compat import (
+    COMPOSITION_SUITE_PROFILE_IDS,
     KESSLER_PROFILE_ID,
     MYNN_NOAHMP_PROFILE_ID,
     MYNN_NOAHMP_RTE_RRTMGP_PROFILE_ID,
@@ -443,30 +445,299 @@ def test_real_source_mp_off_requires_explicit_moist_carrier(source_id):
     for domain in plan["domains"]:
         domain["components"] = {"microphysics": "off"}
 
-    refused = validate_physics_plan(plan)
-    assert refused["launchable"] is False
-    errors = [
-        error for error in refused["errors"]
-        if error["code"] == (
-            "real-source-mp-off-requires-explicit-moist")
+    # AUDIT R-005.  This was briefly a WARNING that said moist=true "was
+    # resolved for you".  Nothing performs that resolution -- this
+    # function reports, and the RunConfig a runner builds takes moist
+    # from the microphysics-off option's own row -- so review called
+    # launchable a plan gpuwm/ingest/real.py refuses before step 0.  It
+    # is an error again, at review, and it names the route's own
+    # declaration of where the value lives instead of a door two of the
+    # three routes do not have.
+    unstated = validate_physics_plan(plan)
+    assert unstated["launchable"] is False, unstated["warnings"]
+    refusals = [
+        error for error in unstated["errors"]
+        if error["code"] == "real-source-mp-off-requires-explicit-moist"
     ]
-    assert [error["path"] for error in errors] == [
+    assert [error["path"] for error in refusals] == [
         "domains[0].parameters.moist",
         "domains[1].parameters.moist",
     ]
-    assert all("allocates qv/qc/qr carrier fields" in error["message"]
-               for error in errors)
-    assert all("does not synthesize analyzed clouds" in error["message"]
-               for error in errors)
-    assert all("source-absent cloud mass stays exact zero"
-               in error["message"] for error in errors)
+    site = physics_registry()["runner_routes"][
+        "tools.prepared_domain_tree_forecast"]["moist_declaration_site"]
+    assert all(site in error["message"] for error in refusals)
+    # The named breakage is the loader's own sentence, not a paraphrase:
+    # if that refusal is ever retired, this assertion goes with it.
+    loader = (Path(gpuwm.__file__).parent
+              / "ingest" / "real.py").read_text(encoding="utf-8")
+    assert "real initialization requires cfg.moist=True" in loader
+    assert all("real initialization requires cfg.moist=True"
+               in error["message"] for error in refusals)
+
+    if source_id == "hrrr":
+        # The one REAL per-source incompatibility the old error carried in
+        # prose is a registry row now, refused at review by name rather
+        # than inside gpuwm/ingest/real.py an initialization later.  It
+        # carries its OWN code, because it is the one refusal in the
+        # constraint battery that a per-domain RunConfig cannot mirror --
+        # a RunConfig has no source identity.
+        native_errors = [
+            error for error in unstated["errors"]
+            if error["code"] == "component-source-refusal"
+        ]
+        assert native_errors, unstated["errors"]
+        assert all("analyzed QC/QR/QI/QS/QG" in error["message"]
+                   for error in native_errors)
+
+    # An EXPLICIT dry column is refused with its own sentence, because a
+    # user who wrote moist=false made a different mistake from one who
+    # wrote nothing, and the remedy differs.
+    for domain in plan["domains"]:
+        domain["parameters"] = {"moist": False}
+    dry = validate_physics_plan(plan)
+    assert dry["launchable"] is False
+    dry_errors = [error for error in dry["errors"]
+                  if error["code"] == "real-source-mp-off-requires-moist"]
+    assert dry_errors, dry["errors"]
+    assert all(site in error["message"] for error in dry_errors)
 
     for domain in plan["domains"]:
         domain["parameters"] = {"moist": True}
     admitted = validate_physics_plan(plan)
-    assert admitted["launchable"] is True, admitted["errors"]
+    native = source_id == "hrrr"
+    assert admitted["launchable"] is not native, admitted["errors"]
     assert all(domain["settings"]["moist"] is True
                for domain in admitted["resolved_domains"])
+
+
+def test_a_route_refusal_is_the_route_s_own_reason_not_one_sentence_for_all():
+    """A refusal may not name a breakage the route it fires on does not have.
+
+    ``tools/build_registry.py`` writes the reason per route and per
+    component, and nothing read either: both fixed-template routes
+    printed "runs its registered templates unchanged".  That is the benchmark route's reason and only
+    its reason.  The prepared single-domain route declares the tree
+    route's component overrides (the 2026-07-31 ruling removed that
+    runner's profile whitelist), so it was telling a user the route runs
+    its templates unchanged while the same validator admitted a cumulus,
+    microphysics, turbulence or PBL override on the same plan, and
+    pointing them away from the reason the exclusion actually has.
+
+    One refusal is delivered about ONE component, so the clause is the
+    refused component's own: reading a route-wide reason instead told a
+    user who named land_surface what is wrong with an analytic radiation
+    scheme, in two sentences about a breakage that did not fire, and
+    restated the admitted lists the sentence before it already names.
+    """
+
+    # What the route ADMITS as an override.  Asked of the route question
+    # alone: a suite can still be refused for a pairing its own options
+    # state, which is a different refusal with a different sentence.
+    for component, option in (("cumulus", "grell-freitas"),
+                              ("microphysics", "thompson-mp8"),
+                              ("pbl", "mynn"),
+                              ("turbulence", "smagorinsky-3d")):
+        admits = _single_plan()
+        admits["domains"][0]["components"] = {component: option}
+        report = validate_physics_plan(admits)
+        assert "component-override-route" not in {
+            error["code"] for error in report["errors"]}, report["errors"]
+
+    admitted = _single_plan()
+    admitted["domains"][0]["components"] = {"land_surface": "noah-mp"}
+    report = validate_physics_plan(admitted)
+    assert not [error for error in report["errors"]
+                if error["code"] == "component-override-route"], report["errors"]
+
+    # A genuine option-specific radiation exclusion retains its explanation.
+    other = _single_plan()
+    other["domains"][0]["components"] = {"radiation": "analytic-clear-sky"}
+    other_errors = [
+        error for error in validate_physics_plan(other)["errors"]
+        if error["code"] == "component-override-route"]
+    assert other_errors, other
+    for error in other_errors:
+        message = error["message"]
+        assert "carries no cloud, aerosol or gas optics" in message, message
+        assert "expert_template_ids gating" not in message, message
+
+    # The one route the immutability sentence describes still says it,
+    # and says it as its OWN declared reason.
+    benchmark = _single_plan()
+    benchmark["context"].update(
+        source_id="hrrr", runner_id="tools.hrrr_single_domain_benchmark")
+    benchmark["domains"][0]["template_id"] = physics_registry()[
+        "runner_routes"]["tools.hrrr_single_domain_benchmark"][
+            "source_template_ids"]["hrrr"][0]
+    benchmark["domains"][0]["components"] = {"microphysics": "thompson-mp8"}
+    sealed = validate_physics_plan(benchmark)
+    sealed_errors = [error for error in sealed["errors"]
+                     if error["code"] == "component-override-route"]
+    assert sealed_errors, sealed["errors"]
+    assert all("only comparable against the immutable template"
+               in error["message"] for error in sealed_errors)
+    assert all("retire the comparison the route exists to publish"
+               in error["message"] for error in sealed_errors)
+    # A declared reason does not restate the subject the message just
+    # named: "on runner 'X': benchmark route: its published ..." read as
+    # two colons and two labels for one route.
+    assert all("': benchmark route:" not in error["message"]
+               for error in sealed_errors), sealed_errors
+
+
+
+
+@pytest.mark.parametrize("runner_id,mode", [
+    ("tools.prepared_single_domain_forecast", "single"),
+    ("tools.prepared_domain_tree_forecast", "tree"),
+])
+@pytest.mark.parametrize("component,option", [
+    ("pbl", "ysuu"), ("surface_layer", "typo-mm5"),
+    ("land_surface", "typo-noah"), ("radiation", "typo-radiation"),
+    ("not-a-component", "not-an-option"),
+])
+def test_unrecognized_selection_does_not_claim_a_route_restriction(
+        runner_id, mode, component, option):
+    plan = _single_plan() if mode == "single" else _uniform_tree()
+    plan["context"]["runner_id"] = runner_id
+    plan["domains"][0]["components"] = {component: option}
+    report = validate_physics_plan(plan)
+    path = "domains[0].components." + component
+    issues = [error for error in report["errors"] if error["path"] == path]
+    expected = "unknown-component" if component == "not-a-component" else "unknown-option"
+    assert any(error["code"] == expected for error in issues), issues
+    assert all(error["code"] != "component-override-route" for error in issues), issues
+    assert report["launchable"] is False
+
+
+def test_declared_route_fallback_is_generated_from_its_own_metadata():
+    routes = physics_registry()["runner_routes"]
+    checked = 0
+    for route in routes.values():
+        if not route.get("component_override_refusal_reasons"):
+            continue
+        general = route.get("component_override_refusal_reason", "")
+        assert "whole-component override axes" in general
+        for component in route["allowed_component_overrides"]:
+            assert component in general
+        checked += 1
+    assert checked > 0, "no partially restricted route was tested"
+
+
+@pytest.mark.parametrize("seed", range(12))
+def test_future_route_and_component_rows_do_not_inherit_benchmark_text(seed):
+    from gpuwm.physics_registry import _fixed_template_override_refusal
+    component = f"fixture_component_{seed}"
+    option = f"fixture_option_{seed}"
+    runner = f"fixture.runner_{seed}"
+    route = {
+        "mode": "fixed-template", "implemented": True,
+        "allowed_component_overrides": [f"fixture_free_{seed}"],
+        "allowed_component_options": {component: ["base"]},
+    }
+    message = _fixed_template_override_refusal(
+        runner, {runner: route}, {}, (), "fixture", {component: "base"},
+        component, option)
+    assert "immutable template" not in message
+    assert "registered templates unchanged" not in message
+    assert f"fixture_free_{seed}" in message
+    assert component in message
+
+
+def test_a_deferred_per_domain_parameter_names_its_component_and_its_value():
+    """The omission the route publishes is the sentence the user gets.
+
+    ``runner_routes.<route>.deferred_parameter_keys`` maps every knob the
+    per-domain loader accepts but the route leaves out of
+    ``allowed_parameter_keys`` to the component it belongs to and the way
+    to the value.  It was written and read by nothing, so a plan naming
+    ``ra_physics`` per domain -- a knob ``gpuwm.experiment``'s
+    ``_DOMAIN_RUN_OVERRIDES`` accepts -- was refused with "runner route
+    does not accept this per-domain setting" and nothing else, while the
+    release surface said the route publishes the omission.
+    """
+
+    route = physics_registry()["runner_routes"][
+        "tools.prepared_domain_tree_forecast"]
+    deferred = route["deferred_parameter_keys"]
+    assert "ra_physics" in deferred and deferred["ra_physics"]
+    assert "ra_physics" not in route["allowed_parameter_keys"]
+
+    plan = _uniform_tree()
+    plan["domains"][1]["parameters"] = {"ra_physics": 0}
+    report = validate_physics_plan(plan)
+    assert report["launchable"] is False
+    errors = [error for error in report["errors"]
+              if error["code"] == "parameter-route"
+              and error["path"].endswith(".parameters.ra_physics")]
+    assert errors, report["errors"]
+    for error in errors:
+        assert deferred["ra_physics"] in error["message"]
+        assert "every radiation option states ra_physics" in error["message"]
+        assert "Select the radiation option" in error["message"]
+
+    # A knob no route defers is still refused, and the sentence names the
+    # declaration that lists what this route DOES take per domain.
+    routes = physics_registry()["runner_routes"]
+    single = routes["tools.prepared_single_domain_forecast"]
+    assert "epssm" not in single.get("deferred_parameter_keys", {})
+    assert single["allowed_parameter_keys"]
+    plain = _single_plan()
+    plain["domains"][0]["parameters"] = {"epssm": 0.1}
+    other = [error for error in validate_physics_plan(plain)["errors"]
+             if error["code"] == "parameter-route"]
+    assert other
+    assert all(
+        "runner_routes.tools.prepared_single_domain_forecast"
+        ".allowed_parameter_keys" in error["message"] for error in other)
+
+    # A route that takes NO per-domain setting says that, rather than
+    # pointing a reader at an empty list as though it were a way out.
+    sealed_id = "tools.hrrr_single_domain_benchmark"
+    assert routes[sealed_id]["allowed_parameter_keys"] == []
+    sealed = _single_plan()
+    sealed["context"].update(source_id="hrrr", runner_id=sealed_id)
+    sealed["domains"][0]["template_id"] = routes[sealed_id][
+        "source_template_ids"]["hrrr"][0]
+    sealed["domains"][0]["parameters"] = {"epssm": 0.1}
+    closed = [error for error in validate_physics_plan(sealed)["errors"]
+              if error["code"] == "parameter-route"]
+    assert closed
+    assert all("takes no per-domain setting at all" in error["message"]
+               and "the configuration its runner replays"
+               in error["message"] for error in closed)
+
+    # And the fourth case, which a review read as an unreachable branch:
+    # a plan that names NO runner route at all reaches this refusal, with
+    # route_parameter_keys empty because the lookup found no route.  The
+    # sentence it delivers is asserted here so the branch is not retired
+    # as dead a second time.
+    nameless = _single_plan()
+    nameless["context"].pop("runner_id")
+    nameless["domains"][0]["parameters"] = {"epssm": 0.1}
+    routeless = [error for error in validate_physics_plan(nameless)["errors"]
+                 if error["code"] == "parameter-route"]
+    assert routeless, nameless
+    assert all("this plan names no runner route" in error["message"]
+               for error in routeless), routeless
+
+
+def test_the_per_domain_routes_name_what_their_option_lists_exclude():
+    # An actual optics limitation is distinct from throughput advice.
+    for runner_id in ("tools.prepared_domain_tree_forecast",
+                      "tools.prepared_single_domain_forecast"):
+        plan = _uniform_tree() if "tree" in runner_id else _single_plan()
+        plan["context"]["runner_id"] = runner_id
+        plan["context"]["source_id"] = "gfs"
+        for domain in plan["domains"]:
+            domain["components"] = {"radiation": "analytic-clear-sky"}
+        refused = validate_physics_plan(plan)
+        assert refused["launchable"] is False
+        errors = [error for error in refused["errors"]
+                  if error["code"] == "component-override-route"]
+        assert errors, refused["errors"]
+        assert all("carries no cloud, aerosol or gas optics" in error["message"]
+                   for error in errors), errors
 
 
 def test_unnamed_tree_tuple_governance_uses_registry_reachability_only(
@@ -540,40 +811,11 @@ def test_unnamed_tree_tuple_governance_uses_registry_reachability_only(
                for domain in acknowledged["domains"].values())
 
 
-def test_unnamed_tree_expert_template_retains_its_specific_acknowledgement(
-        capsys):
+def test_unnamed_tree_noah_tuple_needs_no_throughput_acknowledgement(capsys):
     from gpuwm.physics_compat import multi_domain_physics_selection
-
     expert = single_domain_runtime_switches(NOAHMP_PROFILE_ID)
-    # The point of this test is that an expert TEMPLATE keeps its own
-    # specific acknowledgement id rather than collapsing into the generic
-    # outside-reachability one -- and that survives warn-not-block's
-    # ruling on severity: the tuple runs, and the line it prints names
-    # THIS template's acknowledgement, not expert-tuple-v1.
-    unacked = multi_domain_physics_selection({1: expert, 2: expert})
-    lines = [line for line in capsys.readouterr().err.splitlines()
-             if line.startswith("warning:")]
-    assert len(lines) == 2, lines
-    message = "\n".join(lines)
-    assert "noahmp-host-column-throughput-v1" in message
-    assert "expert-tuple-v1" not in message
-    assert {
-        domain["governance"]["required_acknowledgement"]
-        for domain in unacked["domains"].values()
-    } == {"noahmp-host-column-throughput-v1"}
-    assert not any(domain["governance"]["acknowledged"]
-                   for domain in unacked["domains"].values())
-
-    receipt = multi_domain_physics_selection(
-        {1: expert, 2: expert},
-        expert_acknowledgements=("noahmp-host-column-throughput-v1",),
-    )
-    assert {
-        domain["governance"]["state"]
-        for domain in receipt["domains"].values()
-    } == {"registry-expert-template"}
-    assert all(domain["governance"]["acknowledged"]
-               for domain in receipt["domains"].values())
+    receipt = multi_domain_physics_selection({1: expert, 2: expert})
+    assert len(receipt["domains"]) == 2
     assert "noahmp-host-column-throughput-v1" not in capsys.readouterr().err
 
 
@@ -603,14 +845,163 @@ def test_registry_routes_drift_check_against_live_runner_capabilities():
     assert tree_route["topology_ids"] == ["one-way-nested-v1"]
 
 
+def test_every_composition_suite_reaches_a_door_that_can_resolve_it():
+    """R-067's other half: DECLARED is not offered, and offered is not run.
+
+    The pass that minted these six suites declared each of them on all
+    three routes and proved them through ``validate_physics_plan``, which
+    reads the registry -- so the proof said the registry agrees with
+    itself.  The native benchmark RUNNER refused every one of them at its
+    own door with ``unsupported native HRRR physics profile``, because
+    that runner's replay tables are keyed by the profiles IT declares and
+    a composition with no native WRF run behind it has no namelist
+    contract to be replayed against.
+
+    So this asks the DOORS, both ways: the prepared single-domain runner
+    offers each suite and resolves it by name switch for switch, and the
+    native benchmark runner neither offers it nor pretends it could.
+    """
+
+    import tools.hrrr_single_domain_benchmark as benchmark
+    import tools.prepared_single_domain_forecast as single
+
+    offered = single.runner_capabilities()
+    benchmark_profiles = benchmark.runner_capabilities()["physics_profile_ids"]
+    assert COMPOSITION_SUITE_PROFILE_IDS
+
+    for profile in COMPOSITION_SUITE_PROFILE_IDS:
+        sources = sorted(
+            source_id
+            for source_id, row in offered["source_profiles"].items()
+            if profile in row["physics_profile_ids"])
+        assert sources, f"{profile} is on no source of the prepared route"
+
+        switches = single._profile_runtime_switches(sources[0], profile)
+        assert switches["mp_physics"] is not None
+        # Every switch the composition declares, resolved -- the same
+        # inventory the door writes into the experiment it materializes.
+        assert switches == single_domain_runtime_switches(profile)
+
+        assert profile not in benchmark_profiles, (
+            f"{profile} is offered by a runner that refuses it")
+        with pytest.raises(ValueError, match="unsupported native HRRR"):
+            benchmark._native_hrrr_runtime_switches(profile)
+
+
+def test_a_route_refusal_is_reachable_and_fires_at_plan_review():
+    """The refusals exist where a user meets them, and they refuse.
+
+    The sentences that keep a template off a route were written in
+    tools/build_registry.py and stayed there: a grep of the shipped
+    registry for their text returned nothing, plan review returned
+    launchable with a warning saying "the resolved runtime settings still
+    apply", and the runner then refused at its own door with a bare
+    ``unsupported native HRRR physics profile``.  So the breakage was
+    never named and the way out was never offered, on a route the user
+    had already paid to prepare.
+
+    Both legs are checked here: the registry PUBLISHES each refusal, and
+    validate_physics_plan refuses on it with the published sentence.
+    """
+
+    registry = physics_registry()
+    routes = registry["runner_routes"]
+    published = {
+        route_id: route.get("refused_template_ids", {}) or {}
+        for route_id, route in routes.items()}
+    assert any(published.values()), (
+        "no route publishes a refusal; the reasons are back in the builder")
+
+    checked = 0
+    for route_id, refusals in published.items():
+        route = routes[route_id]
+        if route.get("mode") != "fixed-template":
+            continue
+        source_id = route["source_ids"][0]
+        for template_id, reason in refusals.items():
+            assert template_id in registry["templates"], template_id
+            # The way out, named: another door, or an acknowledgement.
+            assert ("tools.prepared" in reason
+                    or "route" in reason), (template_id, reason)
+            plan = _single_plan()
+            plan["context"].update(source_id=source_id, runner_id=route_id)
+            plan["domains"][0]["template_id"] = template_id
+            report = validate_physics_plan(plan)
+            assert report["launchable"] is False, (route_id, template_id)
+            refused = [error for error in report["errors"]
+                       if error["code"] == "template-refused-on-route"]
+            assert refused, report["errors"]
+            assert all(reason in error["message"] for error in refused)
+            # And NOT the evidence warning, which says the opposite.
+            assert "template-route-evidence" not in {
+                warning["code"] for warning in report["warnings"]}
+            checked += 1
+    assert checked >= 6, checked
+
+
+def test_a_template_the_route_merely_does_not_declare_still_runs():
+    """The reverse leg of the refusal above, so it cannot widen.
+
+    A template with no evidence entry for a source is not a refusal: the
+    resolved settings still apply and the run is launchable with a
+    warning.  That distinction is the whole reason the refusal is keyed
+    on a published row rather than on absence from the declaration.
+    """
+
+    registry = physics_registry()
+    route = registry["runner_routes"]["tools.prepared_single_domain_forecast"]
+    refused = set(route.get("refused_template_ids", {}) or {})
+    source_id, declared = next(
+        (source_id, ids)
+        for source_id, ids in route["source_template_ids"].items()
+        if ids)
+    expert: set[str] = set()
+    for ids in (route.get("expert_template_ids", {}) or {}).values():
+        expert |= set(ids)
+    undeclared = next(
+        template_id for template_id in sorted(registry["templates"])
+        if template_id not in declared and template_id not in refused
+        and template_id not in expert)
+    plan = _single_plan()
+    plan["context"].update(source_id=source_id)
+    plan["domains"][0]["template_id"] = undeclared
+    report = validate_physics_plan(plan)
+    assert "template-refused-on-route" not in {
+        error["code"] for error in report["errors"]}
+    assert "template-route-evidence" in {
+        warning["code"] for warning in report["warnings"]}
+
+
 def test_fixed_template_runners_reject_all_overrides():
+    # AUDIT R-021.  The blanket "fixed-template runner accepts only its
+    # immutable template_id" is retired: it described no runner -- this
+    # route's own runner had its profile whitelist removed by the
+    # 2026-07-31 ruling and runs any engine-valid suite -- and the route
+    # declaration now mirrors the tree route's.  What a route declares is
+    # admitted, on every route, through the one question.
     plan = _single_plan()
     plan["domains"][0]["components"] = {"microphysics": "wsm6-mp6"}
     components = validate_physics_plan(plan)
-    assert components["launchable"] is False
-    assert "fixed-template-components" in {
-        error["code"] for error in components["errors"]
-    }
+    assert components["launchable"] is True, components["errors"]
+
+    # The BENCHMARK route stays closed, and its refusal names what the
+    # closure protects rather than restating itself.
+    benchmark = _single_plan()
+    benchmark["context"].update(
+        source_id="hrrr", runner_id="tools.hrrr_single_domain_benchmark")
+    benchmark["domains"][0]["template_id"] = physics_registry()[
+        "runner_routes"]["tools.hrrr_single_domain_benchmark"][
+            "source_template_ids"]["hrrr"][0]
+    # A component the benchmark template does NOT already select, so the
+    # request is a real override rather than a restatement.
+    benchmark["domains"][0]["components"] = {"microphysics": "thompson-mp8"}
+    refused = validate_physics_plan(benchmark)
+    assert refused["launchable"] is False
+    override_errors = [error for error in refused["errors"]
+                       if error["code"] == "component-override-route"]
+    assert override_errors, refused["errors"]
+    assert all("only comparable against the immutable template"
+               in error["message"] for error in override_errors)
 
     plan = _single_plan()
     plan["domains"][0]["parameters"] = {"epssm": 0.1}
@@ -618,23 +1009,51 @@ def test_fixed_template_runners_reject_all_overrides():
     assert parameters["launchable"] is False
     assert "parameter-route" in {error["code"] for error in parameters["errors"]}
 
+    # AUDIT R-059: the expert refusal names what the emptiness protects
+    # and the way out, rather than restating that the route says no.  The
+    # two routes get two sentences, because they stopped refusing the
+    # same things when R-021 widened one of them: a shared "invalidates
+    # the seal" line no longer separated what is refused from what is
+    # allowed, since this route now ACCEPTS a component override.
     plan = _single_plan()
     plan["domains"][0]["expert_overrides"] = {"settings": {"epssm": 0.1}}
     expert = validate_physics_plan(plan)
     assert expert["launchable"] is False
-    assert "expert-setting-route" in {error["code"] for error in expert["errors"]}
+    expert_errors = [error for error in expert["errors"]
+                     if error["code"] == "expert-setting-route"]
+    assert expert_errors, expert["errors"]
+    assert all("no per-domain override table" in error["message"]
+               and "COMPONENT choice is a different question"
+               in error["message"] for error in expert_errors)
+
+    benchmark = _single_plan()
+    benchmark["context"].update(
+        source_id="hrrr", runner_id="tools.hrrr_single_domain_benchmark")
+    benchmark["domains"][0]["template_id"] = physics_registry()[
+        "runner_routes"]["tools.hrrr_single_domain_benchmark"][
+            "source_template_ids"]["hrrr"][0]
+    benchmark["domains"][0]["expert_overrides"] = {"settings": {"epssm": 0.1}}
+    benchmark_expert = validate_physics_plan(benchmark)
+    assert benchmark_expert["launchable"] is False
+    benchmark_errors = [error for error in benchmark_expert["errors"]
+                        if error["code"] == "expert-setting-route"]
+    assert benchmark_errors, benchmark_expert["errors"]
+    assert all("varies NOTHING" in error["message"]
+               for error in benchmark_errors)
 
 
-@pytest.mark.parametrize("component", ["land_surface", "radiation"])
-def test_tree_route_rejects_currently_unsupported_component_variation(component):
+@pytest.mark.parametrize(
+    ("component", "option"),
+    # What the tree route still refuses per domain, and why neither is the
+    # contentless refusal audit R-022/R-023 retired. The analytic proxy
+    # carries no cloud, aerosol or gas optics and is
+    # not a forecast product.
+    [("radiation", "analytic-clear-sky")],
+)
+def test_tree_route_rejects_currently_unsupported_component_variation(
+        component, option):
     plan = _uniform_tree()
-    replacements = {
-        "pbl": "off",
-        "surface_layer": "revised-mm5",
-        "land_surface": "off",
-        "radiation": "analytic-clear-sky",
-    }
-    plan["domains"][1]["components"] = {component: replacements[component]}
+    plan["domains"][1]["components"] = {component: option}
     report = validate_physics_plan(plan)
     assert report["launchable"] is False
     assert "component-override-route" in {
@@ -809,19 +1228,35 @@ def test_huge_numeric_parameter_returns_validation_error_instead_of_crashing(
     assert cli_report["errors"]
 
 
-#: Profiles registered on the HRRR routes only (the Kessler rule: no
-#: other source inherits evidence from an HRRR-bound run), so they are
-#: unreachable on the prepared-single-domain route the parametrized test
-#: below walks and carry their own hrrr-context test instead.
-_HRRR_ONLY_PROFILE_IDS = (
-    KESSLER_PROFILE_ID,
-    THOMPSON_LEGACY_RRTMG_PROFILE_ID,
-    THOMPSON_SHINHONG_LEGACY_RRTMG_PROFILE_ID,
-    # P3 joined on the same Kessler rule when the native-HRRR doors
-    # admitted mp=50: the composition is registered on the two HRRR
-    # routes and no other source inherits evidence from them.
-    P3_LEGACY_RRTMG_PROFILE_ID,
-)
+def _profiles_off_the_prepared_single_domain_route() -> tuple[str, ...]:
+    """Profiles no source declares on the prepared single-domain route.
+
+    Some compositions are registered on the HRRR routes only -- the
+    Kessler rule: no other source inherits evidence from an HRRR-bound
+    run -- and the audit R-067 suites are registered on the routes their
+    composition is valid for rather than on all of them.  Both are
+    unreachable on the route the parametrized test below walks, and both
+    carry the hrrr-context test instead.
+
+    DERIVED, not listed (audit R-067).  A hand tuple here is a fourth
+    scheme table: it went stale the moment a template was registered on a
+    different route, and it reported that as a failure of the claim it
+    happened to be checking.
+    """
+
+    route = physics_registry()["runner_routes"][
+        "tools.prepared_single_domain_forecast"]
+    offered = {
+        template_id
+        for key in ("source_template_ids", "expert_template_ids")
+        for declared in (route.get(key, {}) or {}).values()
+        for template_id in declared
+    }
+    return tuple(profile for profile in SINGLE_DOMAIN_PHYSICS_PROFILES
+                 if profile not in offered)
+
+
+_HRRR_ONLY_PROFILE_IDS = _profiles_off_the_prepared_single_domain_route()
 
 
 @pytest.mark.parametrize(
@@ -1347,10 +1782,14 @@ def test_real_windows_subprocess_emits_exact_lf_registry_and_validation_bytes(
     ).encode("utf-8")
 
 
-def test_registry_is_pinned_to_lf_for_source_archives():
+def test_registry_is_pinned_to_lf_for_source_archives(tmp_path):
+    # A source archive carries the attributes, but intentionally has no .git.
+    (tmp_path / ".gitattributes").write_bytes((ROOT / ".gitattributes").read_bytes())
+    subprocess.run(["git", "init", "--quiet", str(tmp_path)], check=True,
+                   capture_output=True, text=True)
     attributes = subprocess.run(
         ["git", "check-attr", "eol", "--", "gpuwm/physics_registry_v2.json"],
-        cwd=ROOT,
+        cwd=tmp_path,
         capture_output=True,
         text=True,
         check=True,
@@ -1840,46 +2279,54 @@ def test_mp28_publishes_the_near_cancellation_relaxation_too():
             assert value < published["ulps_of_entry_value"], (name, field)
 
 
-def test_mp28_is_reachable_only_as_a_per_domain_override_and_is_no_default():
-    """Selectable, and selectable exactly one way.
+def test_mp28_has_its_own_suite_and_is_still_no_default():
+    """Selectable as a named suite, and in nobody's default.
 
-    Reachability is recomputed from the routes by
-    ``tests/test_registry_reachability.py``; what this adds is the negative
-    half that a recomputation cannot express as an intention -- that no
-    template selects mp=28, that no source route offers one, and that the
-    shipped default template is untouched.  Those three together are what
-    keep an unverified scheme out of every default suite while still letting
-    a user opt into it per domain.
+    AUDIT R-067.  The scheme used to be reachable only as a hand-written
+    per-domain override -- implemented, and offered by no named suite --
+    which is the ship-only-what-users-can-reach rule failing quietly.  It
+    has a template now, so what this guard holds is the half a
+    reachability recomputation cannot express as an intention: that
+    exactly ONE template selects it, that the template is not on a route
+    whose runner cannot initialize it, and that the shipped default is
+    untouched.
     """
     from gpuwm.physics_registry import (DEFAULT_TEMPLATE_ID,
                                         THOMPSON_KF_TEMPLATE_ID)
 
     registry = physics_registry()
-    assert _mp28_option()["reachability"] == {"state": "component-override"}
+    assert _mp28_option()["reachability"] == {"state": "template"}
     assert "blocker" not in _mp28_option()["reachability"], (
         "a reachable option carrying a blocker is a self-contradiction")
 
-    for template_id, template in registry["templates"].items():
-        assert template["components"]["microphysics"] != MP28_OPTION_ID, (
-            f"template {template_id!r} selects mp=28; it must be reachable "
-            "only as an explicit per-domain override")
+    selecting = [
+        template_id for template_id, template in registry["templates"].items()
+        if template["components"]["microphysics"] == MP28_OPTION_ID
+    ]
+    assert len(selecting) == 1, selecting
     assert DEFAULT_TEMPLATE_ID == THOMPSON_KF_TEMPLATE_ID
     assert registry["templates"][DEFAULT_TEMPLATE_ID]["components"][
         "microphysics"] == "thompson-mp8"
 
-    # It really is selectable, on the one route that permits the override.
+    # The suite is declared on the experiment-per-domain route only: the
+    # fixed-template runners have no cold-start arm for the aerosol-aware
+    # boundary species (audit R-044), which is a named breakage rather
+    # than a policy, and it is written where the omission is cited.
+    for route_id, route in registry["runner_routes"].items():
+        declared = {
+            template_id
+            for key in ("source_template_ids", "expert_template_ids")
+            for ids in (route.get(key, {}) or {}).values()
+            for template_id in ids
+        }
+        assert (selecting[0] in declared) == (
+            route.get("mode") == "experiment-per-domain"), route_id
+
+    # It really is selectable, both as its own suite and as the override.
     report = validate_physics_plan(_mp28_tree_plan())
     assert report["launchable"] is True, report["errors"]
     assert [domain["settings"]["mp_physics"]
             for domain in report["resolved_domains"]] == [28, 28]
-
-    # ...and refused on the fixed-template routes, like every other override.
-    single = _single_plan()
-    single["domains"][0]["components"] = {"microphysics": MP28_OPTION_ID}
-    refused = validate_physics_plan(single)
-    assert refused["launchable"] is False
-    assert "fixed-template-components" in {
-        error["code"] for error in refused["errors"]}
 
 
 def test_mp28_plan_warns_at_every_deviation_rather_than_blocking():
@@ -1900,12 +2347,12 @@ def test_mp28_plan_warns_at_every_deviation_rather_than_blocking():
     for phrase in (
         "UNVERIFIED against a WRF forecast",
         "THE COLUMN EVIDENCE IS NOT CLEAN",
-        "NO AEROSOL INGEST",
+        "AEROSOL INPUT LIMITS",
         # The aerosol INITIALISATION, which flipped on 2026-08-01.  Until
         # then the registry warned that the synthetic CCN/IN profile was
         # implemented and never installed; the call is now wired, so what
         # must survive the trip through the planner is the CALLER, the fact
-        # that ingest is still missing, and the measured sensitivity -- the
+        # the supported input limits, and the measured sensitivity -- the
         # same number, which was the cost of the gap and is now the value of
         # the profile.  Asserting the old phrases here would preserve a
         # false statement in the one channel a front end renders.
@@ -2072,21 +2519,33 @@ def test_mp28_activation_table_is_declared_as_a_shipped_but_separate_asset():
 
 
 def test_the_aerosol_roadmap_knobs_are_published_and_stay_unsettable():
-    """WRF's aerosol-ingest knobs become discoverable, not honoured.
+    """WRF's aerosol-ingest knobs: roadmap rows, and the two that landed.
 
-    mp=28 exists now, so the honest place for ``wif_input_opt`` and its family
-    is the published roadmap: typed, reasoned, and refused.  The two knobs
-    that must NOT appear are the interesting half -- ``aer_init_opt`` and
-    ``aer_fire_emit_opt`` are declared ``derived`` in WRF's own Registry
-    (Registry.EM_COMMON:2656 and :2658), so they are not legal user settings
-    and publishing them as gpuwm knobs would invent a control WRF does not
-    have.
+    mp=28 exists, so the right place for the family that is still absent
+    is the published roadmap: typed, reasoned, and refused.
+
+    AUDIT R-060 moved two of them off that roadmap, and the reason they
+    were on it is the defect the audit found: the gate that kept these
+    rows true proved only the POSITIVE claim, so a lane that landed the
+    read was under no obligation to move the row and was mechanically
+    forbidden from citing it.  ``gpuwm/ingest/wif_climatology.py`` IS the
+    WIF ingest the ``wif_input_opt`` row said gpuwm did not have, and
+    ``gpuwm/ingest/real.py`` branches on the ``(aer_init_opt,
+    wif_input_opt) == (1, 1)`` pair that ``gpuwm/config.py``'s own error
+    text tells a user to select -- a pair the registry made unspellable,
+    one row refusing it and the other not existing at all.
+
+    ``aer_fire_emit_opt`` stays absent, and now for the reason that
+    survives: gpuwm has no biomass-burning emission subsystem, so nothing
+    carries the value.  WRF declaring it ``derived`` is a statement about
+    WRF's namelist, and under the own-way ruling it does not decide what
+    gpuwm publishes -- what decides that is whether gpuwm reads it.
     """
     registry = physics_registry()
     parameters = registry["parameters"]
 
     for name in (
-        "wif_input_opt", "num_wif_levels", "use_aero_icbc",
+        "num_wif_levels", "use_aero_icbc",
         "use_rap_aero_icbc", "qna_update", "scalar_pblmix",
         "grav_settling", "dust_emis", "wif_fire_emit", "wif_fire_inj",
         "progn", "naer",
@@ -2096,19 +2555,26 @@ def test_the_aerosol_roadmap_knobs_are_published_and_stay_unsettable():
         assert spec["unimplemented_reason"].strip(), name
         assert "default" not in spec, name
 
-    for name in ("aer_init_opt", "aer_fire_emit_opt"):
-        assert name not in parameters, (
-            f"{name} is DERIVED in WRF, not a namelist knob; declaring it "
-            "would publish a control WRF does not offer")
+    for name in ("wif_input_opt", "aer_init_opt"):
+        spec = parameters[name]
+        assert spec.get("implemented") is not False, name
+        assert spec["consuming_read"], (
+            f"{name} is published as implemented and cites no consuming "
+            "read; tools/check_parameter_claims.py proves the claim, and a "
+            "row with nothing to prove is the drift R-060 closed")
+
+    assert "aer_fire_emit_opt" not in parameters, (
+        "gpuwm has no biomass-burning emission subsystem, so nothing "
+        "carries aer_fire_emit_opt and publishing it would invent a control")
 
     # The three rows that pre-date the port now point at the option that
     # exists, instead of describing the scheme as unported.
     for name in ("progn", "naer", "use_aero_icbc"):
         assert MP28_OPTION_ID in parameters[name]["unimplemented_reason"], name
 
-    # Published is not settable.
+    # Published is not settable -- for the rows that are still roadmap.
     plan = _mp28_tree_plan()
-    plan["domains"][1]["parameters"] = {"wif_input_opt": 0}
+    plan["domains"][1]["parameters"] = {"num_wif_levels": 0}
     report = validate_physics_plan(plan)
     assert report["launchable"] is False
     assert {"parameter-value", "parameter-route"} & {
@@ -2508,10 +2974,11 @@ def test_mp28_publishes_the_aerosol_initialisation_the_tree_actually_performs():
     assert "NOTHING in gpuwm/ CALLS it" not in warnings, (
         "the registry still warns that nothing calls the hook, and "
         f"{published} does")
-    assert "NO AEROSOL INGEST" in warnings, (
-        "the INGEST gap is a separate and still-open one -- no WIF metgrid "
-        "stream, no GOCART reader, no nbca -- and closing the "
-        "initialisation must not take that warning with it")
+    assert "AEROSOL INPUT LIMITS" in warnings
+    assert "analyzed QNWFA/QNIFA pair" in warnings
+    assert "monthly WIF climatology reader" in warnings
+    assert "black-carbon (nbca) species" in warnings
+    assert "NO AEROSOL INGEST" not in warnings
     assert published in warnings, (
         "the human-readable warning must name the caller too; a front end "
         "renders warnings and not extensions")

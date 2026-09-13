@@ -189,7 +189,16 @@ def test_the_run_route_streams_instead_of_refusing():
     assert "builders=_streaming.builders_for_tree(model, exp.tiles)" in tree_src
     assert "steppers = _streaming.steppers_for_tree(" in tree_src
     assert "machine=planning_machine" in tree_src
-    assert 'resident_estimate=getattr(model.memory_ledger, "estimate", None)' in tree_src
+    # THE GUARD THIS RETIRES read the ledger estimate out of this call
+    # unconditionally, which is the wiring the one-admission fix replaced:
+    # the tree route now takes its admission at the front door, before the
+    # fetch, and hands the decision here rather than pricing a second one
+    # at build time.  What has to stay true is that the ledger estimate is
+    # still the basis on the arms that never reached that door, so neither
+    # the hand-off nor the fall-back can quietly become a third answer.
+    assert "tree_decision=tree_decision" in tree_src
+    assert 'getattr(model.memory_ledger, "estimate", None)' in tree_src
+    assert "None if tree_decision is not None else" in tree_src
     # The fixed single-domain arm still binds its standalone builder.
     assert "standalone_domain_builder(" in src
     assert "stepper=single_stepper" in src

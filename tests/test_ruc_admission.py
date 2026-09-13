@@ -213,7 +213,7 @@ def test_exactly_the_ratified_templates_select_ruc_and_no_route_overrides_it():
 
     THE NAME IS WIDER THAN THE BODY, deliberately.  The "no route overrides
     it" half moved out to
-    :func:`test_no_runner_route_allows_a_land_surface_component_override`,
+    :func:`test_nested_land_surface_choices_follow_shared_geometry`,
     because this test is RED on a ratification decision nobody has taken
     (three RUC-selecting templates, two pinned; recorded in af7e40778) and
     pytest stops at the first failing assert, so that override check was
@@ -253,38 +253,22 @@ def test_exactly_the_ratified_templates_select_ruc_and_no_route_overrides_it():
     assert len(noah) >= 4, noah
 
 
-def test_no_runner_route_allows_a_land_surface_component_override() -> None:
-    """The nest door, in its OWN test, because it was never being checked.
-
-    This assertion used to be the second half of
-    ``test_exactly_the_ratified_templates_select_ruc_and_no_route_overrides_it``
-    -- which is RED, and has been since before lane/ruc-column-nzs (the
-    baseline commit af7e40778 records it: the registry carries three
-    RUC-selecting templates and that test pins two, a ratification decision
-    nobody has taken).  pytest stops a test at its first failing assert, so
-    this check had not executed in any run that reported on it.  A guard
-    behind a dead assert is not a guard.
-
-    It is split out rather than fixed in place because the two claims are
-    independent and only one of them is contested: WHICH templates are
-    ratified is a decision, while "no route lets a user put a different
-    land-surface scheme on one domain of a nest" is a fact this file is
-    supposed to hold, and it is the fact that matters most right now.
-    ``gpuwm/ingest/nest_init.py`` calls ``preprocess_land_surface_soil``
-    without a resolved soil count, so a six-level RUC nest would be a shape
-    error rather than a forecast; this refusal is what keeps a user from
-    reaching that, and it must be able to fail out loud when it stops
-    holding.
-    """
-    registry = physics_registry()
-    overriding = sorted(
-        route_id for route_id, route in registry["runner_routes"].items()
-        if "land_surface" in (route.get("allowed_component_overrides") or []))
-    assert overriding == [], (
-        f"a runner route now allows a land_surface override: {overriding}.  "
-        "gpuwm/ingest/nest_init.py does not thread a resolved soil count, so "
-        "a per-domain RUC override on a nest is a shape error, not a "
-        "forecast.  Thread it before opening this door.")
+def test_nested_land_surface_choices_follow_shared_geometry() -> None:
+    """Option-scoped selection runs; incompatible shared choices do not."""
+    from test_physics_registry import _uniform_tree
+    from test_authority_agreement import _config_refusal
+    from gpuwm.physics_registry import validate_physics_plan
+    plan = _uniform_tree()
+    for domain in plan["domains"]:
+        domain["components"] = {"land_surface": "ruc-lsm"}
+    report = validate_physics_plan(plan)
+    assert report["launchable"], report["errors"]
+    for index, domain in enumerate(report["resolved_domains"]):
+        assert _config_refusal(domain["settings"], nested=index > 0) is None
+    plan["domains"][0]["components"]["land_surface"] = "noah"
+    report = validate_physics_plan(plan)
+    assert not report["launchable"]
+    assert any(error["code"] == "nonuniform-shared-setting" for error in report["errors"])
 
 
 # ---------------------------------------------------------------------------

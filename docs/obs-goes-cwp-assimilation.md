@@ -1,7 +1,7 @@
 # GOES CWP assimilation: the path from pack to analysis
 
 **Status: IMPLEMENTED, UNCALIBRATED, UNSCORED.** The path is complete and
-tested end to end — a GOES CWP observation can change a gpuwm analysis,
+tested end to end -- a GOES CWP observation can change a gpuwm analysis,
 in both directions. No forecast has been scored against one, and the
 observation-error constants are stated assumptions rather than measured
 ones. Read "What must happen before a scored campaign" before using this
@@ -17,7 +17,7 @@ Read this before planning a campaign around it, not after.
 
 ABI cloud products are **2 km**. A model cell takes at most one satellite
 pixel once the grid is finer than that, so coverage falls as the grid
-refines — measured on a live CONUS scan against real domains:
+refines -- measured on a live CONUS scan against real domains:
 
 | dx | cells with an observation |
 | --- | --- |
@@ -28,8 +28,8 @@ refines — measured on a live CONUS scan against real domains:
 
 At LES resolution a 2 km pixel cannot fill a 333 m grid, and 98% of cells
 receive nothing. CWP does not become a dense analysis constraint on an
-inner nest at any QC setting — **the localisation radius does nearly all
-the spatial work**, and the honest expectation is a broad, smooth
+inner nest at any QC setting -- **the localisation radius does nearly all
+the spatial work**, and the expected result is a broad, smooth
 condensate adjustment rather than cell-by-cell control. Budget for it as
 a large-scale constraint carried into the nest, not as a nest-resolution
 observation.
@@ -50,11 +50,11 @@ meets them.
 
 ### 1. The observation error is UNCALIBRATED
 
-There is no measured CWP observation-error covariance for this system,
-and none this project can honestly borrow. So the five constants have
-**no defaults anywhere**: `CwpErrorModel` requires all five, and
-`tools/obs_goes_grid_build.py` makes all five required CLI flags. A stage
-cannot inherit a confident-looking number nobody earned. The values used
+There is no measured CWP observation-error covariance for this system.
+`CwpErrorModel` requires five constants, and explicit pack gridding keeps
+the corresponding required CLI flags. The automatic regional window caller
+supplies a documented provisional policy in
+[local-da-automatic-cwp.md](local-da-automatic-cwp.md). The values used
 are written into the product's `error_model` attribute alongside
 `"calibration": "UNCALIBRATED"`, and travel from there into the cycle
 report.
@@ -72,10 +72,11 @@ condemn mask but no per-pixel plane. `gpuwm-obs.goes-cwp.v2`
 and the inflation is now implemented.
 
 Measured on the live full-CONUS scan s20262161801170, 3,750,000 pixels:
-**27,119 thin (bit 256), 775,251 thick (bit 512), 0 carrying both,
-47,162 with an unreadable DQF word.** Thick alone is 20.7% of the sector,
-so this was never a rounding correction — a fifth of the scene was being
-assimilated at an error its own quality flag disputes.
+**27,119 thick (bit 256), 775,251 thin (bit 512), 0 carrying both,
+47,162 with an unreadable DQF word.** Thin alone is 20.7% of the sector.
+The labels above correct a reversed mapping: the COD/CPS source variable's
+CF `flag_masks` and `flag_meanings` identify 256 as thick and 512 as thin.
+Separate numeric-input regression controls check their distinct factors.
 
 How it is applied: a pixel is thin/thick if *either* DCOMP product's DQF
 word says so (they measured identical on this granule, but that is an
@@ -86,7 +87,7 @@ averaged into it, since the cell's value is their areal mean, and applied
 
 The factors themselves are UNCALIBRATED like everything else in the error
 model, default to 1.0, and requesting >1.0 against a v1 pack is a
-**refusal** naming the schema — not a silent no-op, which is the failure
+**refusal** naming the schema -- not a silent no-op, which is the failure
 mode the version bump exists to remove.
 
 NaN in a DQF plane means the flag itself was unreadable; those pixels
@@ -115,7 +116,7 @@ appears in every join receipt as `datum`.
 The `GPWMGOES` container, checked the way `gpuwm/obs/sweeps.py` checks
 `GPWMRDR1`: magic, version, declared lengths, JSON metadata, **schema
 family**, `status == READY`, payload digest, then per-array dtype, shape,
-and bounds — all before a payload byte is interpreted. Both families
+and bounds -- all before a payload byte is interpreted. Both families
 share the reader, and `expected_schema` is how a caller fails closed on
 which one it is holding: a cloud-top pack decodes perfectly and answers a
 different question.
@@ -134,7 +135,7 @@ that consumer.
 **Method: `nearest`, by default, in geostationary fixed-grid scan-angle
 space.** Both packs carry `x_scan_rad`/`y_scan_rad` and the same
 projection, so the resample happens in the coordinate the instrument
-samples — no reprojection through lat/lon, no assumption that the grids'
+samples -- no reprojection through lat/lon, no assumption that the grids'
 rows line up. Nearest is the default because **cloud-top height is
 discontinuous at a cloud edge**: a bilinear blend across that edge
 returns a height between "cloud at 12 km" and "no cloud", which no pixel
@@ -146,7 +147,7 @@ Before joining, three refusals: the `(satellite, sector, scan_start)`
 pairing key must match; the geostationary projection blocks must be
 identical; and where the cloud-top pack carries a `sibling` block from
 `rw_goes cloud-top --pairs-with`, its `content_sha256` must be the CWP
-pack's — so the pairing is *proved*, not trusted to a filename.
+pack's -- so the pairing is *proved*, not trusted to a filename.
 
 When no cloud-top pack is supplied the receipt still says so, explicitly,
 because a product with every observation at the fallback height must not
@@ -162,20 +163,20 @@ Gates in series, every drop counted:
    proves the bytes are the writer's bytes; it does not prove they are
    the numbers the writer said it was computing.
 2. **DQF**, honoured upstream as above.
-3. **`min_pixels`** — contributing pixels a cell needs (default 1).
-4. **`min_valid_fraction`** — of the pixels landing in a cell, the share
+3. **`min_pixels`** -- contributing pixels a cell needs (default 1).
+4. **`min_valid_fraction`** -- of the pixels landing in a cell, the share
    that survived the DQF gate (default 0.5).
-5. **`phase_uniform_fraction`** — the share of valid pixels agreeing on a
+5. **`phase_uniform_fraction`** -- the share of valid pixels agreeing on a
    phase class (default 1.0, the design note's rule verbatim: "a cell
    half clear, half deep ice is not one observation"). Below 1.0 the cell
    takes the areal mean of every valid pixel and the *dominant* class's
    error model, and both counts are recorded.
 
-Classes are `clear` / `liquid` (1, 2) / `ice` (3, 4) — the same branch
+Classes are `clear` / `liquid` (1, 2) / `ice` (3, 4) -- the same branch
 split `rw_sat::cwp` uses to pick a density, so a cell's class is the
 class its CWP was derived under.
 
-### Placement — and what it does not claim
+### Placement -- and what it does not claim
 
 CWP is a column integral. It has no height. The LETKF localises in metres
 about an observation's gridpoint, so a column observation has to be
@@ -205,19 +206,19 @@ CWP(j,i) = 1000 * sum_k q_cond[k,j,i] * (c1h[k]*mu[j,i] + c2h[k]) * (-dnw[k]) / 
 ```
 
 **The measure** is the model's own eta-coordinate column mass, taken from
-`gpuwm/verify/cases/moist_bubble.py:125-134` (`_water_mass`) — this
+`gpuwm/verify/cases/moist_bubble.py:125-134` (`_water_mass`) -- this
 project's only pre-existing column water integral, and the one its
 moisture-conservation case is judged against. Preferred over `rho_d * dz`
 for two reasons: it is exact in the discretisation (by the `alt`
 definition in `gpuwm/core/kernels/diagnostics.cu:11` the two agree to
 rounding, but only the mass form telescopes exactly to the column dry
-mass), and it never goes stale — `gpuwm/da/perturb.py:1639` documents
+mass), and it never goes stale -- `gpuwm/da/perturb.py:1639` documents
 `p`/`al`/`alt` as invalid after any state mutation, which is exactly the
 condition an operator sees when evaluating a perturbed member.
 
 **The species** are the model's own optical condensate: liquid = `qc`,
 ice = `qi + qs`, from `gpuwm/core/rrtmgp.py:1097-1098` and
-`gpuwm/core/rrtmg_legacy_prep.py:538-539` — the definition that feeds the
+`gpuwm/core/rrtmg_legacy_prep.py:538-539` -- the definition that feeds the
 model's own optical depths, which is what an optical retrieval sees. Rain
 is excluded, citing `gpuwm/core/rrtmgp.py:1243` (rain never enters the
 model's cloud-fraction condensate) and `gpuwm/core/refl.py:13` (which puts
@@ -229,7 +230,7 @@ depth per unit mass.
 came from uses. `gpuwm/core/rrtmgp.py:1096` uses 9.80665, so a CWP
 compared against RRTMGP's `clwp + ciwp` differs by 0.035% on this alone.
 
-**Phase composition** uses the *observation's* phase, never the model's —
+**Phase composition** uses the *observation's* phase, never the model's --
 a state-dependent species selection would make H discontinuous in `x` and
 give the filter a covariance it has no right to:
 
@@ -251,14 +252,14 @@ definition includes it in both radiation paths, and a spec written before
 the operator was built is a weaker authority than the code the operator
 must be consistent with. The divergence is recorded in every receipt as
 `cwp_composition.diverges_from_spec`, and the spec's variant is one
-argument away — `CwpComposition(ice=("qc", "qi"))`, or
+argument away -- `CwpComposition(ice=("qc", "qi"))`, or
 `--cwp-ice-species qc,qi` on the driver. Which is right is a scoreboard
 question, exactly as the spec says.
 
 ### Wiring (`gpuwm/da/radar_assimilation.py`, `tools/da_cycle_prepared.py`)
 
 CWP is a batch in the same LETKF solve as the radar batches, with its own
-errors, thinning and localisation — the only arrangement in which a
+errors, thinning and localisation -- the only arrangement in which a
 satellite column integral and a radar gate constrain the same state
 without one being re-expressed as the other. `assimilate_radar_grid` now
 also accepts `observations=None` for a satellite-only analysis.
@@ -311,7 +312,7 @@ would not mean what it appears to.
    **Start with the floor, not the relative term.** Measured on a live
    CONUS scan, the cloudy CWP median is **65 g m-2** (p25 24, p75 172).
    So at any `floor_liquid_g_m2` near 40, `max(rel * CWP, floor)` returns
-   the *floor* for more than half of all cloudy observations — the
+   the *floor* for more than half of all cloudy observations -- the
    relative term never engages, and tuning `rel_liquid` moves nothing
    across most of the scene. The floor is the live parameter at typical
    cloudiness; the relative term only takes over in the upper quartile.
@@ -362,7 +363,7 @@ would dominate `rel * CWP` for more than half of all cloudy observations.
 The floor, not the relative term, is the parameter doing the work at
 typical cloudiness.
 
-### QC yield vs grid spacing — the concern was backwards
+### QC yield vs grid spacing -- the concern was backwards
 
 Against four real domains from the 1974 Super Outbreak nest ladder
 (geometry only; the meteorology does not pair with a 2026 scene):
@@ -382,8 +383,8 @@ and there are literally zero mixed cells to reject. The gate bites at
 right for a nested campaign, and the knob is an outer-domain question.
 
 **The real constraint at nest resolution is coverage, not QC.** d03 sees
-observations in 13.9% of its cells; d04 in 1.77%. That is geometry — a
-2 km pixel cannot fill a 333 m grid — and it means CWP is a *sparse*
+observations in 13.9% of its cells; d04 in 1.77%. That is geometry -- a
+2 km pixel cannot fill a 333 m grid -- and it means CWP is a *sparse*
 constraint at inner-nest resolution, with the localisation radius doing
 nearly all the spatial work. Worth knowing before anyone expects a dense
 satellite analysis on an LES domain.
@@ -391,9 +392,9 @@ satellite analysis on an LES domain.
 ### The coverage figure, reproduced independently
 
 The 3 km row above was measured on a 1974-lineage domain over the Ohio
-valley with v1 packs. A second, unrelated run — a 150x150 grid at 3 km
+valley with v1 packs. A second, unrelated run -- a 150x150 grid at 3 km
 over the Gulf coast, 40 levels, built from the model's own
-`make_vertical_coord`/`make_base_state` — landed **19,492 observations in
+`make_vertical_coord`/`make_base_state` -- landed **19,492 observations in
 22,500 cells, 86.6%**, against the ladder's 86%. Different domain,
 different vertical structure, same number.
 
@@ -403,13 +404,13 @@ spacing) rather than a meteorological one. Two independent measurements
 agreeing to half a percent is the evidence that it travels.
 
 The same run reproduced the rest of the picture: cloudy CWP median
-91 g m-2, H(x) 198–599 against observations of 0–1026 (same units, same
+91 g m-2, H(x) 198-599 against observations of 0-1026 (same units, same
 range), and every increment negative against an over-cloudy background.
 
 ### The cross-grid join earns its seat
 
 Nearest served 2,277,975 of 3,750,000 pixels (60.7%), exactly the ACHA
-finite fraction — the join loses nothing, it simply has no top where ACHA
+finite fraction -- the join loses nothing, it simply has no top where ACHA
 published none. At d01, **16,151 of 16,153 cloudy observations (99.99%)
 were placed at a retrieved cloud top** rather than the fallback height.
 The 10 km to 2 km resample is not a bottleneck.
@@ -422,7 +423,7 @@ projection at 6 km over the Gulf coast, the real operator and the real
 LETKF. 1,407 observations (923 clear, 465 liquid, 19 ice) of 2,304 cells;
 269 cells error-inflated at a mean factor of 1.183.
 
-H(x) came out 233–730 g m-2 against observations of 0–753 g m-2 — the
+H(x) came out 233-730 g m-2 against observations of 0-753 g m-2 -- the
 same units and the same range, which is the check this was for. Every
 increment was negative (qc to -2.25e-4 kg/kg): the background was
 constructed far cloudier than the real scene, and the analysis removed
@@ -442,6 +443,6 @@ every v1 pack whose digest an earlier receipt recorded. Fixed upstream
 every schema the tool has ever written, while `cwp` / `cloud-top` still
 write v2 only. This reader always took both.
 
-The capability flag both sides branch on is `per_pixel_dqf` — a fact
+The capability flag both sides branch on is `per_pixel_dqf` -- a fact
 about the version, not a fault, so a v1 pack reports `false` and still
 passes. Pinned in `test_both_lanes_read_v1_and_v2`.

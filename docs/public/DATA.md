@@ -31,13 +31,14 @@ Three routes to keep straight from the start:
   [downscaling](DOWNSCALE.md). They do not feed the `[case_data]` GPU
   run path today; the domain wizard prints exactly which route your
   source gets.
-- **GDAS is fetch and decode only, f000..f009 -- it has no
-  initialization front door at all.** `gpuwm fetch --source gdas`
-  downloads verified, digest-bound GRIB2 and the certified
-  `gfs_grib2_bridge` reads it, but `rw-wps --source gdas` refuses: the
-  adapter declares no field, level, or cadence mapping, so nothing
-  downstream of the bridge accepts a GDAS series. Details, and why the
-  source is worth having anyway, are in the *GDAS* section below.
+- **GDAS runs f000..f009 through the staged mapped chain.** `gpuwm
+  fetch --source gdas` downloads verified, digest-bound GRIB2, the
+  `gfs_grib2_bridge` decoder reads it, and the fetch publishes the
+  bound `prep-arguments.json` handoff its packaged composition
+  declares, so `gpuwm go` on a GDAS configuration runs fetch, prepare,
+  forecast and render like any other staged source. f009 is where NCEP
+  stops publishing the cycle, not where this decoder stops. Details are
+  in the *GDAS* section below.
 
 Everything downstream of `fetch` is fail-closed: the Rust GRIB bridges
 validate envelopes, inventories, grids, and hashes before decoding, and
@@ -165,10 +166,10 @@ gpuwm fetch --source gfs --cycle 2026-07-29T18 --hours 24 \
   records -- which the bridge now reads, but through NOMADS' rate
   governor; the S3 archive serves the same bytes without one.
 
-## GDAS (0.25-degree analysis cycle, NOMADS) -- fetch and decode only
+## GDAS (0.25-degree analysis cycle, NOMADS)
 
 ```bash
-# the f000 analysis alone -- gdas is the one source that accepts --hours 0
+# the f000 analysis alone -- acquisition also accepts a single analysis on other sources
 gpuwm fetch --source gdas --cycle 2026-07-29T12 --hours 0 \
   --area 25,-110,45,-85 --out data/gdas-analysis
 
@@ -177,8 +178,10 @@ gpuwm fetch --source gdas --cycle 2026-07-29T12 --hours 9 --cadence 3 \
   --area 25,-110,45,-85 --out data/gdas-cycle
 ```
 
-Both of those land verified GRIB2 on disk and stop there. Neither one
-prints an `rw-wps` next step, because there is not one.
+Both of those land verified GRIB2 on disk and name the preparation
+route that consumes them: the container fetch writes the ordered input
+list, the prep command and `prep-arguments.json`, the last bound to the
+in-band surface role the packaged composition declares.
 
 GDAS is the GFS assimilation cycle's own output, published in the
 *same* `pgrb2.0p25` container: same 0.25-degree grid, same variable and
@@ -186,10 +189,11 @@ level codes, same 124-record census under gpuwm's selector, same centre
 and table versions. Fetch and the `gfs_grib2_bridge` decoder serve it
 with a source tag and nothing else, so everything in the GFS section
 above about the transport, the record bar and the packing applies
-unchanged. What does *not* carry over is the front door -- see below.
+unchanged. The front door does not carry over from GFS: GDAS reaches a
+run through the staged mapped composition instead, described below.
 
-**Scope: fetch and decode, f000..f009 -- there is no GDAS front door.**
-Read that as two separate statements, because they are.
+**Scope: f000..f009, which is the published span of the cycle rather
+than a bound on what this decoder will read.**
 
 *Fetch and decode are certified through f009.* f000 carries analysis
 generating process ID 81; real NOMADS f003, f006 and f009 samples carry
@@ -206,33 +210,35 @@ hour or from a source name. Each forecast sample is also required to
 fail under the undeclared analysis-only policy. Past f009 refuses up
 front and says why.
 
-*There is no ingest route.* `rw-wps --source gdas` refuses: the adapter
-declares no field, level, or cadence mapping, so nothing downstream of
-the bridge will accept a GDAS series. The container is the certified GFS
-container and the mapping is expected to be reusable wholesale, but
-"expected to be reusable" is not a run, and ArWen does not ship a front
-door on that basis. `gpuwm fetch --source gdas` therefore prints no
-`rw-wps` next step; for a runnable single-domain front door today, use
-`--source gfs`, which is certified through f384. `rw-wps --show-source
-gdas` states the same thing in machine form -- `"runnable": false`,
-`"runner": null`, and `"pending"` for the field, level and cadence
-mappings.
+*The ingest route is the staged mapped composition.* The registry row
+declares a packaged profile, and `gpuwm prep --show-source gdas` states
+it in machine form: `"runnable": true`, `"runner":
+"mapped_composition_v1"`, field mapping
+`packaged-rw-wps-gdas-pgrb2-0p25-grib2-v1`, level mapping
+`33-pressure-level-to-explicit-wrf-eta-v2`, cadence mapping
+`uniform-hourly-forecast-series-v1`. The profile takes all 33 pressure
+levels and binds each input's own in-band terrain field
+(`--supplement gdas_pgrb2_in_band_surface=FILE`), which is why the
+fetch publishes `prep-arguments.json` rather than leaving the binding
+to be retyped. `gpuwm go` on a GDAS configuration therefore plans
+fetch, prepare, forecast and render, and `gpuwm domain --source gdas`
+emits a `[fetch]` table like any other acquired source. For a longer
+window use `--source gfs`, which is certified through f384; GDAS stops
+where NCEP stops publishing the cycle.
 
 Otherwise the only differences are naming: files, the series TSV and the
 manifest role all carry the `gdas` stem, and a manifest authored over a
 GDAS series records `"model": "GDAS"` -- which is a label on the bytes,
 not a route through them.
 
-**Why bother, given there is no front door yet:** f000 is an *analysis*
--- the assimilation system's best estimate of the atmosphere at that
-valid time -- rather than a forecast field carried forward by the model.
-For hindcast and case work, where the initial state is the whole point,
-that is the analysis-quality source at identical cost and in a container
-ArWen's decoder already reads. Today that buys you verified, digest-bound
-GRIB2 on disk and a decoder that accepts it; the ingest route that turns
-it into `wrfinput` is roadmap, not shipped. ArWen has not measured the
-forecast impact of analysis-versus-forecast initialization either, so it
-makes no claim about one.
+**Why bother, given GFS reaches f384:** f000 is an *analysis* -- the
+assimilation system's best estimate of the atmosphere at that valid
+time -- rather than a forecast field carried forward by the model. For
+hindcast and case work, where the initial state is the whole point,
+that is the analysis-quality source at identical cost and in a
+container ArWen's decoder already reads. ArWen has not measured the
+forecast impact of analysis-versus-forecast initialization, so it makes
+no claim about one.
 
 **Antimeridian.** A `--area` longitude pair spanning more than 180
 degrees is read as the complementary box crossing 180E:

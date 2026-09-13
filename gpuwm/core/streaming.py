@@ -500,6 +500,220 @@ def cold_planning_machine(exp):
     return Machine.detect(host_bytes=options.host_budget_bytes)
 
 
+def cold_tree_streaming_decision(exp, nodes, *, machine=None, decisions=None):
+    """THE ``[tiles]`` admission a RUN DOOR takes, as one callable question.
+
+    Every run door asks it here: the prepared domain-tree forecast
+    (:mod:`gpuwm.prepared_domain_tree_forecast`) and ``gpuwm run``'s tree
+    route (:func:`gpuwm.runtime.run_experiment`).  It lives beside
+    :func:`decide_tree` rather than inside either door so that "what did
+    this run admit" has one implementation and no door can grow a second
+    one.
+
+    The estimate is :func:`gpuwm.core.preflight.admission_estimate`, the
+    single pricing the plan review (``gpuwm check``, ``gpuwm go``, the
+    cyclone door) also calls, so the review and the door weigh the same
+    envelope against the same budget.  The run's memory LEDGER keeps its
+    own richer estimate -- the prepared cache's retained forcing interval
+    count, its real lateral boundaries -- and that is a different question
+    which is never compared with this one.
+
+    MEASURED on the 12/3 km moving-nest cyclone tree, those two inputs
+    move the envelope by 60,193,971 and by up to 432,788,799 bytes, so
+    for any budget in between one side admitted the tree resident and the
+    other raised :class:`StreamingRefused` AFTER authority, fetch,
+    manifest and prepare had run.  ``gpuwm run``'s tree route was the
+    last door still doing that: it priced from
+    ``model.memory_ledger.estimate`` at build time, which is after the
+    download.
+
+    ``None`` when nothing in the tree configures streaming: an
+    unconfigured tree consults no planner and touches no card, exactly as
+    before.
+    """
+    from gpuwm.core.preflight import admission_estimate
+    from types import SimpleNamespace
+    if not tree_streams_anywhere(
+            SimpleNamespace(walk_parent_first=lambda: nodes), exp.tiles):
+        return None
+    from gpuwm.core.streamed_relocation import mark_reconstruction_nodes
+    mark_reconstruction_nodes(nodes, exp)
+    return decide_tree(
+        nodes, exp.tiles, machine=machine, decisions=decisions,
+        resident_estimate=admission_estimate(exp, machine=machine))
+
+
+_WARNED_COLD_MAP_FACTOR = False
+
+
+def configured_acoustic_state(exp, nodes):
+    """Give a COLD walk the acoustic reach the live clock will resolve.
+
+    An adaptive domain's tile HALO is its per-step dependency radius, and
+    :func:`gpuwm.core.adaptive_clock.acoustic_step_ceiling` prices it from
+    the largest map factor anywhere on the grid.  A walk with no map
+    factors prices it from a unit factor, which is smaller than any real
+    conformal grid's, so the tile it admits has a halo too NARROW for the
+    run it admitted -- and :func:`decide` says of exactly that: tile
+    interiors are silently wrong and the run is FASTER, which is how the
+    defect hides.
+
+    The map factor needs no statics.  It is a function of the projection
+    and of latitude, and ``MAPFAC_U``/``MAPFAC_V`` are that function
+    evaluated on the staggered points
+    (:meth:`gpuwm.static.projection.ProjectedGrid.mapfac_u`), so a walk
+    holding only the configuration can compute the SAME float32 maxima the
+    live domain loads.  MEASURED on a 12/3 km two-domain tree with
+    adaptive clocks, a 700x700 root and a 20 GiB budget: where the root's
+    own map factors reach 1.296803, a unit factor hands the executor halo
+    21 and a 2,687,327,199 byte claim while the resolved factor hands it
+    halo 24 and 2,835,715,157; where they reach 1.798048 the resolved
+    factor hands it halo 27 and 2,988,150,060 and the unit factor still
+    hands it 21.  The build pass deciding on the live nodes produces the
+    resolved numbers both times, so a door that priced cold and a build
+    pass that walked the live tree admitted two different runs.
+
+    An experiment with no ``[projection]`` table is idealized Cartesian
+    geometry whose map factors ARE unit, and is left alone.  A projection
+    that cannot be built is left alone too, with the basis said once:
+    nothing here is a reason to refuse a plan review, and the walk that
+    follows still prices every other term.
+    """
+    options = getattr(exp, "tiles", None) or OFF
+    wanted = [node for node in nodes
+              if bool(getattr(node.cfg.run, "use_adaptive_time_step", False))
+              and options_for_domain(node.cfg, options).enabled
+              and getattr(node, "state", None) is None]
+    if not wanted or getattr(exp, "projection", None) is None:
+        return nodes
+    import numpy as np
+
+    from gpuwm.static.projection import grids_from_projection_config
+    try:
+        grids = {int(dc.grid_id): grid for dc, grid
+                 in zip(exp.domains, grids_from_projection_config(exp))}
+    except Exception as error:                  # a review never dies here
+        global _WARNED_COLD_MAP_FACTOR
+        if not _WARNED_COLD_MAP_FACTOR:
+            _WARNED_COLD_MAP_FACTOR = True
+            import sys
+
+            print(f"[tiles] warning: this configuration's projection will "
+                  f"not build ({type(error).__name__}: {error}), so the "
+                  f"adaptive acoustic reach is priced from unit map "
+                  f"factors and a tile halo may be narrower than the run "
+                  f"needs. Fix the [projection] table, or pin the tiling.",
+                  file=sys.stderr)
+        return nodes
+    from types import SimpleNamespace
+    for node in wanted:
+        grid = grids.get(int(node.cfg.grid_id))
+        if grid is None:
+            continue
+        # DomainState.set_map_coriolis installs float32 values, and the
+        # acoustic substep count has thresholds: the cold maximum has to
+        # round the way the live one does or the two roads part at one.
+        node.state = SimpleNamespace(
+            msfu=np.asarray(grid.mapfac_u(), dtype=np.float32),
+            msfv=np.asarray(grid.mapfac_v(), dtype=np.float32))
+    return nodes
+
+
+def cold_tree_admission_nodes(exp):
+    """The planning nodes a cold door decides on, from the CONFIG alone.
+
+    The same nodes the plan review walks
+    (:func:`tree_road_plan`), so ``gpuwm run``'s tree route and
+    ``gpuwm check`` weigh the same tree.  A door that has staged statics
+    builds richer nodes of its own (the prepared forecast restores real
+    ``MAPFAC_U``/``MAPFAC_V``); a door asking before the first byte is
+    fetched has only the configuration, and
+    :func:`configured_acoustic_state` is how the one term that used to
+    need statics -- the adaptive acoustic reach -- is resolved from it.
+    """
+    return configured_acoustic_state(
+        exp, _config_tree_nodes(getattr(exp, "domains", ()) or ()))
+
+
+def cold_single_domain_admission(exp, *, machine=None, options=None):
+    """THE estimate a SINGLE-domain ``[tiles]`` admission is judged from.
+
+    The one-domain sibling of the tree's
+    :func:`gpuwm.core.preflight.admission_estimate` call inside
+    :func:`cold_tree_streaming_decision`, and the same function: a tree
+    of one is still a configuration, and the review and the run door
+    still have to weigh it identically.
+
+    It exists as its own name because the single-domain seam has a
+    second consumer besides the decision -- the streamed walk that
+    follows it prices its radiation reserve from the same estimate -- and
+    a caller that reached for ``estimate_experiment`` again there would
+    reopen the band one line below the one being closed.
+
+    ``options`` ARE THE ONE GUARD over whether this question is asked at
+    all, and they answer it for every caller: ``None`` where
+    :func:`decide` consults no estimate, which is ``mode = 'off'`` (it
+    returns before the planner) and a PINNED tiling (the configuration
+    is the decision, so it needs no card and no estimate).  Left alone,
+    the estimate is taken unconditionally, which is what a caller that
+    has not resolved the table yet wants.  Two callers spelling this
+    condition for themselves is how the run door came to guard it one
+    way while this seam guarded it another and priced the same estimate
+    twice on the route that uses it.
+    """
+    if options is not None and (options.mode == "off"
+                                or options.tile_nx is not None):
+        return None
+    from gpuwm.core.preflight import admission_estimate
+    return admission_estimate(exp, machine=machine)
+
+
+def cold_single_domain_decision(exp, *, machine=None, cfg=None, options=None,
+                                estimate=None):
+    """THE ``[tiles]`` admission for an experiment of ONE domain.
+
+    Every surface that asks whether a single domain may stay resident
+    asks it here: the plan review (``gpuwm check`` through
+    :func:`gpuwm.domain_wizard._sizing_phases`, the run plan's resolved
+    sizing, the starter template) and the run doors (``gpuwm run``'s
+    single-domain arm, the prepared single-domain forecast).
+
+    THE DEFECT THIS CLOSES is the tree defect one domain down.  The
+    review priced this decision from its report's own forecast term while
+    the run door priced it from the run's richer ledger estimate -- with
+    the retained forcing interval count folded in, and taken only after
+    the case had been fetched and decoded.  MEASURED on the 12 km root of
+    the moving-nest cyclone tree on an 8 GiB card: 4,749,512,312 bytes on
+    the review's side against 4,757,701,968 at 2 retained intervals,
+    4,806,839,904 at 8 and 4,937,874,400 at 24 -- a band of up to
+    188,362,088 bytes in which the review admitted the domain resident
+    and the run then raised :class:`StreamingRefused` after the download
+    was already paid for.
+
+    ``cfg`` and ``options`` are for a caller that has already resolved
+    them (a prepared forecast holds the run config it restored, a
+    refinement pass holds a tiling resolved on live geometry); left
+    alone they are the experiment's own, through
+    :func:`options_for_domain`, so a domain carrying its own
+    ``tiles = {...}`` table is judged on that table at every surface.
+
+    ``estimate`` is for the caller that already took the admission from
+    :func:`cold_single_domain_admission` because it keeps it for the
+    streamed walk afterwards; it is the same estimate this function
+    would take, and passing it spares the second call rather than
+    changing the answer.
+    """
+    domain = (getattr(exp, "domains", ()) or (None,))[0]
+    if cfg is None:
+        cfg = domain.run
+    if options is None:
+        options = options_for_domain(domain, getattr(exp, "tiles", None) or OFF)
+    if estimate is None:
+        estimate = cold_single_domain_admission(exp, machine=machine,
+                                                options=options)
+    return decide(cfg, options, machine=machine, resident_estimate=estimate)
+
+
 def _redundancy_limit_kwargs(options) -> dict:
     """The planner keyword ``[tiles] max_redundancy`` selects, if any."""
     limit = getattr(options, "max_redundancy", None)
@@ -4748,6 +4962,18 @@ def _decided_for_live_nodes(nodes, tree_decision):
     Refuses rather than silently re-deciding a grid the decision does not
     cover: a build pass that quietly planned a domain the admission never
     saw is the failure this parameter exists to remove.
+
+    WHAT REACHES THIS REFUSAL, since it fires inside the build pass and
+    every other admission refusal now fires at plan review: nothing a
+    configuration can say.  :func:`cold_tree_admission_nodes` walks EVERY
+    configured domain, and the live tree is built from the same
+    configuration, so the live set is a subset of the decided set by
+    construction.  It reports a CALLER that handed in a decision taken
+    for a different tree than the one it then built -- an engine defect,
+    not a run the user could have configured differently -- which is why
+    its way out addresses the caller.  A plan-review equivalent would be
+    a check that is true by construction at the door, and a gate that
+    names no reachable breakage is a gate that does not exist.
     """
     by_id = {int(entry[0].cfg.grid_id): entry for entry in tree_decision.decided}
     decided = []
@@ -4832,11 +5058,18 @@ def steppers_for_tree(model, options: StreamingOptions | None = None, *,
     whatever the model carried, so the two passes could weigh different
     envelopes against different budgets and the run would then execute a
     road the user was never shown.  The decision reaches the LIVE nodes by
-    grid id (:func:`_decided_for_live_nodes`); the states, and only the
-    states, come from the model.
+    grid id (:func:`_decided_for_live_nodes`); the states come from the
+    model, and so does the moving-subtree marking
+    (:func:`gpuwm.core.streamed_relocation.mark_reconstruction_nodes`,
+    applied to the live nodes on BOTH paths so that a tree whose road came
+    in from the door still knows here which of its grids relocate).
 
     ``decisions`` is filled with ``{grid_id: StreamingDecision}`` for EVERY
-    grid, streamed or not, and it is the receipt's source.  It has to be an
+    grid THIS WALK SEES -- every node of the live tree, streamed or not, on
+    either path -- and it is the receipt's source.  A door that decided a
+    grid this walk has no live node for keeps that decision on its own
+    :class:`TreeDecision`; a live grid the decision does not cover is
+    refused rather than quietly re-decided (:func:`_decided_for_live_nodes`).  It has to be an
     out-parameter rather than a second call to :func:`decide`, because under
     ``auto`` the decision is a function of the free VRAM at the instant it
     was taken: a receipt that re-derived it later would be describing a
@@ -4852,10 +5085,21 @@ def steppers_for_tree(model, options: StreamingOptions | None = None, *,
     builders = dict(builders or {})
     out = {}
     nodes = list(model.walk_parent_first())
+    # ON THE LIVE NODES, ON BOTH PATHS.  These marks say which grids this
+    # tree MOVES: _relocating_grid_ids and the reconstruction claim read
+    # them off the node during the decide walk, which is why the
+    # self-deciding path has always set them here.  The handed-in path
+    # ran the walk with them unset, so the same run left its live tree in
+    # one of two states depending on which door had taken its admission,
+    # and this function's own contract -- the marking is applied to every
+    # grid it walks -- held on only one of them.  Nothing further down
+    # THIS pass reads the mark today; what it buys is that the two roads
+    # hand the executor the same tree.  Idempotent, and a no-op when the
+    # model carries no declared experiment.
+    from gpuwm.core.streamed_relocation import mark_reconstruction_nodes
+    mark_reconstruction_nodes(
+        nodes, getattr(model, "_declared_experiment", None))
     if tree_decision is None:
-        from gpuwm.core.streamed_relocation import mark_reconstruction_nodes
-        mark_reconstruction_nodes(
-            nodes, getattr(model, "_declared_experiment", None))
         decided = decide_tree(nodes, options,
                               machine=machine, decisions=decisions,
                               resident_estimate=resident_estimate).decided
@@ -5056,7 +5300,6 @@ def decide_tree(nodes, options=None, *, machine=None, decisions=None,
                           and getattr(node.cfg, "tiles", None) is not None)
     inherited_ids = tuple(gid for gid in compelled_ids
                           if gid not in own_table_ids)
-    compelled_names = ", ".join(f"d{gid:02d}" for gid in compelled_ids)
 
     def _compelled_tables() -> str:
         """The table(s) to change, each named where it actually lives."""
@@ -6019,7 +6262,12 @@ def tree_road_plan(exp, *, machine=None, resident_estimate=None) -> TreeRoadPlan
             or any(options_for_domain(dc, options).enabled
                    for dc in domains)):
         return None
-    nodes = _config_tree_nodes(domains)
+    # The SAME nodes the cold run door decides on
+    # (:func:`cold_tree_admission_nodes`), acoustic reach included: a
+    # review that priced an adaptive halo from unit map factors while the
+    # run resolved them is two answers to one question again, one domain
+    # lower than the estimate this walk is handed.
+    nodes = configured_acoustic_state(exp, _config_tree_nodes(domains))
     from gpuwm.core.streamed_relocation import mark_reconstruction_nodes
     mark_reconstruction_nodes(nodes, exp)
     decisions: dict = {}

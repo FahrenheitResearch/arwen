@@ -46,6 +46,8 @@ from pathlib import Path
 import numpy as np
 
 from .highres import sha256_file
+from .highres_refusal import HighresRefusal
+from .projection import _wrap180
 
 #: Read/stream chunk for downloads and hashing.
 _CHUNK = 8 * 1024 * 1024
@@ -231,6 +233,12 @@ class SourceCoverage:
     license_url: str
     attribution: str = ""
     note: str = ""
+    #: The source is published for EVERY longitude, so no footprint can
+    #: leave it east or west.  Without this a dateline footprint, whose
+    #: longitude range is continued past 180 by a fraction of a degree
+    #: (see :func:`domain_footprint`), would be reported as leaving an
+    #: envelope that in truth wraps around and meets itself.
+    global_lon: bool = False
 
     def outside(self, bbox: FootprintBBox) -> dict[str, float]:
         """Per-edge overshoot in degrees; empty when fully covered."""
@@ -239,10 +247,11 @@ class SourceCoverage:
             out["south_by_deg"] = round(env.lat_min - bbox.lat_min, 6)
         if bbox.lat_max > env.lat_max:
             out["north_by_deg"] = round(bbox.lat_max - env.lat_max, 6)
-        if bbox.lon_min < env.lon_min:
-            out["west_by_deg"] = round(env.lon_min - bbox.lon_min, 6)
-        if bbox.lon_max > env.lon_max:
-            out["east_by_deg"] = round(bbox.lon_max - env.lon_max, 6)
+        if not self.global_lon:
+            if bbox.lon_min < env.lon_min:
+                out["west_by_deg"] = round(env.lon_min - bbox.lon_min, 6)
+            if bbox.lon_max > env.lon_max:
+                out["east_by_deg"] = round(bbox.lon_max - env.lon_max, 6)
         return out
 
     def check(self, bbox: FootprintBBox) -> None:
@@ -265,7 +274,8 @@ class SourceCoverage:
                 "source_url": self.source_url,
                 "license_id": self.license_id,
                 "license_url": self.license_url,
-                "attribution": self.attribution, "note": self.note}
+                "attribution": self.attribution, "note": self.note,
+                "global_lon": self.global_lon}
 
 
 #: Envelope where the two US collections are JOINTLY published: 3DEP staged
@@ -302,7 +312,8 @@ TERRAIN_SOURCES: dict[str, SourceCoverage] = {
         note="Published south-west tile labels run S90..N83, so the "
              "product reaches 84 N and 90 S.  All-water tiles are not "
              "published, which this path treats as sea level only where "
-             "the domain's own baseline land mask already says water."),
+             "the domain's own baseline land mask already says water.",
+        global_lon=True),
     "srtm-gl1": SourceCoverage(
         source_id="srtm-gl1", role="terrain",
         envelope=FootprintBBox(lat_min=-56.0, lat_max=60.0,
@@ -314,7 +325,8 @@ TERRAIN_SOURCES: dict[str, SourceCoverage] = {
         note="SRTM stops at 60 N / 56 S: it does not reach Canada, "
              "Scandinavia, Alaska or most of Russia.  Fetched from the "
              "anonymous OpenTopography mirror because NASA's own "
-             "distribution requires an Earthdata login."),
+             "distribution requires an Earthdata login.",
+        global_lon=True),
 }
 
 #: Land-cover sources.  There is exactly one wired, and it is US-only.
@@ -342,6 +354,38 @@ def terrain_source_coverage(source_id: str) -> SourceCoverage:
             f"{sorted(TERRAIN_SOURCES)}") from None
 
 
+def _continued_longitude_range(lon) -> tuple[float, float]:
+    """(lon_min, lon_max) of a corner mesh, continued across the dateline.
+
+    ``ij_to_latlon`` returns longitudes cut into (-180, 180], so a domain
+    straddling 180 degrees comes back bimodal against a gap and a plain
+    min/max collapses to the whole planet.  Each longitude is re-expressed
+    as the shortest signed offset from one member of the mesh
+    (:func:`gpuwm.static.projection._wrap180`, the existing helper for that
+    arithmetic), which recovers the true range exactly for any footprint
+    narrower than 180 degrees, and the range is then shifted so ``lon_min``
+    lands in (-180, 180].  A dateline domain therefore reports a CONTINUED
+    range such as 179.28 .. 180.72 rather than -180 .. 180.
+
+    A footprint genuinely 180 degrees or wider in longitude (a domain that
+    encloses a projection pole is the realistic case) has no continued
+    representation at all, and is reported as the full longitude band so
+    the per-source coverage check sees what it really is.
+    """
+    lon = np.asarray(lon, dtype=np.float64)
+    anchor = float(lon.ravel()[0])
+    continued = anchor + _wrap180(lon - anchor)
+    lon_min = float(np.min(continued))
+    lon_max = float(np.max(continued))
+    if lon_max - lon_min >= 180.0:
+        return -180.0, 180.0
+    while lon_min <= -180.0:
+        lon_min, lon_max = lon_min + 360.0, lon_max + 360.0
+    while lon_min > 180.0:
+        lon_min, lon_max = lon_min - 360.0, lon_max - 360.0
+    return lon_min, lon_max
+
+
 def domain_footprint(grid, halo: int, margin_deg: float = 0.03
                      ) -> FootprintBBox:
     """Geographic bbox of the grid extended by ``halo`` cells + margin.
@@ -349,6 +393,12 @@ def domain_footprint(grid, halo: int, margin_deg: float = 0.03
     Uses the cell-corner mesh of the extended grid (the same support the
     static builder samples) so the fetched sources cover every source pixel
     any halo cell can accumulate.
+
+    The longitude range is CONTINUED across the dateline
+    (:func:`_continued_longitude_range`): a domain on 180 degrees reports
+    the degree and a half it actually occupies, and ``lon_max`` may exceed
+    180.  Every consumer -- the coverage envelopes, the one-degree tile
+    enumerators, the window mosaic -- reads the same continued frame.
     """
     if halo < 0:
         raise ValueError("halo must be non-negative")
@@ -357,9 +407,10 @@ def domain_footprint(grid, halo: int, margin_deg: float = 0.03
         np.arange(0.5 - halo, nx + halo + 1.0, dtype=np.float64),
         np.arange(0.5 - halo, ny + halo + 1.0, dtype=np.float64))
     lat, lon = grid.ij_to_latlon(xc, yc)
+    lon_min, lon_max = _continued_longitude_range(lon)
     return FootprintBBox(
         float(np.min(lat)), float(np.max(lat)),
-        float(np.min(lon)), float(np.max(lon))).padded(margin_deg)
+        lon_min, lon_max).padded(margin_deg)
 
 
 @dataclass(frozen=True)
@@ -544,13 +595,13 @@ def copernicus_dem_tile_ids(bbox: FootprintBBox) -> tuple[str, ...]:
     ``N39_00_W105_00`` spans 39..40 N and 105..104 W; ``S34_00_E018_00``
     spans 34..33 S and 18..19 E.  Unlike the US enumerator this one is
     valid in all four quadrants, which is the whole point of the source.
+
+    A continued longitude range from :func:`domain_footprint` (a dateline
+    domain reporting, say, 179.25 .. 180.75) enumerates correctly with no
+    special case: the integer-degree loop names each tile through
+    ``((lon_sw + 180) % 360) - 180``, so degree 180 comes out as
+    ``W180_00`` and the two sides of the line are simply adjacent tiles.
     """
-    if bbox.lon_max - bbox.lon_min > 180.0:
-        raise CoverageError(
-            f"footprint {bbox.as_dict()} spans "
-            f"{bbox.lon_max - bbox.lon_min:.1f} degrees of longitude; a "
-            "footprint that wide is an antimeridian wrap, not a domain, "
-            "and 1x1-degree tile enumeration cannot express it")
     lat_lo = max(-90, int(math.floor(bbox.lat_min)))
     lat_hi = min(90, int(math.ceil(bbox.lat_max)))
     lon_lo = int(math.floor(bbox.lon_min))
@@ -665,6 +716,78 @@ def fetch_copernicus_dem_tiles(bbox: FootprintBBox, cache_root: Path, *,
     return tuple(fetched), tuple(absent)
 
 
+#: Second way out of :func:`_require_cut_frame_window`, valid for both
+#: footprints it refuses: the 30-arc-second baseline is written in no
+#: window at all and so has no cut frame to run past.
+_BASELINE_WAY_OUT = ("or leave [static.highres] disabled and run on the "
+                     "30-arc-second baseline, which has no such limit")
+
+
+def _require_cut_frame_window(bbox: FootprintBBox) -> None:
+    """One statement, every door: the mosaic frame is still cut.
+
+    :func:`domain_footprint` continues a dateline domain's longitude range
+    past 180 and the tile enumerators and per-source coverage envelopes
+    read it in that frame.  The window writers below (Rust bridge and the
+    rasterio parity body alike) still emit the derived GeoTIFF in the cut
+    -180..180 frame, so a continued window is the one thing they cannot
+    express.
+
+    Two different footprints arrive here and they are told two different
+    things, because the fact and the way out differ:
+
+    - A domain ON the line has a narrow continued range (179.28 .. 180.72
+      and the like).  The tiles either side of the line would be pasted a
+      planet apart, and moving the domain off 180 degrees builds.
+    - A domain whose corners span 180 degrees of longitude or more has no
+      continued range at all: :func:`_continued_longitude_range` reports
+      it as the full -180..180 band, which the footprint margin then
+      pushes past both ends of the cut frame.  Such a footprint occupies
+      every longitude, and a domain wrapped around its projection pole is
+      what produces it (the polar-stereographic domain that encloses the
+      pole, the conic domain whose corners fan more than half a turn
+      about the cone apex).  There is no line here and nothing to move
+      off it, so the way out is a smaller domain, or one further from the
+      projection pole, until its corners span less than 180 degrees.
+
+    The two are told apart by width: the band is 360 degrees wide or more
+    once padded, and a continued range is by construction narrower than
+    180.
+
+    This fires at PLAN REVIEW:
+    :func:`gpuwm.static.highres_production._apply` calls it on the
+    footprint it has just computed, before the plan is resolved and
+    before one byte is requested, so neither domain enumerates or
+    downloads a tile it cannot mosaic.  Both window writers call it
+    again as a backstop, so no door can disagree with another about one
+    footprint.
+    """
+    if not (bbox.lon_max > 180.0 or bbox.lon_min < -180.0):
+        return
+    if bbox.lon_max - bbox.lon_min >= 360.0:
+        raise HighresRefusal(
+            "dateline-window-unbuilt",
+            f"the domain+halo footprint {bbox.as_dict()} occupies every "
+            "longitude: its corners span 180 degrees or more, which has "
+            "no continued range, so it reduces to the whole band.  A "
+            "domain wrapped around its projection pole is what produces "
+            "that, and the mosaic window is one rectangle in the cut "
+            "-180..180 frame, so the only window covering this footprint "
+            "is the whole planet at source resolution, thousands of "
+            "tiles, rather than the domain.  Shrink the domain, or move "
+            "it away from the projection pole, until its corners span "
+            f"less than 180 degrees of longitude, {_BASELINE_WAY_OUT}")
+    raise HighresRefusal(
+        "dateline-window-unbuilt",
+        f"the domain+halo footprint {bbox.as_dict()} is continued past "
+        "180 degrees, and the mosaic window is still written in the "
+        "cut -180..180 frame, so the tiles either side of the line "
+        "would be pasted a whole planet apart and the terrain would "
+        "arrive shifted.  Tile enumeration and source coverage already "
+        "handle the crossing; the window writer does not yet.  Move "
+        f"the domain off 180 degrees, {_BASELINE_WAY_OUT}")
+
+
 def derive_global_terrain_window(tiles, bbox: FootprintBBox,
                                  cache_root: Path, *,
                                  sea_level_fill: float = 0.0,
@@ -697,6 +820,7 @@ def derive_global_terrain_window(tiles, bbox: FootprintBBox,
     tiles = list(tiles)
     if not tiles:
         raise ValueError("terrain window derivation requires >= 1 tile")
+    _require_cut_frame_window(bbox)
     identity = hashlib.sha256(json.dumps(
         {"tiles": sorted(item.sha256 for item in tiles),
          "bbox": bbox.as_dict(), "res": resolution_deg,
@@ -971,6 +1095,7 @@ def derive_terrain_window(tiles, bbox: FootprintBBox,
     tiles = list(tiles)
     if not tiles:
         raise ValueError("terrain window derivation requires >= 1 tile")
+    _require_cut_frame_window(bbox)
     identity = hashlib.sha256(json.dumps(
         {"tiles": sorted(item.sha256 for item in tiles),
          "bbox": bbox.as_dict(), "kind": "terrain-window-v1"},

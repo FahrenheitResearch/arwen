@@ -236,7 +236,34 @@ def test_immutable_process_floor_prunes_many_auto_preferences(monkeypatch):
     assert len(calls) == 1  # previously1025 identical impossible walks
 
 
-def test_auto_ordinary_dispatch_prices_actual_intervals_before_initialization(tmp_path, monkeypatch):
+def test_auto_ordinary_dispatch_takes_one_admission_before_the_fetch(tmp_path, monkeypatch):
+    """The single-domain ``auto`` route prices ONE admission, and early.
+
+    THE GUARD THIS RETIRES pinned the opposite order.  It required this
+    route to build the input catalog, decode every forcing snapshot and
+    only then price ``estimate_experiment(exp, forcing_intervals=47)`` --
+    the schedule's ACTUAL retained boundary count, which is knowable only
+    after the case has been fetched.  That was a real reading of the
+    route, and it was the defect: a refusal taken there is a refusal the
+    user has already paid the download for, and the plan review that
+    admitted the same domain minutes earlier priced it from the shared
+    admission instead, so the two could disagree.
+
+    What is pinned now is the contract that replaced it: the admission is
+    :func:`gpuwm.core.preflight.admission_estimate`'s arguments and
+    nothing else -- the experiment's own ``column_chunk`` and the
+    machine's device profile -- it is taken ONCE, and it is taken before
+    the catalog is built.  The retained interval count did not become
+    wrong; it became a different question, and it stays with the run's
+    memory LEDGER, which is priced after the fetch because that is when it
+    can be.  WHAT THAT COSTS, measured: the boundary tables the count
+    sizes are real device residency, and an admission that prices them at
+    the library's default cadence rather than the case's own under-states
+    them.  It under-states them identically on the review and at the door,
+    which is the property this lane exists to hold; closing the remaining
+    gap means giving :func:`admission_estimate` a cadence both surfaces
+    derive the same way, and that is not this seam.
+    """
     from datetime import timedelta
     from types import SimpleNamespace
     from gpuwm import runtime
@@ -254,8 +281,11 @@ def test_auto_ordinary_dispatch_prices_actual_intervals_before_initialization(tm
     monkeypatch.setattr(runtime, "forcing_snapshots", lambda *a: events.append("decode") or {})
     monkeypatch.setattr(runtime, "forcing_schedule", lambda *a: catalog.valid_times)
     marker = object()
+    priced = []
     def price(value, **kwargs):
-        assert value is exp and kwargs == {"forcing_intervals": 47}
+        assert value is exp
+        assert kwargs == {"column_chunk": exp.column_chunk, "profile": None}
+        priced.append(kwargs)
         events.append("price")
         return marker
     monkeypatch.setattr(pf, "estimate_experiment", price)
@@ -274,7 +304,8 @@ def test_auto_ordinary_dispatch_prices_actual_intervals_before_initialization(tm
     monkeypatch.setattr(runtime, "prepare_experiment_case", prepare)
     with pytest.raises(ReachedInitializer):
         runtime.run_experiment(exp, data, tmp_path / "out")
-    assert events == ["cold", "catalog", "decode", "price", "decide", "prepare"]
+    assert events == ["cold", "price", "decide", "catalog", "decode", "prepare"]
+    assert len(priced) == 1, "the route priced its admission more than once"
 
 
 def test_all_streamed_tree_still_prices_retained_global_workspaces():

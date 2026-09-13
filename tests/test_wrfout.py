@@ -1356,3 +1356,179 @@ def test_p3s_rime_pair_is_published_and_its_carriers_are_not():
         nc = np.zeros((4, 3, 2), np.float32)
 
     assert not ({"QIR", "QIB"} & set(_live_state_history_fields(_Morrison())))
+
+
+def _incomplete_wrfout(path):
+    """A syntactically valid history file with no completion attribute."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with netCDF4.Dataset(path, "w") as ds:
+        ds.createDimension("Time", 1)
+    return path
+
+
+def _complete_wrfout(path):
+    """The same file, stamped the way a published frame is."""
+    from gpuwm.io.wrfout import _COMPLETION_ATTR
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with netCDF4.Dataset(path, "w") as ds:
+        ds.createDimension("Time", 1)
+        ds.setncattr(_COMPLETION_ATTR, 1)
+    return path
+
+
+def test_quarantine_sweeps_episode_foldered_frames_and_not_its_own(tmp_path):
+    """The sweep reaches the tree this module itself writes.
+
+    ``PerDomainWrfoutWriters.submit`` files a lifecycle domain's frames at
+    ``<out>/d05/episode-002/wrfout_...``, taking the segment from
+    ``render_layout.episode_segment``; the sweep globbed one level deep,
+    so every orphan temporary and every incomplete final frame of an
+    episode-foldered run stayed exactly where it was, named like a
+    published product, for the next reader to pick up.
+
+    Second half: the sweep is idempotent.  ``supervisor.quarantine_file``
+    names the moved file ``wrfout_....incomplete-wrfout.<stamp>.<pid>``,
+    which still begins with ``wrfout``, so a recursive walk without the
+    dot-directory exclusion would re-sweep its own quarantine on every
+    run and nest ``.quarantine`` inside ``.quarantine`` without bound.
+
+    RED on the flat sweep: ``directory.glob`` never descends into
+    ``d05/``, so the returned tuple is empty and both files stay put.
+    """
+    from gpuwm.io.wrfout import quarantine_orphan_wrfouts
+
+    out = tmp_path / "out"
+    episode = out / "d05" / "episode-002"
+    episode.mkdir(parents=True)
+
+    orphan = episode / ".wrfout_d05_1974-04-03_18-00-00.nc.tmp.0"
+    orphan.write_bytes(b"an interrupted frame")
+    incomplete = _incomplete_wrfout(
+        episode / "wrfout_d05_1974-04-03_18-00-00.nc")
+    published = _complete_wrfout(
+        out / "wrfout_d01_1974-04-03_18-00-00.nc")
+
+    moved = quarantine_orphan_wrfouts(out)
+
+    quarantine = episode / ".quarantine"
+    assert {path.parent for path in moved} == {quarantine}
+    assert len(moved) == 2
+    assert not orphan.exists()
+    assert not incomplete.exists()
+    swept = sorted(path.name for path in quarantine.iterdir())
+    assert any(name.startswith(".wrfout_d05_") and "orphan-wrfout-tmp" in name
+               for name in swept), swept
+    assert any(name.startswith("wrfout_d05_") and "incomplete-wrfout" in name
+               for name in swept), swept
+    # The complete frame at the run root is a product, not an orphan.
+    assert published.is_file()
+
+    # Idempotent: what the sweep already quarantined is not a candidate.
+    assert quarantine_orphan_wrfouts(out) == tuple()
+    assert sorted(path.name for path in quarantine.iterdir()) == swept
+    assert not (quarantine / ".quarantine").exists()
+    assert published.is_file()
+
+
+def test_sweep_reaches_episode_frames_and_spares_readiness_markers(tmp_path):
+    """Discovery names what a frame is; it does not open files to find out.
+
+    Two halves of one walk, and the tree exercises both at once.
+
+    Recursion: an interrupted lifecycle episode's unfinished frame sits
+    at ``<out>/d05/episode-002/wrfout_...`` and must be swept.  A
+    one-level glob never descends, so it stays under a published name.
+
+    What a frame IS: ``progress_log.write_frame_marker`` publishes
+    ``<out>/ready/<frame>.json``, a receipt that deliberately repeats the
+    history basename, and its in-flight temporary carries ``.tmp`` as
+    well.  Both match the sweep's patterns.  A recursive walk that
+    handed them to netCDF4 and read "cannot open" as "incomplete
+    product" would quarantine a valid receipt under a false label and
+    destroy the one positive signal ``write_frame_marker`` documents a
+    consumer may trust (a marker that exists names a frame that is
+    complete and readable; absence means "not yet", never "corrupt").
+    The same walk fed to a renderer would hand it JSON, which is the
+    "NetCDF: Unknown file format" exit 2 that ``go_cli.WRFOUT_GLOB``
+    records itself as existing to prevent, so the last assertion reads
+    the listing directly and not only the sweep.
+
+    RED on the flat sweep: the episode frame is never reached.
+    RED on a recursive sweep with no frame rule: the marker is moved to
+    ``ready/.quarantine/...incomplete-wrfout...`` and its temporary with
+    it.
+    """
+    from gpuwm import progress_log
+    from gpuwm.io.wrfout import quarantine_orphan_wrfouts
+
+    out = tmp_path / "out"
+    episode = out / "d05" / "episode-002"
+    episode.mkdir(parents=True)
+
+    stranded = _incomplete_wrfout(
+        episode / "wrfout_d05_2026-08-15_06_00_00.nc")
+    published = _complete_wrfout(out / "wrfout_d01_2026-08-15_00_00_00.nc")
+
+    marker = progress_log.write_frame_marker(
+        out / progress_log.FRAME_MARKER_DIRNAME, domain=1,
+        valid_time="2026-08-15_00:00:00", path=published)
+    assert marker.parent == out / progress_log.FRAME_MARKER_DIRNAME
+    # A marker publication caught mid-flight: tmp + fsync + os.replace,
+    # so this name is on disk for the length of a write.
+    marker_temp = marker.with_name(f"{marker.name}.tmp.4242.0")
+    marker_temp.write_text("{}\n", encoding="utf-8")
+
+    moved = quarantine_orphan_wrfouts(out)
+
+    # One move, and it is the stranded episode frame.  A flat sweep
+    # moves nothing; a recursive sweep with no frame rule also carries
+    # off the receipt and its temporary.
+    assert len(moved) == 1, sorted(path.name for path in moved)
+    assert moved[0].name.startswith(f"{stranded.name}.incomplete-wrfout.")
+    assert moved[0].parent == episode / ".quarantine"
+    assert not stranded.exists()
+
+    # The receipt and its in-flight temporary are not products and are
+    # not swept; nothing was filed under the marker directory.
+    assert marker.is_file()
+    assert marker_temp.is_file()
+    assert not (marker.parent / ".quarantine").exists()
+    assert published.is_file()
+
+    # The same listing is what a render feed would read.
+    from gpuwm.io.wrfout import iter_wrfout_files
+
+    assert iter_wrfout_files(out) == [published]
+
+
+@pytest.mark.skipif(os.name != "nt", reason="native Windows junction contract")
+@pytest.mark.parametrize("selected_root_is_junction", [False, True])
+def test_orphan_sweep_does_not_follow_descendant_junctions(tmp_path, selected_root_is_junction):
+    import _winapi
+    from gpuwm.io.wrfout import iter_wrfout_files, quarantine_orphan_wrfouts
+
+    run = tmp_path / "run"
+    episode = run / "d02" / "episode-001"
+    episode.mkdir(parents=True)
+    external = tmp_path / "external"
+    external.mkdir()
+    outside = external / ".wrfout_external.tmp.1"
+    outside.write_bytes(b"belongs to a different run")
+    _winapi.CreateJunction(str(external), str(run / "external-link"))
+    inside = episode / ".wrfout_owned.tmp.2"
+    inside.write_bytes(b"owned interrupted frame")
+    selected = run
+    if selected_root_is_junction:
+        selected = tmp_path / "selected-run"
+        _winapi.CreateJunction(str(run), str(selected))
+
+    moved = quarantine_orphan_wrfouts(selected)
+
+    assert outside.is_file(), "a descendant junction let the sweep move another run's file"
+    assert outside.read_bytes() == b"belongs to a different run"
+    assert not (external / ".quarantine").exists()
+    assert not inside.exists()
+    assert len(moved) == 1
+    assert moved[0].parent == selected / "d02" / "episode-001" / ".quarantine"
+    assert iter_wrfout_files(selected, ".wrfout*.tmp*") == []

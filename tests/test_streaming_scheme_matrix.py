@@ -93,6 +93,15 @@ COMPONENT_ADAPTERS: dict[str, tuple[tuple[str, str], ...]] = {
         ("gpuwm.core.analytic_radiation", "AnalyticClearSkyRadiation"),
     ),
     "kain-fritsch": (("gpuwm.core.kf", "KainFritsch"),),
+    # The two cumulus closures that entered the TEMPLATE walk when audit
+    # R-067 gave each of them a named suite.  Both were selectable before
+    # -- as per-domain component overrides on the tree route -- and this
+    # audit walks templates, so neither was in its scope until a suite
+    # named them.  Adding the rows is the point of the mapping check: a
+    # registry value with no adapter class is an unaudited scheme, and
+    # these two now go through the same twinning proof as the rest.
+    "grell-freitas": (("gpuwm.core.gf", "GrellFreitas"),),
+    "new-tiedtke": (("gpuwm.core.ntiedtke", "NewTiedtke"),),
     "off": (),
 }
 

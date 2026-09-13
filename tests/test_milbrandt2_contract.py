@@ -487,6 +487,27 @@ def test_registry_row_is_implemented_unverified_and_says_so():
     row = registry["components"]["microphysics"]["options"]["milbrandt2mom-mp9"]
     assert row["implemented"] is True
     assert row["maturity"] == "implemented-unverified"
-    assert row["reachability"]["state"] == "component-override"
     assert row["selectors"] == {"mp_physics": 9}
     assert any("NO ORACLE HAS BEEN RUN" in w for w in row["warnings"])
+    # RETIRED with the defect it guarded (audit R-067): this asserted
+    # ``reachability.state == "component-override"``, which said the only
+    # way to this scheme was hand-writing a tuple.  It has a named suite
+    # now, so the state is "template" -- and the state is COMPUTED from
+    # the declared template lists, so pinning the string here would only
+    # re-pin the absence.  What this row is actually about survives: the
+    # scheme is implemented, no oracle has judged it, and the suite that
+    # reaches it says so on its own maturity.
+    assert row["reachability"]["state"] == "template"
+    suites = [
+        template_id
+        for template_id, template in registry["templates"].items()
+        if template.get("components", {}).get(
+            "microphysics") == "milbrandt2mom-mp9"
+    ]
+    assert suites, "an implemented scheme with no named suite has no door"
+    assert all(registry["templates"][t]["maturity"]
+               == "implemented-unverified" for t in suites), suites
+    # And never a default: a suite is a door, not a promotion.
+    for route in registry["runner_routes"].values():
+        for declared in (route.get("source_template_ids") or {}).values():
+            assert not declared or declared[0] not in suites, declared

@@ -289,6 +289,7 @@ def doors() -> dict[str, argparse.ArgumentParser]:
         if module == "gpuwm.cli":
             continue  # the subcommand walk above IS this door
         out[name] = built(module, PARSER_FACTORY.get(module, "build_parser"))
+        walk(out[name], name)
     for name, (module, attr) in sorted(MODE_FLAG_DOORS.items()):
         out[name] = built(module, attr)
     return out

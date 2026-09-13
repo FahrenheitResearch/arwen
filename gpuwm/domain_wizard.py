@@ -564,15 +564,6 @@ SOURCE_FORCING_INTERVAL_S = MappingProxyType({
     for source_id in wizard_planable_source_ids()
 })
 
-#: Sources whose fetch planner takes no ``--cadence`` at all.  HRRR is
-#: hourly by construction and `gpuwm fetch --source hrrr --cadence N`
-#: refuses by name ("HRRR is hourly; --cadence does not apply"), so the
-#: emitted [fetch] table must not carry the key for it.  Stated as an
-#: exclusion rather than by omitting HRRR from a hand-written table,
-#: because omission reads as an oversight and this one is a fact about
-#: the download planner.
-_CADENCE_FREE_FETCH_SOURCES = frozenset({"hrrr"})
-
 
 def _fetch_ladder_cadence_h() -> dict[str, int]:
     """The ``cadence = N`` an emitted ``[fetch]`` table carries, per source.
@@ -583,16 +574,24 @@ def _fetch_ladder_cadence_h() -> dict[str, int]:
     second hand-written table.  It used to be ``{"era5": 6, "gfs": 3}``,
     and `--source gdas` was unreachable from this door precisely because
     nothing had ever added the third entry: opening the door without
-    deriving this produced "GFS cadence must be 1 or 3 hours" from a
-    ``cadence`` key nobody had filled in.
+    deriving this priced every source at the GFS spacing, so the GFS
+    window planner refused a ``cadence`` key nobody had filled in.
+
+    A source whose fetch takes no cadence at all carries no entry, and
+    which sources those are is asked of the fetch module
+    (:func:`gpuwm.fetch.fetch_accepts_cadence`) rather than held here as
+    a second spelling: the two used to be written separately, and the
+    emission wrote a ``cadence`` key into a table whose own fetch refuses
+    the flag.
     """
 
-    from gpuwm.fetch import fetch_front_door_sources
+    from gpuwm.fetch import fetch_accepts_cadence, fetch_front_door_sources
 
     return {
         source: int(source_forcing_interval_seconds(source) // 3600)
         for source in fetch_front_door_sources()
-        if source not in _CADENCE_FREE_FETCH_SOURCES
+        if fetch_accepts_cadence(source)
+        and not get_source_adapter(source).fetch_entire_window
         and source in SOURCE_FORCING_INTERVAL_S
     }
 
@@ -1326,7 +1325,7 @@ def final_step_command(out: "Path", *, source: str, profile: str | None,
     from gpuwm.runplan import PlanError, prepared_chain_for_source
 
     try:
-        prepared_chain_for_source(source)
+        prepared_chain_for_source(source, source_root=data_dir)
     except PlanError as error:
         from gpuwm.explain import split
         return "# " + split(str(error))[0]
@@ -1853,7 +1852,7 @@ def _buffers_for_levels(values: tuple[float, ...] | None,
 
 
 def _resolve_cycle(raw: str, *, source: str, hours: int,
-                   start_hour: int = 0) -> datetime:
+                   start_hour: int = 0, **selection) -> datetime:
     """Parse ``--cycle``, resolving ``latest`` the way ``fetch`` does.
 
     v1.0.0 refused ``--cycle latest`` here with a message that said
@@ -1878,7 +1877,8 @@ def _resolve_cycle(raw: str, *, source: str, hours: int,
     # rather than a list this door would have to keep in step.
     from gpuwm.fetch import resolve_latest_cycle
     try:
-        cycle = resolve_latest_cycle(source, start_hour + hours)
+        cycle = resolve_latest_cycle(source, start_hour + hours,
+            **(dict(selection, start_hour=start_hour) if start_hour else selection))
     except (RuntimeError, OSError) as error:
         raise ValueError(
             f"--cycle latest could not be resolved for {source}: {error}"
@@ -3739,20 +3739,52 @@ def _sizing_phases(exp, *, free_bytes: int, machine=None, **kwargs):
     """Price the emitted route against the declared card, including refusals."""
     if kwargs.get("forcing_interval_seconds") is not None:
         kwargs["ingest_forcing_interval_seconds"] = kwargs["forcing_interval_seconds"]
-    options = getattr(exp, "tiles", None)
-    if options is None or options.mode == "off":
-        return estimate_phases(exp, machine=machine, **kwargs)
     from gpuwm.core import streaming
     from tilestream.autoplan import CannotPlan
 
+    # THE TABLES THAT GOVERN THIS TREE'S DOMAINS, not the tree-wide one
+    # read raw.  A domain carrying its own ``tiles = {...}`` under a
+    # tree-wide ``mode = "off"`` returned from here without being decided
+    # at all, while every run door decided it on its own table -- one
+    # configuration, two answers, the review's arriving first and the
+    # door's arriving after the download.  The mode NAMED in a refusal is
+    # the one that put this configuration on the tiled road: the
+    # tree-wide table where that is enabled, and otherwise the first
+    # domain table that is.
+    tree_options = getattr(exp, "tiles", None) or streaming.OFF
+    governing = [streaming.options_for_domain(dc, tree_options)
+                 for dc in exp.domains]
+    if not any(entry.enabled for entry in governing):
+        return estimate_phases(exp, machine=machine, **kwargs)
+    options = (tree_options if tree_options.enabled
+               else next(entry for entry in governing if entry.enabled))
+    profile = kwargs.get("profile")
     if machine is None:
         machine = streaming.planner_machine(
             vram_bytes=free_bytes, name="gpuwm domain budget",
-            device_profile=kwargs.get("profile"))
+            device_profile=profile)
     if machine is None:
         raise DomainFitError(
             "--tiles needs host RAM available to the shared planner; "
             "run the wizard on the forecast host or use --tiles off")
+    if profile is not None and getattr(machine, "device_profile", None) is None:
+        # THE CALLER'S MEASURED CARD, ON THE SHARED ADMISSION.  The
+        # admission (:func:`gpuwm.core.preflight.admission_estimate`, for
+        # one domain and for a tree alike) takes its device term from the
+        # MACHINE and from nowhere else, on purpose: an optional second
+        # way in is what let the review and the run door price the same
+        # configuration against two different cards.  A caller that
+        # measured the card and handed it here beside a machine built
+        # without it therefore has to fold it in before asking, or the
+        # shared question is answered against the 170-SM reference.
+        # MEASURED on the shipped RTX 3080 profile at 6.54 GiB free,
+        # budget 6,485,400,616 bytes: 7,091,619,592 bytes with the bare
+        # machine against 5,602,673,416 with the profile carried -- the
+        # first is above the budget and the second is below it, so the
+        # wizard refused a domain that fits.
+        from dataclasses import replace as _replace
+
+        machine = _replace(machine, device_profile=profile)
     # Build the same configured, device-profiled estimate used by the phase
     # gate before asking whether auto can stay resident. Falling back inside
     # decide() discards this caller's measured card and prices a 68-SM 3080
@@ -3761,9 +3793,13 @@ def _sizing_phases(exp, *, free_bytes: int, machine=None, **kwargs):
     decision = None
     if len(exp.domains) == 1:
         try:
-            decision = streaming.decide(exp.domains[0].run, options,
-                                        machine=machine,
-                                        resident_estimate=phases.forecast)
+            # The SHARED admission, not this report's own forecast term:
+            # the run door asks the same function of the same
+            # configuration, and a review that admitted a domain the door
+            # then refused is the defect
+            # gpuwm.core.streaming.cold_single_domain_decision documents.
+            decision = streaming.cold_single_domain_decision(
+                exp, machine=machine)
         except (streaming.StreamingRefused, CannotPlan) as error:
             raise DomainFitError(f"--tiles {options.mode}: {error}",
                                  resource=getattr(error, "resource", None),
@@ -5322,9 +5358,34 @@ def domain_main(args, *, sizing_budget: SizingBudget | None = None) -> int:
             f"f{start_hour + args.hours:03d}, past {args.source}'s declared "
             f"f{horizon:03d} horizon; shorten the window, start earlier, or "
             "choose a source with a longer forecast")
+    from gpuwm.fetch import validate_fetch_hints
+    acquisition = {"source": args.source, "cycle": args.cycle,
+                   "hours": args.hours, "forecast_start_hour": start_hour}
+    for key in ("member", "cadence", "era5_product", "era5_provider"):
+        value = getattr(args, key, None)
+        if value is not None:
+            acquisition[key] = value
+    cadence = acquisition.get("cadence", _fetch_cadence_h(args.source, start_hour))
+    if cadence is not None:
+        acquisition["cadence"] = cadence
+        acquisition["hours"] = max(cadence, math.ceil(args.hours / cadence) * cadence)
+    if acquisition.get("era5_product") == "ensemble_members":
+        acquisition.setdefault("era5_provider", "cds")
+        acquisition["retrieve"] = True
+    from gpuwm.runplan import drivability_for
+    acquisition_reachable = (source_has_fetch_front_door(args.source) or
+                             drivability_for(args.source).get("requires_source_root"))
+    if acquisition_reachable:
+        validate_fetch_hints(acquisition, source="domain arguments")
+    elif any(key in acquisition for key in ("member", "era5_product", "era5_provider")):
+        raise ValueError("This source has no acquisition selection contract. Supply a prepared bundle "
+                         "or declare its product and preparation authority before selecting a member.")
+    selection = {key: acquisition[key] for key in ("cadence", "member") if key in acquisition}
+    if start_hour:
+        selection["start_hour"] = start_hour
     cycle = _resolve_cycle(
-        args.cycle, source=args.source, hours=args.hours,
-        start_hour=start_hour)
+        args.cycle, source=args.source, hours=acquisition["hours"],
+        start_hour=start_hour, **{key: value for key, value in selection.items() if key != "start_hour"})
     if args.source == "hrrr":
         # The cycle horizon is a property of the cycle hour (48 h at
         # 00/06/12/18Z, 18 h otherwise), so a lead can walk a window off
@@ -5336,6 +5397,11 @@ def domain_main(args, *, sizing_budget: SizingBudget | None = None) -> int:
     start_time = cycle + timedelta(hours=start_hour)
     supplied_forcing, forcing_interval_seconds, forcing_intervals = (
         _supplied_forcing_schedule(args, start_time))
+    if getattr(args, "cadence", None) is not None:
+        requested_interval = args.cadence * 3600
+        if forcing_interval_seconds is not None and forcing_interval_seconds != requested_interval:
+            raise ValueError("--cadence differs from the supplied input spacing. Use that spacing or omit --cadence.")
+        forcing_interval_seconds = requested_interval
     if forcing_interval_seconds is not None:
         print(f"forcing: native inputs supply {forcing_interval_seconds:g} s cadence "
               f"and {forcing_intervals} retained boundary interval(s)")
@@ -5592,7 +5658,26 @@ def domain_main(args, *, sizing_budget: SizingBudget | None = None) -> int:
         projection, *dims[0], source=args.source, root_dx_m=root_dx_m,
         target_option=target_option, notes=area_notes,
         coverage_notes=coverage_notes)
+    # Is this source prepared from bytes already on disk?  Asked here
+    # because the cadence fallback below depends on it, and again by the
+    # emission further down -- one verdict, from the one function that
+    # canonicalizes the spelling first.
+    from gpuwm.runplan import drivability_for
+    local_source = bool(drivability_for(args.source).get(
+        "requires_source_root"))
     cadence = _fetch_cadence_h(args.source, start_hour)
+    if cadence is None and local_source:
+        # A local-input source has no download ladder to take a spacing
+        # from, and the staging check needs one to know which valid times
+        # the files on disk must cover, so the registry row's own forcing
+        # interval fills it.  Gated on the local-input verdict: applied to
+        # every source whose row declares a whole-hour interval, it wrote
+        # `cadence = 1` into tables for sources whose own `gpuwm fetch`
+        # refuses a cadence outright, so `gpuwm check` passed a config
+        # that then died at stage 1 of the run it had been checked for.
+        interval = get_source_adapter(args.source).forcing_interval_seconds
+        if interval is not None and interval % 3600 == 0:
+            cadence = int(interval / 3600)
     if forcing_interval_seconds is not None:
         cadence = int(forcing_interval_seconds / 3600)
     data_dir = (Path(args.data_dir) if args.data_dir
@@ -5609,18 +5694,31 @@ def domain_main(args, *, sizing_budget: SizingBudget | None = None) -> int:
         "area": area_hint,
         "out": _relative_or_absolute(data_dir, Path.cwd()),
     }
+    from gpuwm import fetch_routes
+    for key in ("era5_product", "era5_provider", "retrieve", "member"):
+        if key in acquisition:
+            fetch_hints[key] = acquisition[key]
+    if args.source in fetch_routes.route_ids():
+        route = fetch_routes.route_for(args.source)
+        if route.members is not None:
+            fetch_hints["member"] = fetch_routes.resolve_member(route, acquisition.get("member"))[0]
+    elif args.source == "era5":
+        from gpuwm.era5_member import validate_selection
+        selected = validate_selection(product_type=acquisition.get("era5_product", "reanalysis"),
+            provider=acquisition.get("era5_provider", "cds"), member=acquisition.get("member"),
+            cadence=cadence, cycle=cycle)
+        if selected is not None:
+            fetch_hints["member"] = selected
     if cadence is not None:
         fetch_hints["cadence"] = cadence
     if start_hour:
         fetch_hints["forecast_start_hour"] = start_hour
-    # A [fetch] table is a claim that `gpuwm fetch` can go and get these
-    # bytes.  For a source with no download route that claim is false, and
-    # the table would be refused at every later config load anyway
-    # (validate_fetch_hints checks it against the routes that exist), so
-    # the emission carries the geometry and states the acquisition gap in
-    # the file's own header instead of advertising a step that refuses.
+    # Preserve source/cycle metadata for local preparation as well.
+    # The run-plan review requires an explicit input root before execution.
+    if local_source:
+        fetch_hints["source_root"] = str(data_dir.expanduser().resolve())
     emitted_fetch_hints = (fetch_hints
-                           if source_has_fetch_front_door(args.source)
+                           if source_has_fetch_front_door(args.source) or local_source
                            else None)
     # And the crop key comes out for a source whose fetch takes whole
     # published objects.  The area is still COMPUTED (the advisories and
@@ -5628,8 +5726,15 @@ def domain_main(args, *, sizing_budget: SizingBudget | None = None) -> int:
     # -- it is not ADVERTISED as a download flag the fetch would refuse.
     if (emitted_fetch_hints is not None
             and not source_fetch_takes_a_crop_box(args.source)):
-        emitted_fetch_hints = {k: v for k, v in fetch_hints.items()
+        emitted_fetch_hints = {k: v for k, v in emitted_fetch_hints.items()
                                if k not in {"area", "point", "radius_km"}}
+    # And `out` comes out for a source nothing downloads: it names where a
+    # download would write, this source is prepared from bytes already on
+    # disk, and the key would be read and then have nothing to write.  The
+    # directory that matters for such a source is source_root.
+    if emitted_fetch_hints is not None and local_source:
+        emitted_fetch_hints = {k: v for k, v in emitted_fetch_hints.items()
+                               if k != "out"}
     # Prove every emitted hint against the REAL fetch validators before
     # anything is written.  A config the wizard cannot fetch is a config
     # whose printed step 1 exits 2, and that shipped twice: any lead not
@@ -5643,9 +5748,8 @@ def domain_main(args, *, sizing_budget: SizingBudget | None = None) -> int:
     # `validate_fetch_hints` when `experiment_from_text` re-loads the
     # rendered bytes below, still before the file lands on disk.
     parse_cycle(fetch_hints["cycle"], args.source)
-    if args.source in {"gfs", "gdas"}:
-        from gpuwm.fetch import gfs_forecast_hours
-        gfs_forecast_hours(int(fetch_hints["hours"]), cadence, start_hour)
+    if emitted_fetch_hints is not None:
+        validate_fetch_hints(emitted_fetch_hints, source=str(out))
 
     # [case_data] only where the config-driven front door can honestly
     # consume the fetched data (the native GRIB1 = ERA5 route).
@@ -5820,16 +5924,23 @@ def domain_main(args, *, sizing_budget: SizingBudget | None = None) -> int:
         # for every table-driven model.  The window is stated after the
         # command instead, where it belongs -- it is a prep fact.
         area_flag = ""
-    if emitted_fetch_hints is not None:
+    if source_has_fetch_front_door(args.source):
         fetch_command = ("gpuwm fetch "
                          f"--source {args.source} "
                          f"--cycle {fetch_hints['cycle']} "
                          f"--hours {fetch_hints['hours']} "
                          + (f"{area_flag} " if area_flag else "")
                          + cadence_flag
+                         + (f"--era5-product {fetch_hints['era5_product']} "
+                            if "era5_product" in fetch_hints else "")
+                         + (f"--era5-provider {fetch_hints['era5_provider']} "
+                            if "era5_provider" in fetch_hints else "")
+                         + ("--retrieve " if fetch_hints.get("retrieve") else "")
                          + (f"--forecast-start-hour {start_hour} "
                             if start_hour else "")
-                         + f"--out {_printed_path(printed_out)}")
+                         + (f"--member {fetch_hints['member']} "
+                             if "member" in fetch_hints else "")
+                          + f"--out {_printed_path(printed_out)}")
     else:
         # NOT a `gpuwm fetch` line.  This source has a runnable profile
         # and no download route, and printing a command that refuses is
@@ -5862,9 +5973,17 @@ def domain_main(args, *, sizing_budget: SizingBudget | None = None) -> int:
     check_command_declared = (f"gpuwm check {_printed_path(out)} "
                               f"--free-gib {free_bytes / GIB:.17g} "
                               f"--vram-gib {vram_gib:g}")
+    # `--explain` describes the route the emitted config takes; it does
+    # not invent an input root.  A local-input source with no root has no
+    # runnable next step, and handing one to `final_step_command` printed
+    # `gpuwm go` on a config that refuses at plan review for want of the
+    # very directory this door did not write into its [fetch] table.
+    printed_root = (printed_out if args.data_dir or local_source
+                    else printed_out if explain and not local_source
+                    else None)
     run_command = final_step_command(
         out, source=args.source, profile=profile,
-        domain_count=len(dims), data_dir=printed_out if args.data_dir or explain else None,
+        domain_count=len(dims), data_dir=printed_root,
         case_data=case_data, exp=exp, cycle=cycle,
         forecast_start_hour=start_hour)
 
@@ -5977,7 +6096,10 @@ def domain_main(args, *, sizing_budget: SizingBudget | None = None) -> int:
     # reads as "and then this other thing happened" rather than "do
     # this".
     deferred: list[str] = []
-    if case_data is None:
+    if local_source:
+        deferred = [str(data_dir)]
+        print(f"Local inputs: stage the declared series in {data_dir}, then run {check_command}.")
+    elif case_data is None:
         if explain:
             # "fetched" only where a fetch exists; every other source's
             # bytes arrive by hand, and calling that a fetch is the same
@@ -6258,9 +6380,12 @@ def register_cli(subparsers) -> None:
                "sets the boundary cadence written into the companion "
                "namelist.wps, bounds the domain by the source's own grid "
                "where that grid is regional, and (era5) declares "
-               "[case_data].  A source `gpuwm fetch` cannot download yet "
-               "emits the same geometry with the acquisition step named "
-               "instead of a [fetch] table")
+               "[case_data].  A source `gpuwm fetch` cannot download "
+               "still emits the same geometry: one whose registry row "
+               "declares a local input contract gets a [fetch] table "
+               "(source, cycle, hours and its staging source_root) "
+               "with the staging step named beside it, and any other has "
+               "the acquisition step named in place of the table")
     parser.add_argument("--cycle", required=True,
                         metavar="YYYY-MM-DDTHH|latest",
                         help="the forcing CYCLE (UTC), which is the run's "
@@ -6268,8 +6393,15 @@ def register_cli(subparsers) -> None:
                              "moves it; 'latest' probes the public mirrors "
                              "for the newest complete gfs/hrrr cycle "
                              "covering the whole window and prints what it "
-                             "picked (needs network; era5 must name an "
-                             "explicit time)")
+                             "picked; sources without a probe use their declared publication delay)")
+    parser.add_argument("--era5-product", choices=("reanalysis", "ensemble_members"), default=None,
+                        help="explicit ERA5 product; default reanalysis has no member axis")
+    parser.add_argument("--era5-provider", choices=("cds", "arco"), default=None,
+                        help="ERA5 provider; ensemble_members requires CDS")
+    parser.add_argument("--cadence", type=int, default=None, metavar="HOURS",
+                        help="boundary spacing in whole hours, validated against the selected product")
+    parser.add_argument("--member", default=None,
+                        help="ensemble trajectory member; defaults to the route's control")
     parser.add_argument("--forecast-start-hour", type=int, default=None,
                         metavar="K",
                         help="gfs/gdas/hrrr: initialize the run from the "

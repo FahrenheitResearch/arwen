@@ -1844,15 +1844,20 @@ def test_a_mixed_column_asking_for_28_anywhere_still_refuses_the_wif_key(
     assert "mp_physics=6" in message
 
 
-def test_mp28_is_a_component_override_and_never_a_default():
+def test_mp28_has_one_named_suite_on_one_route_and_is_never_a_default():
     """The registry decides reachability, and this pins what it decided.
 
     The comment in ``pending_wrf_physics_components`` justifies appending
-    no blocker for mp=28 partly on the ground that the registry keeps it
-    off every template and out of every route's source template list.  That
+    no blocker for mp=28 partly on what the registry does with it.  That
     is a checkable claim about a shipped document, so it is checked --
-    otherwise a later registry edit could quietly make aerosol-aware
-    Thompson somebody's default while this file still says it cannot be.
+    otherwise a registry edit could quietly make aerosol-aware Thompson
+    somebody's default while that comment still says it cannot be.
+
+    What the claim IS changed with audit R-067: the option went from no
+    template at all -- which was the ship-only-what-users-can-reach rule
+    failing quietly -- to exactly one named suite, on the one route that
+    can build a cold start for it.  Never a default is the part that did
+    not change, and it is the part the blocker comment rests on.
     """
     from gpuwm.physics_compat import MP28_REGISTRY_OPTION_ID
     from gpuwm.physics_registry import DEFAULT_TEMPLATE_ID, physics_registry
@@ -1862,18 +1867,31 @@ def test_mp28_is_a_component_override_and_never_a_default():
         MP28_REGISTRY_OPTION_ID]
     assert option["selectors"] == {"mp_physics": 28}
     assert option["implemented"] is True
-    assert option["reachability"]["state"] == "component-override"
+    assert option["reachability"]["state"] == "template"
 
     by_template = {
         name: template.get("components", {}).get("microphysics")
         for name, template in registry["templates"].items()
     }
-    assert MP28_REGISTRY_OPTION_ID not in by_template.values()
+    suites = {name for name, mp in by_template.items()
+              if mp == MP28_REGISTRY_OPTION_ID}
+    assert len(suites) == 1, suites
     assert by_template.get(DEFAULT_TEMPLATE_ID) != MP28_REGISTRY_OPTION_ID
-    for route in registry["runner_routes"].values():
-        for template_ids in route.get("source_template_ids", {}).values():
-            for template_id in template_ids:
-                assert by_template.get(template_id) != MP28_REGISTRY_OPTION_ID
+    # The route split is the claim, so it is asserted BOTH ways: declared
+    # where a runner can build the cold start, absent where none can.
+    routes = registry["runner_routes"]
+    declaring = {
+        route_id
+        for route_id, route in routes.items()
+        for template_ids in (route.get("source_template_ids", {}) or {}).values()
+        if suites & set(template_ids)
+    }
+    assert declaring == {"tools.prepared_domain_tree_forecast"}, declaring
+    for route_id in ("tools.hrrr_single_domain_benchmark",
+                     "tools.prepared_single_domain_forecast"):
+        for template_ids in (
+                routes[route_id].get("source_template_ids", {}) or {}).values():
+            assert not suites & set(template_ids), route_id
 
 
 def test_the_aerosol_units_are_wrfs_resolved_value_not_the_registry_line():

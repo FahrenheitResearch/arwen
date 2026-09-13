@@ -35,6 +35,7 @@ MP28_HANDOFF.md
 # names this machine's Downloads directory and program ledger -- and means
 # nothing to a release reader.
 CLAUDE.md
+AGENTS.md
 
 # Campaign handoffs and internal project history (developer paths inside).
 docs/gpuwm-controller-handoff.md

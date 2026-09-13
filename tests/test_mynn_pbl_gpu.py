@@ -127,12 +127,9 @@ MYNN_LEVEL2_CUDA_ULP = {
 # all three outputs.
 MYNN_PBLH_CUDA_ULP = {"zi": 1, "psig_bl": 0, "psig_shcu": 2}
 
-# el is the largest residue outside the condensation lane.  It is built from
-# ``els * els / (1 + els*els / (elt*elt))`` under a sqrt, with ``els`` itself
-# carrying a powf and the blend weight carrying a tanhf, and the surrounding
-# multiply-adds are not pinned -- hence 384 with contraction on against 1 with
-# it off.  qkw, which is just a sqrt of qke, is already at 1.
-MYNN_MIXLENGTH_CUDA_ULP = {"el": 384, "qkw": 1}
+# Ordinary length now calls initialization's rounded column helper. Both
+# fields are exact against the unchanged WRF oracle, replacing 384/1 ULP.
+MYNN_MIXLENGTH_CUDA_ULP = {"el": 0, "qkw": 0}
 
 # Every one of these is FMA contraction, and pinning mym_level2 proved that
 # the earlier attribution of it was wrong in two ways.
@@ -799,7 +796,7 @@ def test_mynn_mass_flux_tendencies_cuda_reject_nondefault_knobs():
     # The device mixscalars lane admits ONLY the fixture combo: all five
     # qn flags true and every qn/s_awqn input present (CPU twin pins the
     # same surface).
-    with pytest.raises(ValueError, match="FLAG_QNC true"):
+    with pytest.raises(ValueError, match="FLAG_QNC says its column is absent"):
         mynn_tendencies_default_cuda(inputs, bl_mynn_mixscalars=1)
     with pytest.raises(TypeError, match="mixscalars"):
         mynn_tendencies_default_cuda(

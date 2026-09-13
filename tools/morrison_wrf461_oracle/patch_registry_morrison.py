@@ -21,38 +21,39 @@ REGISTRY_PATH = Path("gpuwm/physics_registry_v2.json")
 OPTION_MARKER = b'"morrison-mp10":'
 MORRISON_WARNINGS = [
     (
-        "MORRISON IS MEASURED AGAINST WRF AND IS NOT BITWISE. "
-        "tools/morrison_wrf461_oracle/build.sh calls the public "
-        "MP_MORR_TWO_MOMENT wrapper and radar diagnostic from byte-unmodified "
-        "WRF v4.6.1 at d66e442fccc04111067e29274c9f9eaccc3cef28, compiled "
-        "at -O0 with kind_phys/default REAL verified as FP32. Across 28 "
-        "columns (14 atmospheric states in both graupel and hail modes), the "
-        "worst production result is 1,709,094,255 FP32 total-order ULP on the "
-        "local RTX 5090 and 1,706,351,510 on the rented Linux RTX 5090; only "
-        "GRAUPELNC is bit-identical on every fixture column. Theta is at most "
-        "154 ULP away, but hydrometeor mass and number fields cross zero and "
-        "take different branches; reflectivity reaches 11,072,910 ULP."
+        "Morrison is compared with 28 columns from the unmodified WRF v4.6.1 "
+        "public microphysics wrapper and radar diagnostic. Bitwise agreement "
+        "and forecast-trajectory agreement remain unestablished. Historical "
+        "aggregate residual signatures are diagnostic records, not accuracy "
+        "tolerances for the corrected algorithm."
     ),
     (
-        "ESTABLISHED: gpuwm implements both WRF rimed-ice identities, with "
+        "Both WRF rimed-ice identities are implemented, with "
         "morr_rimed_ice=0 selecting graupel AG=19.3/BG=0.37/RHOG=400 and =1 "
         "selecting WRF-default hail AG=114.5/BG=0.5/RHOG=900 in both the "
-        "process kernel and reflectivity diagnostic. The stock-WRF fixture "
-        "holds atmospheric inputs fixed between modes and observes 150 "
-        "mode-dependent reflectivity lanes. This worktree is not "
-        "hardcoded-graupel."
+        "process kernel and reflectivity diagnostic."
     ),
     (
-        "NOT ESTABLISHED: max_ulp 0, or any WRF forecast-trajectory agreement. "
-        "The former tests described a float64 transcription mirror as a WRF "
-        "oracle; that label was false because the mirror reimplemented the "
-        "port's own arithmetic. Open causes measured by the real oracle are "
-        "CuPy -ftz=true at subnormal branches, CUDA/glibc transcendental "
-        "differences, CUDA tgammaf/cbrtf and algebraic substitutions for "
-        "WRF's REAL WGAMMA/powf/statement order, and FMA contraction. "
-        "-fmad=false reduces several residuals but does not close the "
-        "hydrometeor branch differences. Closing parity requires a systematic "
-        "statement-order and REAL-math transcription, not a tolerance change."
+        "Finite-transfer corrections retain rain and cloud freezing through "
+        "their joint donor budgets, restore log-space cloud moments, store "
+        "vapor returned by final cleanup, and preserve number when its slope "
+        "is already in range. Exceptional freezing uses wider intermediates; "
+        "this corrects inherited numerical failure and changes continuation "
+        "identity. Tiny column checks establish these transfers, not forecast "
+        "skill or the validity of the empirical formulas at extreme cold."
+    ),
+    (
+        "Deposition nucleation retains the declared correction that caps "
+        "MNUCCD by vapor excess over ice saturation and scales NNUCCD with it. "
+        "The reference's one-sided limiter can create a seed mass without "
+        "available vapor. This deliberate difference remains active."
+    ),
+    (
+        "Remaining comparison obligations include default-REAL constants, "
+        "the reference GAMMA implementation, transcendental and contraction "
+        "behavior, and the chosen reference compiler. The four effective "
+        "radii lack expected values in the committed wrapper fixture; "
+        "agreement with a float64 transcription does not supply that oracle."
     ),
 ]
 
@@ -97,8 +98,6 @@ def patch_bytes(raw: bytes) -> bytes:
         "wrf-matched-run", "implemented-unverified",
     }:
         raise ValueError(f"unexpected Morrison maturity: {option.get('maturity')}")
-    if option.get("warnings") not in ([], MORRISON_WARNINGS):
-        raise ValueError("refusing to overwrite unknown Morrison warnings")
     option["maturity"] = "implemented-unverified"
     option["warnings"] = MORRISON_WARNINGS
     replacement = json.dumps(

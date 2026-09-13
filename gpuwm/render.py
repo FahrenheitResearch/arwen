@@ -1648,13 +1648,162 @@ def scratch_root_for(outdir) -> Path:
     return anchor.parent / f"{anchor.name}{SCRATCH_SUFFIX}"
 
 
+#: The prefix a render's working stores take unless a door minted one
+#: for a single stage.  Named because two functions match on it.
+DEFAULT_SCRATCH_PREFIX = "rwstore-"
+
+#: How a door hands its per-stage scratch prefix to the render
+#: subprocess it spawns.  An environment variable rather than a flag
+#: because the render command line is also PRINTED for a reader to
+#: paste, and a pasted line carrying one run's private token would be
+#: wrong the moment it is reused.
+SCRATCH_PREFIX_ENV = "GPUWM_RENDER_SCRATCH_PREFIX"
+
+_SCRATCH_PREFIX_SHAPE = re.compile(
+    rf"^{re.escape(DEFAULT_SCRATCH_PREFIX)}[0-9a-zA-Z]+-$")
+
+
+def stage_scratch_prefix() -> str:
+    """Mint the prefix naming ONE render stage's working stores.
+
+    A door that spawns a render stage owns exactly the stores that stage
+    creates, and owns no other.  Matching on a time window cannot say
+    which is which: a second render into the same delivery whose store
+    opens a second after this stage started is indistinguishable from
+    this stage's own.  A token minted here, handed to the stage through
+    :data:`SCRATCH_PREFIX_ENV` and matched on afterwards, says it
+    exactly -- nothing another door created can carry this token.
+
+    It keeps :data:`DEFAULT_SCRATCH_PREFIX` as its head so that every
+    working store, minted or not, is still recognisable as one, and so
+    a reader clearing a scratch root by hand needs one glob.
+
+    EIGHT hex digits, not a whole uuid.  The token is on the front of
+    every working-store path under ``<case>.render-scratch/``, a
+    directory this project's own layout page already records as long
+    enough to break a Windows directory listing, and 32 bits of a random
+    uuid separate the handful of stages one delivery ever has open at
+    once exactly as well as 128 do.
+    """
+
+    import uuid
+
+    return f"{DEFAULT_SCRATCH_PREFIX}{uuid.uuid4().hex[:8]}-"
+
+
+def scratch_prefix() -> str:
+    """The prefix THIS process's working stores take.
+
+    The door's minted token when one was handed down, and
+    :data:`DEFAULT_SCRATCH_PREFIX` otherwise -- a render nobody spawned
+    from a door (``gpuwm render`` typed directly) is nobody's to sweep
+    and takes the plain prefix.
+
+    A value that is not a mintable token is not a reason to refuse a
+    render: the store is created under the plain prefix instead, and the
+    line says so once, because the only consequence is that the door
+    which handed it down will not recognise this store as its own.
+    """
+
+    named = os.environ.get(SCRATCH_PREFIX_ENV, "").strip()
+    if not named:
+        return DEFAULT_SCRATCH_PREFIX
+    if _SCRATCH_PREFIX_SHAPE.match(named):
+        return named
+    global _WARNED_SCRATCH_PREFIX
+    if not _WARNED_SCRATCH_PREFIX:
+        _WARNED_SCRATCH_PREFIX = True
+        print(f"render: warning: {SCRATCH_PREFIX_ENV}={named!r} is not a "
+              f"{DEFAULT_SCRATCH_PREFIX}<token>- prefix; this render's "
+              "working store takes the plain prefix and the door that "
+              "spawned it will leave the store alone if it dies.",
+              file=sys.stderr)
+    return DEFAULT_SCRATCH_PREFIX
+
+
+_WARNED_SCRATCH_PREFIX = False
+
+
+def sweep_abandoned_scratch(outdir, *, prefix: str) -> list[Path]:
+    """Remove working stores a dead render left beside ``outdir``.
+
+    :func:`scratch_store` removes its own store on the way out, including
+    on an exception -- but only if the process lives to run the ``finally``.
+    A renderer that exits nonzero usually does; one that is OOM-killed, or
+    a stage subprocess that dies on a signal, does not, and the store stays
+    in ``<case>.render-scratch/`` holding the whole tiled hour file it was
+    working on.  MEASURED on one failed 1 km render: 3 abandoned stores,
+    11.4 GiB, beside a delivery that had published nothing.  The door that
+    saw the stage fail is the one place that knows the render is over, so
+    it sweeps here and SAYS what it removed -- silent deletion beside a
+    failure is how evidence disappears.
+
+    ``prefix`` IS THE OWNERSHIP TEST, and a door passes the token it
+    minted with :func:`stage_scratch_prefix` and handed to the stage that
+    died.  :func:`scratch_store` promises that concurrent renders into
+    one delivery each keep their own store and none removes another's,
+    and a sweep of everything under the plain prefix breaks that promise
+    on POSIX, where ``rmtree`` deletes a directory whose files another
+    process still has open and the live render simply loses its work.
+    Matching on the minted token cannot reach another door's store
+    whenever it was created; matching on when a store appeared can, and
+    the interleaving it misses (a second render whose store opens just
+    after this stage started) is the common one.
+
+    A store under the plain prefix is therefore never swept by a door,
+    and this function REFUSES the plain prefix rather than defaulting to
+    it: a default that matches every working store is the blanket sweep
+    two paragraphs up, one keyword away.  It is somebody's live render or
+    an earlier crash's leavings, and ``gpuwm render`` typed directly
+    cleans up after itself.
+
+    Returns the stores actually removed, in path order.  Never raises,
+    and never reports a store it did not remove: a directory that will
+    not go (a Windows handle still mapping an hour file) stays where it
+    is and stays out of the returned list, and the caller's failure
+    remains the failure being reported.
+    """
+
+    import shutil
+
+    if not _SCRATCH_PREFIX_SHAPE.match(str(prefix)):
+        raise ValueError(
+            f"sweep_abandoned_scratch needs the token a door minted with "
+            f"stage_scratch_prefix(), not {prefix!r}: sweeping every store "
+            f"under the plain {DEFAULT_SCRATCH_PREFIX!r} prefix would "
+            f"remove a concurrent render's live store, which on POSIX "
+            f"loses that render's work. Mint a prefix, hand it to the "
+            f"stage through GPUWM_RENDER_SCRATCH_PREFIX, and sweep on it.")
+    root = scratch_root_for(outdir)
+    try:
+        candidates = sorted(entry for entry in root.iterdir()
+                            if entry.is_dir()
+                            and entry.name.startswith(prefix))
+    except OSError:
+        return []
+    removed: list[Path] = []
+    for store in candidates:
+        shutil.rmtree(store, ignore_errors=True)
+        if not store.exists():
+            removed.append(store)
+    try:
+        root.rmdir()
+    except OSError:
+        pass
+    return removed
+
+
 @contextlib.contextmanager
-def scratch_store(outdir, *, prefix: str = "rwstore-"):
+def scratch_store(outdir, *, prefix: str | None = None):
     """One renderer invocation's working store, outside the delivery.
 
     Removed on exit; the sibling root goes with the last store in it, so
     concurrent renders into the same delivery each keep their own and
     none removes another's (``rmdir`` refuses a non-empty directory).
+    That promise survives a door's cleanup too: ``prefix`` defaults to
+    :func:`scratch_prefix`, which is the token the door that spawned
+    this process minted, and :func:`sweep_abandoned_scratch` matches on
+    that token rather than on when a store appeared.
 
     A parent directory that cannot hold the sibling (read-only, or a
     delivery written straight into a mount point) is not a reason to
@@ -1664,6 +1813,8 @@ def scratch_store(outdir, *, prefix: str = "rwstore-"):
 
     import tempfile
 
+    if prefix is None:
+        prefix = scratch_prefix()
     root = scratch_root_for(outdir)
     try:
         root.mkdir(parents=True, exist_ok=True)

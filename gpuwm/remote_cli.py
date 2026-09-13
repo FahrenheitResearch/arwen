@@ -30,13 +30,51 @@ def remote_path(value, name: str) -> str:
     return value
 
 
+WINDOWS_EXTENSIONS = ".COM;.EXE;.BAT;.CMD"
+
+
+def _path_client(name: str, *, environ, windows: bool) -> str | None:
+    """Find `name` on the PATH in `environ` under the rules of `windows`.
+
+    Windows PATH and PATHEXT can be inspected without changing the process
+    environment. POSIX lookup uses the host's native executable permissions
+    through shutil.which; a live launch always selects its current platform.
+    """
+    search = environ.get("PATH")
+    if not search:
+        return None
+    if not windows:
+        return shutil.which(name, path=search)
+    extensions = [suffix for suffix in
+                  (environ.get("PATHEXT") or WINDOWS_EXTENSIONS).split(";") if suffix]
+    wanted = [name] if any(name.lower().endswith(suffix.lower()) for suffix in extensions) else []
+    wanted += [name + suffix for suffix in extensions]
+    for entry in search.split(";"):
+        if not entry:
+            continue
+        try:
+            # Windows matches a filename without regard to case.
+            present = {item.name.lower(): item for item in Path(entry).iterdir() if item.is_file()}
+        except OSError:
+            continue
+        for candidate in wanted:
+            found = present.get(candidate.lower())
+            if found is not None:
+                return str(found)
+    return None
+
+
 def ssh_executable(*, environ=None, windows=None) -> str | None:
     """Prefer Windows' own OpenSSH client, then PATH.
 
     PATH order on a developer desktop puts Git's MSYS ssh.EXE first; it cannot
     reach the Windows OpenSSH agent service, so a passphrase-protected key
     fails under BatchMode=yes with an opaque "Permission denied (publickey)".
-    shutil.which also honours PATHEXT, so an ssh.bat earlier on PATH would win.
+    PATHEXT also means an ssh.bat earlier on PATH would win.
+
+    The environment and the platform are arguments, so both halves of the
+    choice, the system client and the PATH search, answer for the same
+    platform. An environment carrying no PATH has no PATH to search.
     """
     environ = os.environ if environ is None else environ
     windows = (os.name == "nt") if windows is None else windows
@@ -46,26 +84,26 @@ def ssh_executable(*, environ=None, windows=None) -> str | None:
             candidate = Path(system_root) / "System32" / "OpenSSH" / "ssh.exe"
             if candidate.is_file():
                 return str(candidate)
-    return shutil.which("ssh", path=environ.get("PATH"))
+    return _path_client("ssh", environ=environ, windows=windows)
 
 
-def ssh_command(args, *, artifact_stream=False, input_stream=False, processed_stream=False, processed_member_stream_v2=False) -> list[str]:
+def transport_profile(args) -> dict:
+    """Check every typed transport option, before anything about this desktop.
+
+    One function, so review-plan and a live run cannot disagree about one
+    configuration, and so a typed option is refused for what is wrong with it.
+    Resolving the client first made a missing OpenSSH install answer for a port
+    of 65536, which names neither the breakage nor the way out.
+    """
     host = args.host
     if (not isinstance(host, str) or len(host) > 255
             or not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.@:\[\]-]*", host)):
         raise ValueError("--host must be an SSH alias or user@host without shell syntax")
     python = remote_path(args.python, "--python")
     remote_path(args.workspace, "--workspace")
-    ssh = ssh_executable()
-    if ssh is None:
-        raise ValueError("OpenSSH client 'ssh' is unavailable; install it and retry")
-    command = [ssh, "-T", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes",
-               "-o", "ConnectTimeout=10", "-o", "ServerAliveInterval=10",
-               "-o", "ServerAliveCountMax=2"]
-    if args.port is not None:
-        if not 1 <= args.port <= 65535:
-            raise ValueError("--port must be between 1 and 65535")
-        command += ["-p", str(args.port)]
+    if args.port is not None and not 1 <= args.port <= 65535:
+        raise ValueError("--port must be between 1 and 65535")
+    files = []
     for flag, value in (("-F", args.ssh_config), ("-i", args.identity)):
         if value is not None:
             path = Path(value).expanduser()
@@ -76,7 +114,23 @@ def ssh_command(args, *, artifact_stream=False, input_stream=False, processed_st
             path = path.resolve(strict=True)
             if not path.is_file():
                 raise ValueError(f"{flag} must name an existing local file")
-            command += [flag, str(path)]
+            files.append((flag, str(path)))
+    return {"host": host, "python": python, "port": args.port, "files": files}
+
+
+def ssh_command(args, *, artifact_stream=False, input_stream=False, processed_stream=False, processed_member_stream_v2=False) -> list[str]:
+    profile = transport_profile(args)
+    host, python = profile["host"], profile["python"]
+    ssh = ssh_executable()
+    if ssh is None:
+        raise ValueError("OpenSSH client 'ssh' is unavailable; install it and retry")
+    command = [ssh, "-T", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes",
+               "-o", "ConnectTimeout=10", "-o", "ServerAliveInterval=10",
+               "-o", "ServerAliveCountMax=2"]
+    if profile["port"] is not None:
+        command += ["-p", str(profile["port"])]
+    for flag, value in profile["files"]:
+        command += [flag, value]
     # ssh passes its command through the remote shell. Only these fixed words
     # and the quoted interpreter enter that shell; request data travels on stdin.
     command += ["--", host, shlex.join([python, "-I", "-m", "gpuwm.remote_worker",
@@ -291,6 +345,7 @@ def register_cli(subparsers) -> None:
             command.add_argument("--expected-prepared-sha256", help="refuse a prepared receipt changed since review")
         if action == "start":
             command.add_argument("--config", required=True, help="existing absolute remote experiment TOML")
+        if action in ("start", "resume"):
             command.add_argument("--geog-root", help="existing absolute remote geography directory")
             command.add_argument("--prepared-root", help="existing absolute remote prepared bundle; reuse it without fetch or preparation")
             command.add_argument("--wps-namelist", help="with --prepared-root: exact absolute remote WPS authority required by a single-domain bundle")

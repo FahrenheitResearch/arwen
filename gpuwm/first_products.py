@@ -153,6 +153,16 @@ def effective_products(render_products: Any) -> str:
     return text or DEFAULT_RENDER_PRODUCTS
 
 
+def render_without_output_refusal(render_products: Any,
+                                  io_mode: Any) -> str | None:
+    """Explain an explicit request for pictures without history frames."""
+    if early_render_requested(render_products) and io_mode == "none":
+        return ("--render-products needs committed history frames, but "
+                "--io-mode none writes no frames to render. Use --io-mode "
+                "history, or --render-products none to run without pictures.")
+    return None
+
+
 def _sha256_file(path: Path) -> str:
     """The digest of one file, readable at any path length.
 
@@ -597,5 +607,6 @@ __all__ = [
     "published_frames",
     "published_pictures_are_original",
     "read_receipt",
+    "render_without_output_refusal",
     "withdraw",
 ]

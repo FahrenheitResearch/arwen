@@ -101,9 +101,11 @@ rendering is idempotent per filename.
 from __future__ import annotations
 
 import datetime
+from contextlib import contextmanager
 import os
 import re
 from pathlib import Path
+import tempfile
 
 #: Every run folder begins with this.  One word, so a reader scanning a
 #: case directory can tell a run from ``data`` at a glance.
@@ -331,19 +333,72 @@ def stage_flags() -> list[str]:
     return ["--run-stamp", "off"]
 
 
+@contextmanager
+def _latest_lock(root: Path):
+    """Serialize pointer selection on one permanent lock inode."""
+    with (root / ".latest-run.lock").open("a+b") as handle:
+        if os.name == "nt":
+            import msvcrt
+
+            if handle.seek(0, os.SEEK_END) == 0:
+                handle.write(b"\0")
+                handle.flush()
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            if os.name == "nt":
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
 def record_latest(root, run_dir) -> None:
-    """Point ``<root>/latest-run.txt`` at ``run_dir``.
+    """Atomically publish the newest launch among completed publications.
 
     Best effort on purpose: a read-only case root is a reason not to
     have a pointer, never a reason to fail a run that is otherwise
     fine.
     """
 
+    temporary = None
     try:
-        (Path(root) / LATEST_POINTER).write_text(
-            Path(run_dir).name + "\n", encoding="utf-8")
+        root = Path(root)
+        candidate = Path(run_dir).name
+        if not is_run_folder(candidate) or not (root / candidate).is_dir():
+            return
+        with _latest_lock(root):
+            pointer = root / LATEST_POINTER
+            try:
+                previous = pointer.read_text(encoding="utf-8").strip()
+            except OSError:
+                previous = ""
+            if (is_run_folder(previous) and (root / previous).is_dir()
+                    and previous >= candidate):
+                return
+            with tempfile.NamedTemporaryFile(
+                    mode="w", encoding="utf-8", dir=root,
+                    prefix=".latest-run-", suffix=".tmp", delete=False) as handle:
+                temporary = Path(handle.name)
+                handle.write(candidate + "\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, pointer)
+            temporary = None
     except OSError:
         pass
+    finally:
+        if temporary is not None:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
 
 
 def latest(root) -> Path | None:

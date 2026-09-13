@@ -164,4 +164,15 @@ A downscale run publishes the same receipts every other run publishes -- `run-ma
 
 For Rust tests, set `GPUWM_TUI_TEST_PYTHON` to the absolute Python executable in the ArWen environment, then run `cargo test --locked --offline`. The suite exercises actual owned worker processes and native guided configuration emission, without launching a forecast.
 
+Advanced local DA access is opt-in for a terminal session: launch
+`arwen-tui --enable-local-da --open-companion` (or add `--enable-local-da`
+to a `--headless-companion` launch). The ordinary GUI hides local DA by default.
+The shared companion handoff carries `experimental_features.local_da` as a
+boolean; only explicit `true` enables the GUI entry. Engine local-DA commands
+and capabilities remain available independently. An existing live controller
+retains an explicit opt-in for its next visual window. If that window is
+already open, close and reopen it to apply the setting; its forecast remains
+owned by the controller. The switch is intentionally omitted from ordinary
+help and menus. A new controller session needs the switch again.
+
 Choose **Fit starter TOML** on Home (or press T) to size an editable starter through the ordinary domain-fit command. Exact scientific settings stay in the template. Review the settings and command; it creates a new fitted configuration and opens Review launch plan. The log records the exact field changes. This does not launch a forecast.

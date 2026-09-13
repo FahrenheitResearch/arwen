@@ -35,9 +35,13 @@
 // implemented-unverified integration port: no oracle comparison against
 // the WRF Fortran has been run yet (that campaign is the declared next
 // stage, as it was for Shin-Hong and Grell-Freitas).
+// Rain sedimentation deliberately corrects the inherited :810-839 update:
+// each interface transfers one donor-owned mass and number amount. Capping
+// the arrival by the donor's already-updated state discarded real rain.
 
 #ifdef WDM6_CPU_MIRROR
 #include <cmath>
+using std::isfinite;
 #define __device__
 #define __forceinline__ inline
 #define __global__
@@ -46,6 +50,23 @@
 #ifndef WDM6_KMAX
 #define WDM6_KMAX 64
 #endif
+
+// The limit is the signed counter's first unrepresentable positive value.
+// Check the exact FP32 schedule expression before converting it to int.
+__device__ __forceinline__ int wdm6_checked_steps(float value) {
+    float count = floorf(value);
+    if (!isfinite(count) || count < 0.0f || count >= 2147483648.0f) return -1;
+    return count < 1.0f ? 1 : (int)count;
+}
+
+__device__ __forceinline__ int wdm6_rain_steps(float den, float dz, float dtcld) {
+    // The existing inverse-slope cap bounds future vt, including dry receivers.
+    // Its coupled wave speed is <1.25*vt; wave Courant 0.5 gives terminal
+    // Courant 0.4. This is the production schedule itself, not a looser estimate.
+    float df = sqrtf(1.28f / den);
+    return wdm6_checked_steps(2.5f * 2.99849272e3f * powf(1.0e-3f, 0.8f)
+                             * df / dz * dtcld + 1.0f);
+}
 
 __device__ __forceinline__ float wdm6_max0(float x) { return fmaxf(x, 0.0f); }
 __device__ __forceinline__ float wdm6_eff01(float x) {
@@ -102,6 +123,33 @@ struct WdmSlope {
 struct WdmRainSlope {
     float r, rb, r2, r3, vt, vtn;
 };
+
+struct WdmRainFallout {
+    float mass;       // kg m-2 leaving the bottom interface this sub-step
+    float number;     // m-2 leaving the bottom interface this sub-step
+};
+
+__device__ __forceinline__ WdmRainFallout wdm6_rain_substep(
+    float *qr, float *nr, const float *den, const float *dz,
+    const float *mass_rate, const float *number_rate, int nz, float dt)
+{
+    float incoming_mass = 0.0f, incoming_number = 0.0f;
+    for (int k = nz - 1; k >= 0; --k) {
+        const float air_mass = den[k] * dz[k];
+        const float mass = qr[k] * air_mass;
+        const float number = nr[k] * dz[k];
+        // The donor bounds its outgoing transfer once. Both adjacent
+        // cells use that same amount, including unequal density/depth.
+        // This is a conservative flux limit, never a repaired state.
+        const float outgoing_mass = fminf(mass, mass * mass_rate[k] * dt);
+        const float outgoing_number = fminf(number, number * number_rate[k] * dt);
+        qr[k] = (mass - outgoing_mass + incoming_mass) / air_mass;
+        nr[k] = (number - outgoing_number + incoming_number) / dz[k];
+        incoming_mass = outgoing_mass;
+        incoming_number = outgoing_number;
+    }
+    return {incoming_mass, incoming_number};
+}
 
 __device__ __forceinline__ WdmRainSlope wdm6_rain_slope(
     float q, float nr, float den, float denfac) {
@@ -280,8 +328,9 @@ __device__ __forceinline__ float wdm6_plm_remap(
         for (int kk = kt; kk < nz; ++kk) {
             if (zi[k + 1] <= za[kk]) { kt = kk; break; }
         }
-        // DELIBERATE, DOCUMENTED DIVERGENCE from the Fortran, and the only
-        // one in this kernel.  nislfv_rain_plmr:2629 and
+        // DELIBERATE, DOCUMENTED PLM DIVERGENCE from the Fortran.
+        // The separate rain-interface correction is documented above.
+        // nislfv_rain_plmr:2629 and
         // nislfv_rain_plm6:2891 both do an UNCONDITIONAL `kt = kt - 1`
         // here; this clamps at the first index instead.  The two differ on
         // exactly one input: when find_kt leaves kt at its first index
@@ -417,7 +466,7 @@ __device__ float wdm6_sediment_ice(
     return precip;
 }
 
-__device__ void wdm6_column_impl(
+__device__ unsigned int wdm6_column_impl(
     float *theta, float *qv_g, float *qc_g, float *qi_g, float *qr_g,
     float *qs_g, float *qg_g, float *nn_g, float *nc_g, float *nr_g,
     const float *den_g, const float *p, const float *pii,
@@ -427,6 +476,12 @@ __device__ void wdm6_column_impl(
     float *effc, float *effi, float *effs,
     float delt, int hail_opt, int nz, int stride, int col)
 {
+    if (!isfinite(delt) || delt <= 0.0f) return 1u;
+    int loops = wdm6_checked_steps(delt / 120.0f + 0.5f);
+    if (loops < 0) return 2u;
+    float dtcld = delt <= 120.0f ? delt : delt / (float)loops;
+    int mstep = 1;
+    unsigned int count_flags = 0u;
     const WdmRimed gcn = wdm6_rimed_constants(hail_opt);
     float t[WDM6_KMAX], qv[WDM6_KMAX], qc[WDM6_KMAX], qi[WDM6_KMAX];
     float qr[WDM6_KMAX], qs[WDM6_KMAX], qg[WDM6_KMAX];
@@ -435,12 +490,21 @@ __device__ void wdm6_column_impl(
     float qsw[WDM6_KMAX], qsi[WDM6_KMAX], rhw[WDM6_KMAX], rhi[WDM6_KMAX];
     float xni_pre[WDM6_KMAX], work1r[WDM6_KMAX], workn[WDM6_KMAX];
     float rslope3r[WDM6_KMAX];
-    float falk[WDM6_KMAX], falkn[WDM6_KMAX];
 
     for (int k = 0; k < nz; ++k) {
         int id = col + k * stride;
         t[k] = theta[id] * pii[id];
         den[k] = den_g[id]; delz[k] = dz_g[id];
+        // This exact schedule depends only on the density, thickness and
+        // minor interval, which are constant throughout this scheme call.
+        // Check it while loading the column, before any output is written.
+        if (!isfinite(den[k]) || den[k] <= 0.0f || !isfinite(delz[k]) || delz[k] <= 0.0f)
+            count_flags |= 1u;
+        else {
+            int steps = wdm6_rain_steps(den[k], delz[k], dtcld);
+            if (steps < 0) count_flags |= 2u;
+            else if (steps > mstep) mstep = steps;
+        }
         // padding for negative values generated by dynamics (:577-588),
         // including the CCN floor/cap of the Oct-2017 KIAPS revision.
         qv[k] = qv_g[id];
@@ -454,6 +518,7 @@ __device__ void wdm6_column_impl(
         cpm[k] = 1004.5f * (1.0f - vap) + vap * 1846.4f;
         xl[k] = 2.5e6f - 2343.6f * (t[k] - 273.15f);
     }
+    if (count_flags) return count_flags;
     // Land/sea autoconversion threshold (:607-614): xland == 2 is water
     // (module_microphysics_driver.F:2495 "land mask, 1: land, 2: water"),
     // maritime qc0 (xncr0=5e7) against continental qc1 (xncr1=5e8).
@@ -461,12 +526,6 @@ __device__ void wdm6_column_impl(
 
     rainncv[col] = 0.0f; snowncv[col] = 0.0f; graupelncv[col] = 0.0f;
     sr[col] = 0.0f;                                // :625-635
-
-    // Minor-step split (:639-641).
-    int loops = (int)floorf(delt / 120.0f + 0.5f);
-    if (loops < 1) loops = 1;
-    float dtcld = delt / (float)loops;
-    if (delt <= 120.0f) dtcld = delt;
 
     for (int loop = 0; loop < loops; ++loop) {
         // Saturation state at minor-loop start (:665-695); consumed
@@ -490,44 +549,18 @@ __device__ void wdm6_column_impl(
 
         // ---- rain mass+number fallout: explicit upstream flux with
         // per-column sub-stepping (:790-854) --------------------------------
-        int mstep = 1;
         for (int k = nz - 1; k >= 0; --k) {
             float df = sqrtf(1.28f / den[k]);
             WdmRainSlope rsl = wdm6_rain_slope(qr[k], nr[k], den[k], df);
             work1r[k] = rsl.vt / delz[k];
             workn[k] = rsl.vtn / delz[k];
-            // numdt = max(nint(max(w1,wn)*dtcld+.5),1) (:801); nint on the
-            // nonnegative argument is floor(x+0.5).
-            int numdt = (int)floorf(
-                fmaxf(work1r[k], workn[k]) * dtcld + 0.5f + 0.5f);
-            if (numdt < 1) numdt = 1;
-            if (numdt >= mstep) mstep = numdt;
         }
         float fall_r_sfc = 0.0f;                   // fall(i,kts,1)
-        for (int n = 1; n <= mstep; ++n) {
-            {   // top level (:810-820)
-                int k = nz - 1;
-                falk[k] = den[k] * qr[k] * work1r[k] / (float)mstep;
-                falkn[k] = nr[k] * workn[k] / (float)mstep;
-                if (k == 0) fall_r_sfc += falk[k];
-                qr[k] = fmaxf(qr[k] - falk[k] * dtcld / den[k], 0.0f);
-                nr[k] = fmaxf(nr[k] - falkn[k] * dtcld, 0.0f);
-            }
-            for (int k = nz - 2; k >= 0; --k) {    // :822-839
-                falk[k] = den[k] * qr[k] * work1r[k] / (float)mstep;
-                falkn[k] = nr[k] * workn[k] / (float)mstep;
-                if (k == 0) fall_r_sfc += falk[k];
-                float dqr_k = fminf(falk[k] * dtcld / den[k], qr[k]);
-                float dqr_kp1 = fminf(
-                    falk[k + 1] * delz[k + 1] / delz[k] * dtcld / den[k],
-                    qr[k + 1]);
-                float dnr_k = fminf(falkn[k] * dtcld, nr[k]);
-                float dnr_kp1 = fminf(
-                    falkn[k + 1] * delz[k + 1] / delz[k] * dtcld,
-                    nr[k + 1]);
-                qr[k] = fmaxf(qr[k] - dqr_k + dqr_kp1, 0.0f);
-                nr[k] = fmaxf(nr[k] - dnr_k + dnr_kp1, 0.0f);
-            }
+        for (int n = 0; n < mstep; ++n) {
+            const WdmRainFallout fallout = wdm6_rain_substep(
+                qr, nr, den, delz, work1r, workn, nz, dtcld / (float)mstep);
+            // Retain the existing precipitation accumulator's units.
+            fall_r_sfc += fallout.mass / delz[0] / dtcld;
             // slope_rain refresh for the next sub-step (:840-853).
             for (int k = nz - 1; k >= 0; --k) {
                 float df = sqrtf(1.28f / den[k]);
@@ -1316,6 +1349,7 @@ __device__ void wdm6_column_impl(
         effi[id] = fmaxf(4.99f, fminf(effi[id], 125.0f));
         effs[id] = fmaxf(9.99f, fminf(effs[id], 999.0f));
     }
+    return 0u;
 }
 
 #ifndef WDM6_CPU_MIRROR
@@ -1327,15 +1361,17 @@ extern "C" __global__ void wdm6_column(
     float *rainnc, float *rainncv, float *snownc, float *snowncv,
     float *graupelnc, float *graupelncv, float *sr,
     float *effc, float *effi, float *effs,
-    float delt, int hail_opt, int nz, int ny, int nx)
+    float delt, int hail_opt, int nz, int ny, int nx,
+    unsigned int *count_status)
 {
     int col = blockIdx.x * blockDim.x + threadIdx.x;
     int stride = ny * nx;
     if (col >= stride || nz > WDM6_KMAX) return;
-    wdm6_column_impl(theta, qv, qc, qi, qr, qs, qg, nn, nc, nr,
+    unsigned int flags = wdm6_column_impl(theta, qv, qc, qi, qr, qs, qg, nn, nc, nr,
                      den, p, pii, dz, xland,
                      rainnc, rainncv, snownc, snowncv,
                      graupelnc, graupelncv, sr, effc, effi, effs,
                      delt, hail_opt, nz, stride, col);
+    if (flags) atomicOr(count_status, flags);
 }
 #endif

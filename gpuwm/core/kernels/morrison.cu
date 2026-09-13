@@ -108,7 +108,8 @@ __device__ __forceinline__ void morr_bound_one(
     }
     real raw = cbrtf(six_c * (*number) / q);
     *lambda = fminf(fmaxf(raw, lo), hi);
-    *number = q * (*lambda) * (*lambda) * (*lambda) / six_c;
+    if (*lambda != raw)
+        *number = q * (*lambda) * (*lambda) * (*lambda) / six_c;
 }
 
 __device__ __forceinline__ MorrMoments morr_bound(
@@ -227,6 +228,130 @@ struct MorrRates {
     real piacr, niacr, praci, piacrs, niacrs, pracis;
     real nsubi, nsubs, nsubg;
 };
+
+__device__ __forceinline__ double morr_cloud_freezing(
+        real nc, real lambda, real pg, real temp, real pressure, real mu,
+        real dt, real* number)
+{
+    const real nacnt_exponent = -2.80f + 0.262f * (273.15f - temp);
+    const real nacnt = expf(nacnt_exponent) * 1000.0f;
+    const real slip = 7.37f * temp / (288.0f * 10.0f * pressure) / 100.0f;
+    const real rin = 0.1e-6f;
+    const real dap = (4.0f * MPI * 1.38e-23f / (6.0f * MPI * rin)
+                      * temp * (1.0f + slip / rin) / mu);
+    const real cdist = nc / tgammaf(pg + 1.0f);
+    const real exponent = 0.66f * (273.15f - temp);
+    const real bigg = expf(exponent) - 1.0f;
+    const real logdist = logf(cdist), loglambda = logf(lambda);
+    // WRF 2364-2391 evaluates these gamma moments in log space. Direct
+    // lambda^6 overflows even at ordinary cloud slopes and erases freezing.
+    const real contact_factor = expf(logdist + logf(tgammaf(pg + 5.0f))
+                                     - 4.0f * loglambda);
+    const real immersion_factor = expf(logdist + logf(tgammaf(pg + 7.0f))
+                                       - 6.0f * loglambda);
+    const real number_factor = expf(logdist + logf(tgammaf(pg + 4.0f))
+                                    - 3.0f * loglambda);
+    const real contact_coefficient = MPI * MPI / 3.0f * MRHOW;
+    const real immersion_coefficient = MPI * MPI / 36.0f * MRHOW * 100.0f;
+    const real number_coefficient = MPI / 6.0f * 100.0f;
+    const real contact = contact_coefficient * dap * nacnt * contact_factor;
+    const real immersion = immersion_coefficient * immersion_factor * bigg;
+    const real count = 2.0f * MPI * dap * nacnt * cdist
+                       * tgammaf(pg + 2.0f) / lambda
+                       + number_coefficient * number_factor * bigg;
+    if (isfinite(contact + immersion) && isfinite(count)
+            && contact_factor > 0.0f && immersion_factor > 0.0f
+            && number_factor > 0.0f && isfinite(bigg)) {
+        *number = fminf(count, nc / dt);
+        return (double)(contact + immersion);
+    }
+    // The inherited separate exponential can itself overflow in colder
+    // finite air. Re-evaluate positive factors in double, retaining mass
+    // range until its shared cloud donor budget. No temperature cap applies.
+    const double dist = (double)nc / tgammaf(pg + 1.0f);
+    const double lam = lambda;
+    const double nuclei = exp((double)nacnt_exponent) * 1000.0;
+    const double freezing = exp((double)exponent) - 1.0;
+    const double contact_wide = (double)contact_coefficient * dap * nuclei
+                                * dist * tgammaf(pg + 5.0f) / pow(lam, 4.0);
+    const double immersion_wide = (double)immersion_coefficient * dist
+                                  * tgammaf(pg + 7.0f) / pow(lam, 6.0)
+                                  * freezing;
+    const double count_wide = (double)(2.0f * MPI) * dap * nuclei * dist
+                              * tgammaf(pg + 2.0f) / lam
+                              + (double)number_coefficient * dist
+                              * tgammaf(pg + 4.0f) / pow(lam, 3.0) * freezing;
+    *number = (real)fmin(count_wide, (double)nc / dt);
+    return contact_wide + immersion_wide;
+}
+
+__device__ __forceinline__ void morr_limit_cold_cloud(
+        MorrRates& r, real qc, real dt, double freezing)
+{
+    real loss = (r.prc + r.pra + r.mnuccc + r.psacws + r.psacwi
+                 + r.qmults + r.psacwg + r.pgsacw + r.qmultg) * dt;
+    if (!isfinite(loss)) {
+        const double other = (double)r.prc + r.pra + r.psacws + r.psacwi
+                              + r.qmults + r.psacwg + r.pgsacw + r.qmultg;
+        const double ratio = fmin(1.0, ((double)qc / dt) / (other + freezing));
+        r.prc = (real)(r.prc * ratio); r.pra = (real)(r.pra * ratio);
+        r.mnuccc = (real)(freezing * ratio);
+        r.psacws = (real)(r.psacws * ratio);
+        r.psacwi = (real)(r.psacwi * ratio);
+        r.qmults = (real)(r.qmults * ratio);
+        r.qmultg = (real)(r.qmultg * ratio);
+        r.psacwg = (real)(r.psacwg * ratio);
+        r.pgsacw = (real)(r.pgsacw * ratio);
+    } else if (loss > qc && qc >= MQSMALL) {
+        real ratio = qc / loss;
+        r.prc *= ratio; r.pra *= ratio; r.mnuccc *= ratio;
+        r.psacws *= ratio; r.psacwi *= ratio; r.qmults *= ratio;
+        r.qmultg *= ratio; r.psacwg *= ratio; r.pgsacw *= ratio;
+    }
+}
+
+__device__ __forceinline__ void morr_limit_cold_rain(
+        MorrRates& r, real qr, real nr, real lambda, real temp, real dt)
+{
+    if (!isfinite(r.mnuccr)) {
+        // A finite Bigg exponential can overflow its FP32 numerator before
+        // the two slope-cubed divisions. Keep the exceptional rate wide
+        // until the joint rain donor budget has limited ALL competing sinks.
+        // This corrects inherited range failure in WRF 2780-2781/3124-3144.
+        const double exponent = (double)(0.66f * (273.15f - temp));
+        const double lambda3 = (double)lambda * lambda * lambda;
+        const real coefficient = 20.0f * MPI * MPI * MRHOW * 100.0f;
+        const double freezing = (double)coefficient * nr
+                                * (exp(exponent) - 1.0) / lambda3 / lambda3;
+        const double other = -(double)r.pre + r.qmultr + r.qmultrg
+                             + r.pracs + r.piacr + r.piacrs
+                             + r.pgracs + r.pracg;
+        const double supply = (double)qr / dt + r.prc + r.pra;
+        const double ratio = fmin(1.0, supply / (other + freezing));
+        r.pre = (real)(r.pre * ratio);
+        r.pracs = (real)(r.pracs * ratio);
+        r.qmultr = (real)(r.qmultr * ratio);
+        r.qmultrg = (real)(r.qmultrg * ratio);
+        r.mnuccr = (real)(freezing * ratio);
+        r.piacr = (real)(r.piacr * ratio);
+        r.piacrs = (real)(r.piacrs * ratio);
+        r.pgracs = (real)(r.pgracs * ratio);
+        r.pracg = (real)(r.pracg * ratio);
+        // NNUCCR retains its separate NR/DT bound (WRF 2786).
+    } else {
+        real loss = ((r.pracs - r.pre) + (r.qmultr + r.qmultrg - r.prc)
+                     + (r.mnuccr - r.pra) + r.piacr + r.piacrs + r.pgracs
+                     + r.pracg) * dt;
+        if (loss > qr && qr >= MQSMALL) {
+            real ratio = (qr / dt + r.prc + r.pra)
+                         / (-r.pre + r.qmultr + r.qmultrg + r.pracs + r.mnuccr
+                            + r.piacr + r.piacrs + r.pgracs + r.pracg);
+            r.pre *= ratio; r.pracs *= ratio; r.qmultr *= ratio;
+            r.qmultrg *= ratio; r.mnuccr *= ratio; r.piacr *= ratio;
+            r.piacrs *= ratio; r.pgracs *= ratio; r.pracg *= ratio;
+        }
+    }
+}
 
 __device__ __forceinline__ void morr_process_level(
         real* qv, real* qc, real* qr, real* qi, real* qs, real* qg,
@@ -432,23 +557,11 @@ __device__ __forceinline__ void morr_process_level(
     }
 
     // Cold rate evaluation from the single begin-of-process snapshot.
+    double cloud_freezing = 0.0;
     if (*qc >= MQSMALL && *temp < 269.15f) {
-        real nacnt = expf(-2.80f + 0.262f * (273.15f - *temp)) * 1000.0f;
-        real slip = 7.37f * *temp / (288.0f * 10.0f * pressure) / 100.0f;
-        real rin = 0.1e-6f;
-        real dap = (4.0f * MPI * 1.38e-23f / (6.0f * MPI * rin)
-                    * *temp * (1.0f + slip / rin) / mu);
-        real cdist = *nc / tgammaf(m.pg + 1.0f);
-        real bigg = expf(0.66f * (273.15f - *temp)) - 1.0f;
-        r.mnuccc = MPI * MPI / 3.0f * MRHOW * dap * nacnt * cdist
-                   * tgammaf(m.pg + 5.0f) / powf(m.lc, 4.0f)
-                   + MPI * MPI / 36.0f * MRHOW * 100.0f * cdist
-                   * tgammaf(m.pg + 7.0f) / powf(m.lc, 6.0f) * bigg;
-        r.nnuccc = 2.0f * MPI * dap * nacnt * cdist
-                   * tgammaf(m.pg + 2.0f) / m.lc
-                   + MPI / 6.0f * 100.0f * cdist * tgammaf(m.pg + 4.0f)
-                   / powf(m.lc, 3.0f) * bigg;
-        r.nnuccc = fminf(r.nnuccc, *nc / dt);
+        cloud_freezing = morr_cloud_freezing(*nc, m.lc, m.pg, *temp,
+                                              pressure, mu, dt, &r.nnuccc);
+        r.mnuccc = (real)cloud_freezing;
     }
     if (*qs >= 1.0e-8f) {
         real cons15 = -1108.0f * 0.1f * powf(MPI, (1.0f - 0.41f) / 3.0f)
@@ -682,15 +795,8 @@ __device__ __forceinline__ void morr_process_level(
     if (r.prdg < 0.0f) { r.eprdg = r.prdg; r.prdg = 0.0f; }
 
     // WRF 3086-3187 joint mass-only donor limiting.
-    real loss = (r.prc + r.pra + r.mnuccc + r.psacws + r.psacwi
-                 + r.qmults + r.psacwg + r.pgsacw + r.qmultg) * dt;
-    if (loss > *qc && *qc >= MQSMALL) {
-        real ratio = *qc / loss;
-        r.prc *= ratio; r.pra *= ratio; r.mnuccc *= ratio;
-        r.psacws *= ratio; r.psacwi *= ratio; r.qmults *= ratio;
-        r.qmultg *= ratio; r.psacwg *= ratio; r.pgsacw *= ratio;
-    }
-    loss = (-r.prd - r.mnuccc + r.prci + r.prai - r.qmults - r.qmultg
+    morr_limit_cold_cloud(r, *qc, dt, cloud_freezing);
+    real loss = (-r.prd - r.mnuccc + r.prci + r.prai - r.qmults - r.qmultg
             - r.qmultr - r.qmultrg - r.mnuccd + r.praci + r.pracis
             - r.eprd - r.psacwi) * dt;
     if (loss > *qi && *qi >= MQSMALL) {
@@ -700,17 +806,7 @@ __device__ __forceinline__ void morr_process_level(
         r.prci *= ratio; r.prai *= ratio; r.praci *= ratio;
         r.pracis *= ratio; r.eprd *= ratio;
     }
-    loss = ((r.pracs - r.pre) + (r.qmultr + r.qmultrg - r.prc)
-            + (r.mnuccr - r.pra) + r.piacr + r.piacrs + r.pgracs
-            + r.pracg) * dt;
-    if (loss > *qr && *qr >= MQSMALL) {
-        real ratio = (*qr / dt + r.prc + r.pra)
-                     / (-r.pre + r.qmultr + r.qmultrg + r.pracs + r.mnuccr
-                        + r.piacr + r.piacrs + r.pgracs + r.pracg);
-        r.pre *= ratio; r.pracs *= ratio; r.qmultr *= ratio;
-        r.qmultrg *= ratio; r.mnuccr *= ratio; r.piacr *= ratio;
-        r.piacrs *= ratio; r.pgracs *= ratio; r.pracg *= ratio;
-    }
+    morr_limit_cold_rain(r, *qr, *nr, m.lr, *temp, dt);
     loss = (-r.prds - r.psacws - r.prai - r.prci - r.pracs - r.eprds
             + r.psacr - r.piacrs - r.pracis) * dt;
     if (loss > *qs && *qs >= MQSMALL) {
@@ -1194,6 +1290,7 @@ void morrison_finalize_levels(real* __restrict__ theta,
         qrk = 0.0f; nrk = 0.0f;
     }
 
+    qv[idx] = qvk;
     qc[idx] = qck; qr[idx] = qrk; qi[idx] = qik;
     qs[idx] = qsk; qg[idx] = qgk;
     nc[idx] = nck; nr[idx] = nrk; ni[idx] = nik;

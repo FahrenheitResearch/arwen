@@ -59,16 +59,6 @@ def _stamp(value: datetime | None) -> str | None:
     return None if value is None else value.strftime("%Y-%m-%dT%H")
 
 
-def _reference(now: datetime, grid, last_hour: int, analysis: bool) -> datetime:
-    if not analysis:
-        return now
-    reference = now - timedelta(hours=last_hour)
-    if grid is not None and grid.record_end is not None:
-        reference = min(reference, grid.record_end
-                        + timedelta(hours=grid.delay_hours - last_hour))
-    return reference
-
-
 def _context(source: str | None, hours: float | None,
              config: Path | None, transport: str | None) -> tuple[str, float, str | None]:
     def span(value, label):
@@ -110,7 +100,7 @@ def availability(source: str, hours: float, *, now: datetime | None = None,
     from gpuwm.source_adapters import get_source_adapter
     from gpuwm.source_cycles import cycle_grid_for
     from gpuwm import fetch_endpoints
-    from gpuwm.fetch import cycle_is_probeable
+    from gpuwm.fetch import analysis_window_reference, cycle_is_probeable
 
     source, hours, transport = _context(source, hours, None, transport)
     adapter = get_source_adapter(source)
@@ -128,8 +118,11 @@ def availability(source: str, hours: float, *, now: datetime | None = None,
     # policy separate from which explicit historical starts are valid.
     hourly_start = analysis and adapter.cadence_mapping == "uniform-local-grib-time-series-v1"
     last_hour = math.ceil(hours)
-    reference = _reference(now, grid, last_hour, analysis)
-    newest = grid.newest(reference) if grid else None
+    # The same back-off the acquisition resolver applies, from the same
+    # function, so the date this calendar PUBLISHES as the boundary and the
+    # date its Latest button resolves cannot be two different dates.
+    newest = (grid.newest(analysis_window_reference(source, grid, last_hour, now))
+              if grid else None)
     allowed_hours = []
     if grid:
         for hour in (range(24) if hourly_start else grid.hours):
@@ -237,10 +230,12 @@ def resolve_latest(source: str, hours: float, *, now: datetime | None = None,
         checked.append({"url": url, "available": bool(answer)})
         return answer
 
-    from gpuwm.source_cycles import cycle_grid_for
-    reference = _reference(now, cycle_grid_for(document["source_id"]), document["last_hour"], document["analysis"])
+    # The resolver owns the analysis back-off (gpuwm.fetch
+    # analysis_window_reference); applying it here as well subtracted the
+    # window twice, and the cycle selected for a 240-hour era5 request
+    # landed ten days before this document's own latest_candidate.
     cycle = resolve_latest_cycle(document["source_id"], document["last_hour"],
-                                 now=reference, probe=record_probe)
+                                 now=now, probe=record_probe)
     validate_cycle(document, _stamp(cycle))
     document["selected_cycle"] = _stamp(cycle)
     document["resolution"] = {

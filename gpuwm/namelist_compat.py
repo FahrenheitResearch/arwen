@@ -16,13 +16,48 @@ import math
 from pathlib import Path
 from typing import Iterable
 
-from gpuwm.namelist_import import read_namelist_role
+from gpuwm.namelist_import import (
+    NUDGING_NOT_IMPLEMENTED,
+    THETA_M_ADMITTED,
+    active_nudging_selectors,
+    fine_input_stream_decision,
+    read_namelist_role,
+    theta_m_decision,
+)
 from gpuwm.vertical_contract import validate_explicit_eta_grid
 from gpuwm.wrf_physics_inventory import stock_wrf_physics_inventory
 
 
 SCHEMA = "rw-wps.namelist-support.v1"
+
+#: WRF's own compiled ``max_domains`` (the Registry dimension every
+#: per-domain rconfig array is declared against; the stock build ships
+#: it at 21).  It belongs to the UNCHANGED WRF EXECUTABLE this export
+#: writes for, not to this door: a namelist with more domains than the
+#: compiled maximum cannot be read by that executable, which is the one
+#: verdict this number bounds.  The geometry, physics and timing
+#: analysis is bounded by :data:`ANALYSIS_MAX_DOMAINS` instead, so a
+#: tree above the stock cap is still examined and the gpuwm_runtime
+#: verdict is still answered from real reasons rather than returned as
+#: an unexamined PASS with no reasons at all.
 MAX_DOMAINS = 21
+
+#: Structural bound on the report's own per-domain column expansion
+#: (:func:`_column` materializes one entry per domain for every declared
+#: key).  Nothing physical and no engine limit: it only stops an absurd
+#: ``max_dom`` from expanding every column into a report nobody can
+#: read.  Named in the message that cites it.
+ANALYSIS_MAX_DOMAINS = 256
+
+#: An issue that FAILS the report: the export cannot be written, or the
+#: pair contradicts itself.  The default severity.
+SEVERITY_BLOCKING = "blocking"
+
+#: An issue that is REPORTED and does not fail the report: a route that
+#: is prepared and run, carrying something the reader must be told about
+#: it.  Without this channel every note in the report was a FAIL, so a
+#: supported-with-a-caveat pair could not be stated at all.
+SEVERITY_ADVISORY = "advisory"
 
 _PREPROCESSING_KEYS = {
     "share": {
@@ -40,11 +75,12 @@ _PREPROCESSING_KEYS = {
         "start_month", "start_day", "start_hour", "start_minute",
         "start_second", "end_year", "end_month", "end_day", "end_hour",
         "end_minute", "end_second", "interval_seconds", "input_from_file",
-        # Selects which input stream initializes each nest.  0 is the
-        # standard parent-interpolation path RW-WPS prepares; any nonzero
-        # value (2 = met_em via auxinput2, the delayed-nest-start pattern
-        # observed in WRF-Runner-generated namelists, 2026-07-30) demands
-        # a per-nest input file RW-WPS does not produce -- gated below.
+        # Selects which input stream initializes each nest.  WRF
+        # defines exactly two values: 0 takes every field from the
+        # nest's own input, and 2 takes only the static and masked
+        # land-surface fields from it and interpolates the rest from the
+        # parent (the delayed-nest-start pattern).  Both have a prepared
+        # route here; the gate below names which one and what differs.
         "fine_input_stream",
     },
     "domains": {
@@ -113,10 +149,10 @@ _RUNTIME_OUTPUT_KEYS = {
         "history_begin", "restart", "restart_interval", "io_form_history",
         "io_form_restart", "io_form_input", "io_form_boundary", "nocolons",
         "nwp_diagnostics", "debug_level",
-        # CPU-WRF-runtime I/O keys observed in WRF-Runner-generated
-        # namelists (2026-07-30): none changes what RW-WPS must prepare.
-        # io_form_auxinput2 only matters when fine_input_stream is
-        # nonzero, which the preprocessing gate refuses independently.
+        # CPU-WRF-runtime I/O keys: none changes what RW-WPS must
+        # prepare.  io_form_auxinput2 only names the on-disk format of
+        # the auxinput2 stream that fine_input_stream = 2 selects; the
+        # stream itself is classified above and reported below.
         "io_form_auxinput2", "override_restart_timers",
         "iofields_filename", "ignore_iofields_warning",
     },
@@ -137,8 +173,19 @@ _RUNTIME_OUTPUT_KEYS = {
 }
 
 #: Domain TILING keys, which are not moving-nest keys at all -- they
-#: shared this set only because both are refused in the same report.
+#: shared this set only because one report once refused both.  The
+#: tiling half is a note now, so the two halves are split apart below.
 _MOVING_NEST_TILING_KEYS = frozenset({"tile_sz_x", "tile_sz_y"})
+
+#: The vortex-following half of WRF's moving-nest keys, the partition the
+#: engine's own refusal draws (gpuwm/experiment.py:1545-1549): these steer
+#: a nest from a storm tracker whose controls are corral/max-speed shaped
+#: and have no counterpart at all.  Everything else in the loader's set is
+#: a SPECIFIED move -- a schedule of whole-parent-cell shifts, which is
+#: exactly what [[relocation.move]] rows express.
+_VORTEX_FOLLOWING_KEYS = frozenset({
+    "vortex_interval", "max_vortex_speed", "corral_dist", "track_level",
+})
 
 
 def _noah_soil_layer_count() -> int:
@@ -197,10 +244,19 @@ def _moving_nest_keys() -> frozenset[str]:
 
 @dataclass(frozen=True)
 class CompatibilityIssue:
+    """One report finding.
+
+    ``severity`` is what makes a finding sayable without failing the
+    report: :data:`SEVERITY_BLOCKING` entries (the default, so every
+    existing rule keeps its meaning) decide the verdict, and
+    :data:`SEVERITY_ADVISORY` entries state a supported route's caveat.
+    """
+
     code: str
     location: str
     message: str
     action: str
+    severity: str = SEVERITY_BLOCKING
 
 
 def _entry(section: str, key: str, values: Iterable[object], source: str) -> dict:
@@ -315,8 +371,95 @@ def _wps_datetime_columns(values: list[object], count: int, location: str
     return result
 
 
-def _issue(code: str, location: str, message: str, action: str):
-    return CompatibilityIssue(code, location, message, action)
+def _quoted_list(names: Iterable[str]) -> str:
+    """``'a', 'b', or 'c'`` -- one rendering of one declared set."""
+
+    names = [f"{name!r}" for name in names]
+    if len(names) == 1:
+        return names[0]
+    return ", ".join(names[:-1]) + f", or {names[-1]}"
+
+
+def _issue(code: str, location: str, message: str, action: str,
+           severity: str = SEVERITY_BLOCKING):
+    return CompatibilityIssue(code, location, message, action, severity)
+
+
+def _engine_admitted_values(switch: str) -> tuple[int, ...]:
+    """Read the declarations used by the actual experiment validators.
+
+    Import on call because this module also ships in the standalone
+    preprocessing distribution. No partial configuration is instantiated.
+    """
+    from gpuwm.experiment import FEEDBACK_OPTIONS, SMOOTH_OPTION_OPTIONS
+
+    return {"feedback": FEEDBACK_OPTIONS,
+            "smooth_option": SMOOTH_OPTION_OPTIONS}[switch]
+
+
+def _moving_nest_refusal(keys: Iterable[str]) -> str:
+    """The engine's own refusal sentence for these keys, from the engine.
+
+    The loader at :func:`gpuwm.experiment._reject_moving_nest_keys` owns
+    what a moving-nest key breaks and what to write instead; this door
+    used to carry a degraded copy ("Use static nests or add a mapped
+    moving-domain implementation"), so the two doors described one
+    namelist differently.  The location the engine renders is
+    TOML-shaped ("[domains] of ..."), which is left as it is: making it
+    namelist-shaped means a keyword on that out-of-lane function
+    (gpuwm/experiment.py:1535).
+    """
+
+    from gpuwm.experiment import _reject_moving_nest_keys
+
+    try:
+        _reject_moving_nest_keys(
+            "domains", {key: [] for key in keys}, "the WRF namelist pair")
+    except ValueError as error:
+        return str(error)
+    return ""
+
+
+def _relocation_itinerary_action(domains: dict[str, list]) -> str:
+    """The exact ``[relocation]`` rows that reproduce a specified itinerary.
+
+    WRF's specified moves are a schedule of whole-parent-cell shifts, and
+    so is :class:`gpuwm.experiment.ScheduledRelocationMove` (at_seconds,
+    di_parent_cells, dj_parent_cells -- whole parent cells, same sign
+    convention).  ``move_interval`` is in minutes, which is the only unit
+    conversion in the paste.
+    """
+
+    grid_id: object = None
+    rows: list[str] = []
+    try:
+        count = int(_value(domains, "num_moves", 0))
+        ids = [int(value) for value in domains.get("move_id", [])]
+        minutes = [int(value) for value in domains.get("move_interval", [])]
+        shift_i = [int(value) for value in domains.get("move_cd_x", [])]
+        shift_j = [int(value) for value in domains.get("move_cd_y", [])]
+        if ids and all(value == ids[0] for value in ids):
+            grid_id = ids[0]
+        for index in range(count):
+            rows.append(
+                f"{{at_seconds = {minutes[index] * 60}, "
+                f"di_parent_cells = {shift_i[index]}, "
+                f"dj_parent_cells = {shift_j[index]}}}")
+    except (IndexError, KeyError, TypeError, ValueError):
+        grid_id, rows = None, []
+    named = "the moving nest's grid id" if grid_id is None else str(grid_id)
+    itinerary = (
+        ", ".join(rows) if rows else
+        "{at_seconds = <move_interval minutes x 60>, "
+        "di_parent_cells = <move_cd_x>, dj_parent_cells = <move_cd_y>}")
+    return (
+        "Write the same itinerary in the shipped [relocation] table: "
+        f"enabled = true, grid_id = {named}, and one [[relocation.move]] "
+        f"row per move -- {itinerary} (move_interval is minutes, "
+        "at_seconds is seconds; di_parent_cells/dj_parent_cells are "
+        "move_cd_x/move_cd_y, whole parent cells, same sign convention). "
+        "One difference you accept by doing this: ArWen relocates at "
+        "cycle boundaries, WRF on the model clock.")
 
 
 def analyze_namelists(
@@ -341,6 +484,12 @@ def analyze_namelists(
     inp = read_namelist_role(input_path, "namelist.input")
     issues: list[CompatibilityIssue] = []
     projection: dict[str, object] | None = None
+    # Resolved once: the classification loop and the gate below must
+    # agree about which keys these are, and the loader owns the list.
+    # Without this, a namelist carrying the six specified-move keys got
+    # one named refusal plus five UNCLASSIFIED_NAMELIST_SETTING shrugs
+    # about settings this door knows perfectly well.
+    moving_keys = _moving_nest_keys()
     classifications = {
         "preprocessing_relevant": [],
         "physics_state_relevant": [],
@@ -352,7 +501,9 @@ def analyze_namelists(
         for section, entries in parsed.items():
             for key, values in entries.items():
                 target = None
-                if key in _PREPROCESSING_KEYS.get(section, set()):
+                if key in _PREPROCESSING_KEYS.get(section, set()) or (
+                        section in ("domains", "geogrid")
+                        and key in moving_keys):
                     target = "preprocessing_relevant"
                 elif key in _PHYSICS_STATE_KEYS.get(section, set()):
                     target = "physics_state_relevant"
@@ -408,7 +559,8 @@ def analyze_namelists(
         issues.append(_issue(
             "INVALID_MAX_DOM", "&domains/max_dom",
             f"max_dom must be an integer, got {max_dom_raw!r}.",
-            f"Choose an integer from 1 through {MAX_DOMAINS}.",
+            f"Choose an integer from 1 through {MAX_DOMAINS}, WRF's "
+            "compiled max_domains.",
         ))
         max_dom = 0
     else:
@@ -416,9 +568,23 @@ def analyze_namelists(
     if not 1 <= max_dom <= MAX_DOMAINS:
         issues.append(_issue(
             "UNSUPPORTED_MAX_DOM", "&domains/max_dom",
-            f"max_dom={max_dom} is outside the compiled RW-WPS contract.",
-            f"Choose 1..{MAX_DOMAINS}; six-domain hierarchies are explicitly "
-            "covered and this is not a d01/d02-only parser.",
+            f"max_dom={max_dom} is outside WRF's compiled max_domains = "
+            f"{MAX_DOMAINS}: an unchanged WRF executable built at that "
+            "maximum cannot read a namelist declaring more domains, "
+            "whatever this export writes for them.",
+            f"Reduce the tree to {MAX_DOMAINS} domains or fewer, or "
+            "rebuild WRF with a larger max_domains. The rest of this "
+            "report is computed either way.",
+        ))
+    if max_dom > ANALYSIS_MAX_DOMAINS:
+        issues.append(_issue(
+            "UNSUPPORTED_MAX_DOM", "&domains/max_dom",
+            f"max_dom={max_dom} is past this report's own structural "
+            f"bound of {ANALYSIS_MAX_DOMAINS} domains, which bounds the "
+            "per-domain column expansion the geometry, physics and "
+            "timing blocks build.",
+            f"Declare at most {ANALYSIS_MAX_DOMAINS} domains to get the "
+            "geometry, vertical, physics and timing blocks.",
         ))
     wps_max_dom = _value(share, "max_dom", max_dom)
     if wps_max_dom != max_dom:
@@ -430,28 +596,35 @@ def analyze_namelists(
         ))
 
     raw_projection = _value(geogrid, "map_proj")
-    _IMPLEMENTED_PROJECTIONS = ("lambert", "mercator", "polar")
+    # The implemented set is DECLARED once, by the module that implements
+    # it (gpuwm.static.projection), and read here on call -- the same
+    # on-call idiom :func:`_moving_nest_keys` uses, and for the same
+    # reason.  The literal tuple this replaced was the third hand-typed
+    # copy of one set, so adding a projection meant remembering to edit a
+    # door that is not the projection module.
+    from gpuwm.static.projection import (
+        implemented_projections, latlon_blocker,
+    )
+    implemented = implemented_projections()
+    implemented_list = _quoted_list(implemented)
     if not isinstance(raw_projection, str):
         issues.append(_issue(
             "INVALID_PROJECTION", "&geogrid/map_proj",
-            "map_proj must be a WPS string ('lambert', 'mercator', or "
-            f"'polar'), got {raw_projection!r}.",
+            f"map_proj must be a WPS string ({implemented_list}), got "
+            f"{raw_projection!r}.",
             "Set map_proj to one of the implemented WPS projection "
             "strings.",
         ))
     else:
         normalized_projection = raw_projection.strip().lower().replace("_", "-")
-        if normalized_projection not in _IMPLEMENTED_PROJECTIONS:
+        if normalized_projection not in implemented:
             issues.append(_issue(
                 "UNSUPPORTED_PROJECTION", "&geogrid/map_proj",
                 f"map_proj={raw_projection!r}; RW-WPS implements Lambert "
                 "conformal, Mercator, and polar stereographic geometry.",
-                "Use map_proj='lambert', 'mercator', or 'polar'. "
-                "Regular/rotated latitude-longitude is rejected rather "
-                "than approximated: it needs angular dx/dy rather than "
-                "metre spacing and WRF's global/pole polar filter; rotated "
-                "grids also need pole_lat/pole_lon state and the "
-                "map_proj == 6 curvature branch.",
+                f"Use map_proj={implemented_list}. "
+                "Latitude-longitude is rejected rather than "
+                f"approximated because {latlon_blocker()}.",
             ))
         else:
             # Mercator ignores truelat2/stand_lon and polar
@@ -527,23 +700,42 @@ def analyze_namelists(
             _column(dynamics, "use_theta_m", max_dom, default=1),
             "&dynamics/use_theta_m",
         )
-        unsupported_theta = [
+        declaration = (
+            "is omitted, so WRF Registry default 1 applies"
+            if "use_theta_m" not in dynamics
+            else f"resolves to {theta_values!r}"
+        )
+        undefined_theta = [
             index + 1 for index, value in enumerate(theta_values)
-            if value != 0
+            if value not in THETA_M_ADMITTED
         ]
-        if unsupported_theta:
-            declaration = (
-                "is omitted, so WRF Registry default 1 applies"
-                if "use_theta_m" not in dynamics
-                else f"resolves to {theta_values!r}"
-            )
+        moist_theta = [
+            index + 1 for index, value in enumerate(theta_values)
+            if value == 1
+        ]
+        if undefined_theta:
             gpuwm_reasons.append(
-                "gpuwm forecast runtime requires the dry-theta branch: "
-                f"&dynamics/use_theta_m {declaration}; unsupported on "
-                f"domains {unsupported_theta}. Set explicit "
-                "&dynamics use_theta_m = 0. Stock-WRF input export remains "
-                "independent and supported."
+                f"&dynamics/use_theta_m {declaration}; WRF defines "
+                f"{THETA_M_ADMITTED} and domains {undefined_theta} declare "
+                "something else. Set explicit &dynamics use_theta_m = 0."
             )
+        elif moist_theta:
+            # The SAME answer gpuwm.namelist_import gives for the same
+            # namelist, from the same function: a declared divergence the
+            # reader is told about, not a runtime FAIL.  This door used to
+            # FAIL the gpuwm_runtime verdict for a pair the importer
+            # accepts and announces -- one configuration, two answers.
+            decision = theta_m_decision(1)
+            issues.append(_issue(
+                "THETA_M_DRY_SUBSTITUTION", "&dynamics/use_theta_m",
+                f"&dynamics/use_theta_m {declaration}; domains "
+                f"{moist_theta} select WRF's moist-theta prognostic. "
+                + decision.reason,
+                "Nothing to change: the import books this as a declared "
+                "divergence and announces it. Set explicit &dynamics "
+                "use_theta_m = 0 to integrate what WRF would integrate.",
+                severity=SEVERITY_ADVISORY,
+            ))
     except (KeyError, ValueError) as error:
         gpuwm_reasons.append(
             "gpuwm forecast runtime cannot classify "
@@ -587,32 +779,63 @@ def analyze_namelists(
             _column(domains, "smooth_option", max_dom, default=2),
             "&domains/smooth_option",
         )
-        unsupported_smooth = [
+        admitted_smooth = _engine_admitted_values("smooth_option")
+        admitted_smooth_list = ", ".join(
+            str(value) for value in admitted_smooth)
+        declaration = (
+            "is omitted, so WRF Registry default 2 applies"
+            if "smooth_option" not in domains
+            else f"resolves to {smooth_values!r}"
+        )
+        undefined_smooth = [
             index + 1 for index, value in enumerate(smooth_values)
-            if value != 0
+            if value not in admitted_smooth
         ]
-        if unsupported_smooth:
-            declaration = (
-                "is omitted, so WRF Registry default 2 applies"
-                if "smooth_option" not in domains
-                else f"resolves to {smooth_values!r}"
-            )
+        active_smooth = [
+            index + 1 for index, value in enumerate(smooth_values)
+            if value != 0 and value in admitted_smooth
+        ]
+        if undefined_smooth:
             gpuwm_reasons.append(
-                "gpuwm one-way forecast runtime requires the disabled parent "
-                f"smoother: &domains/smooth_option {declaration}; unsupported "
-                f"on domains {unsupported_smooth}. Set explicit "
-                "smooth_option = 0. Stock-WRF input export remains independent "
-                "and supported."
+                f"&domains/smooth_option {declaration}; domains "
+                f"{undefined_smooth} declare a smoother gpuwm.experiment "
+                f"does not admit ({admitted_smooth_list}). Set explicit "
+                "smooth_option = 0 (none), 1 (sm121) or 2 (smdsm)."
             )
+        elif active_smooth:
+            # The post-feedback parent smoother is IMPLEMENTED
+            # (gpuwm/core/nest.py builds sm121 and smdsm and applies it
+            # in feedback_commit), and WRF reads the key only when
+            # feedback = 1, so a nonzero value is a statement about the
+            # run rather than a runtime FAIL.  The literal 0 this
+            # replaced failed every namelist that omits the key, which
+            # takes WRF's Registry default 2.
+            issues.append(_issue(
+                "PARENT_SMOOTHER_ACTIVE", "&domains/smooth_option",
+                f"&domains/smooth_option {declaration}; domains "
+                f"{active_smooth} select WRF's post-feedback parent "
+                "smoother, which gpuwm implements (0 none, 1 sm121, "
+                "2 smdsm) and applies only while feedback = 1, exactly "
+                "as WRF's own smoother returns before dispatching when "
+                "feedback is off.",
+                "Nothing to change. Set smooth_option = 0 to leave the "
+                "parent unsmoothed after a two-way exchange.",
+                severity=SEVERITY_ADVISORY,
+            ))
     except (KeyError, ValueError) as error:
         gpuwm_reasons.append(
             "gpuwm forecast runtime cannot classify "
             f"&domains/smooth_option: {error}. Declare the WRF integer "
-            "smooth_option = 0 explicitly. Stock-WRF input export remains "
-            "independent and supported."
+            "smooth_option = 0, 1 or 2 explicitly. Stock-WRF input export "
+            "remains independent and supported."
         )
     vertical = None
-    if 1 <= max_dom <= MAX_DOMAINS:
+    # Bounded by the REPORT's structure, not by the stock-export cap: a
+    # tree above WRF's compiled max_domains still gets its geometry,
+    # physics and timing examined, so the gpuwm_runtime verdict below is
+    # answered from what the namelist says instead of coming back PASS
+    # with no reasons over a hierarchy nothing looked at.
+    if 1 <= max_dom <= ANALYSIS_MAX_DOMAINS:
         required_columns = (
             (geogrid, "e_we", "&geogrid/e_we"),
             (geogrid, "e_sn", "&geogrid/e_sn"),
@@ -793,43 +1016,106 @@ def analyze_namelists(
                 "Use consistent ordered static one-way WRF/WPS domain arrays.",
             ))
 
-        moving = sorted(
-            (set(domains) | set(geogrid)) & _moving_nest_keys()
-        )
-        if moving:
+        moving = sorted((set(domains) | set(geogrid)) & moving_keys)
+        tiling = [key for key in moving if key in _MOVING_NEST_TILING_KEYS]
+        engine_keys = [key for key in moving if key not in tiling]
+        vortex = [key for key in engine_keys if key in _VORTEX_FOLLOWING_KEYS]
+        specified = [key for key in engine_keys if key not in vortex]
+        if specified:
             issues.append(_issue(
                 "MOVING_NEST_UNSUPPORTED", "&domains/&geogrid",
-                f"moving-nest controls are present: {moving}.",
-                "Use static nests or add a mapped moving-domain implementation.",
+                _moving_nest_refusal(specified),
+                _relocation_itinerary_action(domains),
+            ))
+        if vortex:
+            issues.append(_issue(
+                "MOVING_NEST_UNSUPPORTED", "&domains/&geogrid",
+                _moving_nest_refusal(vortex),
+                "The vortex-following controls have no counterpart: "
+                "ArWen's tracker is field/threshold/cooldown shaped, not "
+                "corral/max-speed shaped, so there is nothing to write "
+                "them as. Remove them, and express the motion either as "
+                "a [[relocation.move]] itinerary or as "
+                "[relocation.follow] with [relocation.track] on a field "
+                "you name.",
+            ))
+        if tiling:
+            # A note, not a refusal.  The action below says in words
+            # that nothing breaks, and a finding whose own text names no
+            # breakage cannot decide the verdict: these keys size the
+            # CPU build's shared-memory tiles and reach neither the
+            # prepared state nor the integration.  gpuwm.namelist_import
+            # records them as dropped beside numtiles/nproc_x/nproc_y,
+            # so both doors accept the same namelist.
+            issues.append(_issue(
+                "DOMAIN_TILING_IGNORED", "&domains",
+                f"WRF tile-decomposition key(s) {tiling} are present: "
+                "they size the CPU build's shared-memory tiles, and this "
+                "product decomposes its own domains, so there is no value "
+                "to carry them to.",
+                "Nothing to change: the importer records them as dropped "
+                "keys, and they change neither what is prepared nor what "
+                "is integrated.",
+                severity=SEVERITY_ADVISORY,
             ))
         feedback = _value(domains, "feedback", 1)
-        if feedback != 0:
+        admitted_feedback = _engine_admitted_values("feedback")
+        admitted_list = ", ".join(str(value) for value in admitted_feedback)
+        if feedback == 0 and not isinstance(feedback, bool):
+            pass
+        elif (not isinstance(feedback, bool) and isinstance(feedback, int)
+                and feedback in admitted_feedback):
+            # The warning the runtime prints for this tier is stated here
+            # in this door's own words rather than imported: the string
+            # lives at gpuwm/runtime.py:103, forecast-side, and this
+            # module stages in the standalone preprocessing wheel.
+            issues.append(_issue(
+                "TWO_WAY_NESTING_EXPERIMENTAL", "&domains/feedback",
+                f"feedback={feedback!r} selects the EXPERIMENTAL two-way "
+                "child-to-parent path. gpuwm.experiment admits it "
+                f"({admitted_list}) and the runtime stamps every such run "
+                "as experimental; it is not certified against stock WRF "
+                "yet.",
+                "Nothing to change: this pair exports and runs. Set "
+                "feedback = 0 for the certified one-way path.",
+                severity=SEVERITY_ADVISORY,
+            ))
+        else:
             issues.append(_issue(
                 "TWO_WAY_NESTING_UNSUPPORTED", "&domains/feedback",
-                f"feedback={feedback!r}; current RW-WPS export is one-way only.",
-                "Set feedback=0. RW-WPS does not silently change this value.",
+                f"feedback={feedback!r} is not a value the engine admits: "
+                f"gpuwm.experiment admits ({admitted_list}) -- 0 one-way, "
+                "1 experimental two-way.",
+                f"Set feedback to one of ({admitted_list}).",
             ))
 
-        # fine_input_stream selects each nest's initialization input stream.
-        # 0 is the parent-interpolation path this export prepares; nonzero
-        # (2 = met_em through auxinput2, WRF's delayed-nest-start pattern)
-        # requires a per-nest input file RW-WPS does not produce.
+        # fine_input_stream selects each nest's initialization input
+        # stream.  The answer comes from the importer's own
+        # fine_input_stream_decision -- the ONE function this door, the
+        # importer and the WRF doors all read it from -- so a pair this
+        # report blesses is a pair gpuwm.namelist_import accepts, and a
+        # pair it refuses is refused here with the same sentence.
         try:
-            streams = _integers(
+            # No _integers() here: the shared decision is the type gate
+            # as well, so a column WRF's reader would not accept is
+            # refused on both doors in one sentence.
+            stream_decision = fine_input_stream_decision(
                 _column(inp.get("time_control", {}), "fine_input_stream",
-                        max_dom, default=0),
-                "&time_control/fine_input_stream",
-            )
-            if any(stream != 0 for stream in streams):
+                        max_dom, default=0))
+            if stream_decision.refusal is not None:
                 issues.append(_issue(
                     "NEST_INPUT_STREAM_UNSUPPORTED",
                     "&time_control/fine_input_stream",
-                    f"fine_input_stream={streams}; nonzero streams initialize "
-                    "a nest from its own met_em-class input at its start "
-                    "time (WRF's delayed-nest-start pattern), and RW-WPS "
-                    "produces no such per-nest input file.",
-                    "Set fine_input_stream=0 for every domain, or keep WPS + "
-                    "real.exe for delayed nest initialization.",
+                    stream_decision.refusal,
+                    stream_decision.way_out,
+                ))
+            elif stream_decision.delayed_domains:
+                issues.append(_issue(
+                    "NEST_INPUT_STREAM_SUBSTITUTION",
+                    "&time_control/fine_input_stream",
+                    stream_decision.divergence,
+                    stream_decision.way_out,
+                    severity=SEVERITY_ADVISORY,
                 ))
         except (KeyError, TypeError, ValueError) as error:
             issues.append(_issue(
@@ -857,6 +1143,17 @@ def analyze_namelists(
                 "Declare integer grid_fdda values in d01..dNN order, or "
                 "remove &fdda.",
             ))
+        # The RUNTIME verdict for the same &fdda block the importer
+        # refuses, through the importer's own predicate and sentence.  The
+        # issue below is the STOCK EXPORT's separate question (real.exe
+        # writes wrffdda_d0N and RW-WPS does not); this door used to answer
+        # that one only, so gpuwm_runtime came back PASS with no reasons for
+        # a namelist gpuwm.namelist_import refuses outright.
+        active_nudging = active_nudging_selectors(fdda)
+        if active_nudging:
+            named = ", ".join(
+                f"&fdda/{key} = {values}" for key, values in active_nudging)
+            gpuwm_reasons.append(f"{named}: {NUDGING_NOT_IMPLEMENTED}")
         if grid_fdda is not None and any(value != 0 for value in grid_fdda):
             issues.append(_issue(
                 "FDDA_INPUT_NOT_PRODUCED", "&fdda/grid_fdda",
@@ -1133,7 +1430,7 @@ def analyze_namelists(
             ))
 
     timing = None
-    if 1 <= max_dom <= MAX_DOMAINS:
+    if 1 <= max_dom <= ANALYSIS_MAX_DOMAINS:
         try:
             time_control = inp["time_control"]
             starts = _datetime_columns(time_control, "start", max_dom)
@@ -1307,7 +1604,13 @@ def _finish_report(
     gpuwm_reasons, issues, timing=None,
 ) -> dict[str, object]:
     issue_rows = [asdict(issue) for issue in issues]
-    stock_pass = not issues
+    # BLOCKING issues decide the verdict.  This used to read
+    # ``not issues``, which made every note in the report a FAIL and left
+    # the report no way to say "supported, and here is what differs" --
+    # so a supported route with a caveat had to be refused to be
+    # mentioned at all.
+    stock_pass = not any(
+        issue.severity == SEVERITY_BLOCKING for issue in issues)
     return {
         "schema": SCHEMA,
         "verdict": "PASS" if stock_pass else "FAIL",
@@ -1358,8 +1661,11 @@ def require_supported_namelists(*args, **kwargs) -> dict[str, object]:
 
 
 __all__ = [
+    "ANALYSIS_MAX_DOMAINS",
     "MAX_DOMAINS",
     "SCHEMA",
+    "SEVERITY_ADVISORY",
+    "SEVERITY_BLOCKING",
     "analyze_namelists",
     "require_supported_namelists",
 ]

@@ -41,14 +41,19 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+import errno
 import functools
 import hashlib
+from http.client import IncompleteRead
 import json
 from pathlib import Path
 import re
 import shlex
+import socket
+import time
 from types import MappingProxyType
 from typing import Mapping, Sequence
+from urllib.error import HTTPError, URLError
 
 from gpuwm import fetch_endpoints, fetch_pool, source_adapters
 from gpuwm.fetch_endpoints import Endpoint
@@ -328,6 +333,33 @@ def refusal_ids() -> tuple[str, ...]:
     return tuple(_REFUSALS)
 
 
+def acquisition_refusal(source: str) -> Mapping[str, object] | None:
+    """The table's declared refusal row for ``source``, or ``None``.
+
+    Public because a caller outside this module has to be able to read
+    WHY the table registers no acquisition route -- the run plan says
+    so in the sentence it prints about a local-input source -- and a
+    second copy of that sentence written at the reading end would
+    drift from the table the moment a row's ``why`` changed.
+    """
+
+    return _REFUSALS.get(_canonical(source))
+
+
+def acquisition_refusal_reason(source: str) -> str:
+    """One sentence: why no acquisition route is registered for ``source``.
+
+    Empty for a source this fetch door DOES serve, so a caller cannot
+    print a reason for an absence that is not there.
+    """
+
+    source_id = _canonical(source)
+    if source_id in all_fetchable_sources():
+        return ""
+    why = str((acquisition_refusal(source_id) or {}).get("why", "")).strip()
+    return why or "No automatic acquisition route is registered for it."
+
+
 def all_fetchable_sources() -> tuple[str, ...]:
     """Every ``--source`` the fetch front door accepts, sorted."""
 
@@ -469,14 +501,22 @@ def resolve_leads(route: Route, cycle: datetime, hours: int, *,
                   start_hour: int = 0) -> tuple[int, ...]:
     """The ordered leads a window asks for, checked against the ladder."""
 
-    if hours < 0:
-        raise ValueError("--hours cannot be negative")
-    cadence = route.default_cadence if cadence is None else int(cadence)
-    if cadence not in route.cadences:
+    if isinstance(hours, bool) or not isinstance(hours, int) or hours < 0:
+        raise ValueError("--hours must be a nonnegative integer")
+    if (isinstance(start_hour, bool) or not isinstance(start_hour, int)
+            or start_hour < 0):
+        raise ValueError("--forecast-start-hour must be a nonnegative integer")
+    cadence = route.default_cadence if cadence is None else cadence
+    if (isinstance(cadence, bool) or not isinstance(cadence, int)
+            or cadence not in route.cadences):
         offered = ", ".join(str(value) for value in route.cadences)
         raise ValueError(
             f"--cadence {cadence}: --source {route.source_id} publishes at "
             f"{offered} h spacing (default {route.default_cadence}).")
+    if hours % cadence:
+        raise ValueError(
+            f"--hours must be an exact multiple of the {cadence} h cadence; "
+            "the requested final time must not be silently omitted")
     ladder = ladder_for(route, cycle)
     last = start_hour + hours
     if last > ladder[-1]:
@@ -909,6 +949,11 @@ PREP_ARGUMENTS_SCHEMA = "gpuwm-fetch-prep-arguments-v1"
 
 _USER_AGENT = "gpuwm-fetch/2.5 (+https://github.com/arwenweather)"
 _CHUNK = 1 << 20
+_RECOVERY_REQUEST_NAME = "fetch-recovery-request.json"
+_RECOVERY_SCHEMA = "gpuwm-fetch-recovery-v1"
+_RECOVERY_DIRECTORY = ".fetch-verified"
+_TRANSFER_ATTEMPTS = 3
+_RETRY_WAIT_LIMIT = 30.0
 
 
 def _magic_for(plan: FetchPlan, role: str) -> str:
@@ -1029,10 +1074,34 @@ def _download_object(url: str, dest: Path, *, magic: str, opener=None,
         raise ValueError(
             f"{dest.name}: the host declared {int(declared)} bytes and "
             f"delivered {written}")
+    _verify_payload(part, magic=magic, label=dest.name)
     part.replace(dest)
-    _verify_payload(dest, magic=magic, label=dest.name)
     return {"name": dest.name, "bytes": written, "sha256": digest.hexdigest(),
             "url": url}
+
+
+def _retry_delay(error: BaseException, attempt: int) -> float | None:
+    """Bound transient recovery without repeatedly asking for absent objects."""
+    if isinstance(error, HTTPError):
+        if error.code not in {408, 429, 500, 502, 503, 504}:
+            return None
+        from gpuwm.nomads_governor import retry_after_seconds
+        requested = retry_after_seconds(error) or 0.0
+        if requested > _RETRY_WAIT_LIMIT:
+            return None
+        return max(2.0 ** attempt, requested)
+    if isinstance(error, URLError):
+        reason = error.reason
+        if isinstance(reason, socket.gaierror) and reason.errno != socket.EAI_AGAIN:
+            return None
+        return 2.0 ** attempt
+    if isinstance(error, (TimeoutError, ConnectionError, IncompleteRead, ValueError)):
+        return 2.0 ** attempt
+    if isinstance(error, OSError) and error.errno in {
+            errno.ETIMEDOUT, errno.ECONNRESET, errno.ECONNABORTED,
+            errno.ECONNREFUSED, errno.ENETUNREACH, errno.EHOSTUNREACH}:
+        return 2.0 ** attempt
+    return None
 
 
 def _download_along_ladder(plan: FetchPlan, obj: PlannedObject, dest: Path, *,
@@ -1053,31 +1122,62 @@ def _download_along_ladder(plan: FetchPlan, obj: PlannedObject, dest: Path, *,
     the head (see :func:`_probe_transfer_ladders`).  It is a reorder,
     never a shorter list, so everything below is unchanged by it.
 
-    When every endpoint fails, the refusal names each one and why.
+    After each round, transient endpoints get another attempt, at most
+    three rounds with bounded waits. Permanent refusals still fall
+    through once but do not enter another round. A longer Retry-After
+    defers that endpoint instead of ignoring its requested cooldown.
+    Exhaustion names each endpoint and preserves completed files.
     """
 
     ladder = ladder or plan.ladder or (plan.host,)
     attempts: list[tuple[Endpoint, str]] = []
-    for position, endpoint in enumerate(ladder):
-        url = endpoint.url(obj.key) if obj.key else obj.url
-        try:
-            entry = fetch(url, dest, magic=magic, opener=opener)
-        except BaseException as error:        # noqa: BLE001 - classified
-            reason = fetch_endpoints.fault_reason(error)
-            if reason is None:
-                raise
-            attempts.append((endpoint, reason))
-            remaining = ladder[position + 1:]
-            if not remaining:
-                raise ValueError(fetch_endpoints.ladder_refusal(
-                    f"fetch {plan.source_id}: {obj.relpath}",
-                    attempts)) from error
-            dest.with_name(dest.name + ".part").unlink(missing_ok=True)
-            progress(
-                f"fetch {plan.source_id}: {endpoint.name} did not serve "
-                f"{obj.relpath} ({reason}); asking {remaining[0].name}")
-            continue
-        return {**entry, "endpoint": endpoint.name}
+    active = tuple(ladder)
+    last_error = None
+    for attempt in range(1, _TRANSFER_ATTEMPTS + 1):
+        retry = []
+        wait = 0.0
+        for position, endpoint in enumerate(active):
+            url = endpoint.url(obj.key) if obj.key else obj.url
+            try:
+                entry = fetch(url, dest, magic=magic, opener=opener)
+            except BaseException as error:        # noqa: BLE001 - classified
+                delay = _retry_delay(error, attempt)
+                # Local storage failures cannot be repaired by another endpoint.
+                if (isinstance(error, OSError)
+                        and not isinstance(error, (URLError, TimeoutError, ConnectionError))
+                        and delay is None):
+                    raise
+                reason = ("the response ended early" if isinstance(error, IncompleteRead)
+                          else "HTTP 408 -- the request timed out"
+                          if isinstance(error, HTTPError) and error.code == 408
+                          else fetch_endpoints.fault_reason(error))
+                if reason is None:
+                    raise
+                last_error = error
+                attempts.append((endpoint, reason))
+                if delay is not None:
+                    retry.append(endpoint)
+                    wait = max(wait, delay)
+                dest.with_name(dest.name + ".part").unlink(missing_ok=True)
+                remaining = active[position + 1:]
+                progress(
+                    f"fetch {plan.source_id}: {endpoint.name} did not serve "
+                    f"{obj.relpath} ({reason})"
+                    + (f"; asking {remaining[0].name}" if remaining else ""))
+                continue
+            return {**entry, "endpoint": endpoint.name}
+        if not retry or attempt == _TRANSFER_ATTEMPTS:
+            break
+        progress(f"fetch {plan.source_id}: retrying {obj.relpath} in {wait:g} s "
+                 f"(attempt {attempt + 1}/{_TRANSFER_ATTEMPTS}); "
+                 "completed files are kept")
+        time.sleep(wait)
+        active = tuple(retry)
+    if attempts:
+        raise ValueError(fetch_endpoints.ladder_refusal(
+            f"fetch {plan.source_id}: {obj.relpath}", attempts)
+            + " Completed files are kept; start this forecast again to retry "
+              "the remaining files.") from last_error
     raise ValueError(
         f"fetch {plan.source_id}: {obj.relpath} has no endpoint to ask")
 
@@ -1164,6 +1264,49 @@ def _prior_entries(out: Path) -> dict[str, dict]:
             if isinstance(entry, dict) and entry.get("relpath")}
 
 
+def _recovery_path(out: Path, obj: PlannedObject) -> Path:
+    token = hashlib.sha256(obj.relpath.encode("utf-8")).hexdigest()
+    return out / _RECOVERY_DIRECTORY / f"{token}.json"
+
+
+def has_recovery_request(out: Path) -> bool:
+    """Whether an interrupted managed download recorded its input identity."""
+    try:
+        record = json.loads((out / _RECOVERY_REQUEST_NAME).read_text(encoding="utf-8"))
+        return (record.get("schema") == _RECOVERY_SCHEMA
+                and isinstance(record.get("request"), dict)
+                and all(key in record["request"]
+                        for key in ("source", "cycle", "host", "member")))
+    except (OSError, ValueError, AttributeError, TypeError):
+        return False
+
+
+def _recovery_entry(out: Path, plan: FetchPlan, obj: PlannedObject) -> dict | None:
+    try:
+        record = json.loads(_recovery_path(out, obj).read_text(encoding="utf-8"))
+        wanted = _request_identity(plan)
+        if (record.get("key") != obj.key
+                or any(record.get("request", {}).get(key) != wanted[key]
+                       for key in ("source", "cycle", "host", "member"))):
+            return None
+        entry = record.get("file")
+        return entry if isinstance(entry, dict) else None
+    except (OSError, ValueError, AttributeError, TypeError):
+        return None
+
+
+def _verified_reuse(dest: Path, entry: dict | None, *, magic: str) -> bool:
+    if not entry or not dest.is_file() or dest.stat().st_size != entry.get("bytes"):
+        return False
+    try:
+        _verify_payload(dest, magic=magic, label=dest.name)
+    except ValueError:
+        return False
+    with dest.open("rb") as handle:
+        digest = hashlib.file_digest(handle, "sha256").hexdigest()
+    return digest == entry.get("sha256")
+
+
 #: What an unpinned request records where it used to record one host.
 #:
 #: The guard below exists to stop two different CYCLES publishing one
@@ -1213,16 +1356,7 @@ def check_prior_request(out: Path, plan: FetchPlan | None = None, *,
         resolved_member, _ = resolve_member(route, member)
         wanted = _request_identity_fields(route.source_id, cycle, host, resolved_member, ())
 
-    manifest = out / MANIFEST_NAME
-    if not manifest.is_file():
-        return
-    try:
-        prior = json.loads(manifest.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return
-    recorded = prior.get("request", {})
-
-    def differs(key: str) -> bool:
+    def differs(recorded: dict, key: str) -> bool:
         if recorded.get(key) == wanted[key]:
             return False
         if key != "host":
@@ -1234,20 +1368,26 @@ def check_prior_request(out: Path, plan: FetchPlan | None = None, *,
                     and recorded.get(key) in
                     {host.name for host in route.hosts})
 
-    differing = [key for key in ("source", "cycle", "host", "member")
-                 if differs(key)]
-    if differing:
-        detail = ", ".join(
-            f"{key} {recorded.get(key)!r} -> {wanted[key]!r}"
-            for key in differing)
-        raise ValueError(
-            f"--out {out} already holds a different request ({detail}).\n"
-            "  remedy: fetch into a different --out, or pass "
-            "--force-refetch to move the existing files aside (nothing is "
-            "deleted) and re-download this request.\n"
-            "  why: one directory publishes one SHA256SUMS and one input "
-            "list, and a mixed directory would hand `gpuwm prep` a series "
-            "spanning two cycles.")
+    for name in (MANIFEST_NAME, _RECOVERY_REQUEST_NAME):
+        try:
+            prior = json.loads((out / name).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        recorded = prior.get("request", {})
+        differing = [key for key in ("source", "cycle", "host", "member")
+                     if differs(recorded, key)]
+        if differing:
+            detail = ", ".join(
+                f"{key} {recorded.get(key)!r} -> {wanted[key]!r}"
+                for key in differing)
+            raise ValueError(
+                f"--out {out} already holds a different request ({detail}).\n"
+                "  remedy: fetch into a different --out, or pass "
+                "--force-refetch to move the existing files aside (nothing is "
+                "deleted) and re-download this request.\n"
+                "  why: one directory publishes one SHA256SUMS and one input "
+                "list, and a mixed directory would hand `gpuwm prep` a series "
+                "spanning two cycles.")
 
 
 def _quarantine(out: Path, progress) -> Path | None:
@@ -1275,10 +1415,10 @@ def run_plan(plan: FetchPlan, *, out: Path, force: bool = False,
     """Move the planned objects, compose the primaries, write the receipts.
 
     Every file rides :mod:`gpuwm.fetch_pool`, so a table route is
-    parallel by default with the same bounded, host-capped, in-order
-    admission the GFS and HRRR routes have: one failed file still
-    refuses by name, and the verified prefix a receipt claims is
-    contiguous.
+    parallel by default with bounded, host-capped, in-order admission.
+    Completed objects get individual recovery receipts even after an
+    earlier object fails. The preparation manifest is published only
+    when the whole request completes.
 
     ``probe`` is the availability question the transfer host is chosen
     with -- ``url -> bool``, defaulting to one governed HEAD.  It runs
@@ -1293,6 +1433,11 @@ def run_plan(plan: FetchPlan, *, out: Path, force: bool = False,
     else:
         check_prior_request(out, plan)
     prior = _prior_entries(out)
+    # The request and per-object receipts survive a failed pool. They do
+    # not publish a preparation manifest for an incomplete forecast.
+    _write_json(out / _RECOVERY_REQUEST_NAME, {
+        "schema": _RECOVERY_SCHEMA, "request": _request_identity(plan)})
+    (out / _RECOVERY_DIRECTORY).mkdir(exist_ok=True)
     # ONE byte counter for the whole request, not one per object: the
     # pool keeps several transfers in flight, and six interleaved
     # counters read worse than one.  Injected downloaders keep the
@@ -1323,10 +1468,9 @@ def run_plan(plan: FetchPlan, *, out: Path, force: bool = False,
     reuse: dict[str, dict] = {}
     pending: list[PlannedObject] = []
     for obj in plan.objects:
-        known = prior.get(obj.relpath)
+        known = _recovery_entry(out, plan, obj) or prior.get(obj.relpath)
         dest = out / obj.relpath
-        if (known and dest.is_file()
-                and dest.stat().st_size == known.get("bytes")):
+        if _verified_reuse(dest, known, magic=_magic_for(plan, obj.role)):
             reuse[obj.relpath] = known
         else:
             pending.append(obj)
@@ -1364,8 +1508,11 @@ def run_plan(plan: FetchPlan, *, out: Path, force: bool = False,
             entry = _download_along_ladder(
                 plan, obj, dest, magic=magic, fetch=fetch, opener=opener,
                 progress=progress, ladder=rungs)
-            return {**entry, "relpath": relpath, "role": role, "lead": lead,
-                    "reused": False}
+            entry = {**entry, "relpath": relpath, "role": role, "lead": lead,
+                     "reused": False}
+            _write_json(_recovery_path(out, obj), {
+                "request": _request_identity(plan), "key": obj.key, "file": entry})
+            return entry
 
         # The politeness key is the host this object will ACTUALLY be
         # asked first, not the ladder's head: counting a mirrored
@@ -1576,9 +1723,26 @@ def write_handoff(plan: FetchPlan, out: Path, *,
     arguments = [f"{flag} {_q(value)}"
                  for flag, value in zip(tokens[::2], tokens[1::2])]
 
-    _write_prep_arguments(
-        out, plan=plan, prep_source=prep_source, tokens=tokens,
-        unfetched=unfetched)
+    member_step = None
+    if plan.member_set:
+        member_step = {
+            "set": plan.member_set, "member": plan.member,
+            "cycle": f"{plan.cycle:%Y-%m-%dT%H}",
+            "steps": list(plan.leads),
+            "inputs": str((out / "upstream").resolve()),
+            "output": str((out / "members").resolve()),
+            "input_list_after": str((out / "member-input-list.txt").resolve()),
+        }
+    verification_set = (source_adapters.get_source_adapter(
+        plan.source_id).member_set if plan.member is not None else None)
+    member_verification = ({"set": verification_set, "member": plan.member}
+                           if verification_set is not None else None)
+    write_prep_arguments(
+        out, source=plan.source_id, prep_source=prep_source,
+        cycle=plan.cycle, tokens=tokens,
+        unbound_roles=[donor.role for donor in unfetched],
+        member=plan.member, member_set=verification_set,
+        member_prep=member_step, member_verification=member_verification)
 
     header = [
         f"# {plan.route.label}",
@@ -1593,7 +1757,9 @@ def write_handoff(plan: FetchPlan, out: Path, *,
     if plan.member_set:
         header.append("#")
         header.append(
-            f"# member identity lives in the PATH, not the filename, so run")
+            "# Automatic prepared chains verify and select this member before prep.")
+        header.append(
+            "# For a standalone preparation, first run")
         header.append(
             f"#   gpuwm-member-prep --member-set {plan.member_set} "
             f"--member {plan.member} \\")
@@ -1624,39 +1790,84 @@ def write_handoff(plan: FetchPlan, out: Path, *,
     return inputs, command
 
 
-def _write_prep_arguments(out: Path, *, plan: "FetchPlan", prep_source: str,
-                          tokens: list[str],
-                          unfetched: list[DonorRequest]) -> Path:
-    """The bound prep handoff as one JSON document a caller composes from.
-
-    ``argv`` is the exact token list ``prep-command.txt`` renders --
-    the source binding, the ordered input list, every supplement role
-    the route table and the fetched donors decided, and the manifest
-    authoring flag.  What is NOT here is exactly what the text file's
-    footer says is the caller's: ``--wps-namelist``,
-    ``--experiment-config``, ``--geog-root`` and ``--output-root``.
-    ``unbound_supplement_roles`` names any donor role this fetch could
-    not supply, so a caller refuses before composing a preparation that
-    rw-wps would refuse deeper.
-    """
-
+def write_prep_arguments(out: Path, *, source: str, prep_source: str,
+                         cycle: datetime, tokens: Sequence[str],
+                         unbound_roles: Sequence[str] = (),
+                         member: str | None = None,
+                         member_set: str | None = None,
+                         member_prep: Mapping[str, object] | None = None,
+                         member_verification: Mapping[str, object] | None = None) -> Path:
+    """Publish the bound preparation arguments from any acquisition path."""
     document = {
         "schema": PREP_ARGUMENTS_SCHEMA,
-        "source": plan.source_id,
+        "source": source,
         "prep_source": prep_source,
-        "cycle": f"{plan.cycle:%Y-%m-%dT%H}",
+        "cycle": f"{cycle:%Y-%m-%dT%H}",
         "argv": list(tokens),
         "caller_supplies": ["--wps-namelist", "--experiment-config",
                             "--geog-root", "--output-root"],
-        "unbound_supplement_roles": sorted(
-            donor.role for donor in unfetched),
-        "member": plan.member,
-        "member_set": plan.member_set,
+        "unbound_supplement_roles": sorted(set(unbound_roles)),
+        "member": member,
+        "member_set": member_set,
     }
-    path = out / PREP_ARGUMENTS_NAME
-    path.write_text(json.dumps(document, indent=2, sort_keys=True) + "\n",
-                    encoding="utf-8", newline="\n")
+    if member_prep is not None:
+        document["member_prep"] = dict(member_prep)
+    if member_verification is not None:
+        document["member_verification"] = dict(member_verification)
+    path = Path(out) / PREP_ARGUMENTS_NAME
+    _write_json(path, document)
     return path
+
+
+def in_band_supplement_role(source: str) -> str | None:
+    """Read an in-band terrain binding from the packaged composition."""
+    from gpuwm.source_authorities import packaged_composition, packaged_profile
+    adapter = source_adapters.get_source_adapter(source)
+    if adapter.packaged_profile is None:
+        return None
+    profile = packaged_profile(adapter.packaged_profile)
+    if profile["composition_state"] != "composed":
+        return None
+    composition = packaged_composition(adapter.packaged_profile)
+    terrain = composition.get("supplements", {}).get("terrain_height")
+    if (terrain and terrain.get("format") == profile["source_format"]
+            and terrain.get("selector_authority") == "mapping_field_exact"
+            and not composition.get("field_sources")):
+        return str(terrain["data_role"])
+    return None
+
+
+def prepares_through_packaged_composition(source: str) -> bool:
+    """Whether a packaged composition drives this source's preparation.
+
+    The fact the container writer forks on.  It used to fork on the
+    container's NAME, which is the same test only for as long as exactly
+    one of the two containers has a composed profile: a name cannot say
+    whether a composition is there to write a handoff from, and
+    :func:`publishes_prep_handoff` already promises callers a document
+    from this fact.
+    """
+
+    from gpuwm.source_authorities import packaged_profile
+
+    adapter = source_adapters.get_source_adapter(source)
+    if adapter.packaged_profile is None:
+        return False
+    try:
+        return packaged_profile(
+            adapter.packaged_profile)["composition_state"] == "composed"
+    except (ValueError, KeyError):
+        return False
+
+
+def publishes_prep_handoff(source: str) -> bool:
+    """Whether the implemented acquisition path publishes bound prep arguments."""
+    source = canonical_source(source)
+    if source in route_ids():
+        return True
+    # The container writer emits a mapped handoff when its composition
+    # selects its surface fields from the same input files.
+    return source in LEGACY_ROUTE_SOURCES and in_band_supplement_role(source) is not None
 
 
 def _q(value) -> str:

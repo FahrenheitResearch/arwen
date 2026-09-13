@@ -238,7 +238,9 @@ The Rust renderer needs a working store for the intermediate hour files
 it builds before it draws.  That store is scratch, and it does **not**
 live in the tree you are delivered: it lives in a sibling directory
 named after the render directory with `.render-scratch` appended
-(`png.render-scratch/rwstore-xxxxxxxx`), created for one renderer
+(`png.render-scratch/rwstore-xxxxxxxx`, or
+`png.render-scratch/rwstore-<token>-xxxxxxxx` when a door spawned the
+render), created for one renderer
 invocation and removed when it finishes.
 
 It matters because the removal is best-effort by nature -- a
@@ -249,3 +251,16 @@ leftover scratch directories sitting among the products, with paths long
 enough to break a Windows directory listing, and a `tar` of a tree being
 rendered into dying with `File removed before we read it`.  Copy, tar,
 sync or scan a render directory at any moment and you get pictures.
+
+A render stage that exits nonzero is the one case where the renderer's
+own cleanup may never run at all -- a process that is killed does not
+reach it -- so the door that saw the stage fail sweeps the sibling itself
+and prints one `render: warning:` line saying how many working stores it
+removed and where they were.  They hold no product and nothing later
+reads them.  What the door sweeps is its OWN stage's stores and nothing
+else: it mints a token before it starts the stage, hands it down so every
+store that stage opens is named `rwstore-<token>-xxxxxxxx`, and matches on
+that token afterwards.  A concurrent render into the same case is working
+in a store that cannot carry this door's token, whenever it opened it, so
+it is never swept.  The partial delivery is left alone: it is the evidence
+of what failed.

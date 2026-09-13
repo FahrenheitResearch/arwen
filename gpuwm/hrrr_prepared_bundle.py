@@ -84,7 +84,7 @@ def _artifact(path: Path, relative: str) -> dict[str, object]:
     }
 
 
-def render_wps_namelist(experiment) -> str:
+def render_wps_namelist(experiment, *, interval_seconds: float = 3600.) -> str:
     """The ``&share``/``&geogrid`` namelist this experiment's domains ARE.
 
     Not a derivation and not a guess: every number below already exists
@@ -110,6 +110,13 @@ def render_wps_namelist(experiment) -> str:
     a shortened spelling is a refusal.
     """
 
+    # Native HRRR callers retain their hourly default; source-selected callers
+    # pass the registry interval explicitly.
+    import math
+    interval = float(interval_seconds)
+    if not math.isfinite(interval) or interval <= 0 or not interval.is_integer():
+        raise HrrrBundleError("WPS forcing interval must be a positive whole number of seconds")
+
     projection = experiment.projection
     if projection is None:
         raise HrrrBundleError(
@@ -134,7 +141,7 @@ def render_wps_namelist(experiment) -> str:
         "&share\n"
         " wrf_core = 'ARW',\n"
         f" max_dom = {len(domains)},\n"
-        " interval_seconds = 3600,\n"
+        f" interval_seconds = {int(interval)},\n"
         " io_form_geogrid = 2,\n"
         "/\n"
         "&geogrid\n"

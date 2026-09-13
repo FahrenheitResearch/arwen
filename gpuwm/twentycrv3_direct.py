@@ -84,7 +84,8 @@ def discover_20crv3_grib2(source_root: str | Path) -> dict[str, object]:
         path.resolve() for path in source_root.rglob("*.grb2") if path.is_file()
     ))
     if not files:
-        raise ValueError("20CRv3 source directory contains no GRIB2 files")
+        raise ValueError("20CRv3 source directory contains no GRIB2 files. "
+                         "Supply the paired pressure and surface member series as .grb2 files.")
     members: set[str] = set()
     by_time: dict[datetime, dict[str, Path]] = {}
     for path in files:

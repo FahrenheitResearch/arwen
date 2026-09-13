@@ -1338,7 +1338,113 @@ fn read_wrf_products(
     // re-panic; a stuck cache must not fail the hour.
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| file.clear_cache()));
 
+    // wrf-core has no ml/mu parcel ECAPE diagnostic (`wrf_product_slug`
+    // leaves those variants unmapped) and no ECAPE / derived-CAPE ratio at
+    // all, so with `--heavy` on those grids are computed here through the
+    // SAME shared recipe lane the GRIB heavy ingest calls: this hour's own
+    // surface planes and `*_iso` volumes are assembled into the products-side
+    // input pair and handed to `compute_store_heavy_grids`. Runs after the
+    // wrf-core cache is released, so the f64 input volumes do not stack on
+    // top of it.
+    if options.heavy_ecape {
+        push_shared_heavy_recipe_grids(&mut fields, options, progress);
+    }
+
     Ok(fields)
+}
+
+/// Add every heavy (ECAPE-class) recipe grid the shared lane realizes and
+/// this hour does not already carry under that slug, so wrf-core's own
+/// authoritative diagnostics keep their names and only the gaps are filled.
+/// A missing input degrades to a note: the 2-D fields and the soundings
+/// still write.
+fn push_shared_heavy_recipe_grids(
+    fields: &mut WrfHourFields,
+    options: &WrfProcessOptions,
+    progress: &mut impl FnMut(String),
+) {
+    if fields.volumes.is_empty() {
+        fields.notes.push(
+            "shared heavy (ECAPE) recipe grids unavailable: this hour has no isobaric \
+             sounding volumes for the parcel columns"
+                .to_string(),
+        );
+        return;
+    }
+    progress(
+        "computing the shared heavy (ECAPE) recipe grids wrf-core carries no diagnostic for"
+            .to_string(),
+    );
+    let grid = fields.grid.clone();
+    let projection = fields.projection.clone();
+    let outcome = {
+        let canonical = &fields.canonical;
+        let volumes = &fields.volumes;
+        isolate_panics("shared heavy recipe grids", || {
+            crate::local_import::compute_wrf_heavy_store_grids(
+                &grid,
+                projection.clone(),
+                canonical,
+                volumes,
+            )
+        })
+    };
+    let (heavy, basis) = match outcome {
+        Ok(value) => value,
+        Err(err) => {
+            fields
+                .notes
+                .push(format!("shared heavy (ECAPE) recipe grids unavailable: {err}"));
+            return;
+        }
+    };
+    if let Some(note) = basis.note() {
+        fields.notes.push(note);
+    }
+    let mut added = Vec::new();
+    for grid_values in heavy.grids {
+        let slug = grid_values.slug;
+        if !options.should_process(slug, Some(slug), WrfProductGroup::Heavy) {
+            continue;
+        }
+        let already = fields
+            .canonical
+            .iter()
+            .any(|(name, _)| name == slug)
+            || fields.derived.iter().any(|field| field.name == slug);
+        if already {
+            continue;
+        }
+        fields.derived.push(OwnedDerivedField {
+            name: slug.to_string(),
+            units: grid_values.units,
+            values: grid_values
+                .values
+                .into_iter()
+                .map(|value| value as f32)
+                .collect(),
+        });
+        added.push(slug);
+    }
+    if !added.is_empty() {
+        fields.notes.push(format!(
+            "shared heavy (ECAPE) recipe grids added from {} isobaric levels: {}",
+            basis.levels,
+            added.join(", ")
+        ));
+    }
+    for skip in heavy.skipped {
+        fields.notes.push(format!(
+            "heavy recipe '{}' skipped: {}",
+            skip.slug, skip.reason
+        ));
+    }
+    if heavy.ecape_failure_count > 0 {
+        fields.notes.push(format!(
+            "shared heavy (ECAPE) recipe grids: {} column(s) whose parcel ascent failed carry NaN",
+            heavy.ecape_failure_count
+        ));
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2245,9 +2351,11 @@ pub(crate) fn wrf_product_slug(base: &str) -> Option<&'static str> {
         // GRIB heavy lane uses, with parcel_type defaulting to "sb"
         // (diag/ecape.rs::resolve_ecape_opts), so its plain `ecape`,
         // `ncape`, and `ecape_cin` outputs ARE the surface-based recipe
-        // quantities and store under those recipe slugs.  The ml/mu
-        // variants would need parcel_type plumbed through the import's
-        // ComputeOpts and stay unmapped until then.
+        // quantities and store under those recipe slugs.  wrf-core exposes
+        // no ml/mu variant to map, so those grids are not missing: with
+        // `--heavy` on they come from the SHARED recipe lane instead
+        // (`push_shared_heavy_recipe_grids`), which solves all three
+        // parcels from this hour's own planes and volumes.
         "ecape" => Some("sbecape"),
         "ncape" => Some("sbncape"),
         "ecape_cin" => Some("sbecin"),

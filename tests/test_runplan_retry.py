@@ -535,18 +535,19 @@ def _observer(tmp_path) -> tuple[RunObserver, EventStream, Path]:
         events_path
 
 
-def test_an_empty_forecast_directory_is_left_alone(tmp_path):
+def test_an_existing_empty_forecast_directory_gets_a_distinct_claim(tmp_path):
     forecast = tmp_path / "run"
     forecast.mkdir()
     observer, events, _ = _observer(tmp_path)
     try:
-        assert _clear_forecast_output(forecast, observer=observer) is None
+        claimed = _clear_forecast_output(forecast, observer=observer)
+        assert claimed != forecast and claimed.is_dir()
     finally:
         events.__exit__(None, None, None)
     assert forecast.is_dir()
 
 
-def test_an_earlier_attempts_output_is_moved_aside_and_announced(tmp_path):
+def test_an_earlier_attempts_output_stays_at_its_address(tmp_path):
     """The runner refuses to merge two runs into one receipt, correctly.
 
     So the retry gets a clean directory and the failed attempt's
@@ -559,18 +560,19 @@ def test_an_earlier_attempts_output_is_moved_aside_and_announced(tmp_path):
     (forecast / "report.json").write_text("{}", encoding="utf-8")
     observer, events, events_path = _observer(tmp_path)
     try:
-        superseded = _clear_forecast_output(forecast, observer=observer)
+        claimed = _clear_forecast_output(forecast, observer=observer)
     finally:
         events.__exit__(None, None, None)
 
-    assert superseded is not None
-    kept = Path(superseded["path"]) / "report.json"
+    assert claimed != forecast and claimed.is_dir()
+    kept = forecast / "report.json"
     assert kept.is_file(), "the earlier attempt's receipt was not kept"
-    assert not forecast.exists() or not any(forecast.iterdir())
+    assert not any(claimed.iterdir())
 
     warning = next(record for record in read_events(events_path)
-                   if record.get("code") == "forecast_output_superseded")
-    assert "nothing was deleted" in warning["message"]
+                   if record.get("code") == "forecast_output_recovery")
+    assert warning['previous_path'] == str(forecast)
+    assert warning['path'] == str(claimed)
 
 
 # ---------------------------------------------------------------------------
@@ -758,9 +760,9 @@ def test_the_second_attempts_forecast_gets_a_directory_of_its_own(
     """The third create-only refusal on the retry path.
 
     The forecast runner will not merge into a directory that already
-    holds output, and it is right -- the receipt it writes has to
-    describe one run.  So the failed attempt's output is moved aside,
-    not deleted, and its receipts stay readable beside the retry's.
+    holds output: the receipt it writes has to describe one run. The
+    failed attempt stays at its original address and the retry receives
+    another generation, preserving every prior receipt's frame paths.
     """
 
     from gpuwm.runplan import EVENTS_FILENAME, execute_plan, load_plan
@@ -780,9 +782,8 @@ def test_the_second_attempts_forecast_gets_a_directory_of_its_own(
             execute_plan(plan, events=events)
 
     forecast = run_dir / "chain" / "run"
-    kept = sorted((run_dir / "chain").glob(
-        f"run{stage_reuse.SUPERSEDED_MARK}*"))
-    assert len(kept) == 1, "the first attempt's output was not preserved"
+    kept = sorted((run_dir / "chain").glob("run-attempt-*/run"))
+    assert len(kept) == 1, "the second attempt did not get a new generation"
     assert (kept[0] / "report.json").is_file()
     assert (forecast / "report.json").is_file()
 

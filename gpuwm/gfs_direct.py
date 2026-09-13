@@ -529,20 +529,18 @@ def _read_series(path: Path) -> tuple[tuple[int, Path], ...]:
     # the f000 anchor here was the reason a user who wanted the f174..f240
     # window had to integrate 240 hours to reach it.  What a series must
     # still be is at least two times, nonnegative, strictly increasing on
-    # one uniform certified cadence, inside the published horizon: the
+    # one positive uniform cadence, inside the published lead ladder: the
     # first is the initial condition and the rest are its boundaries.
     if len(hours) < 2:
         raise ForcingSeriesRefusal(
             "GFS series must have at least two times")
     if hours[0] < 0:
         raise ValueError("GFS series forecast hours must be nonnegative")
-    if hours[-1] > 384:
-        raise ValueError("GFS series exceeds the certified f384 product horizon")
     deltas = [later - earlier for earlier, later in zip(hours, hours[1:])]
     if not deltas or any(delta <= 0 or delta != deltas[0] for delta in deltas):
         raise ValueError("GFS series cadence must be positive and uniform")
-    if deltas[0] not in {1, 3}:
-        raise ValueError("GFS series cadence must be exactly 1 or 3 hours")
+    from gpuwm.fetch import gfs_forecast_hours
+    gfs_forecast_hours(hours[-1] - hours[0], deltas[0], hours[0])
     return tuple(records)
 
 

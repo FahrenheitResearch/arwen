@@ -270,10 +270,18 @@ def _write_composite_wrfout(npz_path, refl_colmax, grid, cfg,
         stamp = (start + datetime.timedelta(seconds=float(elapsed_seconds))
                  ).strftime("%Y-%m-%d_%H:%M:%S")
         attrs = wrf_global_attrs(grid, start, dt=float(cfg.dt))
-        return write_surface_wrfout(
+        report = write_surface_wrfout(
             snapshot_wrfout_path(npz_path), snapshot, time_str=stamp,
             dx=float(cfg.dx), dy=float(cfg.dy), global_attrs=attrs,
             title=f"gpuwm DA composite ({label})")
+        # Anything the snapshot carried that the file did not get, by
+        # name.  Empty for the composite this lane builds, and stated
+        # anyway, because the lane that starts carrying a second field
+        # must not have to discover it went missing from a blank panel.
+        lost = report.skipped_report()
+        if lost:
+            print(f"    composite wrfout for {label} omits: {lost}")
+        return report.path
     except (SurfaceSnapshotRefusal, AttributeError, TypeError,
             ValueError, OSError) as problem:
         print(f"    composite wrfout skipped for {label}: {problem}")

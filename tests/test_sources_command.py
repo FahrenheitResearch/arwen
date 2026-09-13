@@ -75,7 +75,7 @@ def test_the_no_fetch_route_refusal_names_a_command_that_exists():
         if not adapter.runnable
         and adapter.source_id not in set(fetch_routes.route_ids())
         and adapter.source_id not in fetch_routes.LEGACY_ROUTE_SOURCES
-        and adapter.source_id not in fetch_routes._REFUSALS)  # noqa: SLF001
+        and adapter.source_id not in set(fetch_routes.refusal_ids()))
     with pytest.raises(ValueError) as excinfo:
         fetch_routes.route_for(stranded)
     text = str(excinfo.value)

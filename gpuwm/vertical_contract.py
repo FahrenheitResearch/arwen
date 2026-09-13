@@ -76,9 +76,18 @@ def validate_explicit_eta_grid(
                 f"{context}: source top pressure must be finite and positive"
             )
         if source_top > p_top:
+            # NAME THE BREAKAGE AND THE WAY OUT.  "A stops at X, B is Y"
+            # is two numbers and no consequence: the operator who meets it
+            # cannot tell whether the grid is wrong, the source is wrong,
+            # or the run is merely unusual.  What actually breaks is that
+            # every mass level above the source top has no data under it.
             raise ValueError(
                 f"{context}: source atmosphere stops at {source_top:g} Pa "
-                f"but requested p_top is {p_top:g} Pa"
+                f"but requested p_top is {p_top:g} Pa. The levels above "
+                f"{source_top:g} Pa would be filled by extrapolating past "
+                f"the top of the analysis, so the model top has to stay "
+                f"inside it: raise p_top to {source_top:g} Pa or above, or "
+                f"supply a source reaching {p_top:g} Pa"
             )
     return eta.copy()
 

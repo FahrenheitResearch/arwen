@@ -79,6 +79,16 @@ AEROSOL_SOURCE_BY_DOMAIN_KEY = "aerosol_initialization_by_domain"
 #: schema string has to move.
 AEROSOL_SOURCE_SCHEMA = "gpuwm-run-aerosol-source-v1"
 
+#: The ``aerosol_source`` values that mean an aerosol INPUT was read and
+#: used, as opposed to an analytic profile.  A ROW, not a branch: a new
+#: aerosol input lands here and ``dataset_used`` follows, so the two can
+#: never disagree about the same run.  ``wif-climatology`` is WRF's global
+#: monthly water/ice-friendly file; ``metgrid-analyzed`` is an analyzed
+#: QNWFA/QNIFA pair carried by the met_em series itself, which is an
+#: aerosol input by exactly the same standard even though the bytes came
+#: from the analysis rather than from a separate dataset file.
+AEROSOL_SOURCES_FROM_INPUT = ("wif-climatology", "metgrid-analyzed")
+
 #: The schemes that HAVE water-friendly/ice-friendly aerosol number
 #: fields.  Aerosol-aware Thompson and nothing else: ``thompsonaero`` is
 #: the only Registry package declaring qnwfa/qnifa/qnwfa2d/qnifa2d
@@ -177,7 +187,7 @@ def aerosol_source_report_entry(receipt, *, mp_physics, when_unrecorded):
     # ABSENCE (2), when it is the answer: the run searched and found
     # nothing, ran on the analytic profile, and says so in one boolean a
     # reader can filter on without parsing prose.
-    entry["dataset_used"] = source == "wif-climatology"
+    entry["dataset_used"] = source in AEROSOL_SOURCES_FROM_INPUT
     entry["synthetic_fallback_in_use"] = bool(
         plain.get("synthetic_fallback_in_use", False))
     entry["synthetic_fallback_requested"] = bool(

@@ -53,7 +53,7 @@ from gpuwm.physics_compat import (  # noqa: E402
     CONSTANT_DOWNWARD_LONGWAVE_ACK,
     EXPERIMENTAL_THOMPSON_ENV,
     KESSLER_PROFILE_ID,
-    SINGLE_DOMAIN_PHYSICS_PROFILES,
+    route_physics_profiles,
     MORRISON_PROFILE_ID,
     MYNN_NOAHMP_PROFILE_ID,
     MYNN_NOAHMP_RTE_RRTMGP_PROFILE_ID,
@@ -168,9 +168,9 @@ def runner_capabilities() -> dict[str, object]:
     }
     return {
         "schema": RUNNER_CAPABILITIES_SCHEMA,
-        "runner": "tools.hrrr_single_domain_benchmark",
+        "runner": ROUTE_ID,
         "supported_sources": ["hrrr"],
-        "physics_profile_ids": list(SINGLE_DOMAIN_PHYSICS_PROFILES),
+        "physics_profile_ids": list(NATIVE_BENCHMARK_PHYSICS_PROFILES),
         "report_schema": REPORT_SCHEMA,
         "preparation_report_schema": PREPARATION_REPORT_SCHEMA,
         "readiness": (
@@ -872,6 +872,24 @@ def _peak_rss_bytes() -> int:
 # accepted and silently ignored.  The historical WSM6/Thompson contracts are
 # preserved byte-semantically; Morrison and NSSL use the accepted real74
 # YSU/classic-MM5/Noah/KF/RTE+RRTMGP surrounding suite.
+#: This runner's own registry route id.
+ROUTE_ID = "tools.hrrr_single_domain_benchmark"
+
+#: The templates THIS route declares, in its own declared order -- not the
+#: shared single-domain menu.
+#:
+#: Every per-profile table below is keyed by profile id, and each one is
+#: something only THIS route needs: a native WRF namelist contract to gate
+#: the operator's namelist against, the initialization contract for the
+#: species the analysis does not supply, and the switch-home map that
+#: forwards a profile into an experiment payload.  Keying them off the
+#: shared menu is what let another route's declaration grow the menu past
+#: these tables: six composition suites reached ``--physics-profile`` as
+#: offers and every one of them refused here with ``unsupported native
+#: HRRR physics profile``.  The route declares what it can replay; this
+#: reads that declaration.
+NATIVE_BENCHMARK_PHYSICS_PROFILES = route_physics_profiles(ROUTE_ID)
+
 _NATIVE_HRRR_NAMELIST_CONTRACTS = MappingProxyType({
     WSM6_PROFILE_ID: MappingProxyType({
         "physics": MappingProxyType({
@@ -1212,7 +1230,7 @@ _NATIVE_HRRR_NAMELIST_CONTRACTS = MappingProxyType({
 
 _NATIVE_HRRR_RUNTIME_SWITCHES = MappingProxyType({
     profile: MappingProxyType(single_domain_runtime_switches(profile))
-    for profile in SINGLE_DOMAIN_PHYSICS_PROFILES
+    for profile in NATIVE_BENCHMARK_PHYSICS_PROFILES
 })
 
 from gpuwm.ingest.microphysics_cold_start import source_absent_microphysics
@@ -1222,12 +1240,12 @@ from gpuwm.ingest.microphysics_cold_start import source_absent_microphysics
 _HRRR_SOURCE_ABSENT_STATE_DEFAULTS = MappingProxyType({
     profile: MappingProxyType(source_absent_microphysics(
         SimpleNamespace(**single_domain_runtime_switches(profile)))[1])
-    for profile in SINGLE_DOMAIN_PHYSICS_PROFILES
+    for profile in NATIVE_BENCHMARK_PHYSICS_PROFILES
 })
 _HRRR_SOURCE_ABSENT_WRF_FIELDS = MappingProxyType({
     profile: source_absent_microphysics(
         SimpleNamespace(**single_domain_runtime_switches(profile)))[0]
-    for profile in SINGLE_DOMAIN_PHYSICS_PROFILES
+    for profile in NATIVE_BENCHMARK_PHYSICS_PROFILES
 })
 
 
@@ -1269,6 +1287,33 @@ def _initialization_contract_profile(profile: str) -> str:
     return _INITIALIZATION_CONTRACT_ALIASES.get(profile, profile)
 
 
+def _unsupported_profile(profile: str) -> ValueError:
+    """The door refusal, naming the breakage AND the way out.
+
+    This runner replays a native WRF run of the named composition and
+    gates the operator's namelist field for field against a transcribed
+    contract, so a suite with no native run behind it has nothing to be
+    replayed against -- which is a real limit of THIS route and not of the
+    engine.  The bare ``unsupported native HRRR physics profile 'x'`` said
+    none of that: an operator who picked a registered, launchable suite
+    met one line that named neither what was missing nor anywhere else to
+    run it, having already paid for preparation.  The registry states the
+    same refusal at plan review (``refused_template_ids``); this is the
+    last line of the same one, and it carries the offered list because the
+    offered list is this module's own and nothing upstream can print it.
+    """
+
+    return ValueError(
+        f"unsupported native HRRR physics profile {profile!r}: this route "
+        "replays a native WRF run of one immutable composition and gates "
+        "it field for field against a transcribed namelist contract, so it "
+        "offers only the suites that have such a run behind them "
+        f"({', '.join(NATIVE_BENCHMARK_PHYSICS_PROFILES)}). Run this suite "
+        "on tools.prepared_single_domain_forecast, which resolves every "
+        "switch of it from the registry, or state it per domain on "
+        "tools.prepared_domain_tree_forecast")
+
+
 def _native_hrrr_profile_contract(profile: str) -> dict[str, object]:
     contract_profile = (
         NSSL2_PROFILE_ID
@@ -1276,8 +1321,7 @@ def _native_hrrr_profile_contract(profile: str) -> dict[str, object]:
         else profile
     )
     if contract_profile not in _NATIVE_HRRR_NAMELIST_CONTRACTS:
-        raise ValueError(
-            f"unsupported native HRRR physics profile {profile!r}")
+        raise _unsupported_profile(profile)
     return {
         section: dict(fields)
         for section, fields in _NATIVE_HRRR_NAMELIST_CONTRACTS[
@@ -1289,8 +1333,7 @@ def _native_hrrr_runtime_switches(profile: str) -> dict[str, object]:
     try:
         return dict(_NATIVE_HRRR_RUNTIME_SWITCHES[profile])
     except KeyError:
-        raise ValueError(
-            f"unsupported native HRRR physics profile {profile!r}") from None
+        raise _unsupported_profile(profile) from None
 
 
 def _guarded_launch_remedy(missing: tuple[str, ...]) -> str:
@@ -1953,8 +1996,15 @@ def _declare_asymmetric_radiation(
     route cannot declare a different set from the one the door refuses.
     """
 
-    lw = int(switches.get("ra_lw_physics", switches.get("ra_physics", 0)))
-    sw = int(switches.get("ra_sw_physics", switches.get("ra_physics", 0)))
+    # Same one-decider discipline, one level down: the split/combined
+    # resolution is the engine's rule and this had a third hand-copy of
+    # it, blind to the aggregate option's explicit -1 in both split keys.
+    # No template this route declares sits on that option today, so this
+    # is a swept sibling rather than a live defect; it is swept because
+    # the copy is what made the live one on the prepared route possible.
+    from gpuwm.config import radiation_scheme_ids_from_settings
+
+    lw, sw = radiation_scheme_ids_from_settings(switches)
     surface = int(switches.get("sf_surface_physics", 0))
 
     asymmetric = sw > 0 and lw == 0
@@ -4260,7 +4310,12 @@ def _parse_args(argv=None):
     parser.add_argument(
         "--physics-profile",
         default=None,
-        help="optional equality assertion against a named physics template",
+        help="optional equality assertion against a named physics template; "
+             "this route offers "
+             + ", ".join(NATIVE_BENCHMARK_PHYSICS_PROFILES)
+             + ".  Any other registered suite runs on "
+             "tools.prepared_single_domain_forecast or per domain on "
+             "tools.prepared_domain_tree_forecast",
     )
     parser.add_argument(
         "--ack", action="append", default=[],

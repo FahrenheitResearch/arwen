@@ -1798,20 +1798,35 @@ def test_sources_names_the_run_plan_intent_reach_honestly(capsys):
 def test_intent_drivability_is_derived_from_registry_facts():
     """Each class of row lands where its declared facts put it.
 
-    Not a mirror of the implementation: every assertion here is a fact
-    Drew's registry declares (a member set, a missing acquisition
-    route, no cadence, a non-runnable status) paired with the verdict
-    that fact must produce.
+    Not a mirror of the implementation: every assertion here pairs a
+    fact the registry, the route table or the packaged profile DECLARES
+    -- a member set, a missing acquisition route, no cadence, a
+    non-runnable status, a composed profile -- with the verdict that
+    fact must produce.  The chain a row lands on is asserted against its
+    RUNNER, written here as the fixed mapping a reader can check by eye,
+    because asking the dispatcher for it would only prove the verdict
+    equals itself.
     """
 
     from gpuwm import fetch_routes
     from gpuwm.runplan import intent_drivability
     from gpuwm.source_adapters import source_adapters
 
+    #: runner id -> the chain that runner's rows must land on.  A new
+    #: runner is a deliberate edit here, which is the point: this is the
+    #: independent statement of the fork the planner derives.
+    chain_of_runner = {
+        "era5_combined_grib1_v1": "experiment",
+        "gfs_pgrb2_0p25_v1": "prepared:go",
+        "hrrr_f00_f12_v1": "prepared:hrrr",
+        "mapped_composition_v1": "prepared:staged",
+        "twentycrv3_member_grib2_v1": "prepared:staged",
+    }
+
     drivability = intent_drivability()
     adapters = {a.source_id: a for a in source_adapters()}
     table = set(fetch_routes.route_ids())
-    legacy = set(fetch_routes.LEGACY_ROUTE_SOURCES)
+    downloadable = set(fetch_routes.all_fetchable_sources())
 
     for source, verdict in drivability.items():
         adapter = adapters[source]
@@ -1819,35 +1834,53 @@ def test_intent_drivability_is_derived_from_registry_facts():
             assert verdict["routes"] == []
             assert adapter.status.value in verdict["refusal"]
             continue
+        if adapter.forcing_interval_seconds is None:
+            assert verdict["routes"] == []
+            assert "forcing_interval_seconds" in verdict["refusal"]
+            continue
+        if adapter.runner not in chain_of_runner:
+            assert verdict["routes"] == []
+            assert adapter.runner in verdict["refusal"]
+            continue
         if verdict["routes"]:
-            # Every drivable source is wizard-planable and (except the
-            # declared-input experiment route) fetchable.
-            assert adapter.forcing_interval_seconds is not None
-            assert adapter.member_set is None
-            if verdict["chain"] != "experiment":
-                assert source in table | legacy
-        if adapter.member_set is not None:
-            assert verdict["routes"] == []
-            assert "gpuwm-member-prep" in verdict["refusal"]
-            assert adapter.member_set in verdict["refusal"]
-        if (adapter.runnable
-                and adapter.forcing_interval_seconds is not None
-                and adapter.member_set is None
-                and source not in table | legacy):
-            assert verdict["routes"] == []
-            assert "no acquisition route" in verdict["refusal"]
+            # A drivable row lands on the chain its RUNNER names.
+            assert verdict["chain"] == chain_of_runner[adapter.runner]
+            # A member axis is the ROUTE's declaration, never the
+            # planner's: a row that declares a member set is drivable
+            # only where its acquisition route declares one too.
+            if adapter.member_set is not None:
+                assert source in table
+                assert fetch_routes.route_for(source).members is not None
+            # Nothing is drivable without a way to its bytes: either an
+            # acquisition route, or a declared local input contract whose
+            # root review will demand.
+            if verdict["chain"] != "experiment" and source not in downloadable:
+                assert verdict["requires_source_root"] is True
+                assert verdict["source_root_reason"] == (
+                    fetch_routes.acquisition_refusal_reason(source))
+            else:
+                assert not verdict.get("requires_source_root")
+            # The mapped chain composes a packaged profile, so a row
+            # without one cannot reach it.
+            if verdict["chain"] == "prepared:staged":
+                assert adapter.packaged_profile is not None
+        else:
+            assert verdict["refusal"]
 
-    # The chain fork is the registry row's, not a name list's.
+    # The fork is the registry row's, not a name list's: these four are
+    # spelled out because each is a different declared fact.
     assert drivability["gfs"]["chain"] == "prepared:go"
     assert drivability["hrrr"]["chain"] == "prepared:hrrr"
     assert drivability["era5"]["chain"] == "experiment"
     staged = {source for source, verdict in drivability.items()
               if verdict["chain"] == "prepared:staged"}
     for source in staged:
-        assert adapters[source].runner == "mapped_composition_v1"
+        assert adapters[source].runner in {
+            "mapped_composition_v1", "twentycrv3_member_grib2_v1"}
         assert adapters[source].packaged_profile is not None
-        assert source in table
-    assert "icon-eu" in staged and "rap" in staged
+    assert {"icon-eu", "rap"} <= staged
+    assert {source for source in staged
+            if drivability[source].get("requires_source_root")}
 
 
 def test_a_new_registry_row_becomes_intent_drivable_with_zero_code_change(
@@ -1916,10 +1949,6 @@ def test_an_undrivable_intent_source_refusal_names_the_missing_fact(
     """Never "unknown source": the refusal is the registry's own fact."""
 
     cases = {
-        # A member source: the missing axis is member selection.
-        "gefs": ("gpuwm-member-prep", "member set"),
-        # A source with no acquisition route registered.
-        "20crv3": ("no acquisition route", "gpuwm fetch"),
         # A row with no runnable implementation route.
         "nam": ("no runnable implementation route", "status"),
         # The generic mapped adapter declares no per-source cadence.
@@ -1937,6 +1966,30 @@ def test_an_undrivable_intent_source_refusal_names_the_missing_fact(
         assert "unknown source" not in text.lower(), source
         for needle in needles:
             assert needle in text, (source, needle, text)
+
+
+def test_an_ensemble_intent_source_is_drivable_on_the_prepared_route(tmp_path):
+    """The other half of the retired guard: the ensemble intent plans.
+
+    It used to be refused for carrying a member set at all, on the
+    reasoning that an intent has no member axis.  The route's grammar
+    supplies the default member and the staged chain verifies the bytes
+    that arrive against it, so the fact the refusal was built on is gone
+    and the plan is built instead.
+    """
+
+    from gpuwm.runplan import intent_drivability
+
+    plan = build_plan(
+        {"schema": PLAN_SCHEMA, "name": "x", "route": "prepared",
+         "config": {"intent": {"point": "39,-98", "cycle": "2026-08-18T06",
+                               "source": "gefs"}}},
+        source="probe.json", base_dir=tmp_path, sha256="0" * 64)
+    assert plan is not None
+    verdict = intent_drivability()["gefs"]
+    assert verdict["routes"] == ["prepared"]
+    assert verdict["chain"] == "prepared:staged"
+    assert verdict["refusal"] is None
 
 
 def test_a_source_the_registry_does_not_hold_points_at_the_sources_door(

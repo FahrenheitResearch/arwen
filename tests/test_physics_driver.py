@@ -1669,10 +1669,11 @@ def test_olr_is_published_only_by_a_declaring_longwave_scheme():
     with pytest.raises(ValueError, match="publishes_olr"):
         driver.compute(state, cfg)
 
-    # Output-only: refilled by the next radiation call after a resume,
-    # never carried in the checkpoint (WRF's row is r-flagged; gpuwm's
-    # divergence is documented where the classification lives).
-    assert "olr" in restart.DRIVER_REBUILT_ATTRS
+    # The last computed flux must survive a resume between radiation calls.
+    # Its checkpoint-only namespace preserves that diagnostic without adding
+    # it to the prognostic driver fields used by the tile sweep.
+    assert "olr" in restart.DRIVER_CHECKPOINT_ONLY_ATTRS
+    assert "olr" not in restart.DRIVER_REBUILT_ATTRS
     assert "olr" not in restart.DRIVER_SERIALIZED_ATTRS
 
 

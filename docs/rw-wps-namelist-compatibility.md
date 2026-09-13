@@ -33,6 +33,12 @@ is `rw-wps.namelist-support.v1`.
 An unknown key is not guessed to be harmless. It receives
 `UNCLASSIFIED_NAMELIST_SETTING` with an action describing the missing rule.
 
+Every issue carries a `severity`. `blocking` (the default) decides the
+verdict: the export cannot be written, or the pair contradicts itself.
+`advisory` is stated and does not fail the report, which is how a prepared
+route says what differs about it. `"verdict": "FAIL"` means at least one
+blocking issue, never merely that the report had something to say.
+
 ## Current initialized-state contract
 
 The stock-WRF and gpuwm-runtime verdicts are intentionally distinct. RW-WPS
@@ -74,17 +80,60 @@ levels. An unchanged-stock-WRF launch remains a separate live evidence gate.
 
 The accepted companion state is presently YSU (`bl_pbl_physics=1`), classic
 MM5 surface layer (`sf_sfclay_physics=91`), four-layer Noah
-(`sf_surface_physics=2`, `num_soil_layers=4`), no urban state, static one-way
-nests, and Lambert conformal, Mercator, or polar stereographic geometry.
-Other choices fail with the exact missing initialized-state adapter rather
-than being changed.
+(`sf_surface_physics=2`, `num_soil_layers=4`), no urban state, nests whose
+footprints are fixed for the run, and Lambert conformal, Mercator, or polar
+stereographic geometry. Other choices fail with the exact missing
+initialized-state adapter rather than being changed.
+
+`feedback` and `smooth_option` are read from the engine's own validator
+rather than from a table in this door. `feedback=0` is the certified one-way
+path and `feedback=1` (WRF's Registry default, so also what an omitted key
+selects) is reported as the experimental two-way path without failing the
+report. `smooth_option` 0, 1 (`sm121`) and 2 (`smdsm`, WRF's Registry
+default) are all implemented and are reported, not refused; WRF reads the key
+only while `feedback = 1` and so does this product. A value the validator
+rejects still fails, and the message names the validator and the set it
+admits. WRF's moving-nest keys are still refused, in the loader's own
+words: the specified-move keys (`num_moves`, `move_id`, `move_interval`,
+`move_cd_x`, `move_cd_y`, `time_to_move`) are answered with the exact
+`[relocation]` rows that reproduce the same itinerary at cycle boundaries,
+and the vortex-following keys (`vortex_interval`, `max_vortex_speed`,
+`corral_dist`, `track_level`) are refused as having no counterpart.
+`tile_sz_x` and `tile_sz_y` are not moving-nest keys and are not refused:
+they size the CPU build's shared-memory tiles, reach neither the prepared
+state nor the integration, and are reported as a note. The importer
+records them as dropped keys beside `numtiles`, `nproc_x` and `nproc_y`,
+so both doors take the same namelist.
 
 ## Domain and vertical behavior
 
 Domain columns remain in d01...dNN order. WRF's short-array convention is
 honored by repeating the final declared value; extra values beyond `max_dom`
-are rejected rather than truncated. The parser supports the compiled
-1-through-21 domain range and has an explicit six-domain regression gate.
+are rejected rather than truncated. The stock-export verdict is bounded by
+WRF's own compiled `max_domains` (21 in the stock build), because an
+unchanged WRF executable cannot read a namelist that declares more domains;
+the message names that artefact and both ways out. The geometry, physics and
+timing analysis is not bounded by it, so a larger tree is still examined and
+still answers the gpuwm runtime verdict. There is an explicit six-domain
+regression gate.
+
+`fine_input_stream` has WRF's two defined values and both have a prepared
+route: 0 takes every field from the nest's own input, and 2 takes only the
+static and masked land-surface fields from it (WRF's delayed-nest-start
+pattern), which the stock export satisfies by writing `wrfinput_d0N` at each
+domain's configured start time and the runtime satisfies by initializing a
+delayed child from its own analysis at activation. The report states that
+substitution and the one difference it carries: the masked surface state
+comes from the child's own-grid analysis rather than from a real.exe
+wrfinput. An index WRF does not define still fails.
+
+The report and `gpuwm.namelist_import` read that answer from one function,
+`gpuwm.namelist_import.fine_input_stream_decision`, so a pair this report
+passes is a pair the importer imports. The delayed-nest route is booked
+there as a declared divergence with the same sentence, which
+`announce_wrf_substitutions` prints at the terminal and which the met_em
+and wrfinput doors admit by name
+(`gpuwm.wrfinput_door.ADMITTED_DECLARED_DIVERGENCES`).
 `map_proj='lambert'`, `'mercator'`, and `'polar'` pass. Following WPS
 `module_llxy` semantics, Mercator may omit `truelat2` and `stand_lon`, and
 polar stereographic may omit `truelat2`; those parameters do not enter the

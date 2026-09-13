@@ -74,9 +74,35 @@ class UnparseableCitation(Exception):
     """The cited file is not source this gate can read a proof out of."""
 
 
+#: ``implemented: false`` rows that ARE configuration fields, each with the
+#: reason the field exists anyway (audit R-060).  A knob gpuwm carries only
+#: so its refusal can NAME it is not drift; a knob gpuwm carries because
+#: something reads it is.  The distinction has to be written down, because
+#: the negative check below cannot tell them apart.
+_UNIMPLEMENTED_BUT_CARRIED = {
+    "nssl_3moment": (
+        "carried on RunConfig so gpuwm/core/nssl2_contract.py can refuse the "
+        "three-moment branch BY NAME at validation; nothing integrates it"),
+}
+
+
 def configuration_fields() -> frozenset[str]:
+    """Every field a gpuwm configuration can carry a knob's value in.
+
+    ``ExperimentConfig`` joins ``RunConfig`` here (audit R-060) because the
+    two are both real carriers and the registry's roadmap rows drifted in
+    exactly the gap between them: ``smooth_option`` is an
+    ``ExperimentConfig`` field that ``gpuwm/core/model.py`` wires into the
+    nest smoother, and while this set could not see it the registry could
+    publish "gpuwm has no smoothing operator" with nothing able to
+    contradict it.
+    """
+
+    from gpuwm.experiment import ExperimentConfig
+
     return frozenset(
         {field.name for field in dataclasses.fields(RunConfig)}
+        | {field.name for field in dataclasses.fields(ExperimentConfig)}
         | set(EXPERIMENT_SCHEMA_PARAMETERS)
     )
 
@@ -200,6 +226,27 @@ def check(root: Path) -> list[str]:
                 failures.append(
                     f"{name}: implemented=false must not carry a default, which "
                     "would seed a resolved setting")
+            # THE REVERSE LEG (audit R-060).  Until now this gate proved only
+            # the POSITIVE claim -- an implemented row's citation resolves --
+            # and forbade an unimplemented row from carrying one.  Nothing
+            # proved the negative, so a lane that landed the read was under no
+            # obligation to move the roadmap row and was mechanically blocked
+            # from citing it.  The rows drifted exactly as restart.py's
+            # scheme map drifted from the mp_physics registry: the registry
+            # published "gpuwm has no WIF ingest" while gpuwm/ingest/
+            # wif_climatology.py WAS that ingest, and told a user the pair its
+            # own error text prescribes could not be spelled.
+            #
+            # A configuration field is the cheapest sound evidence that the
+            # gap closed: a knob nothing carries cannot be read.
+            if name in fields and name not in _UNIMPLEMENTED_BUT_CARRIED:
+                failures.append(
+                    f"{name}: implemented=false, but it is a gpuwm "
+                    "configuration field -- something carries the value, so "
+                    "the roadmap row has outlived the gap it describes. "
+                    "Either register it as implemented with its consuming "
+                    "read, or record in _UNIMPLEMENTED_BUT_CARRIED why the "
+                    "field exists while the knob does not")
             continue
 
         if citation is None:

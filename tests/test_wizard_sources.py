@@ -137,6 +137,38 @@ def _routed_sources() -> frozenset[str]:
 _ROUTED_SOURCES = _routed_sources()
 
 
+def _local_input_source_ids() -> frozenset[str]:
+    """Rows prepared from bytes a person stages, read from the AUTHORITIES.
+
+    The second half of what a ``[fetch]`` table may describe: a source
+    with no download route still carries the acquisition metadata that
+    says WHICH staged bytes (source, cycle, cadence), and review asks for
+    the input root on top of it.  Deliberately not
+    ``runplan.drivability_for``: that verdict is the seam the emission is
+    being checked against, and a test that asks the implementation what
+    the implementation should say passes while both are wrong together.
+    The three facts are read where they are declared -- the registry row,
+    the preparation-runner table, and the packaged profile's own
+    composition state.
+    """
+
+    from gpuwm.source_authorities import packaged_profile
+    from gpuwm.source_cli import preparation_runners
+
+    runners = preparation_runners()
+    staged = []
+    for source in wizard_planable_source_ids():
+        adapter = get_source_adapter(source)
+        runner = runners.get(adapter.runner)
+        if not (adapter.runnable and runner and runner.local_kind
+                and adapter.packaged_profile):
+            continue
+        if packaged_profile(
+                adapter.packaged_profile)["composition_state"] == "composed":
+            staged.append(source)
+    return frozenset(staged)
+
+
 def _refused_source_ids() -> frozenset[str]:
     """The runnable rows the route authority refuses by name."""
 
@@ -151,20 +183,25 @@ def _refused_source_ids() -> frozenset[str]:
 @pytest.mark.parametrize("source", wizard_planable_source_ids())
 def test_fetch_table_is_emitted_exactly_where_the_fetch_door_reaches(
         tmp_path, source):
-    """A ``[fetch]`` table is a claim that `gpuwm fetch` can get the bytes.
+    """A ``[fetch]`` table is a claim about where this source's bytes come from.
 
-    Emitting one for a source the fetch door does not serve produces a
-    config that is refused at every later load; omitting one for a source
-    it DOES serve loses the download hint.  Both are decided against the
-    route authority, never against the emitting seam and never against a
-    list written here.
+    Emitting one for a source neither `gpuwm fetch` nor the local-input
+    contract serves produces a config that is refused at every later
+    load; omitting one for a source that IS served loses the acquisition
+    hint.  A source with a composed local runner keeps the metadata that
+    names which staged bytes, and review still requires its own input
+    root on top of it.  Both halves are decided against the packaged
+    authorities, never against the emitting seam, never against the
+    run-plan verdict the emission is being checked against, and never
+    against a list written here.
     """
 
     rc, out = _emit(tmp_path / source, source)
     assert rc == 0
     text = out.read_text(encoding="utf-8")
     config = tomllib.loads(text)
-    expected = source in _sources_with_public_bytes()
+    expected = (source in _sources_with_public_bytes()
+                or source in _local_input_source_ids())
     assert ("fetch" in config) is expected, source
     if not expected:
         # And the gap is stated in the file, not merely left blank.

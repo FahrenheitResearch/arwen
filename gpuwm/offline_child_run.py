@@ -25,9 +25,7 @@ import numpy as np
 from gpuwm import downscale_pricing
 from gpuwm.aerosol_source_receipt import aerosol_source_report_entry
 from gpuwm.config import (
-    load_config,
     load_history_selection,
-    load_streaming_options,
     radiation_scheme_ids,
     soil_layer_count,
 )
@@ -47,7 +45,11 @@ from gpuwm.offline_child import (
     derive_child_surface_from_parent,
     interpolate_parent_initial_state,
     read_child_surface_state,
+    require_offline_child_root_forcing,
+    require_runnable_child_radiation_from_archive,
     reserve_output_root,
+    resolve_child_run_config,
+    resolve_child_streaming_options,
     validate_parent_history,
 )
 
@@ -1091,21 +1093,31 @@ def _run(args: argparse.Namespace,
     outdir = (Path(args.outdir).resolve()
               if getattr(args, "outdir_reserved", False)
               else _create_output_root(args.outdir))
-    cfg = load_config(args.child_config)
+    # The config the run is actually built on, resolved through the one
+    # function `gpuwm downscale`'s plan review calls, so a --child-levels
+    # ladder reaches this door with the same answer the review printed.
+    cfg = resolve_child_run_config(
+        args.child_config, child_levels=getattr(args, "child_levels", None))
     # Read at ADMISSION, beside the config it belongs to, and before any
     # parent frame is opened: mode = 'on' streams unconditionally and needs
     # no card to be knowable, so a malformed block fails here rather than
-    # after the whole archive has been interpolated.
-    tiles = load_streaming_options(args.child_config)
+    # after the whole archive has been interpolated.  Resolved through the
+    # same shared function for the same reason as the config above.
+    tiles = resolve_child_streaming_options(
+        args.child_config, getattr(args, "tiles", None))
     # Read at ADMISSION as well, and for the same reason: an unknown
     # variable name or a history_vars/history_drop clash refuses HERE,
     # before a parent archive is opened, rather than at the first frame.
     history_selection = load_history_selection(args.child_config)
     history_selection.warn_lost_products(
         HISTORY_VOCABULARY, where=f"child d{cfg.grid_id:02d}")
-    if not cfg.specified or cfg.nested:
-        raise OfflineChildContractError(
-            "child config must set specified=true and nested=false")
+    require_offline_child_root_forcing(cfg)
+    # The same radiation ladder rule plan review asks, asked again here on
+    # the direct runner door, which no plan review stands in front of --
+    # and asked BEFORE the archive is opened for interpolation rather than
+    # after the whole of it has been read.
+    require_runnable_child_radiation_from_archive(
+        cfg, (args.parent_history[0] if args.parent_history else None))
     if args.parent_restart is not None:
         binding = bind_parent_physics_from_gpuwm_restart(args.parent_restart)
     else:
@@ -1461,6 +1473,16 @@ def _run(args: argparse.Namespace,
         "parent_physics_binding": dict(binding.receipt()),
         "child_config": str(args.child_config.resolve()),
         "child_config_sha256": _sha256(args.child_config.resolve()),
+        # The file hash AND the ladder actually integrated, side by side:
+        # `--child-levels` can replace the supplied file's eta_levels, so
+        # the hash alone no longer answers "which grid was this run on?".
+        "child_levels_override": (
+            None if getattr(args, "child_levels", None) is None
+            else str(args.child_levels)),
+        "effective_nz": int(cfg.nz),
+        "effective_eta_levels": (
+            None if cfg.eta_levels is None
+            else [float(value) for value in cfg.eta_levels]),
         "target_mp_physics": int(cfg.mp_physics),
         "placement": {
             "parent_grid_ratio": placement.parent_grid_ratio,

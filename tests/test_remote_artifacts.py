@@ -238,7 +238,7 @@ def test_native_status_forwards_exact_bounded_render_families_and_skip_reasons(c
     summary = {"schema":"gpuwm.render-summary.v1", "requested_specs":["qpf_1h", "10m_wind_speed_and_direction"],
         "rendered_png_count":1, "rendered_family_count":1, "rendered_families":[{"name":"10m_wind_speed_and_direction", "count":1}],
         "skipped_count":1, "skipped_family_count":1,
-        "skipped_families":[{"name":"qpf_1h", "count":1, "reasons":["Previous committed frame is unavailable — no hourly difference was made."], "additional_reasons":0}],
+        "skipped_families":[{"name":"qpf_1h", "count":1, "reasons":["Previous committed frame is unavailable, so no hourly difference was made."], "additional_reasons":0}],
         "failure_count":0, "failures":[], "additional_failures":0, "invocation_count":1}
     event = {"schema_version":"gpuwm.run-plan.event.v1", "sequence":2, "event":"completed" if nested else "stage_finished",
              "stage":"finalize", "emitted_unix_ms":ra._timestamp("2026-09-07T18:00:02Z")}
@@ -345,10 +345,17 @@ def test_both_native_resolved_config_receipts_must_match_saved_bytes(hosted, pro
 
 def test_changed_saved_config_and_after_end_producer_are_refused(hosted):
     h = hosted
+    # The producer starts clear of the window a machine may correct its own
+    # clock in (ra.CLOCK_CORRECTION_MS), so what refuses it here is the job's
+    # recorded end and not an adjustment of a second or two.
+    h.manifest["started_at_utc"] = "2026-09-07T18:00:30Z"
+    h.manifest_path.write_bytes(encoded(h.manifest))
+    h.producer_resolved["emitted_unix_ms"] = ra._timestamp("2026-09-07T18:00:30Z")
+    h.producer_events.write_bytes(encoded(h.producer_resolved) + encoded(h.commit))
     h.case.status.update(state="completed", ended_at="2026-09-07T18:00:00Z")
     with pytest.raises(ValueError, match="does not match"):
         catalog(h.case)
-    h.case.status["ended_at"] = "2026-09-07T18:00:10Z"
+    h.case.status["ended_at"] = "2026-09-07T18:00:40Z"
     h.config.write_bytes(b"changed")
     with pytest.raises(ValueError, match="does not match"):
         catalog(h.case)

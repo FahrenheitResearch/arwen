@@ -40,7 +40,7 @@ from gpuwm.ensemble.member import MemberOutcome
 from gpuwm.ensemble.seeds import member_seed
 from gpuwm.ensemble.state_sha import (
     checkpoint_state_sha_receipt, live_state_sha256, live_state_sha_receipt,
-    serialized_state_attrs,
+    serialized_state_attrs, checkpoint_state_sha256,
 )
 
 BASE_TOML = """
@@ -150,7 +150,7 @@ def clock_honest_runner(*, base_config, member_dir, index, seed,
     return MemberOutcome(
         index=index, seed=seed, member_dir=member_dir,
         initial_state_sha256=f"{index:064d}",
-        final_state_sha256=f"{index:063d}{int(total) % 10}",
+        final_state_sha256=checkpoint_state_sha256(member_dir / CHECKPOINT_NAME),
         wall_seconds=0.1, sim_seconds=total - start, wrfout_count=1,
         last_checkpoint=str(member_dir / CHECKPOINT_NAME),
         perturbation={"restart_from": None if restart is None
@@ -359,7 +359,7 @@ def test_a_crash_on_the_second_rename_never_leaves_a_silent_mixed_roster(
     marker = publication_marker_path(leg)
     assert marker.is_file()
     declared = json.loads(marker.read_text(encoding="utf-8"))
-    assert declared["cycle"] == 0
+    assert declared["context"]["cycle"] == 0
     assert [entry["member"] for entry in declared["members"]] == [0, 1]
 
     report = recover_analysis_publication(leg)
@@ -369,9 +369,9 @@ def test_a_crash_on_the_second_rename_never_leaves_a_silent_mixed_roster(
         assert (leg / member_directory_name(index) / ANALYSIS_NAME).is_file()
         assert not (leg / member_directory_name(index)
                     / (ANALYSIS_NAME + STAGED_SUFFIX)).exists()
-    assert not marker.exists(), "a settled transaction leaves no marker"
+    assert marker.exists(), "the original decision remains available after completion"
     # Idempotent: recovering a settled leg is a no-op, not a second pass.
-    assert recover_analysis_publication(leg) is None
+    assert recover_analysis_publication(leg)["rolled_forward"] == []
 
 
 def test_a_reader_of_an_interrupted_publication_gets_the_whole_roster(
@@ -412,7 +412,7 @@ def test_a_reader_of_an_interrupted_publication_gets_the_whole_roster(
     result = run_cycles(cfg, root, n_cycles=2, cycle_seconds=60.0,
                         assimilate=assimilate, runner=clock_honest_runner)
     assert result.status == "COMPLETE"
-    assert not publication_marker_path(cycle_root(root, 0)).exists()
+    assert publication_marker_path(cycle_root(root, 0)).exists()
     for index in range(2):
         assert (cycle_root(root, 0) / member_directory_name(index)
                 / ANALYSIS_NAME).is_file()
@@ -460,8 +460,8 @@ def test_an_unrecoverable_publication_refuses_loudly_rather_than_guessing(
     with pytest.raises(ValueError) as caught:
         recover_analysis_publication(leg)
     message = str(caught.value)
-    assert "[1]" in message
-    assert "roster is mixed" in message
+    assert "member 1" in message
+    assert "analysis bytes" in message
     assert publication_marker_path(leg).is_file(), (
         "an unrecoverable transaction keeps its marker; clearing it would "
         "make the next start read the mixed roster as a whole one")
@@ -692,7 +692,7 @@ def test_the_supported_reader_returns_the_whole_roster_at_every_cut(
     roster = cycle_module.read_analysis_roster(leg, n_members=3)
     assert sorted(roster) == [0, 1, 2]
     assert all(path.is_file() for path in roster.values())
-    assert not publication_marker_path(leg).exists()
+    assert publication_marker_path(leg).exists()
     # Idempotent: a settled leg reads the same way twice.
     assert sorted(cycle_module.read_analysis_roster(leg, n_members=3)) \
         == [0, 1, 2]
@@ -712,7 +712,7 @@ def test_the_supported_reader_refuses_an_unrecoverable_roster(
     leg = cycle_root(root, 0)
     (leg / member_directory_name(1)
      / (ANALYSIS_NAME + STAGED_SUFFIX)).unlink()
-    with pytest.raises(ValueError, match="roster is mixed"):
+    with pytest.raises(ValueError, match="analysis bytes"):
         cycle_module.read_analysis_roster(leg, n_members=2)
 
 
@@ -747,6 +747,9 @@ def test_the_supported_reader_refuses_a_partial_roster_with_no_transaction(
                    for index in states},
                runner=clock_honest_runner)
     leg = cycle_root(root, 0)
+    from gpuwm.ensemble.analysis_commit import COMMIT_NAME
+    publication_marker_path(leg).unlink()
+    (leg / COMMIT_NAME).unlink()
     assert not publication_marker_path(leg).exists()
     (leg / member_directory_name(1) / ANALYSIS_NAME).unlink()
     with pytest.raises(TypeError, match="n_members"):
@@ -1194,7 +1197,7 @@ def test_the_restart_reader_is_the_supported_reader(tmp_path, monkeypatch):
         "against leg 0")
 
 
-def test_a_completed_publication_leaves_no_marker(tmp_path):
+def test_a_completed_publication_keeps_its_decision(tmp_path):
     cfg = load_ensemble_config(_write_overlay(tmp_path / "s", n_members=2))
     root = tmp_path / "s" / "ens"
     names = _contract_names()
@@ -1204,7 +1207,7 @@ def test_a_completed_publication_leaves_no_marker(tmp_path):
                                                       np.float32)}
                             for index in states},
                         runner=clock_honest_runner)
-    assert not publication_marker_path(cycle_root(root, 0)).exists()
+    assert publication_marker_path(cycle_root(root, 0)).exists()
     receipt = read_manifest(result.manifest_path,
                             schema=CYCLE_MANIFEST_SCHEMA)[
         "cycles"][0]["assimilation"]

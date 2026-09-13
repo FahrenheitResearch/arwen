@@ -108,6 +108,7 @@ def emit(tmp_path, forcing, *, hours=2, extra=()):
     rc = main(["domain", "--point", "35.3,-97.5", "--source", "era5",
                "--cycle", "2026-07-29T18", "--hours", str(hours), "--card", "12gb",
                "--root-dx", "3", "--nz", "76", "--forcing", str(forcing),
+               "--geog-root", str(tmp_path / "unstaged-geography"),
                "--out", str(out), *extra])
     return rc, out
 

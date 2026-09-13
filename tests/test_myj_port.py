@@ -873,7 +873,7 @@ def test_the_registry_rows_are_honest_about_the_evidence():
                                     (eta, "sf_sfclay_physics", 2)):
         assert option["implemented"] is True
         assert option["maturity"] == "implemented-unverified"
-        assert option["reachability"] == {"state": "component-override"}
+        assert option["reachability"] == {"state": "template"}
         assert option["selectors"] == {selector: value}
         assert option["scientific_evidence"] == "none"
         joined = " ".join(option["warnings"])
@@ -881,12 +881,22 @@ def test_the_registry_rows_are_honest_about_the_evidence():
         # alone has been read as "probably fine" before.
         assert "NO ORACLE COMPARISON AGAINST THE WRF FORTRAN" in joined
         assert "tests/test_myj_port.py" in joined
-    # No template may select either half: reachability is component-override
-    # and that is a computed statement about the shipped registry.
+    # Audit R-067 gave the pair its first named suite, so reachability is
+    # 'template' now and the old "no template may select either half" is
+    # retired with it.  What survives is the property that actually
+    # protects the port: a template selects the pair or neither half,
+    # because MYJ's own constraint requires the Eta surface layer and the
+    # Eta surface layer's requires MYJ.
+    paired = 0
     for template in registry["templates"].values():
         components = template.get("components", {})
-        assert components.get("pbl") != "myj"
-        assert components.get("surface_layer") != "eta-similarity"
+        selects = (components.get("pbl") == "myj",
+                   components.get("surface_layer") == "eta-similarity")
+        assert selects[0] == selects[1], template.get("label")
+        paired += int(selects[0])
+    assert paired == 1, (
+        "the pair had no named suite at all until R-067 and has exactly "
+        f"one now; the registry declares {paired}")
 
 
 def test_the_pair_is_selectable_per_domain_and_only_as_a_pair():

@@ -29,6 +29,7 @@ import netCDF4
 from gpuwm import netcdf_bridge
 import numpy as np
 
+from gpuwm.explain import warn
 from gpuwm.core import microphysics_transition as _mt
 from gpuwm.core.grid import (BaseState, compute_hybrid_coeffs,
                              finalize_vertical_coord, make_vertical_coord)
@@ -438,6 +439,284 @@ def reserve_output_root(path, *, flag: str = "--out") -> Path:
                 f"it have to be that run's.  Pass a new {flag}, or remove "
                 f"{path} first.") from error
     return path.resolve()
+
+
+#: The one sentence that says why an offline downscale child's ROOT has to
+#: take specified boundaries.  Spelled ONCE, here, and raised by
+#: :func:`require_offline_child_root_forcing`, which every door onto this
+#: route calls: plan review (``gpuwm downscale``), admission
+#: (``gpuwm.offline_child_run.run``) and the state builder below.  It used
+#: to be open-coded twice, in two different wordings, in two of those three
+#: places and in NEITHER plan-review door, so the same configuration was
+#: turned away with one sentence after a run had started and with another
+#: after the whole parent archive had been interpolated.
+OFFLINE_CHILD_ROOT_FORCING_REFUSAL = (
+    "the offline route forces this domain from an external LBC mirror, so "
+    "the run's root must take specified boundaries (specified = true, "
+    "nested = false); specified = false or nested = true would leave the "
+    "root with no Davies forcing and it would drift freely off the "
+    "archive.  Sub-nests of this child are declared as domains in an "
+    "experiment TOML, not by flipping nested on the root."
+)
+
+
+def require_offline_child_root_forcing(cfg):
+    """Refuse a root the archived parent cannot force.  Returns ``cfg``.
+
+    The rule is about the RUN'S ROOT, which is the only domain this route
+    integrates: it is forced entirely from the archived parent, so it needs
+    Davies relaxation on its own lateral boundaries.  A child tree is
+    declared as domains in an experiment TOML; flipping ``nested`` on this
+    config would only remove the forcing the route depends on.
+    """
+
+    if not cfg.specified or cfg.nested:
+        raise OfflineChildContractError(OFFLINE_CHILD_ROOT_FORCING_REFUSAL)
+    return cfg
+
+
+#: The override sentences this process has already said.  Keyed by the
+#: sentence itself, which carries the config path and both of the values
+#: that disagreed, so a different file or a different disagreement is a
+#: different key and still speaks.
+_RESOLUTION_OVERRIDES_SAID: set = set()
+
+
+def _warn_resolution_once(action: str, *, why: str) -> None:
+    """Say one flag-over-file override once, however many doors reach it.
+
+    Rule of this route: one resolution function, both doors call it, so
+    plan review and admission cannot answer differently.  The cost is that
+    on a real run the SAME sentence is reached twice in one process -- once
+    while the plan is reviewed and once while the run is admitted -- and
+    the published contract is that a disagreement earns ONE warning naming
+    both values.  Printing it twice would make the record disagree with the
+    documentation and read, to someone watching stderr, like two separate
+    overrides.  So the sentence is said the first time it is reached and is
+    silent after; the plan document already holds it (the observer that
+    fills ``downscale-plan.json``'s ``warnings`` is attached around the
+    whole command).
+
+    Deduplicated on the normalized sentence, which is what
+    :func:`gpuwm.explain.warn` prints, so the key and the line cannot drift,
+    and the set spans exactly one command because
+    :func:`reset_resolution_notices` empties it as that command opens.
+    """
+
+    action = " ".join(str(action).split())
+    if action in _RESOLUTION_OVERRIDES_SAID:
+        return
+    _RESOLUTION_OVERRIDES_SAID.add(action)
+    warn(action, why=why)
+
+
+def reset_resolution_notices() -> None:
+    """Forget the override sentences already said, as a command opens.
+
+    The published contract is one warning per INVOCATION however many
+    doors resolve the same configuration, not one per process.  The set
+    above is module state, so without this a second ``gpuwm downscale``
+    in one process, over the same file and the same flag, would override
+    the same written statement in silence: the same defect this route was
+    repaired for, moved one level up.  ``downscale_main`` calls this
+    first, so the set covers exactly one command, plan review and the run
+    admission it dispatches to share it, and the next command starts from
+    silence.
+    """
+
+    _RESOLUTION_OVERRIDES_SAID.clear()
+
+
+def resolve_child_streaming_options(child_config_path, flag_mode):
+    """The ``[tiles]`` options the child actually integrates under.
+
+    ONE resolution rule for the two doors onto this route, so plan review
+    and the runner cannot answer differently about one configuration:
+
+    * no flag -> whatever the child config declares;
+    * the config has NO ``[tiles]`` table (the shared OFF object) -> the
+      flag, written into the run and printed at plan review;
+    * both, and they agree -> a no-op;
+    * both, and they disagree -> the flag wins as the later and more
+      specific statement, and one warning names both modes.  A file that
+      spells ``[tiles]`` mode = "off" out loud has declared a mode, so
+      ``--tiles on|auto`` beside it is a disagreement and earns that
+      warning; only the absence of the table is silence.
+    * they disagree AND the file pins knobs the flag's mode cannot carry
+      -> those knobs leave with the mode that could carry them, and the
+      SAME one warning names them and both ways of keeping them.
+
+    ``[tiles]`` binds no restart identity (``gpuwm.core.streaming
+    .identity_payload_entry`` returns nothing for it), so a mode
+    disagreement is not a breakage to refuse over; it is a choice to
+    resolve and say out loud.  The sibling front door
+    (``gpuwm.prepared_single_domain_forecast``) resolves the same
+    disagreement in the same direction but NOT by the same test: it asks
+    ``declared is not None and declared.enabled and declared != tiles``,
+    so an experiment that spells ``[tiles] mode = "off"`` out loud is
+    still replaced there without a word.  The identity test below is what
+    keeps silence and an explicit off apart; that door needs the same one.
+    """
+
+    from gpuwm.config import load_streaming_options
+    from gpuwm.core.streaming import OFF, StreamingOptions
+
+    supplied = load_streaming_options(child_config_path)
+    if flag_mode is None:
+        return supplied
+    mode = str(flag_mode)
+    # IDENTITY, not equality.  ``load_streaming_options`` returns the
+    # shared OFF object for a file with NO ``[tiles]`` table at all, and
+    # builds a fresh object for a file that HAS one -- including a file
+    # that spells ``[tiles]`` mode = "off" out loud, which is a legal,
+    # documented spelling and compares EQUAL to OFF.  Under ``==`` an
+    # explicit mode = "off" read as "the config declares nothing" and
+    # ``--tiles on|auto`` replaced it in silence: no warning on stderr and
+    # no trace in the plan document that the user's own statement had been
+    # overridden.  ``is`` keeps the two apart, so silence means silence and
+    # an explicit off is a declaration the override has to name.
+    if supplied is OFF:
+        return StreamingOptions.from_mapping({"mode": mode}, source="--tiles")
+    if supplied.mode == mode:
+        return supplied
+    # THE WHOLE TABLE, REBUILT UNDER THE NEW MODE AND VALIDATED BY THE
+    # CLASS THAT OWNS THE RULES.  This used to be ``replace(supplied,
+    # mode=mode)``, a field swap whose only reader of the result was
+    # ``StreamingOptions.__post_init__`` -- and that reader's sentences are
+    # addressed to whoever WROTE the block.  A child config that legally
+    # pins a tiling under its own declared mode ("on" with tile_nx,
+    # tile_ny, or nbuffers) therefore became unconstructible the moment
+    # ``--tiles auto`` changed the mode: the command announced that the
+    # flag had won and then, on the next line, exited on "[tiles] sets
+    # tile_nx, tile_ny while mode = 'auto' ... say which you meant: mode =
+    # 'on' to pin the tiling", which is exactly what the file already said.
+    # The flag imposed that mode, so the file was not the statement that
+    # could be edited to clear it, and there was no way out of the
+    # invocation at all.  Resolved here instead, on the merged mapping:
+    # the flag still wins, the knobs its mode cannot carry leave WITH the
+    # mode that could carry them, and the one warning a disagreement earns
+    # says which they were and how to keep them.
+    merged = supplied.to_mapping()
+    merged["mode"] = mode
+    source = f"--tiles {mode} over {child_config_path}"
+    dropped: tuple[str, ...] = ()
+    try:
+        resolved = StreamingOptions.from_mapping(merged, source=source)
+    except ValueError:
+        # WHICH keys a mode cannot carry stays the class's ruling and is
+        # not copied here: these four are the only keys any mode rejects,
+        # and one is cleared only because the class has just refused the
+        # table that carried it under this mode.
+        dropped = tuple(
+            name for name in ("tile_nx", "tile_ny", "nbuffers", "halo")
+            if merged.get(name) is not None)
+        for name in dropped:
+            merged[name] = None
+        try:
+            resolved = StreamingOptions.from_mapping(merged, source=source)
+        except ValueError as error:
+            # Not reachable from the two flag values argparse admits, and
+            # kept so that a widened flag can never land back on a bare
+            # ValueError with no way out printed beside it.
+            raise OfflineChildContractError(
+                f"--tiles {mode} cannot be resolved against the [tiles] "
+                f"block the child config {child_config_path} declares for "
+                f"mode = '{supplied.mode}': {error}  Drop --tiles to run "
+                "the mode and the block the file declares, or edit "
+                f"[tiles] in that file to one mode = '{mode}' accepts."
+            ) from error
+    said = (
+        f"--tiles mode = '{mode}' replaces the [tiles] mode = "
+        f"'{supplied.mode}' the child config {child_config_path} declares; "
+        "the flag is the later and more specific statement, and [tiles] "
+        "binds no identity either way")
+    why = ("Streaming is a promise that a domain integrated as one "
+           "resident block and the same domain streamed from host RAM "
+           "produce the same bytes, so the mode changes how the child "
+           "runs and nothing it computes.  The rest of the block (tile "
+           "size, buffers, store, write mode) is kept exactly as the "
+           "file wrote it.")
+    if dropped:
+        keys = ", ".join(dropped)
+        said = (
+            f"--tiles mode = '{mode}' replaces the [tiles] mode = "
+            f"'{supplied.mode}' the child config {child_config_path} "
+            f"declares, and with it the {keys} that block pins for mode = "
+            f"'{supplied.mode}', which mode = '{mode}' cannot carry and "
+            "would ignore in silence; the flag is the later and more "
+            "specific statement, and [tiles] binds no identity either "
+            "way.  Drop --tiles to keep the pinned tiling, or delete "
+            f"{keys} from that file to let mode = '{mode}' plan one.")
+        why = ("Streaming is a promise that a domain integrated as one "
+               "resident block and the same domain streamed from host RAM "
+               "produce the same bytes, so the mode changes how the child "
+               f"runs and nothing it computes.  {keys} belong to mode = "
+               "'on', which pins a tiling; 'auto' plans its own and its "
+               "answer IS the planner's, so a pinned tile makes it stream "
+               "a domain that fits and a pinned nbuffers reads back as a "
+               "count nobody chose.  The rest of the block (store, write "
+               "mode, budgets) is kept exactly as the file wrote it.")
+    _warn_resolution_once(said, why=why)
+    return resolved
+
+
+def resolve_child_run_config(child_config_path, *, child_levels=None):
+    """The child ``RunConfig`` the run is actually built on.
+
+    ONE resolution rule for the two doors, as above.  ``child_levels`` is
+    the ``--child-levels N[,STRETCH]`` spec: absent, the file decides;
+    present, the ladder it names replaces ``eta_levels``/``nz`` and
+    ``validate_run_config`` is re-run so the config authority's own length
+    and monotonicity sentences are the ones that speak.  A file that
+    already named a DIFFERENT ladder is warned about, not refused: the
+    flag is the later and more specific statement, and the warning says
+    which ladder won.
+
+    ``p_top``, ``hybrid_opt`` and ``etac`` are left inherited, which is
+    what keeps ``gpuwm.vertical_remap.require_shared_column_basis``
+    satisfied by construction.
+    """
+
+    from dataclasses import replace
+
+    from gpuwm.config import load_config, validate_run_config
+
+    cfg = load_config(child_config_path)
+    if child_levels is None:
+        return cfg
+    # Imported here and not at module scope: ``gpuwm.downscale`` imports
+    # this module, and the ladder generator plus its spec parser live
+    # there beside the flag that spells them.
+    from gpuwm.downscale import _parse_child_levels
+
+    # Never None here: _parse_child_levels answers None only for a None
+    # spec, which the guard above already returned on, and every other
+    # unreadable spec is a refusal it raises itself.
+    ladder = _parse_child_levels(child_levels)
+    if cfg.eta_levels is not None:
+        declared = tuple(float(value) for value in cfg.eta_levels)
+        if declared != tuple(ladder):
+            _warn_resolution_once(
+                f"--child-levels {child_levels} replaces the "
+                f"{len(declared) - 1}-level eta_levels ladder the child "
+                f"config {child_config_path} declares with a "
+                f"{len(ladder) - 1}-level one; the flag is the later and "
+                "more specific statement, and the run and its restarts "
+                "record the ladder that won",
+                why="eta_levels binds the restart identity, so the "
+                    "ladder written into the run is the ladder the "
+                    "checkpoints are bound to.  p_top, hybrid_opt and "
+                    "etac stay inherited from the archived parent, which "
+                    "is what gives the two ladders coincident endpoints.")
+    cfg = replace(cfg, eta_levels=tuple(ladder), nz=len(ladder) - 1)
+    try:
+        validate_run_config(cfg)
+    except ValueError as error:
+        # The config authority's own sentence, raised as this route's
+        # refusal so one reader answers for a hand-written ladder and a
+        # flag-built one alike.
+        raise OfflineChildContractError(str(error)) from error
+    return cfg
 
 
 def _unsupported_parent_clause(mp_physics: int, *, what: str) -> str:
@@ -2304,8 +2583,8 @@ def _require_prepared_child_ladder(initial, cfg) -> None:
             "loaded against a coordinate it was never remapped to")
 
 
-def _require_runnable_child_radiation(cfg, p_top: float) -> None:
-    """Refuse a child ladder this domain's own radiation cannot run.
+def require_runnable_child_radiation(cfg, p_top: float):
+    """Refuse a child ladder this domain's own radiation cannot run.  Returns ``cfg``.
 
     ``RunConfig`` carries no model-top pressure, so
     ``validate_run_config`` reaches
@@ -2316,7 +2595,17 @@ def _require_runnable_child_radiation(cfg, p_top: float) -> None:
     may now name its own deeper ladder can walk straight into it, and the run
     would die at the FIRST radiative call -- after the fetch, the SINT, the
     remap and the whole preparation had been paid for.  The parent archive
-    knows the model top, so the check runs here with it.
+    knows the model top, so the check runs with it.
+
+    ONE function, three doors, like the root-forcing rule beside it:
+    ``gpuwm downscale``'s plan review and the runner's admission both reach
+    it through :func:`require_runnable_child_radiation_from_archive`, which
+    reads the model top off the parent tape before anything is fetched or
+    interpolated, and the state builder below calls it again with the
+    interpolation's own receipt.  Until plan review asked, a ladder this
+    deep planned clean on ``--dry-run`` and the run died at the first
+    radiative call, after the fetch, the SINT, the remap and the whole
+    preparation had been paid for.
     """
 
     from gpuwm.physics_compat import (
@@ -2330,6 +2619,51 @@ def _require_runnable_child_radiation(cfg, p_top: float) -> None:
         raise OfflineChildContractError(
             f"child nz={cfg.nz} at the parent's p_top={float(p_top):g} Pa "
             f"exceeds a radiation adapter's layer ceiling: {exc}") from exc
+    return cfg
+
+
+def parent_archive_p_top(parent_frame):
+    """The archived parent's model-top pressure, or ``None``.
+
+    Read straight off the tape, from the same ``P_TOP`` variable the
+    interpolation's vertical coefficients are built from
+    (:func:`_vertical_coefficients`), so plan review and the state builder
+    are asking about one number.  ``None`` when the frame does not carry
+    it or carries more than one value: the later door still holds the rule
+    with the receipt's own figure, and a review that cannot read the model
+    top must not invent one.
+    """
+
+    if parent_frame is None:
+        return None
+    try:
+        with netcdf_bridge.open_dataset(parent_frame) as dataset:
+            variable = dataset.variables.get("P_TOP")
+            if variable is None:
+                return None
+            values = np.asarray(variable[:], dtype=np.float64).reshape(-1)
+    except OSError:
+        return None
+    if values.size != 1:
+        return None
+    return float(values[0])
+
+
+def require_runnable_child_radiation_from_archive(cfg, parent_frame):
+    """The radiation ladder rule, asked BEFORE anything is interpolated.
+
+    The plan-review and admission doors hold parent frames and no
+    interpolation receipt, so they read the model top off the tape and put
+    the same question to the same function.  A frame that does not carry
+    ``P_TOP`` leaves the rule to the state builder, which always has the
+    receipt.  Returns ``cfg``.
+    """
+
+    p_top = parent_archive_p_top(parent_frame)
+    if p_top is None:
+        return cfg
+    return require_runnable_child_radiation(cfg, p_top)
+
 
 def build_offline_child_domain_state(
         initial: InterpolatedInitialState, cfg, *, array_module=None):
@@ -2340,9 +2674,8 @@ def build_offline_child_domain_state(
     production APIs so callers can select the new child physics explicitly.
     """
 
-    if not cfg.specified or cfg.nested:
-        raise OfflineChildContractError(
-            "standalone offline child requires specified=True and nested=False")
+    # The rule, not a second wording of it: one function, every door.
+    require_offline_child_root_forcing(cfg)
     if initial.receipt.get("source_physics_binding") is None:
         raise OfflineChildContractError(
             "standalone offline child requires authoritative parent physics "
@@ -2372,7 +2705,7 @@ def build_offline_child_domain_state(
         raise OfflineChildContractError(
             f"child cfg mp_physics={cfg.mp_physics} != prepared target {target_mp}")
     _require_prepared_child_ladder(initial, cfg)
-    _require_runnable_child_radiation(cfg, float(initial.receipt["p_top"]))
+    require_runnable_child_radiation(cfg, float(initial.receipt["p_top"]))
     from gpuwm.core.diagnostics import update_diagnostics
     from gpuwm.core.state import DomainState
     coord, base = _base_from_interpolated_initial(initial, cfg)

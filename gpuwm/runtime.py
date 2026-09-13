@@ -242,30 +242,21 @@ class _SingleDomainDigestClock:
         "the digest carries the DomainClock initial value")
 
 
-def _frame_records(paths, *, progress_callback=None
+def _frame_records(paths, *, progress_callback=None, completed_records=()
                    ) -> list[dict[str, object]]:
-    """Every emitted frame with the SHA-256 of the bytes now on disk.
+    """Verify completed writer identities, hashing legacy files as needed.
 
-    This is the longest silence in a large run: a 250 m nest's frame set
-    is hundreds of GiB, and re-reading all of it after the last model
-    step used to publish nothing at all.  The supervisor's integration
-    watchdog reads that silence as a hang and kills the worker, so every
-    frame publishes one beat naming how far through the set it is.
+    The shared owner checks each fresh record's file revision before reuse.
+    Files without a current writer proof still receive a complete stable
+    hash, with progress before each file so fallback work stays observable.
     """
-    records = []
+    from gpuwm.output_identity import file_records
+
     total = len(paths)
-    for index, path in enumerate(paths, start=1):
+    def beginning(index, path):
         _finalizing_progress(
             progress_callback, f"hash-output-frames-{index}-of-{total}")
-        path = Path(path)
-        digest = hashlib.sha256()
-        with path.open("rb") as handle:
-            for block in iter(lambda: handle.read(1 << 20), b""):
-                digest.update(block)
-        records.append({"path": str(path.resolve()),
-                        "bytes": path.stat().st_size,
-                        "sha256": digest.hexdigest()})
-    return records
+    return file_records(paths, completed=completed_records, before_record=beginning)
 
 
 def _emit_front_door_capsule(outdir, *, emission_site: str, exp,
@@ -2015,16 +2006,7 @@ def build_real_relocation_runners(exp: ExperimentConfig,
         parent = node.parent
         if parent is None:
             continue
-        stash = float(parent.cfg.history_interval_s)
         cadence = float(follow.cadence_seconds)
-        multiple = cadence / stash
-        if abs(multiple - round(multiple)) > 1.0e-6 * max(1.0, abs(multiple)):
-            raise ValueError(
-                f"d{gid:02d} follow cadence_seconds={cadence:g} is not a "
-                f"whole multiple of parent d{int(parent.cfg.grid_id):02d} "
-                f"history_interval_s={stash:g}; the UH tracker can run at "
-                "its own cadence, but its reflectivity fallback is stashed "
-                "only on history boundaries and would otherwise be stale")
         slot = uh_diag.follow_window_slot(gid)
         provider = StormTracker(follow.tracker, uh_slot=slot)
         relocation = _replace(
@@ -2032,11 +2014,18 @@ def build_real_relocation_runners(exp: ExperimentConfig,
             max_move_parent_cells=follow.max_move_parent_cells,
             min_overlap_fraction=follow.min_overlap_fraction,
             cadence_seconds=cadence, follow=follow.tracker, moves=(),
-            # One [relocation.track] file has one writer.  The legacy/tree
-            # follower owns it; a per-domain follower dropping the table
-            # here writes no track rather than a second stream into the
-            # same CSV.  Per-follower track paths are a named follow-up.
-            track=None)
+            # Each follower owns its explicitly declared track file.
+            track=follow.track)
+        # The same refusal the configuration load already ran, on the
+        # same operands, through the same label helper: a follower that
+        # reaches this door has passed it once, and a caller that built an
+        # experiment in memory rather than loading a file meets it here.
+        from gpuwm.core.nest_lifecycle import FOLLOWER_TABLE, follower_label
+        from gpuwm.experiment import _refuse_unservable_follow_cadence
+        _refuse_unservable_follow_cadence(
+            relocation, exp.domains, follower_label(gid),
+            root_dt=exp.root.run.dt, table=FOLLOWER_TABLE,
+            follow_table=FOLLOWER_TABLE)
         view = _replace(exp, relocation=relocation)
         runner = build_real_relocation_runner(
             view, data, model, outdir, provider=provider,
@@ -2306,10 +2295,13 @@ def build_prepared_tree_relocation_runners(exp, *, statics_corridor, model,
             enabled=True, grid_id=gid, follow=follow.tracker,
             cadence_seconds=follow.cadence_seconds,
             max_move_parent_cells=follow.max_move_parent_cells,
-            min_overlap_fraction=follow.min_overlap_fraction)
+            min_overlap_fraction=follow.min_overlap_fraction,
+            track=follow.track)
+        from gpuwm.core.nest_lifecycle import FOLLOWER_TABLE, follower_label
         _refuse_unservable_follow_cadence(
-            relocation, exp.domains, f"d{gid:02d} follow",
-            root_dt=exp.root.run.dt)
+            relocation, exp.domains, follower_label(gid),
+            root_dt=exp.root.run.dt, table=FOLLOWER_TABLE,
+            follow_table=FOLLOWER_TABLE)
         # Keep ALL declarations in this view: an ancestor's independent
         # follower determines the descendant corridor's coordinate frame.
         view = replace(exp, relocation=relocation)
@@ -3583,16 +3575,25 @@ def restart_outer_steps(
         restart_interval_s, cfg.dt, "restart_interval_s")
 
 
+def history_output_due(outer_step: int, output_outer_steps: int, *,
+                       final_outer_step: int | None = None) -> bool:
+    """Keep the cadence and optionally publish the completed terminal state."""
+    return ((outer_step + 1) % output_outer_steps == 0
+            or outer_step + 1 == final_outer_step)
+
+
 def refl_10cm_due(outer_step: int, substep: int,
                   output_outer_steps: int,
-                  dynamics_substeps: int) -> bool:
+                  dynamics_substeps: int, *,
+                  final_outer_step: int | None = None) -> bool:
     """True only for the microphysics call immediately before an output.
 
     The final internal step owns the outer-step history frame.  Keeping this
     as a pure predicate makes the calendar wiring CPU-testable even if a
     future configuration restores more than one dynamics substep.
     """
-    return ((outer_step + 1) % output_outer_steps == 0
+    return (history_output_due(outer_step, output_outer_steps,
+                               final_outer_step=final_outer_step)
             and substep + 1 == dynamics_substeps)
 
 
@@ -3886,6 +3887,7 @@ def integrate_prepared_case(
         restart_path=None, run_seconds: float | None = None,
         history_interval_s: float | None = None,
         restart_interval_s: float | None = None, progress_callback=None,
+        write_final_output: bool = False,
         health_debug: bool = False,
         feedback=None, stepper=None) -> RealCaseRunSummary:
     """Integrate a prepared real case and write its configured outputs.
@@ -3910,6 +3912,10 @@ def integrate_prepared_case(
     ``run_seconds``/``history_interval_s``/``restart_interval_s`` are the
     experiment/domain timing authority.  Legacy callers omit them and use
     the compatibility copies on ``cfg``.
+
+    ``write_final_output`` publishes the actual terminal state when a
+    member leg ends between history times. The final microphysics call
+    produces its output diagnostics through the ordinary history path.
 
     ``stepper`` is what one dynamics substep is taken with.  ``None`` binds
     ``gpuwm.core.dycore.step`` ITSELF -- not a wrapper around it -- so a run
@@ -4159,6 +4165,7 @@ def integrate_prepared_case(
             last_checkpoint=last_checkpoint, phase="initialized-or-restored",
             step_wall_seconds=0.0)
     dynamics_substeps = int(round(cfg.dt / integration_cfg.dt))
+    final_output_step = outer_steps if write_final_output else None
     for outer_step in range(start_outer_step, outer_steps):
         outer_started = time.perf_counter()
         forcing_time = start_time + timedelta(seconds=outer_step * cfg.dt)
@@ -4166,7 +4173,7 @@ def integrate_prepared_case(
             refl_due = (cfg.mp_physics in REFL_10CM_MICROPHYSICS
                         and refl_10cm_due(
                             outer_step, substep, output_outer_steps,
-                            dynamics_substeps))
+                            dynamics_substeps, final_outer_step=final_output_step))
             phase = f"outer-{outer_step + 1}.substep-{substep + 1}"
             if health_debug and not phase_hook_supported and health_armed:
                 health.require_healthy(phase=phase + ".pre-step")
@@ -4280,7 +4287,8 @@ def integrate_prepared_case(
         if step_swdown_peak > swdown_peak:
             swdown_peak = step_swdown_peak
             swdown_peak_time = forcing_time
-        if (outer_step + 1) % output_outer_steps == 0:
+        if history_output_due(outer_step, output_outer_steps,
+                              final_outer_step=final_output_step):
             valid = start_time + timedelta(seconds=(outer_step + 1) * cfg.dt)
             outputs.append(write_case_output(
                 prepared, output_dir, valid, start_time=start_time,
@@ -4705,21 +4713,31 @@ def run_experiment(exp: ExperimentConfig, data: CaseDataConfig, outdir, *,
         # Resolve once on the cold device. Allocation during preparation
         # must not turn a domain that fits into a different plan afterwards.
         planning_machine = _streaming.cold_planning_machine(exp)
-        resident_estimate = None
-        if single_tiles.mode != "auto":
-            single_decision = (_streaming.decide(dc.run, single_tiles)
-                if planning_machine is None else _streaming.decide(
-                    dc.run, single_tiles, machine=planning_machine))
+        # THIS ARM'S ONE ADMISSION, TAKEN BEFORE THE FETCH, from the same
+        # function the plan review calls
+        # (:func:`gpuwm.core.streaming.cold_single_domain_decision`).  It
+        # used to be taken twice over and late: `auto` was priced from
+        # `estimate_experiment` with the schedule's retained interval
+        # count folded in and no device profile, AFTER the catalog was
+        # built and every forcing snapshot decoded, while the review
+        # priced the same domain from the shared admission estimate.
+        # MEASURED on the 12 km root of the moving-nest cyclone tree on an
+        # 8 GiB card, the two differ by up to 188,362,088 bytes, so there
+        # was a band of budgets in which `gpuwm check` admitted the domain
+        # resident and this route then refused it once the download was
+        # already spent.  The other mode took no estimate at all, which is
+        # a third answer to the same question.  Whether the question is
+        # asked at all is the admission function's own guard, not a
+        # second copy spelled here, and the estimate is handed to the
+        # decision so the route that uses it prices it once.
+        resident_estimate = _streaming.cold_single_domain_admission(
+            exp, machine=planning_machine, options=single_tiles)
+        single_decision = _streaming.cold_single_domain_decision(
+            exp, machine=planning_machine, cfg=dc.run, options=single_tiles,
+            estimate=resident_estimate)
         catalog = build_input_catalog(data)
         snapshots = forcing_snapshots(data, catalog)
         times = forcing_schedule(exp, data, snapshots)
-        if single_tiles.mode == "auto":
-            from gpuwm.core.preflight import estimate_experiment
-            resident_estimate = estimate_experiment(
-                exp, forcing_intervals=max(0, len(times) - 1))
-            single_decision = _streaming.decide(
-                dc.run, single_tiles, machine=planning_machine,
-                resident_estimate=resident_estimate)
         store_direct = single_decision.stream and single_decision.store == "host"
         adaptive_clock = None
         adaptive_fingerprint = None
@@ -4836,12 +4854,32 @@ def run_experiment(exp: ExperimentConfig, data: CaseDataConfig, outdir, *,
 
     from gpuwm.core import streaming as _streaming
     planning_machine = _streaming.cold_planning_machine(exp)
+    # THE RUN'S ONE ADMISSION, TAKEN BEFORE THE FETCH.  This route used to
+    # decide the tree's roads inside the build pass below, from the model's
+    # own memory LEDGER estimate against this machine -- a richer envelope
+    # (the catalog's retained forcing intervals, its real lateral
+    # boundaries) than the one the plan review prices from
+    # (:func:`gpuwm.core.preflight.admission_estimate`), and taken after
+    # build_experiment had already fetched, decoded and ingested the whole
+    # case.  MEASURED on the 12/3 km moving-nest cyclone tree those two
+    # inputs move the envelope by 60,193,971 and by up to 432,788,799
+    # bytes, so for any budget in between `gpuwm check` admitted the tree
+    # resident and this route then raised StreamingRefused after the
+    # download was already paid for.  One call, one estimate, one budget:
+    # the same function the prepared tree door and the review call, on the
+    # configuration alone, before a byte is fetched, and the decision is
+    # carried into the build pass rather than asked for a second time.
+    cold_decisions: dict = {}
+    cold_tree = _streaming.cold_tree_streaming_decision(
+        exp, _streaming.cold_tree_admission_nodes(exp),
+        machine=planning_machine, decisions=cold_decisions)
     model = build_experiment(exp, data)
     print(resolved_tree_config_report(exp, data, model._input_catalog))
     return _run_built_experiment(
         exp, data, outdir, model, restart=restart,
         progress_callback=progress_callback, health_debug=health_debug,
-        planning_machine=planning_machine)
+        planning_machine=planning_machine, tree_decision=cold_tree,
+        tree_decisions=cold_decisions)
 
 
 def _refine_single_streaming_plan(prepared, options, decision, machine,
@@ -4908,7 +4946,8 @@ def _model_from_prepared_single(exp, prepared, tick_clock, fingerprint):
 def _run_built_experiment(exp, data, outdir, model, *, restart=None,
                           progress_callback=None, health_debug=False,
                           prepared_steppers=None, prepared_decisions=None,
-                          planning_machine=None):
+                          planning_machine=None, tree_decision=None,
+                          tree_decisions=None):
     """The shared scheduled runtime, independent of initialization storage."""
     from gpuwm.core.model import execute_experiment
     from gpuwm.io.restart import (read_tree_lifecycle_header,
@@ -5058,13 +5097,23 @@ def _run_built_experiment(exp, data, outdir, model, *, restart=None,
         # anywhere saying the mode never engaged.
         from gpuwm.core import streaming as _streaming
 
-        streaming_decisions: dict = {}
+        # THE DOOR'S DECISION, CONSUMED -- never re-taken.  ``tree_decision``
+        # is the admission run_experiment took before the fetch, and the
+        # decisions mapping it filled is this run's receipt source, so the
+        # receipt names the road the user was shown.  ``None`` only on the
+        # arms that never reached that door (the adaptive single-domain
+        # hand-off below, which brings its own steppers), and then this
+        # pass decides for itself exactly as it always did.
+        streaming_decisions: dict = dict(tree_decisions or {})
         if prepared_steppers is None:
             steppers = _streaming.steppers_for_tree(
                 model, exp.tiles,
                 builders=_streaming.builders_for_tree(model, exp.tiles),
                 decisions=streaming_decisions, machine=planning_machine,
-                resident_estimate=getattr(model.memory_ledger, "estimate", None))
+                tree_decision=tree_decision,
+                resident_estimate=(
+                    None if tree_decision is not None else
+                    getattr(model.memory_ledger, "estimate", None)))
         else:
             steppers = dict(prepared_steppers)
             streaming_decisions.update(prepared_decisions or {})
@@ -5159,10 +5208,11 @@ def _run_built_experiment(exp, data, outdir, model, *, restart=None,
     feedback_path, feedback_sha, feedback_receipt = \
         _write_feedback_provenance_receipt(
             outdir, exp, resumed=restart is not None)
-    # Hashed ONCE, here, and carried on the summary: the supervisor's
-    # success capsule used to re-read the same frames a second time, so
-    # the whole output set was digested twice at the end of every run.
-    frame_records = _frame_records(paths, progress_callback=progress_callback)
+    # Fresh files were hashed during writer completion. Verify those
+    # revisions here and carry the records into the success capsule.
+    frame_records = _frame_records(
+        paths, progress_callback=progress_callback,
+        completed_records=getattr(writers, "completed_records", ()))
     _finalizing_progress(progress_callback, "run-capsule")
     # Spectral run receipts bind into the capsule; a completed apply run
     # with missing step receipts refuses a clean capsule here.

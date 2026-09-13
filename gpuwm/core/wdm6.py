@@ -69,7 +69,7 @@ def launch_wdm6(theta, qv, qc, qr, qi, qs, qg, nn, nc, nr,
                 rho, pii, pressure, dz, xland,
                 rainnc, rainncv, snownc, snowncv,
                 graupelnc, graupelncv, sr, dt: float, *,
-                effc, effi, effs, hail_opt: int = 0) -> None:
+                effc, effi, effs, hail_opt: int = 0, count_status=None) -> None:
     """Launch one WDM6 call over contiguous FP32 ``(nz,ny,nx)`` fields."""
     shape = theta.shape
     if len(shape) != 3:
@@ -78,6 +78,10 @@ def launch_wdm6(theta, qv, qc, qr, qi, qs, qg, nn, nc, nr,
     capacity = _kernel_capacity(nz)
     if not np.isfinite(dt) or dt <= 0.0:
         raise ValueError(f"dt must be finite and positive, got {dt}")
+    with np.errstate(over='ignore', under='ignore'):
+        device_dt = DTYPE(dt)
+    if not np.isfinite(device_dt) or device_dt <= 0:
+        raise ValueError(f"WDM6 dt must remain finite and positive in float32, got {dt}")
     if int(hail_opt) not in (0, 1):
         raise ValueError(f"WDM6 hail_opt must be 0 or 1, got {hail_opt}")
     volume = {
@@ -108,6 +112,11 @@ def launch_wdm6(theta, qv, qc, qr, qi, qs, qg, nn, nc, nr,
             raise ValueError(f"{name} must be C-contiguous")
     ncol = ny * nx
     blocks = (ncol + _COLUMN_TPB - 1) // _COLUMN_TPB
+    if count_status is None:
+        count_status = cp.empty((1,), dtype=cp.uint32)
+    if count_status.shape != (1,) or count_status.dtype != np.dtype('uint32'):
+        raise ValueError('WDM6 count status must be one uint32 word')
+    count_status.fill(cp.uint32(0))
     kernel = (get_kernel("wdm6", "wdm6_column")
               if capacity == _SHALLOW_KMAX else
               get_kernel_int_defines(
@@ -117,8 +126,16 @@ def launch_wdm6(theta, qv, qc, qr, qi, qs, qg, nn, nc, nr,
         (theta, qv, qc, qi, qr, qs, qg, nn, nc, nr,
          rho, pressure, pii, dz, xland,
          rainnc, rainncv, snownc, snowncv, graupelnc, graupelncv, sr,
-         effc, effi, effs, DTYPE(dt), np.int32(hail_opt),
-         np.int32(nz), np.int32(ny), np.int32(nx)))
+         effc, effi, effs, device_dt, np.int32(hail_opt),
+         np.int32(nz), np.int32(ny), np.int32(nx), count_status))
+    from gpuwm.core import health_ledger
+    def describe(flags):
+        if flags & 1:
+            raise FloatingPointError('WDM6 substep geometry requires finite positive density, layer thickness and interval; the affected column was not updated')
+        raise FloatingPointError('WDM6 substep count is not representable by its signed 32-bit counter for the supplied density/layer thickness and interval; correct those inputs or use a shorter interval. The affected column was not updated')
+    flags = health_ledger.read_status(count_status, site='wdm6-counts', describe=describe)
+    if flags:
+        describe(flags)
 
 
 def column_land_mask(state: DomainState) -> cp.ndarray:
@@ -186,7 +203,8 @@ def apply(state: DomainState, cfg: RunConfig, dt: float, *,
         rho, pii, state.p, dz, cp.ascontiguousarray(xland),
         rainnc, rainncv, snownc, snowncv,
         graupelnc, graupelncv, sr, dt, effc=state.effc,
-        effi=state.effi, effs=state.effs, hail_opt=cfg.wdm6_hail_opt)
+        effi=state.effi, effs=state.effs, hail_opt=cfg.wdm6_hail_opt,
+        count_status=state.scratch((1,), 'wdm6_count_status', dtype=cp.uint32))
     if refl_10cm_due:
         from gpuwm.core.refl import compute_and_stash_refl_10cm
         refl_t = state.scratch((nz, ny, nx), "refl_t")

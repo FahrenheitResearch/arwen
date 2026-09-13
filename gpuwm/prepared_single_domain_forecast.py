@@ -93,6 +93,7 @@ from gpuwm.progress_log import (  # noqa: E402
 from gpuwm.receipt_paths import receipt_basename  # noqa: E402
 from gpuwm.supervisor import atomic_write_json  # noqa: E402
 from gpuwm.physics_compat import (  # noqa: E402
+    COMPOSITION_SUITE_PROFILE_IDS,
     KESSLER_PROFILE_ID,
     MORRISON_PROFILE_ID,
     MULTI_DOMAIN_SELECTION_SCHEMA,
@@ -233,8 +234,43 @@ HRRR_BUNDLE_PATHS = MappingProxyType({
 #: ``mp_physics in (1, 6, 8, 10, 18)`` literal anywhere under ``gpuwm/``,
 #: so a fifth copy of this gate cannot be added silently.
 REFL_10CM_MICROPHYSICS = (1, 6, 8, 9, 10, 16, 18, 28, 50)
-_SOURCE_PHYSICS_PROFILES_BY_SOURCE = {
-    "mapped": (),  # No source-specific verification claim; every suite remains selectable.
+#: What a PACKAGED source reports when nothing has been measured on it:
+#: the suites the generic mapped route carries for every packaged profile,
+#: with the row's own limitation saying no source-specific verification is
+#: claimed.  This is the route's contract, not a claim about the source.
+#:
+#: It used to be the empty tuple, and an empty tuple is NOT the
+#: conservative reading of "nothing measured here".  tools/build_registry.py
+#: completes a served source's ``source_template_ids`` from this evidence
+#: row, and that key is the REACHABILITY declaration a front end reads;
+#: ``gpuwm.physics_registry.expert_template_ids_for_source`` then withholds
+#: the route-wide expert list from any source whose normal list is empty.
+#: So the empty row published "this source reaches no named suite at all"
+#: about packaged sources this runner supports: all six composition
+#: suites and all three Noah-MP expert suites disappeared, and
+#: a plan naming one was warned ``template-route-evidence`` instead of
+#: being handed the acknowledgement advisory the option exists to raise.
+#: The plan still launched, and that is the whole defect: the warning
+#: says the template is off-route for this source, which was false.
+#: A source with no measurement of its own is PRICED from the most
+#: conservative basis on record, which is the one every one of its
+#: siblings on this route already reports.
+_GENERIC_MAPPED_PROFILES = (
+    PHYSICS_PROFILE, THOMPSON_PHYSICS_PROFILE,
+    MORRISON_PHYSICS_PROFILE, NSSL2_PHYSICS_PROFILE,
+    NSSL2_LEGACY_RRTMG_PHYSICS_PROFILE)
+_VERIFIED_SOURCE_PHYSICS_PROFILES = {
+    # A supported source must report a row of its own: it may not disappear
+    # from the capability inventory, inherit another source's evidence, or
+    # be emptied for want of a measurement.  A packaged profile with no row
+    # written below is a packaged profile on the generic mapped route and
+    # reports what that route reports; a new one in
+    # gpuwm.prepared_source_schemas is therefore table work here too, with
+    # no second table to remember.
+    **{source: (_GENERIC_MAPPED_PROFILES
+                if source in _MAPPED_PACKAGED_PROFILE else ())
+       for source in sorted(SUPPORTED_SOURCES)},
+    "mapped": (),  # No packaged profile stands behind it: the composition is the caller's.
     # REPORTED METADATA, NOT A GATE (owner ruling 2026-07-31): these
     # per-source lists name the shipped profiles whose verification
     # evidence this runner can vouch for on each source.  They feed the
@@ -358,47 +394,61 @@ _SOURCE_PHYSICS_PROFILES_BY_SOURCE = {
         NSSL2_LEGACY_RRTMG_PHYSICS_PROFILE),
 }
 
-#: The three Noah-MP suites, which every source above offers and none of
-#: them lists by hand.  They were declared for ``gfs`` alone while this
-#: runner supports eighteen sources, and a route that declares any expert
-#: list is EXHAUSTIVE -- so on an ERA5 single domain the three were
-#: undeclared: nothing offered them, and a plan that named one was told
-#: the template was off-route instead of being handed the acknowledgement
-#: advisory the option exists to raise.  What gates them is the route's
-#: expert acknowledgement and the option's own evidence warnings, which
-#: are source-independent statements: Noah-MP is implemented-unverified
-#: everywhere, not unverified on era5 and verified on gfs.  Appended per
-#: source rather than written into each tuple so the offer cannot drift
-#: source by source again, and appended in the registry's own order so
-#: the drift check in tests/test_physics_registry.py compares equal.
-_NOAHMP_EXPERT_PROFILES = (
-    NOAHMP_PHYSICS_PROFILE,
-    MYNN_NOAHMP_PHYSICS_PROFILE,
-    MYNN_NOAHMP_RTE_RRTMGP_PHYSICS_PROFILE,
+#: The three EXPERT suites of the table above.  The registry declares them
+#: ROUTE-WIDE (``expert_template_ids`` under
+#: ``gpuwm.physics_registry.EXPERT_TEMPLATES_ANY_SOURCE``), so every source
+#: this runner supports offers them and none of the rows above lists one by
+#: hand.  They were written for ``gfs`` alone while this runner supports
+#: eighteen sources, and a route that declares any expert list is
+#: EXHAUSTIVE -- so on an ERA5 single domain the three were undeclared:
+#: nothing offered them, and a plan that named one was told the template was
+#: off-route instead of being handed the acknowledgement advisory the option
+#: exists to raise.  What gates them is the route's expert acknowledgement
+#: and Noah-MP's own evidence warnings, which are source-independent
+#: statements: the scheme is implemented-unverified everywhere, not
+#: unverified on one source and verified on another.  Appended per source
+#: rather than written into each tuple so the offer cannot drift source by
+#: source again.
+_EXPERT_PROFILE_IDS = (
+    NOAHMP_PROFILE_ID,
+    MYNN_NOAHMP_PROFILE_ID,
+    MYNN_NOAHMP_RTE_RRTMGP_PROFILE_ID,
 )
+#: The per-source lists this runner reports: the verification rows above,
+#: then the six COMPOSITION suites (audit R-067), then the expert rows.
+#: The six are appended to EVERY source that names any suite at all, in one
+#: order, because none of them reads anything source-specific: each is an
+#: implemented option's only named front door, and leaving them on the
+#: domain-tree route alone left SASE, the three large-eddy closures, WDM6
+#: with Grell-Freitas and mp9 with New Tiedtke with no named suite on this
+#: route for any source.  The expert rows stay LAST because the registry
+#: keeps them in a separate ``expert_template_ids`` list that a reader
+#: concatenates after the normal one, which is what makes the two orders
+#: comparable element for element -- the drift check in
+#: tests/test_physics_registry.py compares them that way.
+#:
+#: `mapped` keeps its empty tuple: it names no suite at all because the
+#: composition is the caller's, and a source with no first suite gets
+#: neither a composition suite nor an expert one here (which is also how
+#: ``expert_template_ids_for_source`` resolves a source whose declared
+#: template list is empty).
 _SOURCE_PHYSICS_PROFILES = MappingProxyType({
-    source: (
-        profiles if source == "mapped"
-        # "mapped" claims nothing on purpose: it names no model, so it
-        # reports no per-source list at all and its expert offer would
-        # have no source to attach to.
-        else profiles + tuple(
-            profile for profile in _NOAHMP_EXPERT_PROFILES
-            if profile not in profiles))
-    for source, profiles in _SOURCE_PHYSICS_PROFILES_BY_SOURCE.items()
+    source_id: (
+        tuple(p for p in profiles if p not in _EXPERT_PROFILE_IDS)
+        + COMPOSITION_SUITE_PROFILE_IDS
+        + _EXPERT_PROFILE_IDS
+        if profiles else profiles)
+    for source_id, profiles in _VERIFIED_SOURCE_PHYSICS_PROFILES.items()
 })
-_TWENTYCRV3_WSM6_RUNTIME_SWITCHES = MappingProxyType({
-    "moist": True, "moist_cq": False, "mp_physics": 6,
-    "top_lid": False, "epssm": 0.5, "morr_rimed_ice": 1,
-    "wsm6_hail_opt": 0, "ra_physics": 4,
-    "ra_lw_physics": -1, "ra_sw_physics": -1, "radt": 12.0,
-    "wrf_rrtmg_compatibility": "none",
-    "sf_sfclay_physics": 91, "sf_surface_physics": 2,
-    "bl_pbl_physics": 1, "cu_physics": 1, "cudt_minutes": 5.0,
-    "num_soil_layers": 4, "terrain_opt": 1,
-    "km_opt": 4, "diff_6th_opt": 2, "diff_6th_factor": 0.12,
-    "diff_6th_slopeopt": 1,
-})
+# RETIRED, with a measurement.  This template carried a hand-typed
+# twenty-three-value runtime row here because the shared single-domain
+# menu was one other route's declared list and this template is not on
+# it, so ``single_domain_runtime_switches`` refused it by name.  The menu
+# is derived from every fixed-template route's own declaration now, this
+# template is declared on THIS route, and the derivation reproduces the
+# hand-typed row exactly -- all twenty-three keys, all twenty-three
+# values, no key present in one and absent from the other.  A second copy
+# of a table the registry already states can only drift from it.
 #: The switch names an experiment-config-selected (custom) suite's
 #: receipt records: the union of what the shipped profile rows pin,
 #: in one canonical order, so two receipts for one config are
@@ -982,6 +1032,25 @@ def runner_capabilities() -> dict[str, object]:
             ],
         },
     }
+    sources["hrrr"] = {
+        "readiness": "IMPLEMENTED_RUNTIME_PREFLIGHT_REQUIRED",
+        "prepared_layouts": [HRRR_DIRECT_LAYOUT],
+        "single_d01_gpu_execution": True,
+        "physics_profile_ids": list(_SOURCE_PHYSICS_PROFILES["hrrr"]),
+        "physics_profile_ids_semantics": source_profile_ids_semantics,
+    }
+    for source in sorted(SUPPORTED_SOURCES - sources.keys()):
+        if source not in _MAPPED_SOURCES:
+            raise RuntimeError(f"supported source {source!r} lacks a capability contract")
+        sources[source] = {
+            "readiness": "IMPLEMENTED_RUNTIME_PREFLIGHT_REQUIRED",
+            "prepared_layouts": ["mapped-direct-d01-v1", "mapped-hierarchy-d01-v1"],
+            "single_d01_gpu_execution": True,
+            "physics_profile_ids": list(_SOURCE_PHYSICS_PROFILES.get(source, ())),
+            "physics_profile_ids_semantics": source_profile_ids_semantics,
+            "authority_binding": "packaged mapping/composition/input receipts and sealed cache identity",
+            "limitations": ["Runtime preflight remains required; no source-specific WRF verification is claimed."],
+        }
     physics_profiles = {
         PHYSICS_PROFILE: {
             "selector": 6,
@@ -1440,8 +1509,6 @@ def _profile_runtime_switches(source: str, profile: str) -> dict[str, object]:
 
     if source not in SUPPORTED_SOURCES:
         raise ValueError(f"unsupported prepared forecast source {source!r}")
-    if profile == TWENTYCRV3_WSM6_PHYSICS_PROFILE:
-        return dict(_TWENTYCRV3_WSM6_RUNTIME_SWITCHES)
     try:
         return single_domain_runtime_switches(profile)
     except ValueError:
@@ -1872,12 +1939,22 @@ def _profile_acknowledgements(switches, base_exp) -> tuple[str, ...]:
       contains local night at its reference point.
     """
 
+    from gpuwm.config import radiation_scheme_ids_from_settings
     from gpuwm.physics_compat import (
         ASYMMETRIC_RADIATION_NOCTURNAL_ACK, CONSTANT_DOWNWARD_LONGWAVE_ACK,
         downward_longwave_disposition, first_local_night_time)
 
-    lw = int(switches.get("ra_lw_physics", switches.get("ra_physics", 0)))
-    sw = int(switches.get("ra_sw_physics", switches.get("ra_physics", 0)))
+    # RETIRED, with the reader it duplicated: this fell back to the
+    # combined ``ra_physics`` only when a split key was ABSENT.  The
+    # aggregate radiation option states both split keys as -1 and the
+    # resolved pair in the combined key, and this route DECLARES the
+    # suite on that option, so the read returned (-1, -1) and
+    # downward_longwave_disposition then classified a full RTE+RRTMGP
+    # suite as "nothing computes downward longwave" and demanded the
+    # constant-GLW acknowledgement for it.  Measured, on the settings the
+    # route resolves: (-1, -1) -> ('consumed', 'Noah LSM'); (4, 4) ->
+    # ('scheme', None).  The engine's own rule answers it now.
+    lw, sw = radiation_scheme_ids_from_settings(switches)
     surface = int(switches.get("sf_surface_physics", 0))
     required: list[str] = []
     if sw > 0 and lw == 0 and base_exp.projection is not None:
@@ -7022,20 +7099,29 @@ def run_prepared_forecast(
     # route exactly as it was.  The decision is taken here rather than after
     # the restore because the whole point of the store road is that the
     # restore does not happen.
-    tiles_options = getattr(exp, "tiles", None)
+    # THE TABLE THAT GOVERNS THIS DOMAIN, resolved the way every other
+    # surface resolves it.  This door read `exp.tiles` raw, so a domain
+    # carrying its own `tiles = {...}` table was judged on the tree-wide
+    # table here and on its own table at the review and at `gpuwm run` --
+    # one configuration, two answers.
+    tiles_options = streaming.options_for_domain(
+        exp.root, getattr(exp, "tiles", None))
     planning_machine = streaming.cold_planning_machine(exp)
-    resident_estimate = None
-    if tiles_options is not None and tiles_options.enabled:
-        from gpuwm.core.preflight import estimate_experiment
-        boundary_meta = inputs.cache_reader.header.get("metadata", {}).get("lbc")
-        resident_estimate = estimate_experiment(
-            exp, forcing_intervals=(None if boundary_meta is None
-                                    else len(boundary_meta["intervals"])),
-            profile=getattr(planning_machine, "device_profile", None))
-    stream_decision = (streaming.decide(
-        cfg, tiles_options, machine=planning_machine, resident_estimate=resident_estimate)
-                       if tiles_options is not None and tiles_options.enabled
-                       else None)
+    # THE SHARED ADMISSION, not a second one.  This door used to price
+    # from the restored cache's own retained lateral-boundary interval
+    # count, which is the run's LEDGER question rather than the
+    # admission question: the plan review that admitted this forecast
+    # priced it from the configuration alone, so for any budget between
+    # the two the review admitted a domain this door then refused with
+    # the cache already restored.  Same function, same estimate, same
+    # budget as gpuwm check and gpuwm run, and the same one guard over
+    # whether an estimate is consulted at all.
+    resident_estimate = streaming.cold_single_domain_admission(
+        exp, machine=planning_machine, options=tiles_options)
+    stream_decision = (streaming.cold_single_domain_decision(
+        exp, machine=planning_machine, cfg=cfg, options=tiles_options,
+        estimate=resident_estimate)
+                       if tiles_options.enabled else None)
     init_road, init_receipt = _choose_stream_init_road(
         stream_init, decision=stream_decision, reader=inputs.cache_reader,
         cfg=cfg)
@@ -7654,13 +7740,15 @@ def run_prepared_forecast(
     if moved is not None:
         raise RuntimeError(
             f"forecast runtime implementation changed during run: {moved}")
+    from gpuwm.output_identity import file_records
+
     output_inventory = []
-    for path, (offset_seconds, valid_time, _name) in zip(
-            wrfout_paths, output_schedule, strict=True):
+    records = file_records(
+        wrfout_paths, completed=getattr(writers, "completed_records", ()))
+    for record, (offset_seconds, valid_time, _name) in zip(
+            records, output_schedule, strict=True):
         output_inventory.append({
-            "path": str(path.resolve()),
-            "bytes": path.stat().st_size,
-            "sha256": _sha256(path),
+            **record,
             "model_elapsed_seconds": offset_seconds,
             "valid_time": valid_time.isoformat(),
             "atomic_writer_readback_verified": True,

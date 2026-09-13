@@ -124,7 +124,8 @@ def _resolved_authority(manifest, root, started):
                 raise ValueError("Native producer configuration event identity or sequence is invalid")
             previous = event["sequence"]
             if event.get("event") == "resolved_plan":
-                if type(event.get("emitted_unix_ms")) is not int or event["emitted_unix_ms"] < started:
+                if (type(event.get("emitted_unix_ms")) is not int
+                        or event["emitted_unix_ms"] + CLOCK_CORRECTION_MS < started):
                     raise ValueError("Native producer configuration receipt predates this run")
                 return event, _authority(path, line, sequence=event["sequence"])
     raise ValueError("Native producer configuration receipt was not published within its bounded event prefix")
@@ -166,8 +167,10 @@ def _hosted_producer(record, state, outer):
             or producer.get("plan_source") != "gpuwm go " + str(config_path)
             or not HEX.fullmatch(str(producer.get("plan_sha256", "")))
             or not isinstance(producer.get("run_id"), str) or not producer["run_id"]
-            or producer["run_id"] == parent["run_id"] or started < parent_started
-            or (state.get("ended_at") and started > _timestamp(state["ended_at"]))):
+            or producer["run_id"] == parent["run_id"]
+            or started + CLOCK_CORRECTION_MS < parent_started
+            or (state.get("ended_at")
+                and started > _timestamp(state["ended_at"]) + CLOCK_CORRECTION_MS)):
         raise ValueError("Native chain producer does not match this job's saved configuration, process and time")
     parent_resolved = _resolved_authority(parent, root, parent_started)
     producer_resolved = _resolved_authority(producer, producer_root, started)
@@ -201,6 +204,18 @@ def _hosted_producer(record, state, outer):
 # so this budget is observed rather than asserted.
 COMPLETION_SECONDS = 15.0
 COMPLETION_POLL_SECONDS = 2.0
+
+# A job's record, its wrapper, its runner's manifest, its event stream and its
+# result are stamped from CLOCK_REALTIME by different processes at different
+# moments. A desktop steps its wall clock back by a second or two whenever it
+# resynchronises, and every interval between two of those stamps is long enough
+# to be straddled by one, so an ordering read inside that window is not evidence
+# of anything and may not refuse a live job. Every wall-clock ordering below
+# therefore carries this window, and none of them carries it alone: outside it
+# each still refuses, and what binds these records to one job is the per-job
+# token, the process identity and the recorded digests, which no clock moves.
+# The basis is the widest routine correction, not the smallest one observed.
+CLOCK_CORRECTION_MS = 5000
 
 
 class ProducerCompletionPending(ValueError):
@@ -436,7 +451,7 @@ def _completion_evidence(record, state, bound, directory, *, commits=None):
             or runner["identity"]["uid"] != os.getuid()
             or identity["uid"] != os.getuid() or identity["pid"] == bound[2]["pid"]
             or runner["identity"]["boot_id"] != identity["boot_id"]
-            or _timestamp(owner["started_at"]) < _timestamp(record["created_at"])):
+            or _timestamp(owner["started_at"]) + CLOCK_CORRECTION_MS < _timestamp(record["created_at"])):
         raise ValueError("Producer completion runner/wrapper ownership disagrees with this job")
 
     def ownership():
@@ -494,7 +509,8 @@ def _completion_evidence(record, state, bound, directory, *, commits=None):
             raise ValueError("Producer completion chain pointer changed")
     latest = started
     for root, path, manifest, payload, started in authorities:
-        if metadata(path, root, 48 * 1024) != payload or started < _timestamp(owner["started_at"]):
+        if (metadata(path, root, 48 * 1024) != payload
+                or started + CLOCK_CORRECTION_MS < _timestamp(owner["started_at"])):
             raise ValueError("Producer completion manifest identity changed")
         events, stamp = track(manifest["events_path"], root)
         if stamp[2] > MAX_EVENTS:
@@ -509,7 +525,8 @@ def _completion_evidence(record, state, bound, directory, *, commits=None):
                 event = json.loads(line)
                 if (not isinstance(event, dict) or event.get("schema_version") != "gpuwm.run-plan.event.v1"
                         or type(event.get("sequence")) is not int or event["sequence"] <= previous
-                        or type(event.get("emitted_unix_ms")) is not int or event["emitted_unix_ms"] < started
+                        or type(event.get("emitted_unix_ms")) is not int
+                        or event["emitted_unix_ms"] + CLOCK_CORRECTION_MS < started
                         or last is not None and last.get("event") in {"completed", "failed"}):
                     raise ValueError("Producer completion event identity changed or is invalid")
                 previous, last = event["sequence"], event
@@ -539,7 +556,7 @@ def _completion_evidence(record, state, bound, directory, *, commits=None):
     result = ownership()
     if initial_result is not None and result != initial_result:
         raise ValueError("Producer completion terminal result changed")
-    if result is not None and _timestamp(result["ended_at"]) < latest:
+    if result is not None and _timestamp(result["ended_at"]) + CLOCK_CORRECTION_MS < latest:
         raise ValueError("Producer completion artifacts postdate the wrapper result")
     for path, root, stamp in tracked:
         if _inside(str(path), root) != path or _stamp(path) != stamp:
@@ -566,7 +583,7 @@ def bound_manifest(record, state, *, job_directory=None):
             or manifest.get("run_dir") != str(root) or manifest.get("outputs_dir") != str(root)
             or manifest.get("plan_source") != record["snapshot_plan"]
             or manifest.get("plan_sha256") != record.get("plan_sha256")
-            or started < _timestamp(record["created_at"])
+            or started + CLOCK_CORRECTION_MS < _timestamp(record["created_at"])
             or type(pid) is not int or pid <= 0
             or not isinstance(manifest.get("run_id"), str) or not manifest["run_id"]):
         raise ValueError("Remote run manifest does not match this job's saved plan, process and output identity")
@@ -575,7 +592,7 @@ def bound_manifest(record, state, *, job_directory=None):
         raise ValueError("Cannot prove the run manifest process belongs to this active remote job")
     if state["state"] in {"ownership_mismatch", "lost"}:
         raise ValueError("Resolve this remote job's process ownership before retrieving its frames")
-    if state.get("ended_at") and started > _timestamp(state["ended_at"]):
+    if state.get("ended_at") and started > _timestamp(state["ended_at"]) + CLOCK_CORRECTION_MS:
         raise ValueError("Remote manifest was published after this job ended")
     bound = _hosted_producer(record, state, (root, manifest_path, manifest, manifest_bytes, started))
     if missing_token:

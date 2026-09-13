@@ -460,7 +460,10 @@ def validate_dataset_dir(root: Path, dataset: str, *,
     The bar is doctor's own -- the directory exists and carries its WPS
     ``index`` file -- plus the index must actually parse
     (:func:`gpuwm.static.geog.parse_index`), so a zero-byte or truncated
-    index cannot pass.
+    index cannot pass, and it must declare a projection the reader can
+    resolve (:func:`gpuwm.static.geog.unsupported_projection_detail`),
+    so a tree of projected tiles is named here rather than at dataset
+    construction inside a run.
 
     And, when the local manifest recorded what was installed, the tile
     corpus must still match that receipt.  Index-only validation was the
@@ -494,7 +497,8 @@ def validate_dataset_dir(root: Path, dataset: str, *,
         if not index.is_file():
             return False, f"{index.parent} lacks its WPS `index` file"
         try:
-            from gpuwm.static.geog import parse_index
+            from gpuwm.static.geog import (parse_index,
+                                           unsupported_projection_detail)
             parsed = parse_index(index)
             # parse_index defaults absent keys to None; a truncated or
             # foreign file "parses" vacuously, so require the fields no
@@ -506,6 +510,16 @@ def validate_dataset_dir(root: Path, dataset: str, *,
                 return False, (f"{index} lacks required WPS index key(s): "
                                + ", ".join(absent))
             parsed.dtype  # noqa: B018 -- raises on an undecodable wordsize
+            # A tree whose index declares a projection the reader cannot
+            # resolve parses perfectly and is unreadable.  Name it here,
+            # at the inventory every fetch door already consults, so it
+            # is named before anything downloads or builds rather than
+            # at dataset construction inside a run.  Same predicate the
+            # reader raises on, so the two doors cannot disagree.
+            projection_detail = unsupported_projection_detail(
+                parsed.projection)
+            if projection_detail is not None:
+                return False, f"{index}: {projection_detail}"
         except Exception as error:  # any parse failure is the finding
             return False, f"{index} does not parse as a WPS index: {error}"
     if not check_receipt:

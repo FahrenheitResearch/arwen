@@ -1,8 +1,9 @@
 # Choosing the background the radar-DA nowcast starts from
 
-EXPERIMENTAL. Nothing here is on a default route, and GFS remains the
-default background: an existing invocation that names no source gets
-exactly the case and the answer it got before this document existed.
+This document records the original background comparison and the separate
+radar-daemon defaults. Current regional local assimilation uses the live
+preparation catalog and selection contract in [background-contract.md](background-contract.md).
+The existing default remains GFS when that regional request names no source.
 
 ## What the choice is
 
@@ -14,9 +15,10 @@ argument: the driver's front door
 (`gpuwm.prepared_single_domain_forecast.preflight_prepared_forecast`)
 knew three sources and HRRR was not one of them.
 
-It is now four. `--source hrrr` reads the bundle the certified native
-HRRR preparation publishes, through the same front door, with the same
-hash-bound verification re-derived in every process that touches it.
+The original extension added `--source hrrr` to those three sources. It reads
+the native preparation bundle through the same front door, with its input
+verification repeated in every process that consumes it. The current catalog
+also carries the other preparation routes described in the shared contract.
 
 Two things differ in the first guess, and both matter to radar DA:
 

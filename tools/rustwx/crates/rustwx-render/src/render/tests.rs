@@ -36,6 +36,7 @@ fn sample_projected_opts() -> RenderOpts {
         cmap: sample_cmap(),
         background: Rgba::WHITE,
         colorbar: false,
+        colorbar_units: None,
         title: Some("Projected".into()),
         subtitle_left: None,
         subtitle_center: None,
@@ -96,6 +97,59 @@ fn vertical_colorbar_follows_domain_frame_horizontally() {
     assert!(x < layout.cbar_x);
     assert_eq!(y, layout.cbar_y);
     assert_eq!(w, layout.cbar_w);
+}
+
+#[test]
+fn colorbar_units_preserve_map_ticks_and_complete_glyphs() {
+    for style in [StaticPlotStyle::OperationalBudget30s, StaticPlotStyle::CleanAtlas] {
+    for has_title in [false, true] {
+    for has_subtitle in [false, true] {
+    for (width, height) in [(600, 450), (300, 240), (1400, 1000)] {
+    for units in ["degF", "dBZ", "kt", "kg m-2 s-1", "m2 s-2", "kg kg-1"] {
+        let mut opts = sample_projected_opts();
+        opts.width = width;
+        opts.height = height;
+        opts.title = has_title.then(|| "Field".into());
+        opts.subtitle_right = has_subtitle.then(|| {
+            if width < 600 { "18:00Z" } else { "2026-09-12 18:00:00Z" }.into()
+        });
+        opts.colorbar = true;
+        opts.presentation = RenderPresentation::for_mode_with_style(
+            ProductVisualMode::FilledMeteorology, style);
+        let (bare, timing) = render_to_image_profile(&[0.5, 1.0, 1.5, 2.0], 2, 2, &opts);
+        opts.colorbar_units = Some(units.into());
+        let (labelled, _) = render_to_image_profile(&[0.5, 1.0, 1.5, 2.0], 2, 2, &opts);
+        let canvas = opts.presentation.canvas_background.to_image_rgba();
+        let mut changed = 0;
+        for y in 0..bare.height() {
+            for x in 0..bare.width() {
+                if bare.get_pixel(x, y) != labelled.get_pixel(x, y) {
+                    changed += 1;
+                    assert!(x < timing.map_x || x >= timing.map_x + timing.map_w
+                        || y < timing.map_y || y >= timing.map_y + timing.map_h,
+                        "units changed the map: {style:?} {width}x{height} {has_title} {units}");
+                    assert_eq!(bare.get_pixel(x, y), &canvas,
+                        "units overwrote legend ink: {style:?} {width}x{height} {has_title} {units}");
+                }
+            }
+        }
+        // Compare with the complete glyphs drawn by the existing font owner
+        // on an unconstrained canvas. Matching the coverage count also catches
+        // a label clipped at an image edge, even if it missed all old ink.
+        let layout = compute_effective_layout(width, height, true, has_title || has_subtitle,
+            opts.presentation, opts.chrome_scale, false);
+        let mut reference = RgbaImage::from_pixel(400, 100, canvas);
+        text::draw_text_with_factor(&mut reference, units, 32, 32,
+            opts.presentation.colorbar.label_color, layout.text_scale, layout.label_factor);
+        let expected = reference.pixels().filter(|p| *p != &canvas).count();
+        assert!(expected > 0);
+        assert_eq!(changed, expected,
+            "units lost glyph pixels: {style:?} {width}x{height} {has_title} {units}");
+    }
+    }
+    }
+    }
+    }
 }
 
 fn sample_place_label() -> ProjectedPlaceLabelOverlay {

@@ -18,7 +18,7 @@ import time
 
 from gpuwm import explain
 from gpuwm.physics_compat import (
-    SINGLE_DOMAIN_PHYSICS_PROFILES,
+    route_physics_profiles,
     KESSLER_PROFILE_ID,
     MORRISON_PROFILE_ID,
     MYNN_NOAHMP_PROFILE_ID,
@@ -329,9 +329,15 @@ def _bridge_manifest_extension(*, predecessor: Path, suffix: Path,
 from gpuwm.ingest.microphysics_cold_start import cold_start_contract
 from gpuwm.physics_compat import single_domain_runtime_switches
 
+#: The cold-start contract for every profile the NATIVE route offers.
+#: Keyed off that route's own declaration rather than the shared
+#: single-domain menu: this preparation serves one route, and a suite the
+#: other fixed-template route offers has no native preparation here to
+#: contract for.
 _HRRR_COLD_START_CONTRACT = {
     profile: cold_start_contract(single_domain_runtime_switches(profile))
-    for profile in SINGLE_DOMAIN_PHYSICS_PROFILES
+    for profile in route_physics_profiles(
+        "tools.hrrr_single_domain_benchmark")
 }
 
 

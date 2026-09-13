@@ -472,8 +472,16 @@ def test_the_download_is_cached_across_runs_not_stamped(tmp_path):
     case = tmp_path / "out"
     first = go_cli.plan_from_config(config, outdir=case, claim=True)
     second = go_cli.plan_from_config(config, outdir=case, claim=True)
-    assert first["data"] == second["data"] == case / "data"
+    assert first["data"] == second["data"]
+    assert first["data"].parent == case / "downloads"
+    assert not first["data"].is_relative_to(first["root"])
+    assert not second["data"].is_relative_to(second["root"])
     assert first["root"] != second["root"]
+    # Another request belongs in another cache, even within the same case.
+    config.write_text(config.read_text().replace('2026-07-29T18', '2026-07-29T12'))
+    changed = go_cli.plan_from_config(config, outdir=case, claim=True)
+    assert changed["data"] != first["data"]
+    assert changed["data"].parent == first["data"].parent
 
 
 def test_two_go_runs_never_share_a_tree_even_in_one_second(tmp_path,
@@ -527,6 +535,7 @@ def test_the_go_stamp_carries_the_configs_own_cycle(tmp_path):
 
 
 def test_go_run_stamp_off_is_the_pre_2_5_0_tree(tmp_path):
+    """The artifact tree is unstamped; input request isolation still applies."""
     from gpuwm import go_cli
 
     config = _config(tmp_path)
@@ -535,7 +544,9 @@ def test_go_run_stamp_off_is_the_pre_2_5_0_tree(tmp_path):
     assert plan["root"] == case
     assert plan["authority"] == case / "authority"
     assert plan["render"] == case / "png"
-    assert plan["data"] == case / "data"
+    assert plan["data"].parent == case / "downloads"
+    stamped = go_cli.plan_from_config(config, outdir=case, run_stamp=True)
+    assert plan["data"] == stamped["data"]
 
 
 def test_go_refuses_to_run_a_second_time_into_one_run_folder(tmp_path,

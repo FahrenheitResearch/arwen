@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import contextvars
 import sys
 
 #: Separates a message's ACTION half from its WHY half inside one string.
@@ -252,7 +253,8 @@ def explain_scope(enabled: bool = False):
     _EXPLAIN_ACTIVE = bool(enabled)
     _INVOCATION = None
     try:
-        yield
+        with warning_scope():
+            yield
     finally:
         _EXPLAIN_ACTIVE = previous
         _INVOCATION = previous_invocation
@@ -293,6 +295,32 @@ def remove_warning_observer(observer) -> None:
         _WARNING_OBSERVERS.remove(observer)
     except ValueError:
         pass
+
+
+_WARNING_KEYS = contextvars.ContextVar("warning_keys", default=None)
+
+
+@contextlib.contextmanager
+def warning_scope():
+    """Deduplicate keyed advisories within one review, including nested calls."""
+    if _WARNING_KEYS.get() is not None:
+        yield
+        return
+    token = _WARNING_KEYS.set(set())
+    try:
+        yield
+    finally:
+        _WARNING_KEYS.reset(token)
+
+
+def warn_once(key: str, action: str, why: str = "") -> None:
+    """Emit a keyed advisory once in the current review, or once per direct call."""
+    keys = _WARNING_KEYS.get()
+    if keys is not None:
+        if key in keys:
+            return
+        keys.add(key)
+    warn(action, why)
 
 
 def warn(action: str, why: str = "") -> None:

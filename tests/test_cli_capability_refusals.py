@@ -358,6 +358,43 @@ def test_pair_remedy_names_a_distribution_the_extra_really_ships():
     assert "gpuwm[render]" not in remedy
 
 
+def test_the_compositor_names_no_extra_that_cannot_supply_pillow():
+    """H22, second door: the module behind `--pair` said `[render]`.
+
+    :func:`test_pair_remedy_names_a_distribution_the_extra_really_ships`
+    pins the refusal.  The refusal is not the only place a reader looks:
+    ``gpuwm/pair_compose.py`` is the module that imports PIL, and its own
+    docstring told them Pillow "ships with the ``[render]`` extra".  It
+    does not; `[render]` is the rust renderer, and a reader who followed
+    that sentence would install a wheel that cannot supply the package
+    they are missing, then meet the same refusal.  Two doors may not
+    disagree about one fact, so the sweep is over every extra the
+    compositor names, not over one wording: an extra may be named there
+    only if it really installs Pillow.
+
+    Read from the imported module, never from a repository path, so this
+    holds against an installed wheel exactly as it does in a checkout.
+    """
+
+    from gpuwm import pair_compose
+
+    declared = _declared_extras()
+    doc = pair_compose.__doc__ or ""
+    assert doc.strip(), "gpuwm.pair_compose lost its module docstring"
+    named = {part.strip()
+             for spelling in re.findall(r"\[([a-z0-9\-,]+)\]", doc)
+             for part in spelling.split(",")} & set(declared)
+    for extra in sorted(named):
+        carried = " ".join(declared[extra]).lower()
+        assert "pillow" in carried, (
+            f"gpuwm/pair_compose.py sends a reader to gpuwm[{extra}] for "
+            f"Pillow; that extra installs "
+            f"{declared[extra] or 'nothing at all'}, so it cannot supply "
+            "PIL. Pillow is in no gpuwm extra: it arrives with matplotlib, "
+            "a base dependency, and gpuwm.capabilities.PILLOW is the floor "
+            "under an install that lacks it.")
+
+
 def test_the_chain_render_gate_agrees_with_the_render_command(monkeypatch):
     """H20: `go` skipped rendering on installs where render draws 161 PNGs."""
 

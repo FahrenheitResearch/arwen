@@ -336,7 +336,7 @@ def test_every_rung_and_road_the_planner_can_choose_has_a_rate(tmp_path):
     from tilestream import autoplan
 
     for rung in autoplan.FOOTPRINTS:
-        for road in ("resident", "streamed"):
+        for road in ("resident", "streamed"):  # every road the planner picks
             rate = pace_module.step_rate(rung, road)
             assert rate is not None, (rung, road)
             assert 0.0 < rate.low <= rate.high
@@ -406,3 +406,36 @@ def test_the_bandwidth_probe_is_absent_gracefully(monkeypatch):
 
     monkeypatch.setattr(builtins, "__import__", refuse)
     assert pace_module.measured_pinned_bytes_per_second() is None
+
+
+def test_the_slowest_recorded_rate_is_the_conservative_basis():
+    """A rung with no row is priced from the slowest row on record."""
+
+    for road in ("resident", "streamed"):
+        slowest = pace_module.slowest_recorded_rate(road)
+        rows = [rate for rate in pace_module.STEP_RATES.values()
+                if rate.road == road]
+        assert slowest.road == road
+        assert slowest.high == max(rate.high for rate in rows)
+
+
+def test_an_unnamed_rung_is_priced_conservatively_not_refused(
+        tmp_path, monkeypatch):
+    """``conservative`` answers a price and names the substitution."""
+
+    from tilestream import autoplan
+
+    exp = load_experiment(_config(tmp_path))
+    monkeypatch.setattr(autoplan, "rung_of", lambda cfg: "a-rung-nobody-timed")
+
+    assert pace_module.estimate_pace(exp, streamed=None) is None
+
+    priced = pace_module.estimate_pace(exp, streamed=None, conservative=True)
+    assert priced is not None
+    assert priced.substituted and not priced.measured
+    assert "a-rung-nobody-timed" in priced.basis
+    assert priced.wall_seconds_high > 0.0
+    slowest = pace_module.slowest_recorded_rate("resident")
+    assert priced.seconds_per_step_high == pytest.approx(
+        slowest.seconds_per_step(priced.columns,
+                                 exp.domains[0].run.nz)[1])

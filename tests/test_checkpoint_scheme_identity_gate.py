@@ -78,6 +78,16 @@ def test_every_accepted_microphysics_scheme_has_an_identity(scheme_id):
         "row; a run configured with it dies at its first restart interval")
 
 
+@pytest.mark.parametrize("scheme_id", MP_PHYSICS_ACCEPTED)
+def test_published_microphysics_identity_matches_checkpoint_owner(scheme_id):
+    """Published preparation identity must name the restored algorithm."""
+    from gpuwm.physics_registry import consumer_row_for_selector
+
+    published = consumer_row_for_selector(
+        "microphysics", "restart_algorithm_identity", scheme_id)
+    assert published == checkpoint_identity.MICROPHYSICS_ALGORITHM_IDENTITIES[scheme_id]
+
+
 def test_milbrandt_yau_is_identifiable():
     """The 2026-09-10 defect, pinned by number rather than by iteration."""
     identity = restart.MICROPHYSICS_ALGORITHM_IDENTITIES[9]

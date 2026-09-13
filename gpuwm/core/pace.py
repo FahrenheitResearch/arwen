@@ -301,6 +301,27 @@ def step_rate(rung: str, road: str = "resident") -> StepRate | None:
     return STEP_RATES.get((str(rung), str(road)))
 
 
+def slowest_recorded_rate(road: str = "resident") -> StepRate:
+    """The slowest rate this package has RECORDED, for a rung nothing names.
+
+    A caller that must quote a wall clock cannot answer "no row" with
+    silence and cannot answer it with a guess either.  This is the third
+    answer: the slowest row in :data:`STEP_RATES` for that road, which is
+    a figure this repository measured or bounded and therefore the most
+    conservative basis on record.  It is never cheaper than the true rung
+    unless a future rung is slower than every rung measured so far, and
+    the row it returns carries its own ``basis`` so the substitution is
+    quoted rather than implied.
+
+    ``measured`` on the returned row describes that row alone; a caller
+    that substitutes it must additionally say that the row is a
+    SUBSTITUTE, which :func:`estimate_pace` does in its basis when
+    ``conservative`` is set.
+    """
+    rows = [rate for rate in STEP_RATES.values() if rate.road == str(road)]
+    return max(rows or list(STEP_RATES.values()), key=lambda rate: rate.high)
+
+
 def measured_pinned_bytes_per_second(*, device: int = 0,
                                      nbytes: int = 256 << 20,
                                      reps: int = 3) -> int | None:
@@ -508,6 +529,11 @@ class PaceEstimate:
     reference_card: str
     basis: str
     run_seconds: float
+    #: True when no rate row named this rung and road and the estimate
+    #: was taken from :func:`slowest_recorded_rate` instead.  A reader
+    #: branches on it exactly as on ``measured``; the basis says which
+    #: row stood in and for what.
+    substituted: bool = False
 
     @property
     def realtime_ratio_low(self) -> float:
@@ -587,7 +613,8 @@ class PaceEstimate:
 
 
 def estimate_pace(exp, *, streamed=UNPRICED, machine=None,
-                  pinned_bytes_per_second: int | None = None
+                  pinned_bytes_per_second: int | None = None,
+                  conservative: bool = False
                   ) -> PaceEstimate | None:
     """The pace bracket for ``exp``, on the road it will actually take.
 
@@ -608,6 +635,14 @@ def estimate_pace(exp, *, streamed=UNPRICED, machine=None,
     :func:`gpuwm.core.streaming.decide` does with the key -- and
     otherwise the bound is ``None`` rather than a guess.
 
+    ``conservative`` is for a caller whose answer is a PRICE rather than
+    a sentence: when the rung and road have no row at all, the estimate
+    is taken from :func:`slowest_recorded_rate` instead of answering
+    ``None``, and the basis names both the missing rung and the row that
+    stood in for it.  A missing row is then a stated substitution rather
+    than a refusal to price, which is what a plan review owes a reader.
+    ``None`` still answers a request with no domain to price at all.
+
     ``None`` when the experiment carries no domain to price.
     """
     domains = list(getattr(exp, "domains", ()) or ())
@@ -627,8 +662,18 @@ def estimate_pace(exp, *, streamed=UNPRICED, machine=None,
     road = "resident" if streamed is None else "streamed"
     rung = autoplan.rung_of(cfg)
     rate = step_rate(rung, road)
+    substituted = ""
     if rate is None:
-        return None
+        if not conservative:
+            return None
+        rate = slowest_recorded_rate(road)
+        substituted = (
+            f"no rate row names the {rung!r} rung on the {road} road, so "
+            f"this is priced from the slowest rate on record for that "
+            f"road ({rate.rung}, {rate.high:.3g} s per column-step at "
+            f"nz={REFERENCE_NZ}): a SUBSTITUTE basis, not a measurement "
+            f"of this configuration, and the figure to beat by timing "
+            f"one step of it")
     run_seconds = float(getattr(exp, "run_seconds", 0.0) or 0.0)
     machine = machine if machine is not None else _configured_machine(exp)
     nz = int(cfg.nz)
@@ -636,6 +681,8 @@ def estimate_pace(exp, *, streamed=UNPRICED, machine=None,
 
     step_low, step_high = rate.seconds_per_step(columns, nz)
     parts = [f"{rung} rung on the {road} road: {rate.basis}"]
+    if substituted:
+        parts.insert(0, substituted)
 
     # ------------------------------------------------------ the bus floor
     transfer_bytes = transfer_low = transfer_high = 0.0
@@ -721,7 +768,8 @@ def estimate_pace(exp, *, streamed=UNPRICED, machine=None,
         transfer_bytes_per_step=int(transfer_bytes),
         transfer_seconds_per_step_low=transfer_low,
         transfer_seconds_per_step_high=transfer_high,
-        columns=columns, measured=rate.measured,
+        columns=columns, measured=rate.measured and not substituted,
+        substituted=bool(substituted),
         reference_card=rate.reference_card,
         basis="; ".join(part for part in parts if part),
         run_seconds=run_seconds)
@@ -779,6 +827,7 @@ __all__ = [
     "PCIE_PINNED_BYTES_PER_SECOND_HIGH", "PCIE_PINNED_BYTES_PER_SECOND_LOW",
     "PaceEstimate", "REFERENCE_NZ", "STEP_RATES", "StepRate", "estimate_pace",
     "measured_pinned_bytes_per_second", "pace_advisory",
-    "resident_column_limit", "step_rate", "streamed_transfer_bytes_per_step",
+    "resident_column_limit", "slowest_recorded_rate", "step_rate",
+    "streamed_transfer_bytes_per_step",
     "UNPRICED",
 ]

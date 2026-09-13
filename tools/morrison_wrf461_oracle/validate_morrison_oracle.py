@@ -3,8 +3,8 @@
 
 This is intentionally a measurement command, not the standing assertion.
 It prints every field's observed FP32 total-order ULP maximum and a machine-
-readable JSON summary.  The pytest gate imports :func:`measure_oracle` and
-pins the observed result separately.
+readable JSON summary. The pytest gate imports :func:`measure_oracle` and
+checks comparison coverage and a known incorrect latent-heat control.
 """
 
 from __future__ import annotations
@@ -77,9 +77,15 @@ def _record(
             "value_count": 0,
             "bitwise": True,
             "worst": None,
+            "nonfinite_count": 0,
+            "minimum": float("inf"),
         },
     )
     local_max = int(distance.max()) if distance.size else 0
+    entry["nonfinite_count"] = int(entry["nonfinite_count"]) + int(
+        np.count_nonzero(~np.isfinite(got)))
+    if got.size:
+        entry["minimum"] = min(float(entry["minimum"]), float(got.min()))
     entry["mismatch_count"] = int(entry["mismatch_count"]) + int(mismatch.sum())
     entry["value_count"] = int(entry["value_count"]) + int(distance.size)
     entry["bitwise"] = bool(entry["bitwise"]) and bitwise_identical(got, want)

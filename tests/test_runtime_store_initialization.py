@@ -241,7 +241,10 @@ def test_ordinary_dispatch_decides_before_preparation_and_keeps_elapsed_clock(tm
     exp = replace(exp, tiles=options)
     events = []
     decision = streaming.StreamingDecision(True, 'test', 8, 8, 2, 16)
-    def decide(cfg, options):
+    def decide(cfg, options, **kwargs):
+        # The shared single-domain admission passes the planning machine
+        # (None here: a pinned tiling asks no card) and, where the tiling
+        # is not pinned, the estimate it was priced from.
         events.append('decide')
         return decision
     monkeypatch.setattr(streaming, 'decide', decide)

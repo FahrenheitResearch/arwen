@@ -84,8 +84,7 @@ def test_gfs_series_may_begin_at_a_lead_and_keeps_its_cadence_rules(tmp_path):
         _read_series(series)
 
     series.write_text("0\tf000.grib2\n6\tf003.grib2\n")
-    with pytest.raises(ValueError, match="exactly 1 or 3 hours"):
-        _read_series(series)
+    assert [hour for hour, _ in _read_series(series)] == [0, 6]
 
     # The cadence rules bind at a lead exactly as they do at f000.
     series.write_text("18\tf018.grib2\t96\n21\tf021.grib2\t96\n"
@@ -1047,14 +1046,17 @@ def test_the_front_door_manifest_line_is_pasteable_too(tmp_path):
 
     out = tmp_path / "gfs"
     out.mkdir()
-    (out / "gfs-series.tsv").write_text("0\tf000.grib2\n", encoding="utf-8")
+    (out / "gfs-series.tsv").write_text("0\tf000.grib2\n3\tf003.grib2\n", encoding="utf-8")
     (out / "f000.grib2").write_bytes(b"GRIB")
+    (out / "f003.grib2").write_bytes(b"GRIB")
     (out / fetch.FETCH_MANIFEST_NAME).write_text(json.dumps({
         "schema": fetch.FETCH_MANIFEST_SCHEMA,
         "source": "gfs", "cycle": "2026-07-29T18:00:00Z",
-        "forecast_hours": [0],
+        "forecast_hours": [0, 3],
         "files": [{"name": "f000.grib2", "role": "gfs-subset",
-                   "forecast_hour": 0}],
+                   "forecast_hour": 0},
+                  {"name": "f003.grib2", "role": "gfs-subset",
+                   "forecast_hour": 3}],
     }), encoding="utf-8")
     bridge = tmp_path / "gfs_grib2_bridge"
     bridge.write_bytes(b"stand-in")

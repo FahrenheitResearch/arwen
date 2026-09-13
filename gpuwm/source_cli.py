@@ -6,6 +6,8 @@ import argparse
 import contextlib
 import contextvars
 from datetime import datetime
+from dataclasses import dataclass
+from typing import Callable
 import errno
 import hashlib
 import json
@@ -2137,6 +2139,104 @@ def main(argv: list[str] | None = None) -> int:
     return dispatch(parser.parse_args(argv), parser=parser)
 
 
+@dataclass(frozen=True)
+class PreparationRunner:
+    """One preparation implementation and its automatic launch contract."""
+
+    required: Callable
+    command: Callable
+    chain: str
+    local_kind: str | None = None
+    local_inventory: Callable | None = None
+    hierarchy_schema: str | None = None
+    corridor_stage: str | None = None
+
+    def moving_statics(self) -> dict[str, str | None]:
+        """The hierarchy representation this implementation can produce.
+
+        This is a preparation capability, not proof that particular input bytes
+        satisfy it. The ordinary artifact reader still checks state, forcing,
+        geographic coverage and every sealed corridor before allocation.
+        """
+        if self.hierarchy_schema is None:
+            missing = "this preparation implementation produces no domain hierarchy"
+        elif self.corridor_stage is None:
+            missing = "this preparation implementation has no child-resolution statics corridor writer"
+        else:
+            return {"delivery": "statics_corridor", "stage": self.corridor_stage,
+                    "option": "--statics-corridor", "reason": None}
+        return {"delivery": None, "stage": None, "option": None,
+                "reason": missing + "; supply a prepared hierarchy with verified "
+                          "corridors or use preparation that builds them"}
+
+
+def preparation_runners() -> dict[str, PreparationRunner]:
+    """Shared by dispatch and the planner; callbacks resolve at call time."""
+    from gpuwm.twentycrv3_direct import discover_20crv3_grib2
+    return {
+        "hrrr_f00_f12_v1": PreparationRunner(
+            _required_hrrr_args, _hrrr_command, "prepared:hrrr",
+            hierarchy_schema="gpuwm-native-hrrr-hierarchy-direct-v1",
+            corridor_stage="gpuwm.hrrr_hierarchy_direct"),
+        "era5_combined_grib1_v1": PreparationRunner(
+            _required_era5_args, _era5_command, "experiment",
+            hierarchy_schema="gpuwm-era5-native-hierarchy-proof-v1",
+            corridor_stage="gpuwm.era5_direct"),
+        "gfs_pgrb2_0p25_v1": PreparationRunner(
+            _required_gfs_args, _gfs_command, "prepared:go",
+            hierarchy_schema="gpuwm-gfs-native-hierarchy-proof-v2",
+            corridor_stage="rw-wps preparation: gpuwm.source_cli (gpuwm.gfs_direct)"),
+        "twentycrv3_member_grib2_v1": PreparationRunner(
+            _required_twentycr_args, _twentycr_command, "prepared:staged",
+            "member_manifest", discover_20crv3_grib2,
+            hierarchy_schema="gpuwm-mapped-native-hierarchy-proof-v1",
+            corridor_stage="gpuwm.twentycrv3_wrf (gpuwm.mapped_direct)"),
+        "mapped_composition_v1": PreparationRunner(
+            _required_mapped_args, _mapped_command, "prepared:staged",
+            "prep_handoff", hierarchy_schema="gpuwm-mapped-native-hierarchy-proof-v1",
+            corridor_stage="gpuwm.mapped_direct"),
+    }
+
+
+def source_preparation_outputs(source: str) -> dict[str, str | None] | None:
+    """Implementation outputs, reusable by workflows independent of acquisition."""
+    adapter = get_source_adapter(source)
+    runner = preparation_runners().get(adapter.runner)
+    if runner is None or not adapter.runnable:
+        return None
+    return {"hierarchy_schema": runner.hierarchy_schema, **runner.moving_statics()}
+
+
+def preparation_statics(chain: str, *, source: str | None = None) -> dict[str, str | None]:
+    """Read the selected implementation, without coupling unrelated preparers."""
+    if chain == "experiment":
+        return {"delivery": "case_data_ingest", "stage": None, "option": None,
+                "reason": None}
+    if chain == "prepared:existing":
+        return {"delivery": "retained_corridor", "stage": None, "option": None,
+                "reason": None}
+    runners = preparation_runners()
+    if source is not None:
+        adapter = get_source_adapter(source)
+        runner = runners.get(adapter.runner)
+        if runner is None or runner.chain != chain:
+            raise ValueError(f"{source!r} has no preparation implementation on {chain!r}; "
+                             "select the source's declared preparation route")
+        return runner.moving_statics()
+    rows = [runner.moving_statics() for runner in runners.values()
+            if runner.chain == chain]
+    if not rows:
+        raise ValueError(f"{chain!r} has no preparation implementation in the dispatcher")
+    obligations = {(row["delivery"], row["option"]) for row in rows}
+    if len(obligations) != 1:
+        raise ValueError(f"{chain!r} contains different moving-statics requirements; "
+                         "select a source to identify the preparation implementation")
+    return {**rows[0], "stage": ", ".join(dict.fromkeys(
+                row["stage"] for row in rows if row["stage"])) or None,
+            "reason": "; ".join(dict.fromkeys(
+                row["reason"] for row in rows if row["reason"])) or None}
+
+
 def dispatch(args: argparse.Namespace, *,
              parser: argparse.ArgumentParser,
              program: str = "rw-wps") -> int:
@@ -2372,16 +2472,7 @@ def dispatch(args: argparse.Namespace, *,
                   file=sys.stderr)
         return EXIT_CONFIG
 
-    runners = {
-        "hrrr_f00_f12_v1": (_required_hrrr_args, _hrrr_command),
-        "era5_combined_grib1_v1": (_required_era5_args, _era5_command),
-        "gfs_pgrb2_0p25_v1": (_required_gfs_args, _gfs_command),
-        "twentycrv3_member_grib2_v1": (
-            _required_twentycr_args,
-            _twentycr_command,
-        ),
-        "mapped_composition_v1": (_required_mapped_args, _mapped_command),
-    }
+    runners = preparation_runners()
     if (
         adapter.status
         not in {AdapterStatus.CERTIFIED, AdapterStatus.RUNNABLE_NOT_CERTIFIED}
@@ -2524,7 +2615,8 @@ def dispatch(args: argparse.Namespace, *,
         print(f"native decoder authority failed: {error}", file=sys.stderr)
         return EXIT_CONFIG
 
-    required_args, build_command = runners[adapter.runner]
+    runner = runners[adapter.runner]
+    required_args, build_command = runner.required, runner.command
     configuration_errors = required_args(args)
     if configuration_errors:
         print(

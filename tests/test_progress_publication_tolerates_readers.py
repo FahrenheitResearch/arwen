@@ -109,27 +109,26 @@ def test_receipts_stay_fail_loud(
 def test_every_progress_publication_declares_heartbeat(runner):
     """Every progress.json publication in both runners says heartbeat.
 
-    Textual, deliberately: the publication sites are closures buried in
-    the drivers and constructing a live run needs a GPU.  The invariant
+    Inspect the complete calls: publication sites are closures buried in
+    the drivers and constructing a live run needs a GPU. The invariant
     reads off the source -- an ``_atomic_json`` call whose destination
     is the progress file must carry ``heartbeat=True``, or a watcher
     holding that file open kills the run it is watching.
     """
+    import ast
     import inspect
 
-    text = inspect.getsource(runner)
-    offset, sites = 0, 0
-    while True:
-        start = text.find("_atomic_json(", offset)
-        if start < 0:
-            break
-        offset = start + 1
-        window = text[start:start + 700]
-        first_argument = window[:window.find(",")]
-        if "progress" not in first_argument:
+    sites = 0
+    for call in ast.walk(ast.parse(inspect.getsource(runner))):
+        if not (isinstance(call, ast.Call) and isinstance(call.func, ast.Name)
+                and call.func.id == "_atomic_json" and call.args):
+            continue
+        if "progress" not in ast.unparse(call.args[0]):
             continue
         sites += 1
-        assert "heartbeat=True" in window, (
+        assert any(keyword.arg == "heartbeat"
+                   and isinstance(keyword.value, ast.Constant)
+                   and keyword.value.value is True for keyword in call.keywords), (
             "a progress publication without heartbeat=True can kill the "
-            f"run it reports on: {window[:160]!r}")
+            f"run it reports on: {ast.unparse(call)[:160]!r}")
     assert sites > 0, "no progress publication sites found"

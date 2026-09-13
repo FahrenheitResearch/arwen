@@ -61,8 +61,15 @@ def manifest():
                 row(f"gpuwm-bridges-{TAG}-win-x86_64.zip"),
                 row("bridge-bundle-manifest.json"),
                 row("START-HERE.md"),
+                row("gpuwm-carried-physics-v9.8.6-v9.8.7.json"),
+                row("gpuwm-carried-physics-v9.8.6-v9.8.7.verification.json"),
             ],
             "also_attach": ["PUBLICATION-ASSETS.json", "DOWNLOAD-SHA256SUMS.txt"],
+        },
+        "carried_physics": {
+            "schema": "arwen.carried-release-asset.v1", "release_id": "e" * 64,
+            "release": row("gpuwm-carried-physics-v9.8.6-v9.8.7.json"),
+            "verification": row("gpuwm-carried-physics-v9.8.6-v9.8.7.verification.json"),
         },
         "pypi": {
             "artifacts": [
@@ -397,6 +404,9 @@ def capture_fixture(tmp_path, manifest):
         payload = ("fixture: " + item["filename"]).encode("utf-8")
         item.update(bytes=len(payload), sha256=hashlib.sha256(payload).hexdigest())
         (assets / item["filename"]).write_bytes(payload)
+    for key in ("release", "verification"):
+        name = document["carried_physics"][key]["filename"]
+        document["carried_physics"][key] = next(dict(item) for item in document["github"]["assets"] if item["filename"] == name)
     publication_manifest = assets / "PUBLICATION-ASSETS.json"
     publication_manifest.write_text(json.dumps(document), encoding="utf-8")
     checksums = "".join(f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}\n"

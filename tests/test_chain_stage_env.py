@@ -73,5 +73,9 @@ def test_every_stage_spawn_goes_through_the_hardened_environment():
     import inspect
 
     source = inspect.getsource(go_cli._run_stage)
-    assert "env=_stage_env()" in source
+    # The hardened environment is the BASE of every spawn.  A stage may
+    # add names of its own on top of it (the render stage adds the
+    # scratch token that says which working stores are its own); it may
+    # not replace it, which is what this pins.
+    assert "env={**_stage_env()" in source
     assert source.count("subprocess.Popen(") == 1

@@ -377,6 +377,8 @@ def build_parser() -> argparse.ArgumentParser:
     geog_register_cli(sub)
     domain_register_cli(sub)
     cyclone_setup_register_cli(sub)
+    from gpuwm.local_da import register_cli as local_da_register_cli
+    local_da_register_cli(sub)
     from gpuwm.research_workspaces import register_cli as research_register_cli
     research_register_cli(sub)
     from gpuwm.case_catalog import register_cli as case_catalog_register_cli
@@ -459,8 +461,10 @@ def build_parser() -> argparse.ArgumentParser:
                      help="WPS metgrid directory with met_em.d0*.nc and producing namelist.input; native ArWen initialization")
     run.add_argument("--rrtmg-variant", choices=("rrtmg_legacy", "rte-rrtmgp"), default=None,
                      help="WRF inputs: preserve legacy RRTMG by default; choose rte-rrtmgp to change radiation")
-    run.add_argument("--vertical-grid", choices=("native",), default=None,
-                     help="met_em: explicitly use ArWen eta initialization when namelist eta_levels is absent")
+    run.add_argument("--vertical-grid", default=None,
+                     help="met_em: native, wrf-auto, or explicit:PATH eta grid")
+    run.add_argument("--vertical-levels", type=int, default=None,
+                     help="met_em: requested level count for the selected vertical grid")
     run.add_argument("--run-seconds", type=float, default=None,
                      help="shorten a --wrfinput or --met-em run inside its forcing coverage")
     run.add_argument("--outdir", type=Path, default=Path("out/run"),
@@ -616,6 +620,8 @@ def _dispatch_argv(argv: list[str] | None = None) -> int:
             parser.error("--run-seconds is for --wrfinput or --met-em; set run_seconds in CONFIG")
         if args.rrtmg_variant is not None and args.config is not None:
             parser.error("--rrtmg-variant is for WRF inputs; set radiation in CONFIG")
+        if args.vertical_levels is not None and args.met_em is None:
+            parser.error("--vertical-levels is for --met-em inputs")
         if args.vertical_grid is not None and args.met_em is None:
             parser.error("--vertical-grid is for --met-em inputs")
     # Library code emits one-line warnings through gpuwm.explain.warn;
@@ -995,7 +1001,6 @@ def _dispatch(args) -> int:
         directory = args.met_em if args.met_em is not None else args.wrfinput
         unsupported = [flag for flag, value in (
             ("--prep-timeout", args.prep_timeout),
-            ("--allow-shared-gpu", args.allow_shared_gpu),
             ("--directory-input-hash", args.directory_input_hash),
             ("--supervisor-max-restarts", args.supervisor_max_restarts != 3)) if value]
         if unsupported:
@@ -1006,7 +1011,10 @@ def _dispatch(args) -> int:
                                health_debug=args.health_debug, gpu_uuid=args.gpu_uuid,
                                exclusive_gpu=not args.no_supervise,
                                rrtmg_variant=args.rrtmg_variant,
-                               **({"vertical_grid":args.vertical_grid} if args.met_em is not None else {}))
+                               allow_shared_gpu=args.allow_shared_gpu,
+                               **({"vertical_grid":args.vertical_grid,
+                                   "vertical_levels":args.vertical_levels}
+                                  if args.met_em is not None else {}))
 
     # [[domain]]/[experiment] tables route to the experiment path; the
     # legacy [grid]/[dynamics]/[run] shape stays on the frozen case path.

@@ -136,6 +136,15 @@ def load_manifest(document: dict, tag: str, commit: str, repository: str) -> dic
         require(row["bytes"] < 100_000_000, f"distribution exceeds the release size gate: {row['filename']}")
     native = {BRIDGE_MANIFEST, f"gpuwm-bridges-{tag}-linux-x86_64.zip", f"gpuwm-bridges-{tag}-win-x86_64.zip"}
     require(native <= set(github_rows), "GitHub manifest is missing the native bundles or bridge-bundle-manifest.json")
+    carried = document.get("carried_physics")
+    if tuple(int(v) for v in re.match(r"(\d+)\.(\d+)\.(\d+)", version).groups()) >= (2, 7, 4) or carried is not None:
+        require(isinstance(carried, dict) and carried.get("schema") == "arwen.carried-release-asset.v1",
+                "release packet is missing the carried-physics change channel; sibling products must receive its scoped changes")
+        require(isinstance(carried.get("release_id"), str) and bool(SHA256.fullmatch(carried["release_id"])),
+                "carried channel has no pinned content identity")
+        required_carried = _rows([carried.get("release"), carried.get("verification")], "carried_physics")
+        require(all(github_rows.get(name) == row for name, row in required_carried.items()),
+                "carried channel and its verification must be exact hashed GitHub assets")
     require(MANIFEST not in github_rows and MANIFEST not in pypi_rows, "the manifest is pinned externally and must not hash itself")
     auxiliary = github.get("also_attach", [])
     require(isinstance(auxiliary, list) and all(isinstance(x, str) for x in auxiliary), "github.also_attach must be a list of names")
@@ -149,12 +158,33 @@ def load_manifest(document: dict, tag: str, commit: str, repository: str) -> dic
     return {
         "tag": tag, "version": version, "commit": commit, "repository": repository,
         "desktop_source_revision": document["desktop_source_revision"],
+        "carried_physics": carried,
         "rows": combined, "pypi": {
             project: [row for name, row in sorted(pypi_rows.items())
                       if name.startswith("gpuwm_data-" if project == "gpuwm-data" else "gpuwm-")]
             for project in PROJECTS},
         "expected_names": sorted(set(combined) | set(auxiliary) | {MANIFEST}),
     }
+
+
+def verify_carried_release_assets(assets: Path, plan: dict, *, repo: Path | None = None) -> dict | None:
+    """A valid packet hash cannot conceal a channel for different source bytes."""
+    binding = plan.get("carried_physics")
+    if binding is None:
+        return None
+    import importlib.util
+    path = Path(__file__).parent / "release/prepare_carried_release.py"
+    spec = importlib.util.spec_from_file_location("_publication_carried_channel", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    try:
+        actual = module.verify_asset(assets / binding["release"]["filename"],
+            assets / binding["verification"]["filename"], revision=plan["commit"],
+            version=plan["version"], repo=repo)
+    except (ValueError, OSError, KeyError, TypeError) as error:
+        raise PublicationError(f"carried channel verification failed: {error}") from error
+    require(actual == binding, "carried channel bytes differ from the pinned publication manifest")
+    return actual
 
 
 def reconcile_index(rows: list[dict], status: int, payload: dict | None,
@@ -585,6 +615,7 @@ def verify(args) -> None:
     require(not subprocess.check_output(["git", "-C", str(repo), "status", "--porcelain", "-uno"], text=True).strip(), "verification source checkout is dirty")
     checked_run([sys.executable, str(repo / "tools/verify_source_bridge_pins.py")], cwd=repo)
     assets = args.packet / "assets"
+    carried = verify_carried_release_assets(assets, plan, repo=repo)
     shutil.copyfile(assets / MANIFEST, args.out / MANIFEST)
     pins = args.out / "bridge-pins.json"
     generated = args.out / BRIDGE_MANIFEST
@@ -623,6 +654,7 @@ def verify(args) -> None:
         shutil.copyfile(path, dists / path.name)
     write_json(args.out / "PROOF.json", {"schema": PROOF_SCHEMA, "status": "PASS", "captured": captured,
         "plan": plan, "metadata": metadata_records, "prewrite_pypi_checks": collision_checks,
+        "carried_physics": carried,
         "native_rebuilt": False, "distributions_rebuilt": False})
 
 

@@ -81,7 +81,7 @@ from pathlib import Path
 from numbers import Real
 from typing import Mapping
 
-from gpuwm.experiment import _MOVING_NEST_KEYS, build_experiment
+from gpuwm.experiment import _reject_moving_nest_keys, build_experiment
 from gpuwm.static.projection import WRF_MAP_PROJ_CODES
 from gpuwm.physics_compat import (
     RRTMG_VARIANT_LEGACY,
@@ -100,6 +100,202 @@ _REL_TOL = 1.0e-6
 # ---------------------------------------------------------------------------
 # Report types
 # ---------------------------------------------------------------------------
+
+#: The &fdda selectors that turn nudging ON.  Any nonzero entry is a
+#: request to nudge.
+_ACTIVE_NUDGING_SELECTORS = ("grid_fdda", "grid_sfdda", "obs_nudge_opt")
+
+#: What an active nudging request breaks, and the way out.  ONE sentence,
+#: because two doors ask this question about one namelist: the importer
+#: (which refuses) and the RW-WPS support report (whose gpuwm_runtime
+#: verdict used to answer PASS with no reasons for the very pair the
+#: importer refused).
+NUDGING_NOT_IMPLEMENTED = (
+    "FDDA nudging is not implemented; set it to 0 (or remove &fdda) -- "
+    "gpuwm will not import an active nudging request into a model that "
+    "cannot nudge.")
+
+#: The values of ``&dynamics/use_theta_m`` WRF defines.
+THETA_M_ADMITTED = (0, 1)
+
+#: How each import route recovers the dry-theta state it integrates.  The
+#: moist theta_m prognostic is implemented nowhere in the engine and the
+#: initial and boundary state is recovered exactly on all three routes,
+#: so the answer is one announced substitution rather than a refusal on
+#: whichever door the user happened to arrive through.
+_THETA_M_ROUTES = {
+    "metgrid": ("metgrid TT is physical temperature, so the initial and "
+                "boundary state is recovered exactly"),
+    "wrf_boundary": ("the moist wrfbdy THM/QV/MU are converted exactly at "
+                     "each forcing time into the dry-theta state"),
+    "native": ("gpuwm's native initialization constructs the dry-theta "
+               "state from physical temperature (gpuwm/ingest/real.py:1724), "
+               "so the initial and boundary state is recovered exactly"),
+}
+
+
+def active_nudging_selectors(fdda: dict) -> list[tuple[str, list]]:
+    """Every &fdda selector in ``fdda`` that asks for nudging.
+
+    One predicate, called by the importer and by the support report, so
+    the two doors cannot answer one &fdda block differently.
+    """
+
+    active: list[tuple[str, list]] = []
+    for key in _ACTIVE_NUDGING_SELECTORS:
+        values = fdda.get(key)
+        if values is None:
+            continue
+        try:
+            requested = any(int(value) != 0 for value in values)
+        except (TypeError, ValueError):
+            # An unreadable selector is a nudging request nobody can
+            # price; it is named here rather than escaping as a
+            # traceback out of int().
+            requested = True
+        if requested:
+            active.append((key, list(values)))
+    return active
+
+
+@dataclass(frozen=True)
+class ThetaMDecision:
+    """The single answer every door gives about ``use_theta_m``.
+
+    ``moist_theta`` is true when WRF would integrate the moist theta_m
+    prognostic and ArWen integrates dry theta instead -- a DECLARED
+    DIVERGENCE with ``reason``, never a refusal: the divergence is the
+    same on every door, so refusing on one of them and announcing it on
+    the others gave one namelist two answers.
+    """
+
+    moist_theta: bool
+    route: str
+    reason: str
+
+
+def theta_m_decision(use_theta_m: int, *,
+                     metgrid_initialization: bool = False,
+                     wrf_boundary_use_theta_m: int | None = None
+                     ) -> ThetaMDecision:
+    """Book ``&dynamics/use_theta_m`` for whichever door is asking."""
+
+    if metgrid_initialization:
+        route = "metgrid"
+    elif wrf_boundary_use_theta_m is not None:
+        route = "wrf_boundary"
+    else:
+        route = "native"
+    if int(use_theta_m) == 0:
+        return ThetaMDecision(
+            moist_theta=False, route=route,
+            reason=("metgrid TT is physical temperature; native "
+                    "initialization constructs the shared dry-theta state "
+                    "and boundaries" if route == "metgrid" else
+                    "gpuwm transcribes the non-moist-theta use_theta_m=0 "
+                    "branch"))
+    return ThetaMDecision(
+        moist_theta=True, route=route,
+        reason=("WRF would integrate moist theta; ArWen integrates dry theta "
+                "and the moist-theta branch is not implemented.  "
+                + _THETA_M_ROUTES[route]
+                + "; the integration itself differs from a use_theta_m = 1 "
+                "WRF run.  Set use_theta_m = 0 in the producing namelist to "
+                "run WRF on the same variable."))
+
+
+#: ``&time_control/fine_input_stream`` selects which input stream
+#: initializes each nest.  WRF defines exactly two values, and only two
+#: (Registry.EM_COMMON `rconfig integer fine_input_stream`, consumed at
+#: share/mediation_integrate.F:758-766): 0 takes every field from the
+#: nest's own input, and 2 takes only the static and masked
+#: land-surface fields from it and interpolates the rest from the
+#: parent, which is WRF's delayed-nest-start pattern.
+FINE_INPUT_STREAM_OWN_INPUT = 0
+FINE_INPUT_STREAM_DELAYED_NEST = 2
+FINE_INPUT_STREAM_ADMITTED = (FINE_INPUT_STREAM_OWN_INPUT,
+                              FINE_INPUT_STREAM_DELAYED_NEST)
+
+#: The way out of both fine_input_stream answers, in the one place both
+#: doors read it from.
+FINE_INPUT_STREAM_WAY_OUT = (
+    f"Set fine_input_stream to {FINE_INPUT_STREAM_OWN_INPUT} or "
+    f"{FINE_INPUT_STREAM_DELAYED_NEST} on every domain.")
+FINE_INPUT_STREAM_DELAYED_WAY_OUT = (
+    "Nothing to change: the delayed child starts at its declared start "
+    f"time. Set fine_input_stream = {FINE_INPUT_STREAM_OWN_INPUT} to take "
+    "every field from the child's own input instead.")
+
+
+@dataclass(frozen=True)
+class FineInputStreamDecision:
+    """The single answer every door gives about ``fine_input_stream``.
+
+    ``refusal`` is set only for an index WRF does not define.  A declared
+    ``2`` is a DECLARED DIVERGENCE carried in ``divergence``, never a
+    refusal: the delayed child starts at its declared start time on both
+    prepared routes, and only the provenance of its masked surface state
+    differs.  The support report used to PASS the pair while the importer
+    raised an unmapped-key ValueError on it, which is one namelist with
+    two answers.
+    """
+
+    streams: tuple[int, ...]
+    undefined: tuple[int, ...]
+    delayed_domains: tuple[int, ...]
+    refusal: str | None
+    divergence: str | None
+    way_out: str
+
+
+def fine_input_stream_decision(streams) -> FineInputStreamDecision:
+    """Book one ``fine_input_stream`` column for whichever door is asking.
+
+    ``streams`` is the per-domain column in d01..dNN order.  A value that
+    is not a Fortran integer token raises here rather than being coerced,
+    so no door reads a different column from the one the namelist wrote.
+    """
+
+    column = tuple(streams)
+    for value in column:
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ValueError(
+                "fine_input_stream must contain Fortran integer tokens in "
+                f"d01..dNN order, got {value!r}. "
+                + FINE_INPUT_STREAM_WAY_OUT)
+    undefined = tuple(sorted({value for value in column
+                              if value not in FINE_INPUT_STREAM_ADMITTED}))
+    delayed = tuple(index + 1 for index, value in enumerate(column)
+                    if value == FINE_INPUT_STREAM_DELAYED_NEST)
+    if undefined:
+        return FineInputStreamDecision(
+            streams=column, undefined=undefined, delayed_domains=delayed,
+            refusal=(
+                f"fine_input_stream={list(column)} declares "
+                f"{list(undefined)}; WRF defines two values for this key: "
+                f"{FINE_INPUT_STREAM_OWN_INPUT} (every field from the "
+                f"nest's own input) and {FINE_INPUT_STREAM_DELAYED_NEST} "
+                "(only the static and masked land-surface fields from it, "
+                "the rest interpolated from the parent)."),
+            divergence=None, way_out=FINE_INPUT_STREAM_WAY_OUT)
+    if delayed:
+        return FineInputStreamDecision(
+            streams=column, undefined=(), delayed_domains=delayed,
+            refusal=None,
+            divergence=(
+                f"fine_input_stream={list(column)}: domains {list(delayed)} "
+                "take the delayed-nest-start route. Both prepared routes "
+                "satisfy it -- the stock export writes wrfinput_d0N for "
+                "every domain at that domain's configured start time, and "
+                "the gpuwm runtime initializes a delayed child from its "
+                "own analysis at activation. The one difference from stock "
+                "WRF: the masked surface state comes from the child's "
+                "own-grid analysis rather than from a real.exe wrfinput."),
+            way_out=FINE_INPUT_STREAM_DELAYED_WAY_OUT)
+    return FineInputStreamDecision(
+        streams=column, undefined=(), delayed_domains=(), refusal=None,
+        divergence=None, way_out=FINE_INPUT_STREAM_WAY_OUT)
+
 
 @dataclass(frozen=True)
 class Substitution:
@@ -716,11 +912,16 @@ class _Section:
         #: the raw material of the report's Translated section (keys later
         #: recorded as fixed/dropped are subtracted there).
         self.consumed: list[str] = []
-        moving = sorted(_MOVING_NEST_KEYS & set(self.entries))
-        if moving:
-            raise ValueError(
-                f"moving-nest key(s) {moving} in &{name} of {source} are "
-                "rejected: gpuwm implements static nests only.")
+        # The refusal belongs to the loader that owns these keys, and it
+        # is raised here from the loader: the copy that stood here said
+        # "gpuwm implements static nests only", which is not true -- a
+        # nest that follows weather is shipped, expressed as DISCRETE
+        # [relocation] rather than as per-step namelist keys -- so the
+        # importer, the loader and the support report each described one
+        # namelist differently.  The location the loader renders is
+        # TOML-shaped ("[domains] of ..."); making it namelist-shaped
+        # needs a keyword on gpuwm/experiment.py:1530, out of this lane.
+        _reject_moving_nest_keys(name, self.entries, source)
 
     def take(self, key: str, default=None) -> list | None:
         if key in self.entries:
@@ -900,13 +1101,8 @@ def import_namelists(wps_path: str | Path, input_path: str | Path,
     # &fdda: an ACTIVE nudging request must refuse (importing it into a
     # model that will not nudge is a silent trajectory change); disabled
     # selectors and their inert companion keys drop with a reason.
-    for key, values in inp.get("fdda", {}).items():
-        if key in ("grid_fdda", "grid_sfdda", "obs_nudge_opt") \
-                and any(int(v) != 0 for v in values):
-            raise _err("fdda", key, values,
-                       "FDDA nudging is not implemented; set it to 0 (or "
-                       "remove &fdda) -- gpuwm will not import an active "
-                       "nudging request into a model that cannot nudge.")
+    for key, values in active_nudging_selectors(inp.get("fdda", {})):
+        raise _err("fdda", key, values, NUDGING_NOT_IMPLEMENTED)
     for section_name in ("fdda", "grib2", "namelist_quilt"):
         if section_name in inp:
             for key, values in inp[section_name].items():
@@ -1101,6 +1297,24 @@ def import_namelists(wps_path: str | Path, input_path: str | Path,
             ("time_control", tc, "io_form_restart", "WRF I/O layer key"),
             ("time_control", tc, "io_form_input", "WRF I/O layer key"),
             ("time_control", tc, "io_form_boundary", "WRF I/O layer key"),
+            # io_form_auxinput2 names only the on-disk format of the
+            # auxinput2 stream that fine_input_stream = 2 selects.  The
+            # stream itself is answered by fine_input_stream_decision
+            # above and neither prepared route reads the file, so the
+            # format declaration is the last thing left to record.  It
+            # is classified runtime-only by the support report
+            # (gpuwm/namelist_compat.py:156); consuming it here is what
+            # keeps the two doors from splitting on the pair that
+            # carries it beside fine_input_stream = 2.
+            ("time_control", tc, "io_form_auxinput2", "WRF I/O layer key"),
+            # override_restart_timers steers WRF's restart-alarm
+            # bookkeeping.  Resuming is the `gpuwm run --restart` flag
+            # (the reason the &time_control restart key drops above), so
+            # there is no timer to override; runtime-only in the same
+            # report line, and consumed here for the same reason.
+            ("time_control", tc, "override_restart_timers",
+             "resuming is the `gpuwm run --restart` flag, not a config "
+             "key"),
     ):
         drop(section, key, obj.take(key), reason)
 
@@ -1150,6 +1364,66 @@ def import_namelists(wps_path: str | Path, input_path: str | Path,
     fix("time_control", "input_from_file", input_from_file, True,
         "per-domain file initialization implements the input_from_file=T "
         "branch (med_nest_initial, share/mediation_integrate.F:509-952)")
+
+    # fine_input_stream is the OTHER per-domain nest-initialization
+    # selector, and it is answered by the same function the RW-WPS
+    # support report calls (:func:`fine_input_stream_decision`).  It used
+    # to be consumed nowhere, so every namelist carrying it died on the
+    # unmapped-key refusal in _Section.finish while the support report
+    # returned PASS on the identical pair: one configuration, two
+    # answers.  The column is built with the report's own rule -- extra
+    # domain values rejected rather than truncated, the declared tail
+    # filled from the last value -- so the two doors read one column.
+    fine_input_stream_values = tc.take("fine_input_stream")
+    if fine_input_stream_values is not None:
+        if len(fine_input_stream_values) > max_dom:
+            raise _err(
+                "time_control", "fine_input_stream", fine_input_stream_values,
+                f"declares {len(fine_input_stream_values)} values but "
+                f"max_dom = {max_dom}; extra domain values are rejected "
+                f"rather than truncated. Declare at most {max_dom} "
+                "values, one per domain, or raise max_dom to cover "
+                "them.")
+        fine_input_stream_column = list(fine_input_stream_values) + [
+            fine_input_stream_values[-1]] * (
+                max_dom - len(fine_input_stream_values))
+        # Both the type gate and the undefined-index refusal are the
+        # shared function's, named here with the file they came from.
+        # They are raised whole rather than through _err, which would
+        # restate the column the sentences already carry.
+        try:
+            stream_decision = fine_input_stream_decision(
+                fine_input_stream_column)
+        except ValueError as error:
+            raise ValueError(
+                f"&time_control of {input_path}: {error}") from error
+        if stream_decision.refusal is not None:
+            raise ValueError(
+                f"&time_control of {input_path}: "
+                f"{stream_decision.refusal} {stream_decision.way_out}")
+        if stream_decision.delayed_domains:
+            # A SUBSTITUTION, NOT A REFUSAL AND NOT A DROP: the delayed
+            # child starts at its declared start time either way, and
+            # the divergence (where its masked surface state comes from)
+            # is a trajectory statement the terminal must print, not a
+            # line only the receipt file carries.
+            substitutions.append(Substitution(
+                key="fine_input_stream",
+                wrf_value=FINE_INPUT_STREAM_DELAYED_NEST,
+                wrf_name="delayed-nest start with parent-interpolated "
+                         "3-D meteorology",
+                gpuwm_key="fine_input_stream",
+                gpuwm_value=FINE_INPUT_STREAM_OWN_INPUT,
+                gpuwm_name="delayed-nest start from the child's own-grid "
+                           "analysis",
+                reason=stream_decision.divergence))
+        else:
+            drop("time_control", "fine_input_stream",
+                 list(stream_decision.streams),
+                 "every domain takes its initial fields from its own-grid "
+                 "analysis, which is what stream "
+                 f"{FINE_INPUT_STREAM_OWN_INPUT} selects; there is no "
+                 "[domains] counterpart key to carry it to")
 
     history_min = tc.col("history_interval", max_dom, default=0)
     history_sec = tc.col("history_interval_s", max_dom, default=0)
@@ -1411,7 +1685,12 @@ def import_namelists(wps_path: str | Path, input_path: str | Path,
 
     # WRF process/tile decomposition layout: gpuwm's GPU decomposition is
     # internal, so these carry no science and drop with a reason.
-    for key in ("numtiles", "nproc_x", "nproc_y"):
+    # tile_sz_x/tile_sz_y size the CPU build's shared-memory tiles and
+    # belong to exactly this family; they are recorded here rather than
+    # refused so that the support report, which states them as a note
+    # (gpuwm/namelist_compat.py:1079), and this importer give one answer
+    # about one namelist.
+    for key in ("numtiles", "nproc_x", "nproc_y", "tile_sz_x", "tile_sz_y"):
         drop("domains", key, dm.take(key),
              "WRF parallel tile/process decomposition layout; gpuwm's "
              "GPU decomposition is internal")
@@ -1515,16 +1794,20 @@ def import_namelists(wps_path: str | Path, input_path: str | Path,
             _wif_opt = int(_uniform("domains", "wif_input_opt",
                                     list(_wif_values)))
             if _wif_opt == WIF_INPUT_OPT_WITH_BLACK_CARBON:
+                # One spelling of one configuration fact: the canonical
+                # table states what wif_input_opt=2 asks for and what is
+                # ported, and this door adds only the way out.  The
+                # wrfinput door raises the same two sentences from the
+                # same table.
+                from gpuwm.config import MP28_AEROSOL_SOURCE_OPTIONS
+
+                _, _, _why = MP28_AEROSOL_SOURCE_OPTIONS["wif_input_opt"]
                 raise _err(
                     "domains", "wif_input_opt", _wif_values,
-                    "wif_input_opt=2 additionally allocates the "
-                    "black-carbon aerosol scalar qnbca "
-                    "(Registry/registry.new3d_wif:82), which has no "
-                    "consumer in ArWen -- no transport, no microphysical "
-                    "sink, and nothing that writes it to history.  "
-                    "wif_input_opt=1, the monthly QNWFA/QNIFA climatology, "
-                    "IS supported and is what this namelist should say if "
-                    "the black carbon was not the point")
+                    f"{_why}. Set wif_input_opt="
+                    f"{WIF_INPUT_OPT_CLIMATOLOGY} with aer_init_opt=1 for "
+                    "the ported monthly climatology, or remove the "
+                    "black-carbon request")
             if _wif_opt not in (0, WIF_INPUT_OPT_CLIMATOLOGY):
                 raise _err(
                     "domains", "wif_input_opt", _wif_values,
@@ -1587,16 +1870,59 @@ def import_namelists(wps_path: str | Path, input_path: str | Path,
         "truelat2": truelat2,
         "stand_lon": stand_lon,
     }
-    s_we = geo.col("s_we", max_dom, default=1)
-    s_sn = geo.col("s_sn", max_dom, default=1)
-    if any(int(v) != 1 for v in s_we + s_sn):
-        raise _err("geogrid", "s_we/s_sn", [s_we, s_sn],
-                   "sub-window starts other than 1 are not supported.")
-    for key in ("ref_x", "ref_y"):
-        if geo.take(key) is not None:
-            raise _err("geogrid", key, "set",
-                       "only the WPS default reference point "
-                       "(e_we/2, e_sn/2) is supported.")
+    # s_we/s_sn are the domain's own 1-based start index in its own
+    # grid, which runs 1..e_we in WPS and in WRF alike.  They are NOT an
+    # offset into the parent -- that is i_parent_start -- so folding a
+    # declared start into the layout would translate the domain and
+    # produce a different grid.  Normalized to 1 and reported, which is
+    # what the WPS reader does with the same key.
+    from gpuwm.static.projection import WPS_WINDOW_START
+
+    for key in ("s_we", "s_sn"):
+        values = geo.take(key)
+        if values is not None:
+            fix("geogrid", key, values, WPS_WINDOW_START,
+                f"a domain's own grid runs {WPS_WINDOW_START}..e_we, so "
+                "the window start normalizes to it; the start is not an "
+                "offset into the parent (i_parent_start is), and nothing "
+                "about the grid moves")
+    # ref_x/ref_y move the reference point off the WPS default centre
+    # cell.  That is index arithmetic on a projection already fully
+    # resolved, so it is carried exactly rather than refused: the root
+    # grid is built with known_x/known_y, then the SAME grid is emitted
+    # through the six [projection] keys by re-expressing the reference
+    # point at the default centre cell -- the round trip
+    # gpuwm/static/projection.py:148-152 already performs.
+    ref_x_values = geo.take("ref_x")
+    ref_y_values = geo.take("ref_y")
+    if ref_x_values is not None or ref_y_values is not None:
+        from gpuwm.static.projection import projection_class
+
+        known_x = (float(e_we[0]) / 2.0 if ref_x_values is None
+                   else float(ref_x_values[0]))
+        known_y = (float(e_sn[0]) / 2.0 if ref_y_values is None
+                   else float(ref_y_values[0]))
+        declared_grid = projection_class(map_proj)(
+            ref_lat=ref_lat, ref_lon=ref_lon, truelat1=truelat1,
+            truelat2=truelat2, stand_lon=stand_lon,
+            dx=root_dx, dy=root_dy,
+            e_we=int(e_we[0]), e_sn=int(e_sn[0]),
+            known_x=known_x, known_y=known_y)
+        centre_lat, centre_lon = declared_grid.ij_to_latlon(
+            float(e_we[0]) / 2.0, float(e_sn[0]) / 2.0)
+        projection["ref_lat"] = float(centre_lat)
+        projection["ref_lon"] = float(centre_lon)
+        for key, values in (("ref_x", ref_x_values), ("ref_y", ref_y_values)):
+            if values is None:
+                continue
+            fix("geogrid", key, values,
+                "[projection] ref_lat/ref_lon at the grid centre",
+                f"the reference point is carried exactly: the root grid is "
+                f"built with known_x/known_y = ({known_x}, {known_y}) and "
+                "the emitted six-key [projection] table names the same "
+                "geometry at the WPS default centre cell, ref_lat/ref_lon "
+                f"= ({float(centre_lat):.6f}, {float(centre_lon):.6f}); "
+                "[projection] has no ref_x/ref_y key to carry")
     for key, reason in (
             ("geog_data_res", "GEOG dataset/resolution selection is "
                               "static-build configuration, not imported"),
@@ -2619,47 +2945,33 @@ def import_namelists(wps_path: str | Path, input_path: str | Path,
             raise ValueError("WRF boundary thermodynamic identity must be 0 or 1")
         if use_theta_m != wrf_boundary_use_theta_m:
             raise ValueError("namelist use_theta_m differs from the producing WRF files")
-    if use_theta_m not in (0, 1):
+    if use_theta_m not in THETA_M_ADMITTED:
         raise _err("dynamics", "use_theta_m", use_theta_m, "requires 0 or 1")
-    if use_theta_m != 0 and wrf_boundary_use_theta_m is None and not metgrid_initialization:
-        raise _err(
-            "dynamics", "use_theta_m", use_theta_m,
-            "unsupported: the moist-theta branch (use_theta_m = 1, also "
-            "the WRF Registry default when omitted) is not implemented; "
-            "gpuwm requires use_theta_m = 0.")
-    if use_theta_m == 1:
-        # A SUBSTITUTION, NOT A FIX.  use_theta_m = 1 (WRF's Registry default
-        # when omitted) selects the moist-theta prognostic for the whole
-        # integration; ArWen integrates dry theta and has no such branch.
-        # The initial and boundary fields are recovered exactly on both doors
-        # (metgrid TT is physical temperature; a moist wrfbdy's THM/QV/MU are
-        # converted at each forcing time), but the INTEGRATION differs, so
-        # this is booked where the doors' no-substitution gate and the
-        # terminal announcement can see it, with the reason -- not in the
-        # bucket reserved for keys with exactly one implemented value, where
-        # it reached the user through nothing but the receipt file (ENG-016).
+    # A SUBSTITUTION, NOT A FIX, AND NOT A REFUSAL.  use_theta_m = 1 (WRF's
+    # Registry default when omitted) selects the moist-theta prognostic for
+    # the whole integration; ArWen integrates dry theta and has no such
+    # branch.  The initial and boundary fields are recovered exactly on all
+    # three routes -- metgrid TT is physical temperature, a moist wrfbdy's
+    # THM/QV/MU are converted at each forcing time, and native
+    # initialization builds dry theta from physical temperature -- but the
+    # INTEGRATION differs, so it is booked where the doors' no-substitution
+    # gate and the terminal announcement can see it, with the reason (not
+    # in the bucket for keys with exactly one implemented value, where it
+    # reached the user through nothing but the receipt file, ENG-016).
+    # The bare door used to REFUSE the same configuration the other two
+    # announced, which is one namelist with two answers.
+    decision = theta_m_decision(
+        use_theta_m, metgrid_initialization=metgrid_initialization,
+        wrf_boundary_use_theta_m=wrf_boundary_use_theta_m)
+    if decision.moist_theta:
         substitutions.append(Substitution(
             key="use_theta_m", wrf_value=1,
             wrf_name="moist potential temperature (theta_m) prognostic",
             gpuwm_key="use_theta_m", gpuwm_value=0,
             gpuwm_name="dry potential temperature",
-            reason=(
-                "WRF would integrate moist theta; ArWen integrates dry theta and "
-                "the moist-theta branch is not implemented.  "
-                + ("metgrid TT is physical temperature, so the initial and "
-                   "boundary state is recovered exactly"
-                   if metgrid_initialization else
-                   "the moist wrfbdy THM/QV/MU are converted exactly at each "
-                   "forcing time into the dry-theta state")
-                + "; the integration itself differs from a use_theta_m = 1 WRF run.  "
-                "Set use_theta_m = 0 in the producing namelist to run WRF on the "
-                "same variable.")))
+            reason=decision.reason))
     else:
-        fix("dynamics", "use_theta_m", use_theta_m_values, 0,
-            ("metgrid TT is physical temperature; native initialization "
-             "constructs the shared dry-theta state and boundaries"
-             if metgrid_initialization else
-             "gpuwm transcribes the non-moist-theta use_theta_m=0 branch"))
+        fix("dynamics", "use_theta_m", use_theta_m_values, 0, decision.reason)
     top_lid_values = dyn.col("top_lid", max_dom)
     if top_lid_values is None:
         # NOT WRF's Registry default.  gpuwm's open-top branch is

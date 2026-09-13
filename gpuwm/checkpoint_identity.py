@@ -64,8 +64,8 @@ MICROPHYSICS_ALGORITHM_IDENTITIES = {
     0: "disabled",
     1: "kessler-warm-rain-v1",
     6: "wsm6-single-moment-six-class-wrf-v4.6.1-v1",
-    8: ("classic-thompson-wrf-v4.6.1-experimental-v3-cloud-fallout-"
-        "refl10cm-ng-shadow-snow-rime-mass-number-velocity"),
+    8: ("classic-thompson-wrf-v4.6.1-v4-cloud-fallout-"
+        "refl10cm-ng-shadow-snow-rime-mass-number-velocity-rain-density-condensation-history"),
     # Milbrandt-Yau two-moment (WRF v4.6.1 MILBRANDT2MOM).  Named at the
     # mp=8/28/50 granularity -- the trajectory-defining configuration,
     # not the scheme name --
@@ -88,7 +88,10 @@ MICROPHYSICS_ALGORITHM_IDENTITIES = {
     # rather than resuming onto it.
     9: ("milbrandt-yau-wrf-v4.6.1-v1-six-category-2mom-ccntype2-"
         "meyers-contact-nucl-nonspherical-snow-full-sedimentation"),
-    10: "morrison-two-moment-v2-kf-number-seeding",
+    # Range-safe freezing, retained cleanup vapor and in-range number
+    # preservation change subsequent tendencies even from finite inputs.
+    10: ("morrison-two-moment-v3-kf-number-seeding-finite-freezing-"
+         "final-vapor-in-range-number"),
     # WDM6 (WRF v4.6.1 WDM6SCHEME, Registry/Registry.EM_COMMON:3031).  Named
     # at the mp=8/28 granularity -- the trajectory-defining pieces, not the
     # scheme name.  "prognostic-nc-nr-ccn" is the change everything else
@@ -103,8 +106,9 @@ MICROPHYSICS_ALGORITHM_IDENTITIES = {
     # starts from the namelist constant fill (:220-227) rather than an
     # ingested aerosol field, so a future ingest must advance this tag
     # instead of silently resuming onto it.
-    16: ("wdm6-double-moment-warm-rain-wrf-v4.6.1-v1-prognostic-nc-nr-ccn-"
-         "gamma-mu1-rain-ccn-activation-xland-autoconversion-ccn-conc-init"),
+    16: ("wdm6-double-moment-warm-rain-wrf-v4.6.1-v3-prognostic-nc-nr-ccn-"
+         "gamma-mu1-rain-ccn-activation-xland-autoconversion-ccn-conc-init-"
+         "conservative-rain-interface-flux-bounded-transport-time"),
     18: "nssl-two-moment-state-transport-v1-process-boundary-fail-loud",
     # Thompson AEROSOL-AWARE (WRF v4.6.1 THOMPSONAERO,
     # Registry/Registry.EM_COMMON:3036).  Named at the granularity the mp=8
@@ -168,7 +172,9 @@ LAND_SURFACE_ALGORITHM_IDENTITIES = {
 PBL_ALGORITHM_IDENTITIES = {
     0: "disabled",
     1: "ysu-v1",
-    5: "mynn-edmf-pbl-wrf-v4.6.1-v1",
+    # Ordinary mixing length now shares initialization's rounded column law.
+    # This changes prognostic tendencies, so continuation must name it.
+    5: "mynn-edmf-pbl-wrf-v4.6.1-v2-rounded-mixing-length",
     # Adding a scheme means adding its row, not relaxing the check.  The
     # identity binds the WRF version whose byte-frozen module_bl_shinhong.F
     # the certified CPU authority transcribes (max ULP 0, both arms); a

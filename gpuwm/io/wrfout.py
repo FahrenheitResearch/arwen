@@ -17,16 +17,18 @@ from collections.abc import Mapping
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+import fnmatch
 import os
 from pathlib import Path
 import queue
+import stat
 import threading
 import traceback
 
 import numpy as np
 import netCDF4
 
-from gpuwm import perf_timing, render_layout
+from gpuwm import perf_timing, progress_log, render_layout
 from gpuwm.config import NO_LAND_SURFACE_SOIL_LAYERS, soil_layer_count
 from gpuwm.io.classic_tape import (ClassicDim, ClassicTape, ClassicVariable,
                                    classic_attr_value)
@@ -1001,20 +1003,177 @@ def validate_wrfout_file(path, *, inventory, shapes, times):
                 f"got {actual_times}")
 
 
+#: Directory names under a wrfout tree whose contents are ABOUT frames.
+#:
+#: :func:`gpuwm.progress_log.write_frame_marker` publishes
+#: ``<outdir>/ready/<frame>.json``, a readiness receipt that
+#: deliberately repeats the history basename, so ``wrfout*`` matches it
+#: and ``wrfout*.tmp*`` matches its temporary while that is in flight.
+#: Reading one as a frame costs both halves at once.  The sweep below
+#: would file a valid receipt under ``ready/.quarantine`` as an
+#: "incomplete-wrfout", which is false twice over (the receipt is
+#: complete, and so is the frame it names) and which destroys the one
+#: positive signal ``write_frame_marker`` documents a consumer may
+#: trust: a marker that exists names a frame that is complete and
+#: readable, and a consumer reads absence as "not yet".  A render feed
+#: on this walk would hand the renderer JSON, which is the "NetCDF:
+#: Unknown file format" exit 2 that ``gpuwm.go_cli.WRFOUT_GLOB``
+#: records itself as existing to prevent.
+NON_FRAME_DIRNAMES = (progress_log.FRAME_MARKER_DIRNAME,)
+
+#: Suffixes a history frame never carries.  ``gpuwm.runplan``'s frame
+#: count spells this exclusion its own way for the same tree
+#: (``path.suffix != ".json"``, under the comment "Readiness JSON
+#: receipts repeat the history basename under ready/"), so it is spelled
+#: here beside the directory rule rather than instead of it: the two
+#: catch the receipt whatever directory a future writer puts it in, and
+#: a receipt in flight whatever suffix its temporary carries.
+NON_FRAME_SUFFIXES = (".json",)
+
+
+def is_wrfout_frame(relative) -> bool:
+    """Does ``relative`` name a history frame, or something ABOUT one?
+
+    ``relative`` is a path relative to a wrfout root, and only the shape
+    of the name is read, never the bytes.  This is the whole definition
+    of "frame" for :func:`iter_wrfout_files`, in one place and settled
+    before anything opens a file, because the alternative is to infer
+    it, and the inference is wrong: a walk that hands every ``wrfout*``
+    match to a reader and calls whatever fails to open "incomplete"
+    quarantines a valid readiness receipt under that label.  Discovery
+    says what IS a frame; opening it decides only whether that frame is
+    finished.
+
+    What is excluded, and the file that would otherwise be misread:
+
+    * Anything under a DOT-PREFIXED directory.
+      :func:`gpuwm.supervisor.quarantine_file` files a swept frame at
+      ``<parent>/.quarantine/wrfout_....incomplete-wrfout.<stamp>.
+      <pid>``, a name that still begins with ``wrfout``, so without this
+      the sweep re-sweeps its own quarantine on every run and nests
+      ``.quarantine`` inside ``.quarantine`` without bound.  Dot-
+      prefixed FILES are kept, which is why only the parents are read:
+      an orphan temporary is ``.wrfout_....tmp.<pid>.<n>`` and is
+      exactly what the sweep is looking for.
+    * Anything under a directory named in :data:`NON_FRAME_DIRNAMES`.
+    * Any name whose suffix is in :data:`NON_FRAME_SUFFIXES`.
+
+    The dot-directory rule is the one
+    :func:`gpuwm.render_layout.iter_rendered` makes for the PNG tree,
+    deliberately spelled the same way.  The receipt rule has no
+    counterpart there because nothing writes a receipt beside a picture
+    under the picture's own name.
+    """
+
+    relative = Path(relative)
+    parents = relative.parts[:-1]
+    if any(part.startswith(".") for part in parents):
+        return False
+    if any(part in NON_FRAME_DIRNAMES for part in parents):
+        return False
+    return relative.suffix not in NON_FRAME_SUFFIXES
+
+
+def iter_wrfout_files(directory, pattern: str = "wrfout*", *,
+                      include_temporaries: bool = True) -> list[Path]:
+    """Every history file under ``directory`` matching ``pattern``.
+
+    THE reader for a wrfout directory, and the reason there is only one:
+    this module WRITES ``d05/episode-002/wrfout_...`` when a domain
+    declares a lifecycle (see :meth:`PerDomainWrfoutWriters.submit`,
+    which takes the segment from ``render_layout.episode_segment``), and
+    a one-level ``glob`` cannot see a single frame of it.  A flat reader
+    therefore reports "no frames" for a run that published a full tape:
+    the sweep below leaves every incomplete episode frame in place, and
+    a render feed on the same spelling hands the renderer nothing.
+
+    ``pattern`` is a filename glob; :func:`is_wrfout_frame`
+    says which of them are frames, from the name alone and before
+    anything is opened.  A match is dropped when it sits under a
+    dot-prefixed directory (this walk's own ``.quarantine``, which would
+    otherwise be re-swept and re-nested on every run) and when it is a
+    receipt that repeats a frame's basename rather than a frame: the
+    readiness markers at ``ready/<frame>.json``.  That second rule is
+    what makes this walk safe to feed a RENDERER as well as the sweep,
+    which is the other half of why there is only one of it.
+
+    The walk goes through :func:`gpuwm.render_layout.fs_path` and the
+    results come back in the CALLER's spelling, for the same reason the
+    picture walk does: a root's own length says nothing about its
+    descendants', and a frame that cannot be enumerated is a frame that
+    cannot be swept.
+
+    The explicitly selected root may itself be a junction. Descendant
+    symlinks and Windows reparse points are never followed: an episode
+    link to another run must not let this sweep quarantine that run's files.
+
+    Sorted by path, so two directories walk in the same order.
+    Render consumers set ``include_temporaries=False``; the recovery sweep
+    keeps the default because finding orphan temporaries is its job.
+    """
+
+    directory = Path(directory)
+    walk_root = Path(render_layout.fs_path(directory, descend=True))
+    if not walk_root.is_dir():
+        return []
+    def redirected(info):
+        return (stat.S_ISLNK(info.st_mode)
+                or bool(getattr(info, "st_file_attributes", 0)
+                        & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)))
+
+    found, pending = [], [walk_root]
+    while pending:
+        folder = pending.pop()
+        try:
+            if folder != walk_root and redirected(folder.lstat()):
+                continue
+            with os.scandir(folder) as entries:
+                for entry in entries:
+                    try:
+                        info = entry.stat(follow_symlinks=False)
+                    except FileNotFoundError:
+                        continue
+                    if redirected(info):
+                        continue
+                    path = Path(entry.path)
+                    if stat.S_ISDIR(info.st_mode):
+                        if not entry.name.startswith(".") and entry.name not in NON_FRAME_DIRNAMES:
+                            pending.append(path)
+                    elif stat.S_ISREG(info.st_mode) and fnmatch.fnmatch(entry.name, pattern):
+                        if not include_temporaries and ".tmp" in entry.name:
+                            continue
+                        relative = path.relative_to(walk_root)
+                        if is_wrfout_frame(relative):
+                            found.append(directory / relative)
+        except (FileNotFoundError, NotADirectoryError):
+            continue
+    return sorted(found, key=lambda path: path.as_posix())
+
+
 def quarantine_orphan_wrfouts(directory):
-    """Move orphan temporaries and incomplete final files out of sight."""
+    """Move orphan temporaries and incomplete final files out of sight.
+
+    Discovery is :func:`iter_wrfout_files` for all three patterns, so an
+    episode-foldered run is swept exactly as a flat one is.
+
+    "Cannot be opened, therefore incomplete" is read ONLY of files
+    :func:`is_wrfout_frame` has already named as frames.  Everything
+    else in the tree -- the readiness receipts under ``ready/``, this
+    sweep's own ``.quarantine`` -- is never a candidate, so it is never
+    moved and never labelled.
+    """
     directory = Path(directory)
     if not directory.exists():
         return tuple()
     moved = []
-    temporaries = set(directory.glob(".wrfout*.tmp*"))
-    temporaries.update(directory.glob("wrfout*.tmp*"))
+    temporaries = set(iter_wrfout_files(directory, ".wrfout*.tmp*"))
+    temporaries.update(iter_wrfout_files(directory, "wrfout*.tmp*"))
     for path in sorted(temporaries):
         target = quarantine_file(path, reason="orphan-wrfout-tmp")
         if target is not None:
             moved.append(target)
-    for path in sorted(directory.glob("wrfout*")):
-        if not path.is_file() or ".tmp" in path.name:
+    for path in iter_wrfout_files(directory):
+        if ".tmp" in path.name:
             continue
         try:
             with netCDF4.Dataset(path, "r") as ds:
@@ -1044,8 +1203,11 @@ class WrfoutWriter:
 
     def __init__(self, path, *, nx, ny, nz, dx, dy, title="gpuwm",
                  global_attrs=None, field_schema=None, soil_layers=None,
-                 engine=None):
+                 engine=None, _retain_identity_handle=False):
         self.engine = resolve_wrfout_engine(engine)
+        self.publication_revision = None
+        self._publication_file = None
+        self._retain_identity_handle = _retain_identity_handle
         if self.engine == "rust":
             from gpuwm.io import nc_writer_bridge
 
@@ -1423,9 +1585,12 @@ class WrfoutWriter:
                 self.ds.close()
             self._closed = True
             fsync_file(self._temp_path)
+            from gpuwm.output_identity import PublicationFile
+            self._publication_file = PublicationFile(self._temp_path)
             validate_wrfout_file(
                 self._temp_path, inventory=inventory, shapes=shapes,
                 times=times)
+            self._publication_file.check_validated()
             # Sharing violations receive the same capped 0.50 s retry as the
             # heartbeat, but a durable wrfout publication remains fail-loud.
             replace_file_with_retry(self._temp_path, self._final_path)
@@ -1443,7 +1608,11 @@ class WrfoutWriter:
             # This is the last step of ``supervisor.atomic_publish_file``,
             # the helper whose docstring says the wrfout handoff uses it.
             _fsync_directory(self._final_path.parent)
+            self.publication_revision = self._publication_file.published(self._final_path)
+            if not getattr(self, "_retain_identity_handle", False):
+                self.release_identity_handle()
         except BaseException:
+            self.release_identity_handle(preserve=True)
             if not self._closed:
                 # A half-closed netCDF handle can fail repeatedly.  Preserve
                 # the original publication error and still reach quarantine.
@@ -1456,6 +1625,46 @@ class WrfoutWriter:
                         self._temp_path,
                         reason="failed-wrfout-publication")
             raise
+
+    def release_identity_handle(self, *, preserve=False):
+        retained, self._publication_file = self._publication_file, None
+        if retained is None:
+            return
+        try:
+            if preserve:
+                # A replacement may have unlinked the actual written file.
+                # Save its retained descriptor only on this failure path;
+                # never move or overwrite the replacement at the address.
+                info = os.fstat(retained.handle.fileno())
+                named = False
+                for path in (self._temp_path, self._final_path):
+                    with suppress(OSError):
+                        addressed = path.stat()
+                        named = named or ((addressed.st_dev, addressed.st_ino)
+                                          == (info.st_dev, info.st_ino))
+                if not named:
+                    recovery = unique_temp_path(self._final_path, hidden=True)
+                    retained.handle.seek(0)
+                    with recovery.open("xb") as destination:
+                        for block in iter(lambda: retained.handle.read(1 << 20), b""):
+                            destination.write(block)
+                        destination.flush()
+                        os.fsync(destination.fileno())
+                    quarantine_file(recovery, reason="replaced-wrfout-publication")
+        finally:
+            retained.close()
+
+    def complete_output_identity(self, *, cancel_event=None):
+        from gpuwm.output_identity import completed_file_record
+        try:
+            return completed_file_record(
+                self._final_path, published=self.publication_revision,
+                cancel_event=cancel_event, handle=self._publication_file.handle)
+        except BaseException:
+            self.release_identity_handle(preserve=True)
+            raise
+        finally:
+            self.release_identity_handle()
 
     def abort(self):
         """Close without completion and quarantine a failed write."""
@@ -1583,6 +1792,7 @@ class AsyncDomainWrfoutWriter:
     #: the ``__init__`` path turns every such construction into an
     #: AttributeError on the worker thread.
     history_selection = None
+    _identity_pending = False
 
     @staticmethod
     def _new_ticket_queue() -> queue.Queue:
@@ -1625,6 +1835,7 @@ class AsyncDomainWrfoutWriter:
         self._abort_event = (threading.Event() if abort_event is None
                              else abort_event)
         self.paths: list[Path] = []
+        self._completed_records = []
         self._thread = threading.Thread(
             target=self._worker, name=f"gpuwm-wrfout-{id(self):x}",
             daemon=True)
@@ -1633,7 +1844,12 @@ class AsyncDomainWrfoutWriter:
     @property
     def pending(self) -> int:
         with self._condition:
-            return self._pending
+            return self._pending + int(self._identity_pending)
+
+    @property
+    def completed_records(self):
+        with self._condition:
+            return tuple(getattr(self, "_completed_records", ()))
 
     def _raise_failure(self) -> None:
         if self._failure is not None:
@@ -1932,11 +2148,15 @@ class AsyncDomainWrfoutWriter:
         return host
 
     def _worker(self) -> None:
+        if not hasattr(self, "_completed_records"):
+            self._completed_records = []
         while True:
             ticket = self._queue.get()
             if ticket is None:
                 self._queue.task_done()
                 return
+            staging_consumed = False
+            writer = None
             try:
                 ticket.event.synchronize()
                 # D2H is complete.  Drop device ownership on the side stream
@@ -1956,7 +2176,8 @@ class AsyncDomainWrfoutWriter:
                                     if ticket.global_attrs is not None
                                     else self.global_attrs),
                                 soil_layers=self.soil_layers,
-                                field_schema=ticket.fields) as writer:
+                                field_schema=ticket.fields,
+                                _retain_identity_handle=True) as writer:
                             writer.write_frame(ticket.time_str, ticket.fields)
                     except BaseException:
                         # Set the experiment-wide abort while still holding
@@ -1965,11 +2186,29 @@ class AsyncDomainWrfoutWriter:
                         # cancellation.
                         self._abort_event.set()
                         raise
+                # The native writer has consumed every host view and made
+                # the file durable. Release staging before its separate
+                # payload hash, so a streamed next step can reuse its store.
+                # Identity work stays on this worker and outside the NetCDF
+                # lock; the existing queue still holds at most one ticket.
+                ticket.fields = {}
+                ticket.pinned_refs = ()
+                with self._condition:
+                    self._identity_pending = True
+                    self._pending -= 1
+                    staging_consumed = True
+                    self._condition.notify_all()
+                published = getattr(writer, "publication_revision", None)
+                if published is not None:
+                    proof = writer.complete_output_identity(cancel_event=self._abort_event)
+                    with self._condition:
+                        self._completed_records.append(proof)
                 self.paths.append(ticket.path)
                 # The file is durable HERE and nowhere earlier: the
                 # WrfoutWriter context above has exited, so its close()
                 # completed the fsync, the self-validation and the
-                # rename onto the final name.  A failure at any of those
+                # rename onto the final name, and its output identity is
+                # ready. A failure at any of those
                 # went to the handler below instead.  An observer that
                 # raises must not take the writer thread down with it --
                 # the run's outputs matter more than its telemetry.
@@ -1996,6 +2235,10 @@ class AsyncDomainWrfoutWriter:
                         exc, f"{type(exc).__name__}: {exc}")
                 self._abort_event.set()
             finally:
+                if writer is not None:
+                    release = getattr(writer, "release_identity_handle", None)
+                    if release is not None:
+                        release()
                 ticket.pinned_refs = ()
                 self._queue.task_done()
                 # Clear before publishing pending == 0 and before the next
@@ -2003,7 +2246,10 @@ class AsyncDomainWrfoutWriter:
                 # completed frame or any of its arrays.
                 ticket = None
                 with self._condition:
-                    self._pending -= 1
+                    if staging_consumed:
+                        self._identity_pending = False
+                    else:
+                        self._pending -= 1
                     self._condition.notify_all()
 
     def update_global_attrs(self, global_attrs) -> None:
@@ -2020,9 +2266,17 @@ class AsyncDomainWrfoutWriter:
         self.global_attrs = dict(global_attrs)
 
     def drain(self) -> None:
+        """Wait for durable files and their completed output identities."""
+        self._drain(include_identity=True)
+
+    def drain_staging(self) -> None:
+        """Wait until native writes have released borrowed host arrays."""
+        self._drain(include_identity=False)
+
+    def _drain(self, *, include_identity) -> None:
         worker_stopped = False
         with self._condition:
-            while self._pending:
+            while self._pending or (include_identity and self._identity_pending):
                 if not self._thread.is_alive():
                     worker_stopped = True
                     break
@@ -2186,6 +2440,7 @@ class PerDomainWrfoutWriters:
         self._metadata_by_grid_id = {}
         self._episode_by_grid_id = {}
         self._archived_paths = []
+        self._archived_records = []
         #: Every final pathname THIS writer set has published, which is
         #: what the duplicate-valid-time guard in submit() is scoped to.
         self._published_paths = set()
@@ -2273,6 +2528,13 @@ class PerDomainWrfoutWriters:
             ret.extend(self._writers[gid].paths)
         return tuple(ret)
 
+    @property
+    def completed_records(self):
+        ret = list(getattr(self, "_archived_records", ()))
+        for gid in sorted(self._writers):
+            ret.extend(getattr(self._writers[gid], "completed_records", ()))
+        return tuple(ret)
+
     def add_domain(self, grid_id: int, *, grid, static_fields, episode: int = 0) -> None:
         """Mint a writer for a domain that appeared AFTER construction.
 
@@ -2324,6 +2586,9 @@ class PerDomainWrfoutWriters:
         writer.drain()
         writer.close()
         self._archived_paths.extend(writer.paths)
+        if not hasattr(self, "_archived_records"):
+            self._archived_records = []
+        self._archived_records.extend(getattr(writer, "completed_records", ()))
         if writer.paths:
             self.last_durable_wrfout = writer.paths[-1]
         self._metadata_by_grid_id.pop(grid_id, None)
@@ -2441,13 +2706,11 @@ class PerDomainWrfoutWriters:
                 extra_fields=self._metadata_by_grid_id[node.cfg.grid_id],
                 refl_field=refl_field,
                 global_attrs=frame_attrs)
-            # The frame's carriers are views of the pinned store and the
-            # next sweep scatters into them, so this write is on the
-            # critical path by construction.  It is affordable: MEASURED at
-            # forecast cadence the whole frame is 0.077% of wall time at
-            # hourly output and 0.31% at every 60 steps, against a solver
-            # step of ~19 ns/cell with physics.
-            writer.drain()
+            # The next sweep may reuse these pinned views once the native
+            # write releases them. Identity hashing can continue on the
+            # worker; final drain/close still wait for the complete record.
+            consume_staging = getattr(writer, "drain_staging", writer.drain)
+            consume_staging()
             return
         writer.submit(
             path, valid_time, node.state,

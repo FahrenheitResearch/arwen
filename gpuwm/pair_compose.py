@@ -16,9 +16,14 @@ valid-time stems pair naturally).  The domain stays *in* the key on
 purpose: a directory can now hold several nests of one run, and pairing
 a 3 km panel against a 333 m one would be a comparison of nothing.
 
-Pillow is the only dependency -- it ships with the ``[render]`` extra
-(matplotlib depends on it), and no science is performed here: pixels
-are pasted, never recomputed.
+Pillow is the only dependency, and no gpuwm extra ships it.  It
+arrives with matplotlib, a base dependency, so a bare install already
+has it; an install that somehow does not meets
+``gpuwm.capabilities.PILLOW`` at the door, in ``_pair_main``, before
+any directory is read.  A reader sent to an extra for Pillow would
+install a wheel that cannot supply it, so no message here names one.
+No science is performed either way: pixels are pasted, never
+recomputed.
 """
 
 from __future__ import annotations

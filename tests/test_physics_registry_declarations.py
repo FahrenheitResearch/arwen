@@ -19,10 +19,8 @@ These pins guard the declaration contract itself rather than plan resolution
 
 from __future__ import annotations
 
-import dataclasses
 from pathlib import Path
 
-from gpuwm.config import RunConfig
 from gpuwm.physics_registry import (
     MORRISON_TEMPLATE_ID,
     canonical_json,
@@ -31,13 +29,9 @@ from gpuwm.physics_registry import (
     validate_physics_plan,
 )
 
-from test_physics_registry import _single_plan, _uniform_tree
+from tools.check_parameter_claims import configuration_fields
 
-#: Knobs GPUWM reads from the experiment schema rather than from RunConfig
-#: (gpuwm/experiment.py and gpuwm/case_data.py).  They are whole-experiment
-#: values, never per-domain.
-_EXPERIMENT_SCHEMA_PARAMETERS = frozenset({
-    "p_top", "blend_width", "co2_vmr", "feedback"})
+from test_physics_registry import _single_plan, _uniform_tree
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -47,9 +41,19 @@ def _parameters() -> dict[str, dict]:
 
 
 def test_every_implemented_parameter_names_a_real_configuration_field():
-    """A declared knob must exist in the configuration GPUWM actually reads."""
-    run_config_fields = {f.name for f in dataclasses.fields(RunConfig)}
-    known = run_config_fields | _EXPERIMENT_SCHEMA_PARAMETERS
+    """A declared knob must exist in the configuration GPUWM actually reads.
+
+    The carrier set comes from ``tools.check_parameter_claims`` rather than
+    from a copy kept here (audit R-060).  This test held RunConfig's fields
+    plus a hand-written tuple of four experiment-schema names, while the
+    shipped gate held RunConfig's fields, ExperimentConfig's fields and the
+    same four -- two answers to "where can a knob's value live", and the
+    registry drifted in the gap between them: ``smooth_option`` is an
+    ExperimentConfig field that ``gpuwm/core/model.py`` wires into the nest
+    smoother, invisible to this set and therefore unable to be declared
+    implemented without failing here.  One authority, read by both.
+    """
+    known = configuration_fields()
     undeclarable = sorted(
         name
         for name, spec in _parameters().items()

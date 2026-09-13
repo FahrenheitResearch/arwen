@@ -1,13 +1,13 @@
 # Physics options and maturity
 
-Every physics scheme in ArWen is a transcription of WRF v4.6.1 source
-(commit `d66e442f`), and every option carries a machine-readable
-maturity label in the physics registry
-(`gpuwm/physics_registry_v2.json`) -- the registry, not this page, is
-the authority, and `tests/test_registry_reachability.py` keeps the two
-from drifting. Labels never substitute for the evidence behind them;
-each row below links the strongest measurement that exists for that
-option.
+WRF-derived schemes target WRF v4.6.1 source (commit `d66e442f`),
+with declared deviations. ArWen also has original schemes and couplings
+without a WRF counterpart, including SASE and the RTE+RRTMGP coupling.
+Every option carries a machine-readable maturity label in the physics
+registry (`gpuwm/physics_registry_v2.json`). The registry is the authority
+for that label. Labels do not establish which oracle was run: each row
+below states the strongest evidence available for that option and its
+limits.
 
 ## Maturity vocabulary
 
@@ -17,7 +17,7 @@ option.
 | **validation-candidate** | Executable and gated, with a ratified reference comparison, but deliberately not the default; the next candidate for full matched-run validation. |
 | **supported** | Production option from the longest-certified slice: WRF-transcribed, standing unit/runtime gates, exercised by the certified reference configurations. |
 | **experimental-runtime** | Executable, and carrying a documented runtime restriction or an unratified composition -- a table-bound runtime, or a nest edge between two microphysics schemes. Selecting it warns and does not block. |
-| **implemented-unverified** | Runs on the GPU and is column-oracle-measured against unmodified WRF Fortran, but no dedicated ArWen/WRF forecast-trajectory comparison exists for it yet. The registry records its measured ULP distances and open divergences verbatim. |
+| **implemented-unverified** | Executable, with evidence limited as stated in its option row. This label alone does not imply that an independent Fortran oracle has run: some options have only smoke or self-consistency tests, some have oracle comparisons, and original schemes may have no WRF counterpart. A trajectory measurement, where present, remains limited to its recorded configuration and case. |
 | **planned / port-in-progress** | Not selectable. The registry publishes the target so the roadmap is machine-readable; nothing can resolve to it. |
 
 Every option on the first five rungs is yours to select, two ways that
@@ -36,11 +36,11 @@ SASE, Milbrandt-Yau, Morrison, WDM6, P3 one-category, Thompson
 aerosol-aware, Noah, Noah-MP, RUC, Grell-Freitas, New Tiedtke, WRF RRTM
 longwave with Dudhia shortwave, the RTE+RRTMGP legacy-aggregate
 selector, and all five turbulence closures. It says
-exactly one thing -- no matched ArWen-versus-WRF forecast trajectory
-has been run with this option yet -- and it says it about the option,
-not about how freely that option may be composed with others. Those are
-different questions, and the second one is answered by measurement in
-the next section.
+that the option retains the evidence limits described in its own row.
+Some rows report an oracle or an idealized trajectory, while others
+explicitly report no independent oracle. This is separate from whether
+the option can be composed with others. Configuration admission is
+measured in the next section; it is not a numerical validation.
 
 A *suite* then takes the **strict minimum** rung over the options it
 selects (the registry's composition rule C2, "a composed suite is only
@@ -86,15 +86,15 @@ record, and `tests/test_physics_composition_walk.py` regenerates it on
 every release cut and compares it byte for byte. As measured:
 
 - **2981 of 9831 admission attempts are accepted**, covering **2973 distinct
-  accepted suites**, against 19 registered templates. The presets are a
+  accepted suites**, against 26 registered templates. The presets are a
   corner of the space, not the space.
 - **Every accepted run keeps every switch the file set**, checked
   against the resolved per-domain `RunConfig`. Zero rewrites. An
   admission is never a silent substitution.
 - **Every admitted value of every axis reaches an accepted run**, with
   no exceptions left. `ra_lw_physics = 1` (WRF RRTM longwave) was the
-  last one; 1.9 ports it, and it now reaches 676 distinct accepted suites,
-  including 169 paired with Dudhia shortwave.
+  last one; 1.9 ports it, and it now reaches 692 distinct accepted suites,
+  including 173 paired with Dudhia shortwave.
 - **6850 refusals fall into 15 distinct rules**, every one of which
   names the selector to change, and each of which has a
   demonstrated remedy -- the receipt carries a before/after pair per
@@ -123,7 +123,7 @@ registry declares its own meaning
 > template, `'component-override'` through either a route's full
 > `allowed_component_overrides` or its option-scoped
 > `allowed_component_options`, `'expert-template'` only through a
-> route's `expert_template_ids` with its `expert_acknowledgement_id`,
+> route's `expert_template_ids`, with `expert_acknowledgement_id` advisory,
 > and `'unreachable'` not normally reachable -- which must name a
 > blocker. implemented and reachable are independent.
 > `tests/test_registry_reachability.py` recomputes every state.
@@ -134,8 +134,8 @@ In plain words -- and every one of these is a way IN, not a wall:
 |---|---|
 | `template` | **a preset exists**: pick it by name and every later stage enforces it switch for switch |
 | `component-override` | **a preset exists** on the routes that declare the override, and everywhere else you **type it in your config** |
-| `expert-template` | a preset exists behind one gate: **add one acknowledgement line** and it runs |
-| `unreachable` | no preset names it. Either **type it in your config** -- three of the four below do run that way -- or it is **not ported yet**, and then it refuses by name |
+| `expert-template` | an expert preset exists; its acknowledgement records review of the advisory |
+| `unreachable` | no preset and no route names it. Today exactly one option is in this state, and it is **not ported yet**: it declares no selector at all, so it refuses by name |
 
 Every one of those four states is a statement about the **named**
 routes -- what a menu, a `--physics-profile` choice list or a route
@@ -162,10 +162,19 @@ prints both:
 
 | registry `unreachable` option | selectors | what a config naming it actually gets |
 |---|---|---|
-| land surface `off` | `sf_surface_physics = 0` | **type it in your config**: **785 accepted**. Off the menus by policy (its blocker says so), not by the loader |
-| surface layer `off` | `sf_sfclay_physics = 0` | **type it in your config**: **113 accepted**, same reason |
-| radiation `analytic-clear-sky` | `ra_lw_physics = ra_sw_physics = 90` | **type it in your config**: **213 accepted**, same reason |
 | microphysics `sase` | none declared | **not ported yet**: publishes a porting target and declares no selector, so nothing can resolve to it |
+
+Three options used to sit in this table -- land surface `off`, surface
+layer `off` and radiation `analytic-clear-sky` -- each published as
+`unreachable` while a hand-written config ran it (785, 113 and 213
+accepted suites in the walk). The state was a menu policy, not a
+property of the model, and a menu policy that every config route
+overrides is a wall with a door beside it. All three are now
+`component-override` on the routes that declare them, and each keeps its
+degradation as a plan-review WARNING that names what turning the
+component off costs: no land surface means no surface energy budget, no
+surface layer means no surface fluxes, and the analytic radiation is a
+clear-sky proxy that ignores every cloud in the column.
 
 Counts are distinct accepted suites naming every listed selector together.
 Read each option's blocker before using it: the reason it stays off the
@@ -224,11 +233,11 @@ closure is genuinely missing.
 | Kessler | 1 | supported | warm-rain certified slice; idealized + runtime gates |
 | WSM6 | 6 | supported | certified slice; matched-run anchors exist for this scheme on the reference case (refl corr 0.977 at F2, 0.815 at F5, d03) |
 | Thompson | 8 | **model-validated** | full matched 6 h, 4-domain run to 500 m; decay tables in [VERIFICATION.md](VERIFICATION.md); WRF's own coefficient tables packaged and SHA-256-validated at load |
-| Milbrandt-Yau 2-moment | 9 | implemented-unverified | **no oracle has been run.** Line-by-line transcription of `phys/module_mp_milbrandt2mom.F`; what is tested is a column smoke through the shipped seams (finite, bounded, water budget closing to 1.3e-4 relative or better on three seeding layouts, each resolving a named family of source/sink terms) plus a mutation control. Graupel and hail are separate prognostic categories and all twelve moments are transported. Reachable only as a per-domain override; refuses the RTE+RRTMGP pairing (see below) |
+| Milbrandt-Yau 2-moment | 9 | implemented-unverified | **no oracle has been run.** Line-by-line transcription of `phys/module_mp_milbrandt2mom.F`; what is tested is a column smoke through the shipped seams (finite, bounded, water budget closing to 1.3e-4 relative or better on three seeding layouts, each resolving a named family of source/sink terms) plus a mutation control. Graupel and hail are separate prognostic categories and all twelve moments are transported. A preset selects it (with New Tiedtke and the legacy RRTMG engine) and it is also a per-domain override; the modern RTE+RRTMGP coupling is also implemented, with the radius derivation described below |
 | Morrison 2-moment | 10 | implemented-unverified | 28-column oracle vs unmodified WRF `MP_MORR_TWO_MOMENT`: theta within 154 ULP, but hydrometeor fields cross branch points and are not bitwise; both rimed-ice identities (graupel/hail) implemented. **Declared divergence:** deposition-freezing nucleation is bounded by the vapour excess over ice saturation and the nucleated number scales with it; WRF (F:2902-2905) applies no availability test and its FUDGEF rescale (F:3009-3015) tests only matching sign pairs, so below the 159.4887 K POLYSVP crossover -- where the extrapolated liquid curve falls under the ice curve and F:1315 clamps `QVI==QVS` -- the unbounded term drove qv to -1.87e-4 kg/kg out of 5.55e-8 available, dt-independent. That state is unreachable in WRF and in any p_top-limited regional domain; the bound also engages at 189.88-199.96 K where WRF does reach, scaling the number moment by 0.197-0.898 and moving the oracle fixture's ni by up to 67% relative, qi by 1.4e-3 and qv by 1.8e-16, with no pinned per-field max_ulp moved and the fixture mismatch count 3,512 -> 3,554 of 10,948 |
-| WDM6 double-moment warm rain | 16 | implemented-unverified | **no oracle comparison against the WRF Fortran has been run** — the CUDA kernel and `wdm6init` are transcribed line by line from the byte-frozen `phys/module_mp_wdm6.F` with file:line citations, the float64 coefficient block pins the kernel's baked FP32 literals, and a column smoke through the shipped seams asserts finiteness, WDM6's own bounds, water conservation to the surface flux, and that CCN activation actually moves number from `nn` into `nc`; the oracle campaign is the declared next stage. WDM5 (14) and WDM7 (26) are refused by name. Reachable only as a per-domain override |
+| WDM6 double-moment warm rain | 16 | implemented-unverified | **no oracle comparison against the WRF Fortran has been run** -- the CUDA kernel and `wdm6init` are transcribed line by line from the byte-frozen `phys/module_mp_wdm6.F` with file:line citations, the float64 coefficient block pins the kernel's baked FP32 literals, and a column smoke through the shipped seams asserts finiteness, WDM6's own bounds, water conservation to the surface flux, and that CCN activation actually moves number from `nn` into `nc`; the oracle campaign is the declared next stage. WDM5 (14) and WDM7 (26) are refused by name. A preset selects it (with Grell-Freitas and RTE+RRTMGP) and it is also a per-domain override |
 | NSSL 2-moment | 18 | **validation-candidate** (default lane) / implemented-unverified (variants) | full CUDA port with fused-process oracles and a ratified 500 m comparison; explicitly not the default. The hail-off and diagnosed-CCN variants below carry column smoke and treatment proofs only, with no oracle comparison |
-| Thompson aerosol-aware | 28 | implemented-unverified | 22 WRF column fixtures end to end, 23 quantities each: 17 clear a flat 2e-6 gate, 4 do not, 1 clears only under two named allowances (numbers below); it runs multi-step and stays bounded; the one matched WRF forecast comparison is idealized only — a single-domain doubly periodic warm bubble, [validation/mp28-matched-trajectory.md](validation/mp28-matched-trajectory.md), which publishes a failed declared condition alongside a control showing that condition fails for WRF against its own recompilation — and no real-data or nested forecast has ever been validated against WRF; reachable only as a per-domain override |
+| Thompson aerosol-aware | 28 | implemented-unverified | 22 WRF column fixtures end to end, 23 quantities each: 17 clear a flat 2e-6 gate, 4 do not, 1 clears only under two named allowances (numbers below); it runs multi-step and stays bounded; the one matched WRF forecast comparison is idealized only -- a single-domain doubly periodic warm bubble, [validation/mp28-matched-trajectory.md](validation/mp28-matched-trajectory.md), which publishes a failed declared condition alongside a control showing that condition fails for WRF against its own recompilation -- and no real-data or nested forecast has ever been validated against WRF; a preset on the prepared-domain-tree route selects it (with MYJ, the Eta surface layer and RTE+RRTMGP) and it is also a per-domain override. The fixed-template routes do not offer that preset: their cold-start contract has no arm for the aerosol-aware boundary species |
 | P3 one-category | 50 | implemented-unverified | **measured against WRF's own Fortran** — unmodified `phys/module_mp_p3.F` (P3 v4.5.2, byte-identical across WRF v4.6.1/v4.7.1/v4.8.0) compiled at -O0 -ffp-contract=off and driven through `mp_p3_wrapper_wrf` over twelve discriminating fixtures: 4 of 12 bit-identical, F02/F06/F08/F09/F11 within 2–7 ULP, F12 at 829 ULP (6.3e-5 relative); the two long mixed-phase cases (F07, F10) are exact for the first steps and then bifurcate — a property of the system, not the port (a one-ULP nudge to the Fortran's own input diverges it from itself by 100% within ten steps, measured); the parsed lookup table is exact (substituting the Fortran's own generated tables changes nothing); the column smoke still holds through the shipped seams (finite, non-negative, total water closing to 1e-4 against surface precipitation, rime mass ≤ ice mass, 50 ≤ rime density ≤ 900); STILL OPEN: an unexplained 1–6 ULP CUDA-specific `qib` residual on F06/F08/F11, and F09's separate, broader disagreement; no matched WRF forecast run and no comparison against observations — per-step agreement with Fortran is not evidence of forecast skill; reachable through the registered HRRR template `p3-mp50-ysu-mm5-noah-rrtmg-legacy-v1` and as a per-domain override on the tree route |
 
 ### P3 one-category (`mp_physics = 50`) — read this before selecting it
@@ -764,16 +773,16 @@ authority and this page is its summary. Two further things a reader
 needs are in a second, separate list below, marked as such because
 neither is an open deviation and neither is a registry warning:
 
-- **No aerosol ingest.** There is no WIF metgrid stream, no GOCART
-  climatology reader, and no black-carbon (`nbca`) species, so
-  `use_aero_icbc`, `use_rap_aero_icbc`, `wif_input_opt`,
-  `num_wif_levels` and `qna_update` are published unimplemented and
-  refuse rather than being silently dropped. WRF's own fallback for
-  exactly that case — `thompson_init`'s synthetic profile — is ported
-  *and installed* (see the section immediately above), so the gap is the
-  ingest lane, not the initial condition. `qnbca` is refused rather than
-  zero-filled, and `taod5502d`/`taod5503d` (radiation-side aerosol
-  optical depth) are not produced by `mp_gt_driver` at all.
+- **Aerosol input limits.** Native `met_em` preparation accepts a complete
+  analyzed `QNWFA`/`QNIFA` pair, and the monthly WIF climatology reader is
+  available. `auto` uses the analyzed pair when present; an explicit source
+  selector wins and the receipt records which input was used. The imported
+  `use_aero_icbc = .true.`, `wif_input_opt = 1`, `num_wif_levels = 30`
+  combination selects the monthly dataset. Black-carbon (`qnbca`), a generic
+  GOCART reader and the `qna_update` auxiliary stream remain unavailable.
+  `thompson_init` supplies the synthetic fallback described above.
+  `taod5502d`/`taod5503d` are radiation-side optical depths, not outputs of
+  `mp_gt_driver`.
 - **WRF's own initializer refuses the configuration ArWen runs.**
   `dyn_em/module_initialize_real.F:2734-2736` calls
   `wrf_error_fatal('wif_input_opt=0 but mp_physics=28')`, so `real.exe`
@@ -906,12 +915,16 @@ that is correct and easy to assume is missing:
   WRF's separate Fu snow species.
 
 **How to select it.** mp=28 is registered with
-`reachability.state = "component-override"`: among the NAMED routes it
-is offered only as an explicit per-domain microphysics override on the
-experiment-per-domain tree route. No template selects it, it is no
-template's default, and `gpuwm domain` is unchanged. That is
-deliberate — an unverified scheme should be opt-in per domain, not
-something a suite hands you. As with every row on this page, that is a
+`reachability.state = "template"`: one registered suite selects it,
+`thompson-aerosol-mp28-myj-eta-noah-rte-rrtmgp-v1`, which pairs it with
+MYJ, the Eta similarity surface layer, Noah, cumulus off and
+RTE+RRTMGP. That suite is declared on the experiment-per-domain tree
+route only -- the fixed-template routes have no cold-start arm for the
+aerosol-aware boundary species -- and mp=28 remains an explicit
+per-domain microphysics override everywhere the tree route declares
+one. It is still no template's default and `gpuwm domain` is unchanged.
+That is deliberate: an unverified scheme is something you choose, not
+something a default hands you. As with every row on this page, that is a
 statement about the menus and not about the loader: a config that
 writes `mp_physics = 28` itself is accepted and runs it (measured, 14
 of the 15 combinations the walk tried). Opting in is the point; you
@@ -1096,7 +1109,7 @@ Naming a composition is not evidence, and none was claimed for it.
 | MM5 (classic) | 91 | supported | template | the certified-slice surface layer; pairs with YSU and all three LSMs |
 | Eta similarity (MYJ) | 2 | implemented-unverified | component-override | Janjic's viscous sublayer over water and the Zilitinkevich thermal roughness over land, transcribed from the byte-frozen `module_sf_myjsfc.F` including its `MYJSFCINIT` similarity tables; publishes `AKHS`/`AKMS`/`THZ0`/`QZ0`/`UZ0`/`VZ0` and NO `MOL`/`ZOL`/`PSIM`/`PSIH`, which is why it is admitted only as the 2/2 pair with the MYJ PBL. `isftcflx`/`iz0tlnd` are refused: WRF passes them in and never reads them (CZIL is hard-coded to 0.1). No oracle comparison against the WRF Fortran has been run |
 | MYNN | 5 | implemented-unverified | template | column solver oracle-matched over land and water (max rel. err 4.3e-7); `isftcflx` 0-3 ported; needs the PBL slot to be MYNN or off, which is WRF v4.6.1's own restriction ([MYNN scope note](#mynn-scope-note-what-composes-and-what-is-pinned)) |
-| MM5 (revised) | 1 | supported | component-override | no base template selects it (every verified run used the classic scheme); the prepared-domain-tree route offers it as a surface-layer component override, and a config that writes `sf_sfclay_physics = 1` directly is accepted by the loader and runs it -- measured, 1038 distinct accepted combinations in [receipts/physics-composition-walk.json](receipts/physics-composition-walk.json) |
+| MM5 (revised) | 1 | supported | template | the SASE preset selects it (every WRF-matched run used the classic scheme, so no matched preset does); the prepared-domain-tree and prepared-single-domain routes also offer it as a surface-layer component override, and a config that writes `sf_sfclay_physics = 1` directly is accepted by the loader and runs it -- measured, 1038 distinct accepted combinations in [receipts/physics-composition-walk.json](receipts/physics-composition-walk.json) |
 
 All four run. In plain words: `template` means **a preset exists**, and
 `component-override` means **a preset exists** on the routes that
@@ -1240,8 +1253,8 @@ time. Choosing this pair on a large domain remains a deliberate trade.
 | option | WRF id | maturity | notes |
 |---|---|---|---|
 | Kain-Fritsch | 1 | supported | outer (>=10 km) domains; packaged lookup table; cudt 5 min in the certified templates |
-| Grell-Freitas (scale-aware) | 3 | implemented-unverified | whole GFDRV at the WRF v4.6.1 boundary, CPU and CUDA; no template selects it, so among the named routes it is a per-domain override -- a config writing `cu_physics = 3` is accepted directly; runs on the model step (cudt pinned 0) |
-| New Tiedtke | 16 | implemented-unverified | the WRF v4.6.1 `module_cu_ntiedtke` scheme; all 21 stages and the assembled pipeline reproduce the byte-frozen Fortran bitwise over an 18-case, 6-spacing oracle corpus, and `scientific_evidence` is `none`. Runs with or without a PBL scheme -- it reads no `KPBL`, takes its surface fluxes from the surface layer and the land-surface model, and folds zero advective-forcing lanes exactly as WRF's cumulus driver does when no PBL tendency exists (the PBL-off configuration is admitted on that field contract, not on evidence: every measured run carries a PBL scheme) -- and runs on the model step (cudt pinned 0); no template selects it, so it is a per-domain override -- a config writing `cu_physics = 16` is accepted directly. See [cumulus-new-tiedtke.md](../cumulus-new-tiedtke.md) |
+| Grell-Freitas (scale-aware) | 3 | implemented-unverified | whole GFDRV at the WRF v4.6.1 boundary, CPU and CUDA; a preset selects it (with WDM6 and RTE+RRTMGP) and it is also a per-domain override -- a config writing `cu_physics = 3` is accepted directly; runs on the model step (cudt pinned 0) |
+| New Tiedtke | 16 | implemented-unverified | the WRF v4.6.1 `module_cu_ntiedtke` scheme; all 21 stages and the assembled pipeline reproduce the byte-frozen Fortran bitwise over an 18-case, 6-spacing oracle corpus, and `scientific_evidence` is `none`. Runs with or without a PBL scheme -- it reads no `KPBL`, takes its surface fluxes from the surface layer and the land-surface model, and folds zero advective-forcing lanes exactly as WRF's cumulus driver does when no PBL tendency exists (the PBL-off configuration is admitted on that field contract, not on evidence: every measured run carries a PBL scheme) -- and runs on the model step (cudt pinned 0); a preset selects it (with Milbrandt-Yau and the legacy RRTMG engine) and it is also a per-domain override -- a config writing `cu_physics = 16` is accepted directly. See [cumulus-new-tiedtke.md](../cumulus-new-tiedtke.md) |
 | off | 0 | supported | the convection-permitting nests run with cumulus off |
 
 What is certified for Grell-Freitas, and what is not. The certified
@@ -1570,10 +1583,38 @@ the answer is route-dependent. Current preparation behavior:
 | route | what it can prepare |
 |---|---|
 | ERA5 config door (`[case_data]` -> `gpuwm run`) | the registry-admitted combinations |
-| GFS single domain | WSM6, Thompson, Morrison, NSSL2, MYNN and RUC; Noah-MP with an expert acknowledgement; selected source fields and soil geometry must satisfy initialization |
+| GFS single domain | WSM6, Thompson, Morrison, NSSL2, MYNN and RUC; Noah-MP with advisory acknowledgement; selected source fields and soil geometry must satisfy initialization |
 | ERA5 single domain | the same normal profiles, plus RUC |
 | HRRR single domain | the normal profiles, plus RUC and expert Noah-MP |
-| prepared domain trees (GFS, ERA5, HRRR, 20CRv3) | the normal profile family, plus expert Noah-MP; microphysics may be overridden per domain, which is the only way to reach Thompson aerosol-aware (28) |
+| prepared domain trees (GFS, ERA5, HRRR, 20CRv3) | the normal profile family, the aerosol-aware Thompson suite, plus expert Noah-MP; cumulus, microphysics and turbulence may also be overridden per domain, and the other components may resolve to any option the route lists |
+
+Every prepared route above that names any suite at all also names the
+six COMPOSITION suites: Milbrandt-Yau two-moment with New Tiedtke, WDM6
+with Grell-Freitas, SASE on the revised MM5 surface layer, and the three
+large-eddy closures (1.5-order TKE, 3D Smagorinsky, constant K). None of
+them reads anything source-specific, so none of them is a source's
+choice to make, and every source that names any suite at all names all
+six. On the prepared single-domain route that is seventeen of its
+eighteen sources; the other one is the caller-supplied composition row,
+which names no suite because the caller states the physics. A source
+with no measured suite of its own is not emptied: it reports the suites
+that route names for every source it HAS measured, with the limitation
+that no source-specific verification is claimed. On the tree route it is
+the four sources that declare a suite list.
+
+Two exclusions are named rather than left to be discovered as an
+absence. The aerosol-aware Thompson suite is offered on the
+prepared-domain-tree route only: neither fixed-template runner has a
+cold-start arm for `mp_physics = 28`, so neither can build an
+initialization contract for it at all. And the NATIVE HRRR benchmark
+runner -- the sealed route that replays one immutable template against a
+transcribed WRF namelist, which is a different thing from the prepared
+HRRR single-domain route above -- offers none of the six: its product is
+a comparison against a native WRF run of that exact composition, and no
+native run of any of these six exists (SASE has no stock-WRF counterpart
+at all). Run them on the prepared single-domain route, which resolves
+every switch of them from the registry, or state one per domain on the
+tree route.
 
 v1.0.1 restricted the GFS/HRRR door to YSU + MM5 surface layer + Noah,
 because the front door unconditionally ran the stock-WRF exporter and
@@ -1613,17 +1654,15 @@ user-facing walkthrough -- the symptom, how to tell which version is
 actually executing, and how to correct the config -- is
 [NOCTURNAL-DEWPOINTS.md](NOCTURNAL-DEWPOINTS.md).
 
-The table below classifies all **16 shipped single-domain profiles**
+The table below classifies all **24 shipped single-domain profiles**
 (`gpuwm.physics_compat.SINGLE_DOMAIN_PHYSICS_PROFILES`, which is the
-`--physics-profile` choice list). The registry carries two further
-templates that are tree-only and so have no row here --
-`thompson-mp8-ysu-mm5-noah-kf-rte-rrtmgp-v1`, the declared default
-template, and
-`20crv3-wsm6-ysu-mm5-noah-kf-rte-rrtmgp-implemented-unverified-v1` --
-and both run RTE+RRTMGP on both components, so both are nocturnally
-valid. Being absent from this table is never a verdict: a config that
-composes its own suite is classified by the same rule, at load, by the
-same guard.
+`--physics-profile` choice list). The registry carries one further
+template that no fixed-template route declares and so has no row here
+-- `thompson-mp8-ysu-mm5-noah-kf-rte-rrtmgp-v1`, the declared default
+template -- and it runs RTE+RRTMGP on both components, so it is
+nocturnally valid. Being absent from this table is never a verdict: a
+config that composes its own suite is classified by the same rule, at
+load, by the same guard.
 
 | profile | radiation (lw / sw) | nocturnally valid |
 |---|---|---|
@@ -1636,6 +1675,9 @@ same guard.
 | `wsm6-mynn-mynn-noah-rte-rrtmgp-implemented-unverified-v1` | RTE+RRTMGP / RTE+RRTMGP | **yes** |
 | `wsm6-mynn-mynn-ruc-rte-rrtmgp-implemented-unverified-v1` | RTE+RRTMGP / RTE+RRTMGP | **yes** |
 | `wsm6-mynn-mynn-noahmp-rte-rrtmgp-expert-only-v1` | RTE+RRTMGP / RTE+RRTMGP | **yes** |
+| `20crv3-wsm6-ysu-mm5-noah-kf-rte-rrtmgp-implemented-unverified-v1` | RTE+RRTMGP / RTE+RRTMGP (declared as the aggregate `ra_physics = 4`) | **yes** |
+| `milbrandt2mom-mp9-ysu-mm5-noah-ntiedtke-rrtmg-legacy-v1` | legacy RRTMG / legacy RRTMG | **yes** |
+| `wdm6-mp16-ysu-mm5-noah-grell-freitas-rte-rrtmgp-v1` | RTE+RRTMGP / RTE+RRTMGP | **yes** |
 | `thompson-mp8-ysu-mm5-noah-validation-v1` | OFF / Dudhia | **no** |
 | `wsm6-ysu-mm5-noah-no-radiation-v1` | OFF / Dudhia | **no** |
 | `kessler-mp1-ysu-mm5-noah-dudhia-v1` | OFF / Dudhia | **no** |
@@ -1644,6 +1686,10 @@ same guard.
 | `wsm6-mynn-mynn-ruc-no-radiation-implemented-unverified-v1` | OFF / Dudhia | **no** -- nocturnal sibling: `wsm6-mynn-mynn-ruc-rte-rrtmgp-implemented-unverified-v1` |
 | `wsm6-ysu-mm5-noahmp-no-radiation-expert-only-v1` | OFF / Dudhia | **no** |
 | `wsm6-mynn-mynn-noahmp-no-radiation-expert-only-v1` | OFF / Dudhia | **no** -- nocturnal sibling: `wsm6-mynn-mynn-noahmp-rte-rrtmgp-expert-only-v1` |
+| `wsm6-sase-revised-mm5-noah-closure-supplied-v1` | OFF / Dudhia | **no** |
+| `wsm6-pbl-off-mm5-noah-tke-1-5-order-v1` | OFF / Dudhia | **no** |
+| `wsm6-pbl-off-mm5-noah-smagorinsky-3d-v1` | OFF / Dudhia | **no** |
+| `wsm6-pbl-off-mm5-noah-constant-k-v1` | OFF / Dudhia | **no** |
 
 Each MYNN sibling pair differs in the radiation block and nothing else
 -- exactly five switches move, measured: `ra_lw_physics` 0 -> 4,

@@ -1381,6 +1381,34 @@ class ProgressOptions:
             progress_every=getattr(args, "progress_every", 1),
             frame_markers=getattr(args, "frame_markers", True))
 
+    @staticmethod
+    def worker_flags(options) -> list[str]:
+        """These four answers, spelled back as argv for a worker child.
+
+        The inverse of :meth:`from_args`, and it lives beside it so the
+        four flags have ONE spelling in this tree.  A door that
+        re-launches itself as a supervised worker has to hand the child
+        what it was given; a flag accepted at the door and dropped at
+        the re-launch is a flag that quietly did nothing.
+
+        ``None`` and the defaults produce no argv at all, so a child
+        launched by a door that was given no flags is launched exactly
+        as it was before this existed.
+        """
+
+        if options is None:
+            return []
+        flags: list[str] = []
+        if options.progress_format != "text":
+            flags += ["--progress-format", str(options.progress_format)]
+        if options.progress_output is not None:
+            flags += ["--progress-output", str(options.progress_output)]
+        if int(options.progress_every) != 1:
+            flags += ["--progress-every", str(int(options.progress_every))]
+        if not options.frame_markers:
+            flags.append("--no-frame-markers")
+        return flags
+
     def open(self, *, outdir, start_time, run_seconds, text_stream=None,
              adaptive_dt: bool = False):
         return open_step_log(

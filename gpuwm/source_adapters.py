@@ -126,6 +126,8 @@ class SourceAdapter:
     #: (the generic ``mapped`` route reads it from the caller's own mapping),
     #: and the wizard refuses to plan such a source by name.
     forcing_interval_seconds: float | None = None
+    #: The acquisition consumes every native frame; a cadence cannot subsample it.
+    fetch_entire_window: bool = False
     #: The smallest pressure (Pa) this source's CERTIFIED inventory serves
     #: -- the top of the ladder its route decodes, a published fact of the
     #: source like its cadence.  ``None`` means the column reaches at
@@ -186,6 +188,30 @@ class SourceAdapter:
     # requirement for children initialized by a different target operation.
     root_target_interior_axis: int | None = field(
         default=None, compare=False, repr=False, kw_only=True)
+    #: Canonical analysis fields this row's own route serves, for a
+    #: consumer that locates something in them -- today the cyclone
+    #: seeder.  A ROW'S OWN STATEMENT, never a consumer's table: a row
+    #: that names a ``packaged_profile`` states its inventory in that
+    #: profile's mapping and declares nothing here, and
+    #: :func:`gpuwm.cyclone_seed.source_inventory` reads the two as one
+    #: set.  So this column carries the NATIVE routes, whose inventory is
+    #: in their runner rather than in a JSON mapping, and adding a model
+    #: still touches no consumer.
+    #:
+    #: A name here is a claim about what the route serves and is only
+    #: written from what this tree already records that the product
+    #: publishes.  A field the mapping deliberately does not consume is
+    #: not declared: it would read as available to the seeder and fail at
+    #: the one place a seed is supposed to be dependable.
+    seed_fields: tuple[str, ...] = ()
+    # Selection metadata for regional initial and boundary conditions. The
+    # source registry owns product/time semantics independently of transport.
+    time_axis: str | None = None
+    selection_owner: str | None = None
+    forecast_time_owner: str | None = None
+    forecast_time_cycle_argument: bool = False
+    case_data_file: str | None = None
+    case_data_vtable: str | None = None
     notes: str = ""
 
     @property
@@ -195,6 +221,14 @@ class SourceAdapter:
         return (self.display_name or "").strip() or self.source_id
 
     def __post_init__(self) -> None:
+        if type(self.forecast_time_cycle_argument) is not bool:
+            raise TypeError("forecast_time_cycle_argument must be a boolean")
+        for name in ("selection_owner", "forecast_time_owner"):
+            value = getattr(self, name)
+            if value is not None and (not isinstance(value, str) or not value.strip()):
+                raise TypeError(f"{name} must name an owner or be None")
+        if self.time_axis not in (None, "forecast_leads", "analysis_times", "supplied_times"):
+            raise ValueError("time_axis must name forecast leads, analysis times or supplied times")
         for credential in self.credentials:
             if not isinstance(credential, SourceCredential):
                 raise TypeError(
@@ -262,12 +296,20 @@ def _adapter(
     composition: str | None = None,
     member_set: str | None = None,
     forcing_interval_seconds: float | None = None,
+    fetch_entire_window: bool = False,
     certified_source_top_pa: float | None = None,
     coverage: CoverageWindow | None = None,
     cycles: CycleGrid | None = None,
     archives: tuple[ArchiveWindow, ...] = (),
     root_target_interior_axis: int | None = None,
     notes: str = "",
+    seed_fields: tuple[str, ...] = (),
+    time_axis: str | None = None,
+    selection_owner: str | None = None,
+    forecast_time_owner: str | None = None,
+    forecast_time_cycle_argument: bool = False,
+    case_data_file: str | None = None,
+    case_data_vtable: str | None = None,
 ) -> SourceAdapter:
     return SourceAdapter(
         source_id=source_id,
@@ -298,6 +340,7 @@ def _adapter(
         composition_requirement=composition,
         member_set=member_set,
         forcing_interval_seconds=forcing_interval_seconds,
+        fetch_entire_window=fetch_entire_window,
         certified_source_top_pa=certified_source_top_pa,
         coverage_window=coverage,
         cycle_grid=cycles,
@@ -306,6 +349,11 @@ def _adapter(
         display_name=name,
         credentials=tuple(credentials),
         notes=notes,
+        seed_fields=tuple(seed_fields),
+        time_axis=time_axis, selection_owner=selection_owner,
+        forecast_time_owner=forecast_time_owner,
+        forecast_time_cycle_argument=forecast_time_cycle_argument,
+        case_data_file=case_data_file, case_data_vtable=case_data_vtable,
     )
 
 
@@ -399,6 +447,17 @@ _HRRR_NATIVE_ARCHIVE = ArchiveWindow(
 _ADAPTERS = (
     _adapter(
         "hrrr",
+        forecast_time_owner="hrrr_forecast_hours",
+        forecast_time_cycle_argument=True,
+        fetch_entire_window=True,
+        # The native route serves the sea-level field too: `sfc` carries
+        # MSLMA, which is the sea-level pressure this product publishes
+        # (wx-core's HRRR model config names it as such), so the seeder's
+        # first rung is reachable here exactly as it is on the other two
+        # native rows.  Without it a supplied HRRR analysis fell through
+        # to the 850 hPa vorticity rung with "MSLP is not declared".
+        seed_fields=('air_pressure', 'air_temperature', 'eastward_wind',
+                     'northward_wind', 'mean_sea_level_pressure'),
         archives=(_HRRR_NATIVE_ARCHIVE,),
         name="HRRR (native hybrid levels)",
         default_product="sfc",
@@ -581,6 +640,9 @@ _ADAPTERS = (
     ),
     _adapter(
         "gfs",
+        forecast_time_owner="gfs_forecast_hours",
+        seed_fields=('air_pressure', 'air_temperature', 'eastward_wind',
+                     'northward_wind', 'mean_sea_level_pressure'),
         archives=(_GLOBAL_PGRB2_ARCHIVE,),
         name="GFS (global, 0.25 degree)", aliases=("gfs-0p25", "gfs-0.25"),
         default_product="pgrb2.0p25", max_hour=384,
@@ -624,6 +686,7 @@ _ADAPTERS = (
     ),
     _adapter(
         "gdas",
+        forecast_time_owner="gdas_forecast_hours",
         archives=(_GLOBAL_PGRB2_ARCHIVE,),
         name="GDAS analysis (0.25 degree)", aliases=("gdas-0p25", "gdas-0.25"),
         file_family="GRIB2",
@@ -1107,6 +1170,10 @@ _ADAPTERS = (
     ),
     _adapter(
         "era5",
+        time_axis="analysis_times",
+        selection_owner="gpuwm.era5_member",
+        seed_fields=('air_pressure', 'air_temperature', 'eastward_wind',
+                     'northward_wind', 'mean_sea_level_pressure'),
         archives=(_ERA5_ARCHIVE,),
         name="ERA5 reanalysis (ECMWF)",
         credentials=(_COPERNICUS_CDS_KEY,),
@@ -1125,6 +1192,8 @@ _ADAPTERS = (
         ),
         runnable=True,
         runner="era5_combined_grib1_v1",
+        case_data_file="era5-combined.grib",
+        case_data_vtable="data/vtables/Vtable.ERA5_CDO",
         forcing_interval_seconds=21600.0,
         # THE ROW THAT MADE THE COLUMN.  `--cycle latest` used to be
         # refused here with the sentence "a reanalysis published with
@@ -1158,6 +1227,7 @@ _ADAPTERS = (
     ),
     _adapter(
         "era5-l137",
+        time_axis="analysis_times",
         archives=(_ERA5_ARCHIVE,),
         name="ERA5 reanalysis (native 137 model levels)",
         aliases=("era5-model-level", "era5-ml"),
@@ -1225,6 +1295,7 @@ _ADAPTERS = (
     ),
     _adapter(
         "20crv3",
+        time_axis="analysis_times",
         name="20CRv3 reanalysis (member, GRIB2)",
         aliases=("20cr", "twentycrv3", "20crv3-member"),
         upstream_model_id=None,
@@ -1261,6 +1332,7 @@ _ADAPTERS = (
     ),
     _adapter(
         "20crv3-cf",
+        time_axis="analysis_times",
         name="20CRv3 reanalysis (ensemble mean, NetCDF)",
         aliases=("20crv3-netcdf", "20cr-netcdf", "20cr-cf"),
         upstream_model_id=None,

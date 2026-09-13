@@ -884,6 +884,9 @@ fn with_render_state_profile_with_style<T>(
             cmap,
             background: request.background.into(),
             colorbar: request.colorbar,
+            // Product preparation has already converted this field. Its
+            // own units describe the displayed values and legend scale.
+            colorbar_units: Some(request.field.units.clone()),
             title: request.title.clone().or(default_title),
             subtitle_left: request.subtitle_left.clone(),
             subtitle_center: request.subtitle_center.clone(),

@@ -1,29 +1,33 @@
 # Verification
 
-ArWen's development rule was that no model code is accepted on
-generation: every WRF-derived mechanism is gated against WRF v4.6.1
-(upstream <https://github.com/wrf-model/WRF>, tag `v4.6.1`, commit
-`d66e442fccc04111067e29274c9f9eaccc3cef28`) before it ships. This page
-states the methodology, the measured results, and -- with equal
-prominence -- what is deliberately not claimed. It ends with
-instructions for reproducing the headline comparison.
+WRF-derived mechanisms target WRF v4.6.1 (upstream
+<https://github.com/wrf-model/WRF>, tag `v4.6.1`, commit
+`d66e442fccc04111067e29274c9f9eaccc3cef28`), with declared deviations.
+Evidence differs by routine: some have comparisons against unmodified
+Fortran, some have transcription or self-consistency tests only, and
+some have no independent oracle measurement. Per-option evidence is
+listed in [PHYSICS.md](PHYSICS.md). This page describes the retained
+measurements, their scope, and how to reproduce the historical
+headline comparison. A historical receipt is not a measurement of a
+later engine revision.
 
 ## 1. Methodology
 
-Four instruments, in increasing scope:
+Four distinct instruments; their conclusions are not interchangeable:
 
-1. **Component ULP oracles.** For each ported physics routine, a
-   harness drives the byte-unmodified WRF v4.6.1 Fortran (compiled from
+1. **Component ULP comparisons.** An independent reference oracle
+   drives the byte-unmodified WRF v4.6.1 Fortran (compiled from
    the pinned commit) over fixture columns and dumps inputs and
    outputs; the CUDA port is compared field by field in units of FP32
-   ULP (units in the last place). Examples shipped in this tree:
+   ULP (units in the last place). Transcription and self-consistency
+   fixtures are separate forms of evidence. Available tools and decks include
    `tools/noah_wrf461_oracle`, `tools/ysu_wrf461_oracle`,
    `tools/morrison_wrf461_oracle`, the Noah-MP and RUC column oracles,
    and the legacy-RRTMG fixture decks. Where a routine is bit-exact the
    gate pins max ULP 0 (for example, the batched legacy-RRTMG LW and SW
    engines are bit-identical to their transcription oracles over the
    full fixture decks at four chunk sizes); where it is not, the
-   measured distance and its cause are recorded in the physics registry
+   measured distance and any identified cause are recorded in the physics registry
    rather than hidden behind a tolerance (see
    [PHYSICS.md](PHYSICS.md)).
 
@@ -37,6 +41,13 @@ Four instruments, in increasing scope:
    **FAIL**, on all four domains
    ([receipt](../../gpuwm/data/certification/t0_state_parity_digest.json),
    [table](../../gpuwm/data/certification/t0_state_parity_digest.md)).
+   The artifact's historical name is "full-state digest", but its
+   coverage rule requires at least one scored array per required group,
+   not every runtime carrier. Absent variables and unavailable boundaries
+   remain unmeasured. A history frame also need not contain restart-only
+   state. Establish initial time, expected domains, field applicability,
+   units, staggering and vertical coordinates separately before using
+   this receipt as evidence of a shared initial condition.
 
 3. **Matched-run protocol.** The model integrates a real case with
    physics, geometry, and output cadence matched to a WRF v4.6.1 CPU
@@ -106,11 +117,16 @@ against the pinned ceilings -- the two t=0 states do not agree: verdict
 **FAIL** on all four domains
 ([receipt](../../gpuwm/data/certification/t0_state_parity_digest.json),
 [table](../../gpuwm/data/certification/t0_state_parity_digest.md)).
-Only the precipitation accumulators are bit-identical. On d01 the
-largest disagreements are 66 Pa in perturbation pressure, 0.75 m in
-terrain height, 296 K in the deepest soil layer and ten categories in
-the land-use index; the receipt carries the per-array numbers for all
-four domains. The tables below therefore contain initial-state
+Only the accumulation group passes as a whole on every domain; some
+individual arrays in other groups are also bit-identical. On d01 the
+reported maximum absolute differences include 66 Pa in perturbation
+pressure, 0.75 m in terrain height, 296 K in soil temperature, and a
+land-use code difference of ten. The receipt does not record the
+extremum's index, soil depth, active mask or both compared values, so it
+does not by itself locate or explain the soil-temperature discrepancy.
+Land-use codes are categories, not a physical distance scale. The receipt
+carries the per-array numbers for all four domains. The tables below
+therefore contain initial-state
 differences as well as forecast divergence, and the digest is where the
 size of the former is written down.
 
@@ -210,35 +226,27 @@ relaunch: SHA256-identical (d03 and d04 checked explicitly). ArWen
 reproduces its own trajectory bit-for-bit under restart-free relaunch
 on the same hardware and build.
 
-## 4. The chaos floor: how to read the late fine-mesh numbers
+## 4. Late fine-mesh divergence: measured, not causally attributed
 
-The d03/d04 late-lead numbers are not a defect signature; they are what
-point metrics do to convection-permitting forecasts, and the evidence
-for that reading is in the tables themselves:
+On d03, W correlation falls from 0.986 at F2 to 0.333 at F3 and ends at
+0.138 at F6. On d04 it ends at 0.110. These are measured differences
+between the historical forecasts, not a diagnosis of their cause.
 
-- **W correlation is a step function, not a decay curve.** On d03 it
-  falls from 0.986 to 0.333 in the single hour when deep convection
-  initiates (14Z to 15Z), then holds flat-to-recovering for two hours
-  (0.333 -> 0.358 -> 0.370). Once individual updrafts exist, vertical
-  velocity is a small-scale chaotic field and point correlation stops
-  measuring model agreement. d02 shows the same shape one scale
-  coarser; d01, which never resolves updrafts, decays smoothly and
-  stays above 0.9.
-- **The fine-mesh CSI collapse is reproduced by both runs.** The
-  d03/d02 CSI ratio starts near 0.8 at 15Z and falls to roughly
-  0.54-0.62 as convection matures -- in the old run and in the new run
-  at nearly the same ratio. Pixel-overlap scoring of 1 km cells
-  penalizes small displacement errors that carry no information about
-  model fidelity.
-- **Peak-reflectivity differences alternate sign.** Across all 21
-  scored leads the GPU maximum exceeds the CPU maximum 15 times, falls
-  below it 5 times, and ties once. That is chaotic divergence of
-  individual cells, not a systematic intensity bias.
+Convective sensitivity and displacement are plausible contributors.
+However, the initial-state digest fails, boundary tables were not
+retained, and these tables contain no matched reference-versus-reference
+control that establishes a nondegenerate sensitivity envelope for this
+configuration and window. The tables therefore do not exclude ingest,
+geometry, coupling, physics or dynamics errors. Alternating signs in
+peak-reflectivity differences do not establish absence of intensity bias.
 
-Meanwhile the mesoscale envelope -- squall-line position, surface
-temperature and pressure fields, 10 m wind -- stays close through the
-full window on every domain (at 18Z on d02: refl corr 0.929, wind10
-corr 0.988, T2 MAE 0.165 K).
+At d02 F6, reflectivity correlation is 0.929, 10 m wind correlation is
+0.988 and T2 MAE is 0.165 K. That narrower agreement remains useful
+model-versus-model evidence; it neither proves observed forecast skill
+nor supplies a causal explanation for differences on the finer domains.
+
+A zero sensitivity envelope is not a passing chaos allowance. These
+historical scores do not establish a tolerance for a later forecast.
 
 ## 5. Worldwide projections: what their shallower tier means
 
@@ -321,8 +329,10 @@ Claimed, each with its receipt above or in the linked pages:
 - Named component routines bit-exact or measured-ULP-close to
   unmodified WRF v4.6.1 Fortran, per the physics registry's per-option
   records ([PHYSICS.md](PHYSICS.md)).
-- Matched-run forecast agreement on the reference case at the levels
-  tabulated in section 3.
+- Historical model-versus-model forecast agreement on the reference
+  case at the levels tabulated in section 3, with unequal initial states.
+  This is not a pure test of time integration and does not validate
+  subsequent engine changes or a different physics configuration.
 - Bit-deterministic re-execution on fixed hardware and build.
 - Unchanged stock WRF v4.6.1 accepts and integrates this
   preprocessor's outputs, within the stated boundaries
@@ -490,11 +500,13 @@ written.
   machine-wide VRAM peak was 29,004 MiB (28.3 GiB) on a 32 GiB card --
   this case is sized for a 32 GiB card and will not fit smaller ones;
   size your own case with `gpuwm domain` ([HARDWARE.md](HARDWARE.md)).
-- **Expected result:** metrics within ordinary chaotic-divergence
-  scatter of section 3's tables (bit-identical only if hardware,
-  driver, and build match the run of record). The digest command scores
-  the two t=0 states array by array and, as on the run of record, they
-  do not agree within the pinned ceilings -- verdict **FAIL**; compare
-  your per-array numbers against the committed
-  [receipt](../../gpuwm/data/certification/t0_state_parity_digest.json)
-  rather than expecting a floor.
+- **Expected result:** compare the new per-frame metrics with section 3
+  and retain all differences. This page supplies no calibrated tolerance
+  for a new run or a later build; it does not establish a chaos allowance.
+  Same-build determinism is a separate, explicitly tested property.
+  The digest command scores the two t=0 states array by array. Preserve
+  the verdict it measures. The historical result was **FAIL**, not a
+  requirement that later initial states must also fail; compare the
+  per-array numbers with the committed
+  [receipt](../../gpuwm/data/certification/t0_state_parity_digest.json).
+  Missing coverage remains unmeasured rather than equivalent.

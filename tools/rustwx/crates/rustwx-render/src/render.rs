@@ -41,6 +41,7 @@ pub struct RenderOpts {
     pub cmap: LeveledColormap,
     pub background: Rgba,
     pub colorbar: bool,
+    pub colorbar_units: Option<String>,
     pub title: Option<String>,
     pub subtitle_left: Option<String>,
     pub subtitle_center: Option<String>,
@@ -220,6 +221,7 @@ impl Default for RenderOpts {
             },
             background: Rgba::WHITE,
             colorbar: true,
+            colorbar_units: None,
             title: None,
             subtitle_left: None,
             subtitle_center: None,
@@ -4886,6 +4888,60 @@ fn draw_chrome_and_colorbar(
                         }
                     }
                 }
+            }
+        }
+        if let Some(units) = opts.colorbar_units.as_deref().filter(|s| !s.trim().is_empty()) {
+            let units = units.trim();
+            let width = text::text_width_with_factor(
+                units, layout.text_scale, layout.label_factor);
+            let height = text::regular_line_height_with_factor(
+                layout.text_scale, layout.label_factor);
+            let gap = 4u32.saturating_mul(layout.text_scale.max(1));
+            let mut vertical_label = None;
+            let (x, y) = match colorbar_orientation {
+                ColorbarOrientation::HorizontalBottom => (
+                    cbar_x.saturating_sub(width.saturating_add(gap)),
+                    cbar_y.saturating_add(layout.cbar_h).saturating_sub(height),
+                ),
+                ColorbarOrientation::VerticalRight
+                    if cbar_y >= height + gap
+                        && width <= img.width().saturating_sub(cbar_x) => (
+                    cbar_x.saturating_add(cbar_w / 2)
+                        .saturating_sub(width / 2).max(cbar_x),
+                    cbar_y - height - gap,
+                ),
+                ColorbarOrientation::VerticalRight => {
+                    // The header belongs to the map's title and timestamps.
+                    // If the label has no complete row within the legend
+                    // column, retain every glyph in the side margin.
+                    let tick_width = ticks.iter().map(|value| {
+                        text::text_width_with_factor(
+                            &text::format_tick(*value), layout.text_scale,
+                            layout.label_factor)
+                    }).max().unwrap_or(0);
+                    let label = text::vertical_text(units, layout.text_scale, layout.label_factor);
+                    let legend_left = cbar_x.saturating_add(cbar_w)
+                        .saturating_add(6 * layout.text_scale.max(1))
+                        .saturating_add(tick_width).saturating_add(gap);
+                    let spare_width = img.width().saturating_sub(legend_left);
+                    let position = (
+                        legend_left.saturating_add(spare_width.saturating_sub(label.width) / 2),
+                        cbar_y.saturating_add(layout.cbar_h / 2).saturating_sub(label.height / 2),
+                    );
+                    vertical_label = Some(label);
+                    position
+                }
+            };
+            if let Some(label) = vertical_label {
+                label.draw(img, x, y, opts.presentation.colorbar.label_color);
+            } else {
+                text::draw_text_with_factor(
+                    img, units,
+                    x.min(img.width().saturating_sub(width)) as i32,
+                    y.min(img.height().saturating_sub(height)) as i32,
+                    opts.presentation.colorbar.label_color, layout.text_scale,
+                    layout.label_factor,
+                );
             }
         }
     }

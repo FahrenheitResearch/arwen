@@ -1,7 +1,7 @@
 """Locate and drive one of the vendored observation front doors.
 
-:mod:`gpuwm.obs.nexrad` established the shape — resolution ladder, ``--abi``
-probe, JSON record with a checked schema — for one binary. The battery adds
+:mod:`gpuwm.obs.nexrad` established the shape: resolution ladder, ``--abi``
+probe, JSON record with a checked schema, for one binary. The battery adds
 four more (``rw_mrms``, ``rw_stage4``, ``rw_asos``, ``rw_goes``), and four
 more copies of that shape is four places for the ladder to drift. So the
 shape lives here once and each instrument module supplies its own names.
@@ -149,7 +149,7 @@ class FrontDoor:
         return True, f"{transcript} -- --abi matches the record contract"
 
     def run(self, subcommand: str, arguments: list[str], *,
-            schema: str) -> dict:
+            schema: str, binary: Path | None = None) -> dict:
         """Run one subcommand and parse its JSON record.
 
         A non-zero exit, unparseable output, or a record declaring a schema
@@ -158,7 +158,9 @@ class FrontDoor:
         read a record shape nobody checked.
         """
 
-        binary = self.require()
+        # A reviewed caller may bind the already-probed executable so a
+        # companion resolver cannot change the provider between stages.
+        binary = self.require() if binary is None else Path(binary)
         command = [str(binary), subcommand, *arguments]
         try:
             result = subprocess.run(
@@ -178,6 +180,8 @@ class FrontDoor:
             raise RuntimeError(
                 f"{self.name} {subcommand} did not print a JSON record: "
                 f"{error}") from error
+        if not isinstance(record, dict):
+            raise RuntimeError(f"{self.name} {subcommand} did not print a JSON object")
         if record.get("schema") != schema:
             raise RuntimeError(
                 f"{self.name} {subcommand} printed schema "

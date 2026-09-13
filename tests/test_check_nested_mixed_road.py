@@ -88,6 +88,7 @@ def _nested_auto_tiles(tmp_path, name="tree", *, tree_tiles=_TREE_AUTO,
         source = "gfs"
         cycle = "2024-05-03T12"
         hours = 1
+        cadence = 1
 
         [shared]
         nz = 49

@@ -73,7 +73,7 @@ fn workspace_peer(path: &Path) {
     assert_eq!(status["target"]["kind"], "local");
     write_json(&cwd.join("observed-handoff.json"), handoff.clone());
     match env::var("ARWEN_TEST_PEER_MODE").unwrap().as_str() {
-        "idle" | "slow-probe" => return,
+        "idle" | "local-da-opt-in" | "slow-probe" => return,
         "failed" => std::process::exit(7),
         "worker" => {},
         "downscale" => { downscale_peer(&handoff, &cwd); return; },
@@ -212,9 +212,15 @@ fn main() {
     }
     let python = PathBuf::from(env::var_os("GPUWM_TUI_TEST_PYTHON").expect("set test Python path"));
     assert!(python.is_absolute() && python.is_file());
-    for mode in ["idle", "worker", "downscale", "failed", "missing", "snapshot", "missing-python", "malformed-probe", "slow-probe", "hung-probe"] {
+    let modes: &[&str] = if args.iter().any(|arg| arg == "--local-da-opt-in-only") {
+        &["idle", "local-da-opt-in"]
+    } else {
+        &["idle", "local-da-opt-in", "worker", "downscale", "failed", "missing", "snapshot", "missing-python", "malformed-probe", "slow-probe", "hung-probe"]
+    };
+    for &mode in modes {
         let root = scratch(mode);
         let mut launch = command(&root, &python, mode);
+        if mode == "local-da-opt-in" { launch.arg("--enable-local-da"); }
         if mode == "missing" { launch.arg("--companion").arg(root.join("unavailable-workspace.exe")); }
         if mode == "snapshot" { launch.arg("--snapshot").arg(root.join("snapshot.html")); }
         if mode == "missing-python" { launch.arg("--python").arg(root.join("unavailable-python.exe")); }
@@ -254,7 +260,7 @@ fn main() {
         }
         let status = process.wait();
         let stderr = fs::read_to_string(root.join("controller.stderr.log")).unwrap();
-        assert_eq!(status.success(), matches!(mode, "idle" | "worker" | "downscale" | "slow-probe"), "{mode}: {stderr}");
+        assert_eq!(status.success(), matches!(mode, "idle" | "local-da-opt-in" | "worker" | "downscale" | "slow-probe"), "{mode}: {stderr}");
         assert!(!stderr.contains("interactive terminal"), "headless mode reached terminal initialization");
         if mode == "missing" { assert!(stderr.contains("Visual workspace is not installed"), "{stderr}"); }
         if mode == "snapshot" { assert!(stderr.contains("read-only snapshot"), "{stderr}"); }
@@ -277,8 +283,9 @@ fn main() {
             }
             #[cfg(unix)] unsafe { assert_ne!(libc::kill(pid as i32, 0), 0, "timed-out version process was not reaped"); }
         }
-        if matches!(mode, "idle" | "worker" | "downscale" | "failed" | "slow-probe") {
+        if matches!(mode, "idle" | "local-da-opt-in" | "worker" | "downscale" | "failed" | "slow-probe") {
             let handoff = document(&root.join("observed-handoff.json"));
+            assert_eq!(handoff["experimental_features"]["local_da"], mode == "local-da-opt-in");
             let status = document(Path::new(handoff["status_path"].as_str().unwrap()));
             assert_eq!(status["state"], "closed");
             let log_path = Path::new(handoff["control_dir"].as_str().unwrap()).join("companion.log");
