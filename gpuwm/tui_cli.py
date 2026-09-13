@@ -1,6 +1,7 @@
 """Launch the packaged Rust terminal workspace with this Python installation."""
 from __future__ import annotations
 
+import argparse
 import os
 from pathlib import Path
 import subprocess
@@ -64,6 +65,8 @@ def tui_main(args) -> int:
             value = getattr(args, name, None)
             if value is not None:
                 command.extend(("--" + name.replace("_", "-"), str(value)))
+        if getattr(args, "enable_local_da", False):
+            command.append("--enable-local-da")
         # The terminal spawns every engine worker from this interpreter with
         # -P; PYTHONSAFEPATH covers the same ground for anything else it runs,
         # so a gpuwm/ folder in the launch directory never shadows the engine.
@@ -79,6 +82,7 @@ def register_cli(subparsers) -> None:
         "tui", help="open the Rust terminal workspace",
         description="Open the terminal workspace using this installed Python environment. "
                     "Opening it starts no forecast.")
+    parser.add_argument("--enable-local-da", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--config", type=Path, metavar="FILE",
                         help="open an existing configuration")
     parser.add_argument("--output", type=Path, metavar="DIR",

@@ -80,7 +80,8 @@ def test_obsolete_terminal_contract_refuses_without_fallback(monkeypatch, tmp_pa
         tui_cli.require_tui()
 
 
-def test_public_tui_arguments_survive_a_real_subprocess(monkeypatch, tmp_path):
+@pytest.mark.parametrize("enable_local_da", [False, True])
+def test_public_tui_arguments_survive_a_real_subprocess(monkeypatch, tmp_path, enable_local_da):
     from gpuwm.cli import build_parser
 
     # The probe records the actual argv reconstructed by the OS, including
@@ -113,13 +114,26 @@ def test_public_tui_arguments_survive_a_real_subprocess(monkeypatch, tmp_path):
         "--snapshot-screen": "mode:supercell",
     }
     tokens = [item for pair in values.items() for item in pair]
+    if enable_local_da:
+        tokens.append("--enable-local-da")
     args = build_parser().parse_args(["tui", *tokens])
     assert args.func(args) == 7
     actual = json.loads(received.read_text(encoding="utf-8"))
     expected = [str(binary), "--python", sys.executable]
     for flag, value in values.items():
         expected.extend((flag, str(Path(value))))
+    if enable_local_da:
+        expected.append("--enable-local-da")
     assert actual == expected
+
+
+def test_local_da_opt_in_is_hidden_from_ordinary_tui_help(capsys):
+    from gpuwm.cli import build_parser
+
+    with pytest.raises(SystemExit) as stopped:
+        build_parser().parse_args(["tui", "--help"])
+    assert stopped.value.code == 0
+    assert "--enable-local-da" not in capsys.readouterr().out
 
 
 def test_tui_uses_current_interpreter_despite_ambient_tui_python(monkeypatch):
