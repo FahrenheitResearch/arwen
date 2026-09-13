@@ -36,6 +36,7 @@ denser) cadence.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import re
@@ -201,6 +202,68 @@ def _parent_geometry(path: Path) -> dict[str, object]:
                 value = value[0]
             result[name.lower()] = value
     return result
+
+
+
+def inspect_downscale_parent(directory: Path, parent_domain: int | None) -> dict:
+    """Read the selected archive's own geometry, including a standalone child.
+
+    A legacy child TOML has no projection. The Rust-decoded history coordinates
+    remain authoritative regardless of the configuration schema that made it.
+    """
+    from gpuwm.filesystem_paths import io_path
+    frames = _discover_parent_series([io_path(directory)], parent_domain)
+    frame = frames[0]
+    grid = _parent_geometry(frame)
+    j, i = int(grid['ny']) // 2, int(grid['nx']) // 2
+    center = [float(grid['xlat'][j, i]), float(grid['xlong'][j, i])]
+    if not all(math.isfinite(value) for value in center):
+        raise OfflineChildContractError('The parent history has no finite center coordinates')
+    # Normalize the longitude spelling only; the point remains the same cell.
+    center[1] = (center[1] + 180.0) % 360.0 - 180.0
+    actual_domain = int(_FRAME_RE.match(frame.name).group('dom'))
+    return {'schema': 'gpuwm.downscale-parent.v1', 'parent_domain': actual_domain,
+            'history_frame': str(frame), 'geometry_backend': 'rust-netcdf',
+            'center_latlon': center, 'nx': grid['nx'], 'ny': grid['ny'],
+            'nz': grid['nz'], 'dx_m': grid['dx'], 'dy_m': grid['dy']}
+
+
+def downscale_parent_main(args) -> int:
+    import contextlib
+    import sys
+    try:
+        with contextlib.redirect_stdout(sys.stderr):
+            result = inspect_downscale_parent(args.parent_run_dir, args.parent_domain)
+        print(json.dumps(result, allow_nan=False))
+        return 0
+    except Exception as error:
+        print(json.dumps({'schema': 'gpuwm.downscale-parent.v1', 'error': str(error)}))
+        return 1
+
+
+def _verify_child_config_hash(path: Path, expected: str | None) -> str:
+    from gpuwm.filesystem_paths import io_path
+    actual = hashlib.sha256(io_path(path).read_bytes()).hexdigest()
+    if expected is not None and (not re.fullmatch(r'[0-9a-fA-F]{64}', expected)
+                                 or actual != expected.lower()):
+        raise OfflineChildContractError(
+            'The reviewed child configuration changed; review the edited settings again')
+    return actual
+
+
+def child_settings_document(cfg) -> dict:
+    """The existing RunConfig and installed physics registry, without a new schema."""
+    from dataclasses import asdict, fields
+    from gpuwm.companion_domains import physics_components
+    protected = {'nx', 'ny', 'nz', 'dx', 'dy', 'ztop', 'eta_levels', 'grid_id',
+                 'specified', 'nested', 'clock_dt', 'case'}
+    values = asdict(cfg)
+    return {'values': values, 'fields': [
+        {'name': field.name, 'type': str(field.type),
+         'editable': field.name not in protected,
+         'reason': ('Derived grid, vertical coordinate or boundary identity; change the domain and review again'
+                    if field.name in protected else '')}
+        for field in fields(cfg)], 'physics_components': physics_components()}
 
 
 def _parent_mass_dims(path: Path) -> tuple[int, int]:
@@ -900,14 +963,21 @@ def _fit_child_size(parent, parent_config, *, j0: int, i0: int, ratio: int,
     # verdict for a validation refusal (walked live 2026-08-17, when a
     # 2.4.1 restart's recorded key was refused by a newer validation).
     last_config_error: ValueError | None = None
+    last_placement_error: ValueError | None = None
+    any_placement_fit = False
     any_size_fit = False
     priced: dict[int, object] = {}
 
     def fits(size: int) -> bool:
-        nonlocal last_config_error, any_size_fit
+        nonlocal last_config_error, last_placement_error, any_placement_fit, any_size_fit
         try:
             _centered_placement(parent, j0=j0, i0=i0, ratio=ratio,
                                 child_nx=size, child_ny=size)
+        except (OfflineChildContractError, ValueError) as error:
+            last_placement_error = error
+            return False
+        any_placement_fit = True
+        try:
             merged = _derive_child_run_config(
                 parent_config, parent=parent, ratio=ratio,
                 child_nx=size, child_ny=size, run_seconds=run_seconds,
@@ -937,6 +1007,11 @@ def _fit_child_size(parent, parent_config, *, j0: int, i0: int, ratio: int,
         return False
 
     def cannot_plan() -> OfflineChildContractError:
+        if not any_placement_fit and last_placement_error is not None:
+            return OfflineChildContractError(
+                'No child can be centered at the requested point inside this parent with '
+                'the required interpolation margin; move the center inward or choose a larger '
+                f'parent. Placement detail: {last_placement_error}')
         # The validation attribution is claimed only when NO probed size
         # ever fit: a search that saw a genuine fit and still failed is
         # a budget/geometry story, not a validation one.
@@ -1235,6 +1310,7 @@ def _downscale_main(args, reservation: _OutputReservation,
         # still refuse at the same moment they always did.
         _parse_child_levels(args.child_levels)
         child_config = Path(args.child_config)
+        _verify_child_config_hash(child_config, getattr(args, "child_config_sha256", None))
         sizing = _sizing_budget(args, auto_vram)
         memory_basis = ("measured-local" if sizing.measured else "explicit-size")
         memory_vram_gib = sizing.vram_gib
@@ -1341,6 +1417,8 @@ def _downscale_main(args, reservation: _OutputReservation,
     # beside --child-config lands in the cfg the plan is written from and
     # the price is taken on, so review and run describe one grid.
     cfg = resolve_child_run_config(child_config, child_levels=args.child_levels)
+    child_config_sha256 = _verify_child_config_hash(
+        child_config, getattr(args, "child_config_sha256", None))
     # The run's root has to take specified boundaries.  Asked HERE, at
     # plan review and on --dry-run, instead of only once the run had
     # started (offline_child_run admission) and once the whole parent
@@ -1460,6 +1538,8 @@ def _downscale_main(args, reservation: _OutputReservation,
         "accepted_parent_cadence": bool(cadence_is_parents),
         "physics_binding": dict(binding.receipt()),
         "child_config": str(child_config),
+        "child_config_sha256": child_config_sha256,
+        "child_settings": child_settings_document(cfg),
         # WHICH ladder this child is planned and priced on, beside the
         # file that was handed in: --child-levels can replace the file's
         # own eta_levels, so the path alone no longer answers it.
@@ -1636,6 +1716,8 @@ def register_cli(subparsers) -> None:
     parser.add_argument("--child-config", type=Path, default=None,
                         help="legacy RunConfig TOML for the child "
                              "(specified=true, nested=false)")
+    parser.add_argument("--child-config-sha256", default=None,
+                        help="require the exact reviewed child configuration bytes")
     parser.add_argument("--point", default=None, metavar="LAT,LON",
                         help="derive the child around this point instead "
                              "of --child-config (gpuwm parents only)")
@@ -1754,6 +1836,11 @@ def register_cli(subparsers) -> None:
                         help="validate contracts, derive/print the plan, "
                              "write the derived TOML, run nothing")
     parser.set_defaults(func=downscale_main)
+    parent_query = subparsers.add_parser('downscale-parent',
+        help='read the selected parent history geometry as JSON')
+    parent_query.add_argument('parent_run_dir', type=Path)
+    parent_query.add_argument('--parent-domain', type=int, default=None)
+    parent_query.set_defaults(func=downscale_parent_main)
 
 
 __all__ = ["DOWNSCALE_PLAN_NAME", "DOWNSCALE_PLAN_SCHEMA",

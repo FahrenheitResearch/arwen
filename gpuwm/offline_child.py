@@ -1244,13 +1244,14 @@ def map_microphysics_to_nssl18(
         diagnose_missing: Callable[[Mapping[str, np.ndarray], Sequence[str]],
                                    Mapping[str, np.ndarray]] | None = None,
         active_mass_threshold: float = 1.0e-8,
+        air_density=None,
 ) -> tuple[Mapping[str, np.ndarray], Mapping[str, object]]:
     """Map WSM6/Thompson/Morrison transported state into NSSL mp18.
 
-    The optional ``diagnose_missing`` callback is the exact target-scheme
-    ``calcnfromq`` implementation.  Until that official initializer is
-    supplied, any active mass category lacking its number moment fails closed.
-    This prevents a superficially runnable but physically invalid child.
+    The ordinary initial and boundary remappers supply their actual child
+    air density, so missing target moments use the qualified native calcnfromq
+    initializer automatically. Its mass/CCN changes travel with its moments.
+    Direct callers can still supply an explicit diagnosis callback.
     """
 
     source_mp = int(source_mp_physics)
@@ -1372,30 +1373,40 @@ def map_microphysics_to_nssl18(
                 needs.append(number_name)
             else:
                 result[number_name] = np.zeros(shape, dtype=np.float32)
-    if needs:
-        if diagnose_missing is None:
-            raise MomentDiagnosisRequired(
-                "active NSSL categories require official calcnfromq diagnosis "
-                f"for {sorted(needs)}")
-        diagnosed = dict(diagnose_missing(MappingProxyType(result), tuple(needs)))
-        for name in needs:
-            if name not in diagnosed:
-                raise MomentDiagnosisRequired(
-                    f"calcnfromq did not return required moment {name}")
-            value = np.asarray(diagnosed[name], dtype=np.float32)
-            if value.shape != shape or not np.isfinite(value).all() or np.any(value < 0):
-                raise OfflineChildContractError(
-                    f"diagnosed {name} is non-finite, negative, or wrong-shaped")
-            result[name] = np.ascontiguousarray(value)
-
     if "qvolg" not in result:
         result["qvolg"] = np.ascontiguousarray(result["qg"] / np.float32(700.0))
     if "qvolh" not in result:
         result["qvolh"] = np.ascontiguousarray(result["qh"] / np.float32(900.0))
-    # WRF NSSL calcnfromq homogeneous background, in # kg-1.
-    qnn_background = np.float32(0.5e9 / 1.225)
+    qnn_background = np.float32(_mt.NSSL2_BACKGROUND_CCN_PER_KG)
     result["qnn"] = np.maximum(
-        np.float32(0.0), qnn_background - result["qndrop"]).astype(np.float32)
+        np.float32(0.0), qnn_background - result.get("qndrop", np.float32(0.0)))
+    if np.ndim(result["qnn"]) == 0:
+        result["qnn"] = np.full(shape, result["qnn"], dtype=np.float32)
+    initialization_receipt = None
+    if needs:
+        if diagnose_missing is None:
+            if air_density is None:
+                raise MomentDiagnosisRequired(
+                    "active NSSL categories require official calcnfromq diagnosis "
+                    f"for {sorted(needs)}; supply the actual child air density")
+            from gpuwm.core.nssl2_offline_init import initialize_missing_moments
+            density = air_density() if callable(air_density) else air_density
+            # Complete target state is returned: copying only the missing
+            # moments would discard calcnfromq's mass return to vapor.
+            result, initialization_receipt = initialize_missing_moments(result, density)
+        else:
+            diagnosed = dict(diagnose_missing(MappingProxyType(result), tuple(needs)))
+            for name in needs:
+                if name not in diagnosed:
+                    raise MomentDiagnosisRequired(
+                        f"calcnfromq did not return required moment {name}")
+                result[name] = np.ascontiguousarray(diagnosed[name], dtype=np.float32)
+            result["qnn"] = np.maximum(
+                np.float32(0.0), qnn_background - result["qndrop"]).astype(np.float32)
+    for name, value in result.items():
+        if value.shape != shape or not np.isfinite(value).all() or np.any(value < 0):
+            raise OfflineChildContractError(
+                f"diagnosed {name} is non-finite, negative, or wrong-shaped")
 
     unknown = set(result) - set(_NSSL_FIELDS)
     missing = set(_NSSL_FIELDS) - set(result)
@@ -1409,6 +1420,7 @@ def map_microphysics_to_nssl18(
         "category_mapping": category_mapping,
         "carried_source_moments": tuple(sorted(carried)),
         "diagnosed_target_moments": tuple(sorted(needs)),
+        "target_initialization": initialization_receipt,
         "qnn_background_number_per_kg": float(qnn_background),
         "graupel_init_density_kg_m3": 700.0,
         "hail_init_density_kg_m3": 900.0,
@@ -2012,6 +2024,21 @@ def _resolve_source_physics(
     return source_mp_physics, morr_rimed_ice
 
 
+# Condensate and vapor mass have the same physical lower bound, but never
+# the number-moment absolute floor. Keep original corrupt source data visible.
+_POSITIVE_MASS_FIELDS = _MASS_FIELDS + ("qh",)
+
+
+def _validate_parent_mass_fields(moisture):
+    for name in _POSITIVE_MASS_FIELDS:
+        if name not in moisture:
+            continue
+        value = np.asarray(moisture[name])
+        if not np.isfinite(value).all() or np.any(value < 0):
+            raise OfflineChildContractError(
+                f"parent history mass field {name} is non-finite or negative before interpolation")
+
+
 def _raw_parent_state(dataset, source_mp_physics: int):
     raw = {
         name: _read_record(dataset, name)
@@ -2034,6 +2061,7 @@ def _raw_parent_state(dataset, source_mp_physics: int):
         raise OfflineChildContractError(
             "history reader has no bound WRF variable mapping for parent "
             f"mp_physics={source_mp_physics} fields {missing}")
+    _validate_parent_mass_fields(moisture)
     return raw, moisture
 
 
@@ -2094,6 +2122,17 @@ def _mass_edges(znw, mu, hybrid_opt, etac, p_top):
                           hybrid_opt=int(hybrid_opt), etac=float(etac),
                           p_top=float(p_top),
                           mu=np.asarray(mu, dtype=np.float64))
+
+
+def _nssl_child_density(phi, phb, mu, znw, hybrid_opt, etac, p_top):
+    total_phi = (np.asarray(_to_host(phb), dtype=np.float64)
+                 + np.asarray(_to_host(phi), dtype=np.float64))
+    edges = _mass_edges(znw, _to_host(mu), hybrid_opt, etac, p_top)
+    alt = geopotential_thickness_per_mass(total_phi, edges)
+    if not np.isfinite(alt).all() or np.any(alt <= 0):
+        raise OfflineChildContractError(
+            "NSSL target initialization requires positive finite child layer density")
+    return np.ascontiguousarray(1.0 / alt, dtype=np.float32)
 
 
 def _remap_geopotential(phi, src_edges, dst_edges):
@@ -2290,6 +2329,12 @@ def interpolate_parent_initial_state(
     # engine's radiation gate refuses a negative nr at the first radiative
     # call.  Both of those are correct; the artefact is what has to go.
     initial_clamp = clamp_sint_undershoot_mapping(source_mixing)
+    # Actual nonnegative archived cloud water can land at -6e-22 kg/kg
+    # after SINT. Reuse the bounded eight-ULP policy with the DONOR scale,
+    # and no absolute floor; larger negatives still reach the strict gate.
+    initial_clamp.update(clamp_sint_undershoot_mapping(
+        source_mixing, names=_POSITIVE_MASS_FIELDS, floor_scale=0.0,
+        reference_fields=moisture))
     conversion_receipt = None
     _refuse_unbuilt_p3_offline_edge(int(source_mp_physics), target_mp)
     if target_mp == 18:
@@ -2298,6 +2343,10 @@ def interpolate_parent_initial_state(
             source_mp_physics=int(source_mp_physics),
             morr_rimed_ice=morr_rimed_ice,
             diagnose_missing=diagnose_missing,
+            air_density=lambda: _nssl_child_density(
+                interpolated["PH"], interpolated["PHB"],
+                interpolated["MUB"] + interpolated["MU"], raw["ZNW"],
+                hybrid_opt, etac, p_top),
         )
         source_mixing = mapped
     elif (target_mp != int(source_mp_physics)
@@ -2833,8 +2882,9 @@ def interpolate_parent_boundary_snapshot(
     with netcdf_bridge.open_dataset(path) as dataset:
         raw, moisture = _raw_parent_state(dataset, int(source_mp_physics))
         coeffs, hybrid_opt, etac, p_top = _vertical_coefficients(raw, dataset)
-        if child_znw is not None:
-            # Needed only to make the child's geopotential a perturbation
+        if child_znw is not None or (target_mp == 18 and target_mp != int(source_mp_physics)):
+            # Target initialization also needs the actual child dry density.
+            # Needed to make the child's geopotential a perturbation
             # against its OWN base; read here rather than in
             # _raw_parent_state so a child that inherits its parent's ladder
             # still requires exactly the variables it always did.
@@ -2862,6 +2912,9 @@ def interpolate_parent_boundary_snapshot(
     # interior on the first blend.
     boundary_clamp = clamp_sint_undershoot_mapping(
         interpolated, floor_scale=float(abs(parent_chm).max()))
+    boundary_clamp.update(clamp_sint_undershoot_mapping(
+        interpolated, names=_POSITIVE_MASS_FIELDS, floor_scale=0.0,
+        reference_fields=coupled))
     conversion_receipt = None
     if target_mp != int(source_mp_physics):
         _refuse_unbuilt_p3_offline_edge(int(source_mp_physics), target_mp)
@@ -2897,6 +2950,13 @@ def interpolate_parent_boundary_snapshot(
             source_mixing, source_mp_physics=int(source_mp_physics),
             morr_rimed_ice=morr_rimed_ice,
             diagnose_missing=diagnose_missing,
+            air_density=lambda: _nssl_child_density(
+                interpolated["phi"] / (
+                    xp.asarray(coeffs["c1f"], dtype=xp.float32)[:, None, None]
+                    * child_mu[None]
+                    + xp.asarray(coeffs["c2f"], dtype=xp.float32)[:, None, None]),
+                sint(_backend_array(raw["PHB"], backend), registrations[""]),
+                child_mu, raw["ZNW"], hybrid_opt, etac, p_top),
         )
         child_chm_host = _to_host(child_chm)
         interpolated.update({

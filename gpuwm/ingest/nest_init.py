@@ -1400,11 +1400,10 @@ def _parent_only_base(parent, reg, terrain: bool, *, window=None,
 #: in the tests, so the clamp and the gate cannot drift apart about
 #: membership), and every one carries magnitudes of 1e3..1e9 per
 #: kilogram -- large enough that a float32 weighted sum can round across
-#: zero.  Moisture mixing ratios share the same lower bound but are
-#: O(1e-3), so their absolute rounding error is smaller by six decades
-#: and has never been observed to cross; they are deliberately NOT
-#: clamped here, because a fix-up with no evidence behind it is a
-#: trajectory change nobody asked for.
+#: zero. Moisture mixing ratios share the lower bound but not these
+#: units: the offline archive route repairs its measured SINT mass
+#: undershoot with validated donors and a ZERO absolute floor. This
+#: default tuple remains the number-moment policy used by online nests.
 POSITIVE_DEFINITE_MOMENTS = (
     "nc", "nr", "ni", "ns", "ng", "qndrop", "qnr", "qni", "qns",
     "qng", "qnh", "qnn", "nwfa", "nifa",
@@ -1450,7 +1449,7 @@ def positive_definite_clamp_tolerance(peak: float, *,
                _SINT_ROUNDING_ULPS * eps * abs(float(peak)))
 
 
-def _clamp_one_moment(target, *, floor_scale: float = 1.0):
+def _clamp_one_moment(target, *, floor_scale: float = 1.0, reference=None):
     """Clamp one SINT-ed moment in place; return its account or ``None``.
 
     The single place the tolerance is applied.  Both public entry points
@@ -1463,8 +1462,9 @@ def _clamp_one_moment(target, *, floor_scale: float = 1.0):
     if minimum >= 0.0:
         return None
     peak = float(abs(target).max())
+    reference_peak = peak if reference is None else float(abs(reference).max())
     tolerance = positive_definite_clamp_tolerance(
-        peak, floor_scale=floor_scale)
+        reference_peak, floor_scale=floor_scale)
     mask = (target < 0.0) & (target >= -tolerance)
     cells = int(mask.sum())
     if not cells:
@@ -1474,6 +1474,7 @@ def _clamp_one_moment(target, *, floor_scale: float = 1.0):
         "cells": cells,
         "tolerance": tolerance,
         "peak": peak,
+        "reference_peak": reference_peak,
         "most_negative": minimum,
     }
 
@@ -1500,7 +1501,7 @@ def clamp_parent_sint_undershoot(child, *, names=POSITIVE_DEFINITE_MOMENTS):
 
 
 def clamp_sint_undershoot_mapping(fields, *, names=POSITIVE_DEFINITE_MOMENTS,
-                                  floor_scale: float = 1.0):
+                                  floor_scale: float = 1.0, reference_fields=None):
     """:func:`clamp_parent_sint_undershoot` for a name->array mapping.
 
     The offline downscale initializer holds its SINT output in a dict and
@@ -1514,11 +1515,16 @@ def clamp_sint_undershoot_mapping(fields, *, names=POSITIVE_DEFINITE_MOMENTS,
     same policy: the shape of the caller's container is not a reason for
     two children to be born under different rules.
 
+    ``reference_fields`` uses the actual donor peak for the relative budget.
+    The offline mass route passes validated nonnegative donors and a zero
+    absolute floor: particle-number units must never set a mass tolerance.
     Mutates the mapping's arrays in place, like the attribute form.
     """
     report: dict[str, dict[str, float | int]] = {}
     for name in names:
-        entry = _clamp_one_moment(fields.get(name), floor_scale=floor_scale)
+        reference = None if reference_fields is None else reference_fields.get(name)
+        entry = _clamp_one_moment(fields.get(name), floor_scale=floor_scale,
+                                  reference=reference)
         if entry is not None:
             report[name] = entry
     return report

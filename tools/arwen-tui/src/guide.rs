@@ -41,6 +41,8 @@ pub struct Guide {
     pub questions: Vec<Question>,
     pub step: usize,
     pub summary_edit: bool,
+    /// Controller-supplied file identity, not a user form question.
+    pub reviewed_child_config_sha256: Option<String>,
 }
 #[derive(Clone)]
 pub struct Request {
@@ -201,6 +203,7 @@ impl Guide {
             questions,
             step: if kind == Kind::New { 1 } else { 0 },
             summary_edit: false,
+            reviewed_child_config_sha256: None,
         }
     }
     pub fn apply_workflow(&mut self, mode: &'static crate::workflows::Mode, cwd: &Path) {
@@ -499,6 +502,9 @@ impl Guide {
             args.push("--write".into());
         }
         if self.kind == Kind::Downscale {
+            if let Some(hash) = &self.reviewed_child_config_sha256 {
+                args.push(format!("--child-config-sha256={hash}"));
+            }
             let has = |flag: &str| {
                 self.questions
                     .iter()

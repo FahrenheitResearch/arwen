@@ -1,6 +1,11 @@
 # Changelog
 
-## 2.7.4 (unreleased)
+## 2.7.4 (2026-09-13)
+
+- Desktop cyclone selection displays the selected model's pressure/wind preview, with visible loading, errors and retry. Map overlay controls adjust barb size, spacing, line weight and visibility.
+- A standalone downscaled run supplies its own archived geometry when used as a parent. The desktop can save and review child physics/settings separately, and failed forecasts show their error directly.
+- Offline Morrison-to-NSSL startup repairs bounded interpolation roundoff from valid parent fields and invokes the existing NSSL initializer for missing moments. Seven retained parent boundary frames passed conversion; this is not a forecast-skill validation.
+- Known limitation: offline physics transitions remain narrower than live nesting. Mixed offline conversion targets NSSL (18) from WSM6 (6), Thompson (8), Morrison (10), or aerosol-aware Thompson (28). Other mixed transitions and WDM6 offline archives remain unsupported; some configuration reviews can succeed before initialization reports that limitation. Broader shared conversion support is deferred beyond this release.
 
 This corrective release keeps local data assimilation experimental. The ordinary
 Desktop interface hides its entry point; advanced users can enable it by starting

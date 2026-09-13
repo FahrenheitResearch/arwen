@@ -517,6 +517,9 @@ fn downscale_guide(body: &companion::DownscaleRequest, cwd: &Path, output: &Path
     guide.questions[3].value = body.parent_restart.clone().unwrap_or_else(|| "latest".into());
     guide.questions[5].value = body.parent_domain.map(|value| value.to_string()).unwrap_or_else(|| blank.clone());
     guide.questions[6].value = body.ratio.to_string();
+    guide.questions[8].value = body.i_parent_start.map(|v| v.to_string()).unwrap_or_else(|| blank.clone());
+    guide.questions[9].value = body.j_parent_start.map(|v| v.to_string()).unwrap_or_else(|| blank.clone());
+    guide.reviewed_child_config_sha256 = body.child_config_sha256.clone();
     guide.questions[7].value = body.child_size.map(|(nx, ny)| format!("{nx},{ny}")).unwrap_or_else(|| blank.clone());
     guide.questions[11].value = body.max_boundary_interval_seconds.map(number).unwrap_or_else(|| blank.clone());
     guide.questions[12].value = if body.accept_parent_cadence { "true".into() } else { blank.clone() };
@@ -8607,6 +8610,22 @@ mod tests {
             "--accept-parent-cadence".into(),"--output-interval-seconds=900".into(),
             "--tiles=auto".into(),"--out".into(),out.to_string_lossy().into_owned(),
             "--dry-run".into(),"--auto-vram".into(),"--render-products=all".into()]);
+
+        // An edited standalone child follows the existing file route with
+        // its reviewed geometry and byte identity all the way to the engine.
+        let mut edited = body.clone();
+        edited.point = None;
+        edited.child_config = Some(root.join("edited-child.toml").to_string_lossy().into_owned());
+        edited.child_config_sha256 = Some("a".repeat(64));
+        edited.i_parent_start = Some(5);
+        edited.j_parent_start = Some(7);
+        edited.output_interval_seconds = None;
+        let request = downscale_guide(&edited, &root, &root.join("runs"), "none").request(&root).unwrap();
+        for arg in ["--i-parent-start=5".to_string(), "--j-parent-start=7".into(),
+                    format!("--child-config-sha256={}", "a".repeat(64))] {
+            assert!(request.args.contains(&arg), "missing {arg}");
+        }
+        assert!(!request.args.iter().any(|a| a.starts_with("--point=") || a.starts_with("--hours=") || a.starts_with("--output-interval-seconds=")));
 
         // The child is drawn as whatever the session draws, and a request
         // that names its own set is taken verbatim -- "none" included, so

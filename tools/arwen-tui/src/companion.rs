@@ -78,6 +78,9 @@ pub struct DownscaleRequest {
     pub parent_restart: Option<String>,
     pub point: Option<(f64, f64)>,
     pub child_config: Option<String>,
+    pub child_config_sha256: Option<String>,
+    pub i_parent_start: Option<u32>,
+    pub j_parent_start: Option<u32>,
     pub ratio: u32,
     pub child_size: Option<(u32, u32)>,
     pub vram_gib: Option<f64>,
@@ -117,7 +120,7 @@ pub struct Request {
 /// an unknown key is refused rather than ignored, so a caller never
 /// believes it set something the controller dropped.
 const DOWNSCALE_KEYS: &[&str] = &["parent_run_dir", "parent_domain", "parent_restart", "point",
-    "child_config", "ratio", "child_size", "vram_gib", "auto_vram", "hours",
+    "child_config", "child_config_sha256", "i_parent_start", "j_parent_start", "ratio", "child_size", "vram_gib", "auto_vram", "hours",
     "output_interval_seconds", "tiles", "accept_parent_cadence",
     "max_boundary_interval_seconds", "out_dir", "mode", "render_products"];
 
@@ -182,6 +185,22 @@ fn parse_downscale(value: &Value) -> Result<DownscaleRequest, String> {
     };
     if request.point.is_some() == request.child_config.is_some() {
         return Err("Choose either a child centre point or an existing child configuration.".into());
+    }
+    request.i_parent_start = count(value, "i_parent_start", 1..=u32::MAX as u64, "Child parent index i")?;
+    request.j_parent_start = count(value, "j_parent_start", 1..=u32::MAX as u64, "Child parent index j")?;
+    if request.child_config.is_some() {
+        let hash = value["child_config_sha256"].as_str().filter(|hash| hash.len() == 64
+            && hash.bytes().all(|c| c.is_ascii_hexdigit()))
+            .ok_or("The child configuration needs its reviewed SHA256.")?;
+        request.child_config_sha256 = Some(hash.to_ascii_lowercase());
+        if request.i_parent_start.is_none() || request.j_parent_start.is_none() {
+            return Err("The child configuration needs its reviewed i and j parent placement.".into());
+        }
+        if request.hours.is_some() || request.output_interval_seconds.is_some() || !value["child_size"].is_null() {
+            return Err("Edit duration, output interval and dimensions in the child configuration, then review again.".into());
+        }
+    } else if request.i_parent_start.is_some() || request.j_parent_start.is_some() || !value["child_config_sha256"].is_null() {
+        return Err("Reviewed file identity and placement require a child configuration.".into());
     }
     request.child_size = match value.get("child_size") {
         None | Some(Value::Null) => None,
@@ -1206,7 +1225,18 @@ mod downscale_requests {
         let mut configured = payload(&parent, &out);
         configured["point"] = Value::Null;
         configured["child_config"] = json!(root.join("child.toml"));
+        configured["child_config_sha256"] = json!("a".repeat(64));
+        configured["i_parent_start"] = json!(3);
+        configured["j_parent_start"] = json!(4);
+        configured["hours"] = Value::Null;
+        configured["output_interval_seconds"] = Value::Null;
         assert!(parse(&configured).unwrap().auto_vram);
+        let mut missing_placement = configured.clone();
+        missing_placement["i_parent_start"] = Value::Null;
+        assert!(parse(&missing_placement).unwrap_err().contains("reviewed i and j"));
+        let mut missing_hash = configured.clone();
+        missing_hash["child_config_sha256"] = Value::Null;
+        assert!(parse(&missing_hash).unwrap_err().contains("reviewed SHA256"));
         configured["vram_gib"] = json!(12);
         assert!(!parse(&configured).unwrap().auto_vram);
         // The parent domain defaults to the root and is carried as given.

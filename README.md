@@ -130,6 +130,13 @@ Local data assimilation is experimental and hidden in the ordinary desktop.
 Advanced users can enable its entry point with `gpuwm tui --enable-local-da`.
 Continuous local cycling is outside the 2.7.4 release qualification.
 
+Offline downscaling can retain the parent's supported physics. Changing
+microphysics currently supports conversion to NSSL from WSM6, Thompson,
+Morrison or aerosol-aware Thompson. Other mixed-physics conversions and WDM6
+offline archives remain unsupported in 2.7.4; a configuration review can pass
+before initialization reports an unsupported conversion. Broader shared
+conversion support is deferred to later work.
+
 For a configuration already prepared for your computer and inputs:
 
 ```bash
