@@ -2,6 +2,8 @@
 
 ## 2.7.4 (2026-09-13)
 
+- Full-world map bounds retain all longitude columns instead of collapsing to one meridian. The desktop regenerates affected normalized map caches, including AIFS and IFS cyclone previews.
+
 - Desktop cyclone selection displays the selected model's pressure/wind preview, with visible loading, errors and retry. Map overlay controls adjust barb size, spacing, line weight and visibility.
 - A standalone downscaled run supplies its own archived geometry when used as a parent. The desktop can save and review child physics/settings separately, and failed forecasts show their error directly.
 - Offline Morrison-to-NSSL startup repairs bounded interpolation roundoff from valid parent fields and invokes the existing NSSL initializer for missing moments. Seven retained parent boundary frames passed conversion; this is not a forecast-skill validation.

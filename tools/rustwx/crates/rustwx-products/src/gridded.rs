@@ -2893,6 +2893,12 @@ fn point_in_geographic_bounds(lon: f64, lat: f64, bounds: (f64, f64, f64, f64)) 
     if !lon.is_finite() || !lat.is_finite() || lat < bounds.2 || lat > bounds.3 {
         return false;
     }
+    // A full longitude turn remains the whole globe: normalizing both ends
+    // first would turn -180..180 (or 0..360) into one meridian.
+    let longitude_span = bounds.1 - bounds.0;
+    if longitude_span.is_finite() && longitude_span.abs() >= 360.0 {
+        return true;
+    }
     let west = normalize_longitude_for_bounds(bounds.0);
     let east = normalize_longitude_for_bounds(bounds.1);
     let lon = normalize_longitude_for_bounds(lon);

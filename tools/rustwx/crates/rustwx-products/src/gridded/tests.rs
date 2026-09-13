@@ -1,6 +1,25 @@
 use super::*;
 
 #[test]
+fn full_longitude_crop_preserves_columns_and_latitude_selection() {
+    for longitudes in [[-180.,-90.,0.,90.],[0.,90.,180.,270.]] {
+        let grid=LatLonGrid::new(GridShape::new(4,3).unwrap(),
+            [-90.,0.,90.].into_iter().flat_map(|lat|[lat;4]).collect(),
+            (0..3).flat_map(|_|longitudes).collect()).unwrap();
+        for (west,east) in [(-180.,180.),(0.,360.),(180.,-180.),(90.,450.)] {
+            let crop=grid_crop_for_bounds(&grid,(west,east,-85.,85.)).unwrap();
+            assert_eq!((crop.x_start,crop.x_end,crop.y_start,crop.y_end),(0,4,1,2));
+            assert_eq!(crop_values_f32(&(0..12).map(|i|i as f32).collect::<Vec<_>>(),4,crop),[4.,5.,6.,7.]);
+        }
+    }
+    assert!(!point_in_geographic_bounds(0.,90.,(-180.,180.,-85.,85.)));
+    assert!(!point_in_geographic_bounds(f64::NAN,0.,(-180.,180.,-85.,85.)));
+    assert!(point_in_geographic_bounds(175.,0.,(170.,-170.,-5.,5.)));
+    assert!(!point_in_geographic_bounds(0.,0.,(170.,-170.,-5.,5.)));
+    assert!(!point_in_geographic_bounds(0.,0.,(-180.,-180.,-5.,5.)));
+}
+
+#[test]
 fn hrrr_defaults_to_split_surface_and_pressure_products() {
     let (surface, pressure) = thermo_bundles(ModelId::Hrrr, None, None);
     assert_eq!(surface.bundle, CanonicalBundleDescriptor::SurfaceAnalysis);
