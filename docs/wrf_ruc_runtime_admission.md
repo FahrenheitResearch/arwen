@@ -747,7 +747,7 @@ the 24-column water arm to the land surface.  Timed at the seam, the same
 snow-covered configuration is 3.3-3.4 ms per land column.  The "registry's
 end-to-end 4.09" column of the projection table above is therefore an
 over-attribution and should be read as the snow row; the conclusion does not
-move, because the honest number is still flat:
+move, because the accurate number is still flat:
 
 | | one d04 call (360,000 columns) | d04 alone, 12 h |
 |---|---|---|
@@ -1493,7 +1493,7 @@ was not before.
 
 Item 6 no longer carries a correctness asterisk.  What remains against RUC as
 a selectable option is items 3, 4 and 5, all of which are decisions rather
-than measurements, plus the honest statement that **16.8 s per simulated
+than measurements, plus the accurate statement that **16.8 s per simulated
 minute is still the land surface alone** and the driver's host-side
 marshalling is now 46-67 % of it.
 
@@ -1511,7 +1511,7 @@ frequency were not touched.
 `dt = 1.667 s`, `bldt = 0` so one land-surface call per timestep.  Measured at
 that width, not extrapolated, and paired in one process.
 
-"Before" has two honest readings and both belong here, because the difference
+"Before" has two accurate readings and both belong here, because the difference
 between them is the finding of this session:
 
 | | what a forecast RAN | what the device leaves COULD do | after |
@@ -1770,7 +1770,7 @@ from the microphysics, PBL, surface layer, radiation, cumulus and diffusion
 settings.  That is the same discipline the MYNN template used and it is what
 makes the template useful as an experiment rather than merely available.
 
-The maturity did **not** move.  `implemented-unverified` is the honest grade:
+The maturity did **not** move.  `implemented-unverified` is the accurate grade:
 every routine is oracle-matched against the byte-unmodified
 `module_sf_ruclsm.F`, the assembled driver is bitwise against
 `oracle/lsmruc.csv` except its 26 pinned upstream-residue cells, and the CUDA
@@ -1840,7 +1840,7 @@ been awkward even if the first had gone the other way.
 | 5 | `namelist_compat.py:764-768` refuses RUC | UNCHANGED | **still untouched.**  A namelist import of a RUC run is a separate lane from selecting one in the registry |
 | 6 | the width answer | 0.0013 ms/column snow-free, 0.0051 on snow; 16.8 / 65.7 wall s per simulated minute, on a code path nothing launched | **2.36 s / 3.95 s wall seconds per simulated minute at d04, on the path `ruc_lsm_step` actually takes**, gated by a booby trap so it cannot silently revert |
 
-## Still open, honestly
+## Still open, accurately
 
 * No gpuwm/WRF **forecast trajectory** comparison.  That is the whole of the
   distance between `implemented-unverified` and `validation-candidate`, and

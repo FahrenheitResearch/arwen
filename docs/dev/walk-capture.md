@@ -94,7 +94,7 @@ line survive.
 arrival is stamped, which is the only way to answer "how long did the
 terminal show nothing?".  A buffered `capture_output=True` throws that
 away.  The full streams go to `steps/NN-id/stdout.txt` and `stderr.txt`;
-the report carries a bounded excerpt — head, tail, and an honest count
+the report carries a bounded excerpt -- head, tail, and an accurate count
 of the omitted middle.
 
 **Files created and modified under the walk root**, diffed around each

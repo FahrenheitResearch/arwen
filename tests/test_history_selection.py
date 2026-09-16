@@ -365,3 +365,118 @@ def test_apply_of_a_full_default_returns_the_frame_object_untouched():
     kept, attrs = hs.FULL.apply(frame)
     assert kept is frame
     assert attrs == {}
+
+
+# ------------------------------------------- the generic OLR token
+
+def _wrfout_that_dropped(path, dropped):
+    """A minimal frame carrying its run's own [output] stamp.
+
+    Written with netCDF4 directly rather than through ``WrfoutWriter``:
+    the stamp is a global attribute and the question here is about the
+    table that reads it, so the test must not need the Rust netCDF
+    writer this environment does not carry.
+    """
+    import netCDF4
+
+    selection = hs.HistorySelection.from_mapping({"history_drop": list(dropped)})
+    with netCDF4.Dataset(path, "w") as dataset:
+        for name, value in selection.wrfout_attrs(
+                tuple(dropped) + ("T2", "XLAT", "XLONG")).items():
+            dataset.setncattr(name, value)
+    return path
+
+
+def test_the_generic_olr_token_is_claimed_by_the_table():
+    """``var:wrf_olr`` is how OLR is asked for on the rust lane."""
+    assert hs.PRODUCT_HISTORY_INPUTS["var:wrf_olr"] == ("OLR",)
+    lost = hs.lost_products(("OLR",))
+    assert lost["var:wrf_olr"] == ("OLR",)
+    assert lost["olr"] == ("OLR",)
+
+
+def test_a_run_that_shed_olr_refuses_the_generic_token_at_the_door(tmp_path):
+    from gpuwm import render
+
+    path = _wrfout_that_dropped(tmp_path / "trimmed.nc", ("OLR",))
+    refusal = render.history_selection_refusal([path], ["var:wrf_olr"])
+    assert refusal is not None
+    assert "var:wrf_olr" in refusal and "OLR" in refusal
+
+
+def test_a_run_that_kept_olr_is_not_refused(tmp_path):
+    from gpuwm import render
+
+    path = _wrfout_that_dropped(tmp_path / "kept.nc", ("REFL_10CM",))
+    assert render.history_selection_refusal([path], ["var:wrf_olr"]) is None
+
+
+# ------------------------------------------- the product cost of a preset
+
+def test_the_warning_leads_with_the_product_cost_and_its_inputs(capsys):
+    selection = hs.HistorySelection.from_mapping({"preset": "minimal"})
+    selection.warn_lost_products(hs.HISTORY_VOCABULARY, where="d02")
+    err = capsys.readouterr().err
+    assert "30 of 162" in err
+    assert "132 lost" in err
+    assert "U,V,W" in err and "QVAPOR" in err
+    assert "render products" in err
+
+
+def test_the_attributed_losses_add_up_to_the_loss_the_sentence_states(capsys):
+    """94 + 24 + 8 + 4 is 130, and the sentence said 132 were lost.
+
+    The ladder's 162 -> 160 rung is served by the rest of the full
+    inventory and belongs to no named field, so the warning names that
+    remainder instead of printing a sum that visibly fails.
+    """
+    selection = hs.HistorySelection.from_mapping({"preset": "minimal"})
+    selection.warn_lost_products(hs.HISTORY_VOCABULARY, where="d02")
+    err = capsys.readouterr().err
+    stated = int(err.split(" lost:")[0].split()[-1])
+    figures = [int(part.split(" to ")[0].strip())
+               for part in err.split(" lost: ")[1].split(".")[0].split(", ")]
+    assert sum(figures) == stated, err
+    assert "2 to the rest of the full inventory" in err
+
+
+def test_the_product_figure_is_the_same_at_both_doors(capsys):
+    """One configuration, one number, whatever inventory a door hands in."""
+    selection = hs.HistorySelection.from_mapping({"preset": "minimal"})
+    selection.warn_lost_products(hs.HISTORY_VOCABULARY, where="d02")
+    wide = capsys.readouterr().err
+    selection.warn_lost_products(
+        tuple(hs.HISTORY_VOCABULARY & {"REFL_10CM", "T2", "U10", "V10",
+                                       "RAINC", "RAINNC", "XLAT", "T"}),
+        where="d02")
+    narrow = capsys.readouterr().err
+    assert "30 of 162" in wide and "30 of 162" in narrow
+
+
+def test_a_selection_that_is_not_a_preset_says_its_figure_is_a_bound(capsys):
+    selection = hs.HistorySelection.from_mapping({"history_drop": ["REFL_10CM"]})
+    selection.warn_lost_products(("REFL_10CM", "T2", "XLAT"), where="d01")
+    err = capsys.readouterr().err
+    assert "at most" in err and "upper bound" in err
+
+
+def test_the_explain_layer_states_its_coverage_instead_of_completeness(capsys, monkeypatch):
+    from gpuwm import explain
+
+    monkeypatch.setattr(explain, "_EXPLAIN_ACTIVE", True)
+    selection = hs.HistorySelection.from_mapping({"history_drop": ["REFL_10CM"]})
+    selection.warn_lost_products(("REFL_10CM", "T2", "XLAT"), where="d01")
+    err = capsys.readouterr().err
+    assert "the same product that will refuse by name at render time" not in err
+    assert f"{len(hs.PRODUCT_HISTORY_INPUTS)} verified rows" in err
+    assert "were NOT checked by name here" in err
+    assert "may still be lost" in err
+
+
+def test_a_wider_verified_mapping_widens_the_answer_without_moving_the_table():
+    """The 10 verified rows stay the answer when nobody supplies more."""
+    stub = {"srh_0_1km": ("U|V",), "sbcape": ("T",)}
+    assert set(hs.lost_products(("U", "V"), stub)) == {"srh_0_1km"}
+    assert "srh_0_1km" not in hs.lost_products(("U", "V"))
+    assert set(hs.lost_products(("REFL_10CM",))) == {
+        "refl", "composite_reflectivity"}

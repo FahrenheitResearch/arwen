@@ -25,7 +25,7 @@ The harness default model top pads to more layers than RRTMGP accepts. Two ways
 out, and they are not equivalent:
 
 * `ztop=20000.0` — what `test_gate.PHYSICS_MOIST` already uses, and the right fix.
-  It is load-bearing, not decoration: with the 8 km harness default the padding
+  It is essential, not decoration: with the 8 km harness default the padding
   overruns the limit. Copy the rung definitions from `test_gate` rather than
   writing your own.
 * `nz <= 37` — works, but changes the vertical grid, so a run configured that way

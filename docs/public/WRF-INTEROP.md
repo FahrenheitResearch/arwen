@@ -50,7 +50,7 @@ few earlier receipts label build `f0fb585b...` "unchanged stock"; that
 hash is the instrumented oracle rebuild (an audited, write-out-only
 instrumentation patch) -- cite the clean builds instead.
 
-## The honest boundaries (these accompany every claim)
+## The accurate boundaries (these accompany every claim)
 
 1. **These are interoperability and stable-advance gates of 5-60 model
    seconds** -- not forecast-skill runs, and not WPS/METGRID numerical

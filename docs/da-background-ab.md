@@ -42,7 +42,7 @@ profile, same observations, same seed, same perturbation, same
 localization, same relaxation, same thinning, same leg schedule. What is
 left is the model that produced the first guess.
 
-`H-fresh` is the operationally honest arm and is deliberately
+`H-fresh` is the operationally accurate arm and is deliberately
 confounded: it is four hours fresher *and* it is an HRRR analysis, into
 which NOAA has already assimilated radar reflectivity. Any advantage it
 shows over `H-matched` is partly someone else's data assimilation, and
@@ -239,7 +239,7 @@ background (GFS to HRRR) and ensemble size (N=10 to N=8) before any
 treatment was applied, so "variant minus frozen baseline" was measuring
 four things at once and reporting one number.
 
-Two consequences, both load-bearing:
+Two consequences, both essential:
 
 * **The control test tells you which comparison you are in.** The
   unassimilated control shares the prepared case, the background and the

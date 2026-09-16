@@ -182,11 +182,12 @@ consumed `RunConfig` field -- the knob-parity battery
 consuming kernel/module rather than being decorative -- and every one
 is importable from a WRF namelist.
 
-**Which keys a `[[domain]]` table may override.** Exactly these 53,
+**Which keys a `[[domain]]` table may override.** Exactly these 61,
 and no others (`gpuwm/experiment.py`'s `_DOMAIN_RUN_OVERRIDES`):
 
     cu_physics  cudt_minutes  clos_choice  ishallow
     radt  radt_minutes  bldt
+    ra_physics  ra_rrtmg_variant  wrf_rrtmg_compatibility  o3input  use_mp_re  swrad_scat
     diff_6th_factor  diff_6th_opt  epssm  spec_exp  mp_physics  moist
     moist_cq  nest_microphysics_transition
     km_opt  bl_pbl_physics  sf_sfclay_physics  isfflx  c_s  c_k
@@ -418,7 +419,10 @@ fields but admits at exactly one value each -- the value the port was
 validated at against unmodified WRF Fortran. `validate_run_config`
 refuses anything else before a run starts, and the importer records
 each supplied key as *fixed by ArWen* (or refuses a non-identity
-value):
+value). Three Noah-MP keys are the exception, because they reach no
+transcribed code at all: `opt_pedo`, `noahmp_output` and
+`noahmp_acc_dt` run at any value of their own type, warn once, and are
+still recorded as fixed at the pin the run used:
 
 - **MYNN** (`&physics`): `bl_mynn_closure 2.6`, `bl_mynn_cloudpdf 2`,
   `bl_mynn_mixlength 1`, `bl_mynn_edmf 1`, `bl_mynn_edmf_mom 1`,

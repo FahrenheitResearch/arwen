@@ -139,7 +139,7 @@ def test_pending_work_is_not_sitting_under_a_published_number() -> None:
     a cut is pending; a version field naming an already-published release
     says the cut has nowhere to go.  Both cannot be true.
 
-    Conditioning on the pending section is what keeps this honest rather
+    Conditioning on the pending section is what keeps this accurate rather
     than merely strict: once the changelog lane renames ``## Unreleased``
     to ``## X.Y.Z (date)``, version and changelog head SHOULD agree, and
     this gate steps aside instead of failing every release cut.

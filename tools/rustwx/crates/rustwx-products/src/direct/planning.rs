@@ -62,9 +62,16 @@ pub fn store_direct_recipe_slugs() -> Vec<String> {
 }
 
 /// Ensemble/probabilistic recipe families that never render implicitly:
-/// the "all"/catalog paths skip them, and callers (including gpuwm's
-/// vendored catalog lister) must name them explicitly.  Public so
-/// catalog listers can apply the exact same filter the planner does.
+/// the "all" expansion skips them and a caller must name them
+/// explicitly.  Public so the PLANNER's two expansion callers below can
+/// apply one filter.
+///
+/// It is NOT a listing filter, and a lister that applied it hid the
+/// slugs a user is told to type, which is the definition of an
+/// unreachable capability.  `rw_wrfbatch --list-products` resolves these
+/// families through the same requirement loop as every other direct
+/// recipe, so the row's status is whatever the stored fields justify,
+/// and carries the opt-in state in the row's machine code column.
 pub fn direct_recipe_requires_explicit_opt_in(slug: &str) -> bool {
     slug.starts_with("nbm_qmd_")
         || slug.starts_with("sref_prob_")

@@ -660,7 +660,7 @@ PRECIPITATION_OUTPUT_FIELDS: dict[str, WrfOutputField] = {
 #: NOT here, deliberately: ``TAOD5502D``/``TAOD5503D``, the other two
 #: ``state`` members of the thompsonaero package.  They are 550 nm aerosol
 #: optical depth diagnostics produced by the RADIATION side, never by
-#: ``mp_gt_driver``; ArWen computes neither, and their absence is the honest
+#: ``mp_gt_driver``; ArWen computes neither, and their absence is the accurate
 #: signal that no aerosol-radiation coupling ran.  ``QNBCA`` is likewise
 #: absent: it exists only under ``wif_input_opt=2``
 #: (Registry/registry.new3d_wif:82), which ``gpuwm.config`` fails closed on.

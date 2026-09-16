@@ -243,7 +243,7 @@ def test_a_single_domain_namelist_is_refused_before_the_expensive_work():
 
 
 # ---------------------------------------------------------------------------
-# 2. THE LOAD-BEARING TEST: crop == direct build, through the HRRR path
+# 2. THE ESSENTIAL TEST: crop == direct build, through the HRRR path
 # ---------------------------------------------------------------------------
 
 def test_crop_equals_direct_footprint_build_bitwise(chain, sealed):
@@ -353,7 +353,7 @@ def test_the_receipt_binds_the_corridor_and_a_reader_gets_it_back(
 
 
 def test_a_tampered_cache_refuses_against_the_hrrr_receipt(chain, tmp_path):
-    """The bound digest is load-bearing, not decorative."""
+    """The bound digest is essential, not decorative."""
 
     prepared = tmp_path / "hrrr-hierarchy"
     directory = prepared / "hierarchy-artifacts" / STATICS_CORRIDOR_DIRNAME
@@ -455,8 +455,11 @@ def _stub_sealed_root(monkeypatch, chain, root: Path):
     )
 
     monkeypatch.setattr(module, "resolve_cpu_bridge", lambda _p: cpu_bridge)
+    # The sealed-root binding compares the certified sfcp_to_sfcp policy
+    # against the root's preparation policy, which defaults to true.
     monkeypatch.setattr(module, "_require_raw_stock_delta",
-                        lambda *a, **k: {"status": "PASS"})
+                        lambda *a, **k: {"status": "PASS", "certified_native_runtime": {
+                            "domains.sfcp_to_sfcp": [True]}})
     monkeypatch.setattr(module, "_require_raw_wps_contract",
                         lambda *a, **k: {"status": "PASS"})
     monkeypatch.setattr(

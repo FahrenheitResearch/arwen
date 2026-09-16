@@ -320,7 +320,7 @@ class RunConfig:
     # branch comes from the routine that would have had to implement it.
     #
     # These are WRF's ``NoahMP_OPTIONS`` namelist names verbatim.  The
-    # enumeration below is honest about what "validated" means: every value
+    # enumeration below is accurate about what "validated" means: every value
     # is the WRF Registry default AND the value the four whole-column oracle
     # fixtures were generated at, and no other value of any of them has been
     # measured -- not approximated, not measured.
@@ -367,7 +367,7 @@ class RunConfig:
     # (module_diag_nwp.F:246-269).  gpuwm implements the UP_HELI_MAX
     # member of that family (gpuwm/core/uh_diag.py, dycore epilogue); the
     # others (WSPD10MAX, W_UP_MAX, W_DN_MAX, W_MEAN, GRPL_MAX, HAIL_MAX*)
-    # are not carried and their absence from wrfouts is the honest signal.
+    # are not carried and their absence from wrfouts is the accurate signal.
     # The diagnostic is trajectory-inert by construction and by test.
     nwp_diagnostics: int = 0
     # Lane-K option exposure.  These fields are appended so positional
@@ -435,7 +435,7 @@ class RunConfig:
     tke_budget: int = 0
     # --- Aerosol-aware Thompson (mp_physics=28) aerosol-source selectors ---
     #
-    # Both defaults are WRF's own Registry defaults, and that is load-bearing
+    # Both defaults are WRF's own Registry defaults, and that is essential
     # rather than cosmetic: gpuwm/physics_compat.py's
     # _SINGLE_DOMAIN_RUNTIME_SWITCHES rows are compared for EXACT equality by
     # the prepared-forecast runner, so a nonzero default here would silently
@@ -843,6 +843,27 @@ NOAHMP_OPTION_IDENTITY_EVIDENCE: dict[str, tuple[object, str]] = {
                          "value of this knob changes what gpuwm writes"),
     "noahmp_acc_dt": (0.0, "declared only, for the same reason"),
 }
+
+#: The rows of the table above whose evidence reads "declared only": the
+#: knob reaches NO gpuwm code, at any value, and the table says why for
+#: each.  They are not refused, because a refusal has to name a breakage
+#: and there is none available here: nothing downstream reads the field,
+#: so no value of it can make a run wrong, and "pinned to keep it that
+#: way" is a statement about tidiness rather than about the run.  A value
+#: outside the pin is admitted with one warning saying the knob reaches
+#: nothing, which is the fact the user actually needs.  The TYPE is still
+#: refused: a string where a float belongs is a self-contradictory
+#: configuration, not an unmeasured one.
+#:
+#: Derived from the evidence prose rather than listed by hand so the two
+#: cannot drift; tests/test_noahmp_no_consumer_knobs.py pins the
+#: derivation and the membership together.  Four doors read it: the run
+#: door below, the namelist importer, the registry builder (the option's
+#: required_settings) and the Noah-MP runner's own second line.
+NOAHMP_OPTIONS_WITHOUT_CONSUMER: frozenset[str] = frozenset(
+    name for name, (_value, why) in NOAHMP_OPTION_IDENTITY_EVIDENCE.items()
+    if why.startswith("declared only")
+)
 
 #: The enforced form of the table above: field -> the only accepted value.
 NOAHMP_OPTION_IDENTITY: dict[str, object] = {
@@ -1358,7 +1379,7 @@ _P3_UNPORTED_VARIANTS = {
 #: P3 sibling branch below, which states its own missing physics FIRST and
 #: then recites this menu.  A refusal that recites the menu is a VALUE
 #: refusal; a refusal that does not is about a combination.  That
-#: distinction is load-bearing -- tools/report_physics_composition_walk.py
+#: distinction is essential -- tools/report_physics_composition_walk.py
 #: separates the two kinds by exactly this recitation -- so a new mp value
 #: is added here once and both branches stay in the same form.
 _MP_PHYSICS_SCHEMA_MENU = (
@@ -2263,7 +2284,7 @@ def validate_sase_config(cfg: RunConfig) -> None:
     """Admission for the SASE closure and its three knobs.
 
     Warn-not-block applies to *maturity*, never to coherence: an
-    experimental scheme still refuses a configuration it cannot honestly
+    experimental scheme still refuses a configuration it cannot accurately
     execute.  What is refused here is only what the closure genuinely
     needs -- see :data:`_SASE_REQUIREMENTS` for why the development
     lane's wider whitelist is not reproduced.
@@ -3020,7 +3041,7 @@ def auto_mix_isotropic_selection(*, where: str, ratio: float,
         f"this selection.")
 
 
-#: The restart doors' one-line honesty about the changed default: said
+#: The restart doors' one-line accuracy about the changed default: said
 #: when a checkpoint integrated under ``mix_isotropic = 0`` meets a run
 #: that selects 1, because a bare hash/field mismatch does not tell a
 #: reader that the DEFAULT moved under them.  A notice beside the
@@ -3571,13 +3592,31 @@ def validate_run_config(cfg: RunConfig) -> RunConfig:
     for name, (admitted, evidence) in \
             NOAHMP_OPTION_IDENTITY_EVIDENCE.items():
         value = getattr(cfg, name)
-        if type(value) is not type(admitted) or value != admitted:
+        if type(value) is not type(admitted):
             raise ValueError(
-                f"{name}={value!r} is outside the admitted Noah-MP option "
-                f"identity; gpuwm implements {name}={admitted!r} only "
-                f"({evidence}), and no nearby branch is substituted for an "
-                "unported one."
+                f"{name}={value!r} is a {type(value).__name__} where "
+                f"Noah-MP takes a {type(admitted).__name__}; write "
+                f"{name}={admitted!r} or another value of that type."
             )
+        if value == admitted:
+            continue
+        if name in NOAHMP_OPTIONS_WITHOUT_CONSUMER:
+            # No breakage to name: the knob reaches no gpuwm code at
+            # any value, so the run goes ahead and says what the
+            # setting does.
+            from gpuwm.explain import warn
+            warn(
+                f"{name}={value!r} reaches no gpuwm code "
+                f"({evidence}), so it changes nothing this run does; "
+                f"the port behaves as {name}={admitted!r}."
+            )
+            continue
+        raise ValueError(
+            f"{name}={value!r} is outside the admitted Noah-MP option "
+            f"identity; gpuwm implements {name}={admitted!r} only "
+            f"({evidence}), and no nearby branch is substituted for an "
+            "unported one."
+        )
     for name, (admitted, evidence) in RUC_OPTION_IDENTITY_EVIDENCE.items():
         value = getattr(cfg, name)
         if type(value) is not type(admitted) or value != admitted:

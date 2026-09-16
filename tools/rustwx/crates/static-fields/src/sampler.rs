@@ -673,7 +673,26 @@ impl<'g> DomainSampler<'g> {
                     let i = k % nxw;
                     let j = k / nxw;
                     let source_x = win.x0 + i as i64;
-                    let source_x = if ds.wraps_x && nxw > ds.nx_global as usize {
+                    // CANONICAL SOURCE COLUMN, ALWAYS, not only when the
+                    // window is wider than the globe.  `read_window`
+                    // mosaics a wrapping source BY CANONICAL COLUMN, so a
+                    // window that crosses the antimeridian carries column
+                    // 661's bytes at absolute index 43861.  Binning that
+                    // pixel at 43861 asks `xy_to_latlon` for
+                    // `known_lon + 43860*dx`, and a real WPS_GEOG index
+                    // declares a truncated decimal -- dx = 0.00833333, whose
+                    // 43200-fold is 359.999856 deg, not 360 -- so the pixel
+                    // is placed 1.44e-4 deg (7.4 m at 62 N) west of the
+                    // ground its value came from.  Whether that happens at
+                    // all depends on the window, so two builds of the same
+                    // ground disagreed: MEASURED on the Bering Sea 12/3 km
+                    // cyclone case, whose parent spans the dateline, the
+                    // parent-extent statics corridor and the d02 footprint
+                    // build put a different number of source pixels in 198
+                    // LANDUSEF cells and 40 soil cells, flipping LU_INDEX in
+                    // 3 of them and SCT_DOM/SCB_DOM in 2, and the first
+                    // relocation refused on the overlap-statics equality.
+                    let source_x = if ds.wraps_x {
                         (source_x - 1).rem_euclid(ds.nx_global) + 1
                     } else { source_x };
                     let (lat, lon) = ds.xy_to_latlon(
@@ -1110,14 +1129,17 @@ impl<'g> DomainSampler<'g> {
                         ((yi[cell] + 0.5).floor() as i64) - win.y0,
                     ),
                 };
-                if ds.wraps_x && ii < 0 {
-                    // cell_coords speaks DATASET coordinates; a window
-                    // that crossed the wrap seam runs past nx_global,
-                    // so re-frame in integer index space.  Doing it to
-                    // the float coordinate instead is the lossy round
-                    // trip that made two builds of the same ground
-                    // disagree.
-                    ii += ds.nx_global;
+                if ds.wraps_x {
+                    // cell_coords speaks DATASET coordinates; the
+                    // window's own frame may start past nx_global (a
+                    // read that crossed the seam) or below column 1
+                    // (one that reached west of it), so take the offset
+                    // MODULO the global width and let the bounds test
+                    // below decide.  A one-sided correction left the
+                    // second frame unresolved, and doing it to the
+                    // float coordinate instead is the lossy round trip
+                    // that made two builds of the same ground disagree.
+                    ii = ii.rem_euclid(ds.nx_global);
                 }
                 let inside = ii >= 0
                     && (ii as usize) < win.nx

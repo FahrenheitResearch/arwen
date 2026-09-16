@@ -136,7 +136,7 @@ def stats(values) -> dict:
     ``tests/test_les_draw_spread.py``.  The arithmetic is deliberately
     plain Python rather than numpy: the oracle's is, and reproducing its
     published aggregate to the bit is the test that keeps the two
-    reductions honest.
+    reductions accurate.
 
     ``None`` and NaN are dropped rather than propagated -- a metric that is
     undefined in one draw (the dry anchor's vapour resolved fraction, whose

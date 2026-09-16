@@ -348,7 +348,7 @@ def test_source_mutants_are_all_killed(rows):
 
 
 def test_min_max_tie_semantics_are_unobservable(rows):
-    """Honest statement of a limit: MIN/MAX tie-breaking cannot be pinned.
+    """Accurate statement of a limit: MIN/MAX tie-breaking cannot be pinned.
 
     Every ``MIN``/``MAX`` in BARE_FLUX and SFCDIF1 compares two values that are
     equal only when they are the same value, or when they are ``-0.0`` and

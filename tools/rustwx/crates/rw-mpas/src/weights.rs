@@ -687,7 +687,7 @@ impl NearestCellWeights {
     }
 
     /// How far the FURTHEST point that is still on the mesh had to reach.
-    /// With a footprint marked this is the honest resample quality figure;
+    /// With a footprint marked this is the accurate resample quality figure;
     /// [`Self::max_distance_km`] then describes points nobody will see.
     pub fn max_on_mesh_distance_km(&self) -> f32 {
         if self.off_mesh.is_empty() {

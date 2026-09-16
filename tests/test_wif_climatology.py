@@ -429,7 +429,7 @@ def test_default_config_takes_the_climatology_when_it_resolves():
     The old assertion was that a default RunConfig "executes not one
     instruction of the new module".  That was the defect.  What a default
     RunConfig now carries: WRF's Registry defaults on both namelist
-    selectors (unchanged, and load-bearing for the prepared-forecast
+    selectors (unchanged, and essential for the prepared-forecast
     runner's exact-equality switch rows), an empty explicit path
     (unchanged), and ``mp28_aerosol_source='auto'`` -- the field that makes
     the dataset the default without moving either namelist selector.

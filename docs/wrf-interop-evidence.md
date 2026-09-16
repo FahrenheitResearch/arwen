@@ -54,7 +54,7 @@ worktree (`...\2026-07-18\files-mentioned-by-the-user-you\outputs\`:
 same hashes.  If this feature ships beyond this machine, the receipt
 archives must ship with it.
 
-## The honest boundaries (must accompany any claim)
+## The accurate boundaries (must accompany any claim)
 
 1. **These are interoperability and stable-advance gates of 5-60 model
    seconds** — not forecast-skill runs and not WPS/METGRID numerical

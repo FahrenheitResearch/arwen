@@ -140,7 +140,10 @@ def run_cycles(cfg: EnsembleConfig, ens_root: str | Path, *,
                moment_repair: bool = True,
                mp_physics: int | None = None,
                on_event: Callable[[dict], None] | None = None,
-               analysis_context: Callable | None = None
+               analysis_context: Callable | None = None,
+               first_cycle: int = 0,
+               initial_restarts: Mapping[int, str | Path] | None = None,
+               input_binding: Mapping[str, object] | None = None
                ) -> CycleResult:
     """Run ``n_cycles`` legs of ``cycle_seconds``, assimilating between them.
 
@@ -175,6 +178,15 @@ def run_cycles(cfg: EnsembleConfig, ens_root: str | Path, *,
     review, before the first leg integrates.
     """
     root = Path(ens_root)
+    if type(first_cycle) is not int or first_cycle < 0:
+        raise ValueError('first_cycle must be a nonnegative integer')
+    if first_cycle and initial_restarts is None:
+        raise ValueError('A later cycle needs the complete prior analysis roster; recover the preceding cycle before continuing')
+    if not first_cycle and initial_restarts:
+        raise ValueError('The initial cycle cannot also resume a later analysis clock')
+    if initial_restarts is not None and (any(type(i) is not int for i in initial_restarts)
+                                         or set(initial_restarts) != set(range(cfg.n_members))):
+        raise ValueError('The initial restart roster must contain every configured member')
     if n_cycles < 1:
         raise ValueError(f"n_cycles must be >= 1, got {n_cycles}")
     if not (cycle_seconds > 0.0):
@@ -199,6 +211,15 @@ def run_cycles(cfg: EnsembleConfig, ens_root: str | Path, *,
     binding['analysis'] = dict(enabled=assimilate is not None, method=method_binding,
         declared_method=dict(assimilation_method or {}), moment_policy=moment_policy,
         moment_repair=bool(moment_repair), mp_physics=mp_physics)
+    if first_cycle or initial_restarts is not None or input_binding is not None:
+        from gpuwm.output_identity import file_record
+        binding['window'] = dict(first_cycle=first_cycle,
+            inputs=dict(input_binding or {}),
+            prior=[dict(member=i, artifact=file_record(path))
+                   for i, path in sorted((initial_restarts or {}).items())])
+        _, prior_clocks = _leg_horizon(initial_restarts, first_cycle, cycle_seconds)
+        if prior_clocks.get('unstated_members'):
+            raise ValueError('A continued window needs every prior checkpoint clock; recover the complete original checkpoints')
     from gpuwm.ensemble.analysis_commit import canonical
     canonical(binding)
     manifest_path = root / CYCLE_MANIFEST_NAME
@@ -220,7 +241,7 @@ def run_cycles(cfg: EnsembleConfig, ens_root: str | Path, *,
     done = {index for index, entry in entries.items()
             if entry.get("status") == "DONE"}
     ran = []
-    for cycle_index in range(n_cycles):
+    for cycle_index in range(first_cycle, first_cycle + n_cycles):
         if cycle_index in done:
             recorded = entries[cycle_index].get('assimilation')
             if (recorded is not None) != (assimilate is not None):
@@ -242,9 +263,10 @@ def run_cycles(cfg: EnsembleConfig, ens_root: str | Path, *,
             continue
         leg_root = cycle_root(root, cycle_index)
         _emit(on_event, {"event": "cycle-started", "cycle": cycle_index})
-        restarts = _analysis_restarts(root, cycle_index,
-                                      n_members=cfg.n_members,
-                                      required=restart_from_analysis)
+        restarts = (initial_restarts if cycle_index == first_cycle and first_cycle else
+                    _analysis_restarts(root, cycle_index,
+                                       n_members=cfg.n_members,
+                                       required=restart_from_analysis))
         leg_seconds, clocks = _leg_horizon(restarts, cycle_index,
                                            cycle_seconds)
         result = run_ensemble(cfg, leg_root, run_seconds=leg_seconds,
@@ -290,7 +312,7 @@ def run_cycles(cfg: EnsembleConfig, ens_root: str | Path, *,
             ],
             # The DA lane's slot.  ``null`` means the leg stopped at the
             # seam with nothing assimilated -- which is a valid, and
-            # honest, outcome for a forecast-only cycle.
+            # accurate, outcome for a forecast-only cycle.
             "assimilation": None,
         }
         _replace_entry(manifest, entry)
@@ -307,7 +329,7 @@ def run_cycles(cfg: EnsembleConfig, ens_root: str | Path, *,
                 mp_physics=mp_physics, run_binding=binding,
                 context_owner=analysis_context)
         entry["status"] = "DONE"
-        manifest["status"] = ("COMPLETE" if cycle_index == n_cycles - 1
+        manifest["status"] = ("COMPLETE" if cycle_index == first_cycle + n_cycles - 1
                               else "RUNNING")
         write_manifest_atomically(manifest_path, manifest)
         ran.append(cycle_index)
@@ -552,6 +574,8 @@ def _check_cycle_compatible(manifest, binding, path) -> None:
     two different experiments.
     """
     recorded = manifest.get("cycle_binding")
+    if isinstance(recorded, Mapping) and recorded.get('window') != binding.get('window'):
+        raise ValueError(f'{path} belongs to a different window or forcing generation; restore the original inputs before recovery')
     if not isinstance(recorded, Mapping):
         # A manifest written before the binding existed: fall back to the
         # two facts it did record, and say so rather than guessing.

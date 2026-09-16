@@ -1,5 +1,10 @@
 """Correlation-coefficient QC: the per-moment mask, and what it must not eat.
 
+Every ``SuperobParams`` here states ``dealias=None``.  Dealiasing is what a
+bare parameter object does now, and every A/B below is an A/B about the CC
+mask: a run with the unfolder in it would be comparing two things at once.
+
+
 The disaster case for this project is the mask working exactly as
 configured and deleting the storm: hail cores run RhoHV 0.85-0.95, the
 melting layer 0.90-0.97, and the tornadic debris signature falls below
@@ -148,9 +153,9 @@ def test_hail_core_keeps_its_echo_and_loses_its_velocity():
         "RHO": _moment("RHO", rho, radials=radials),
     })]
     on = superob_volume(_volume(grid, sweeps()), grid,
-                        params=SuperobParams(cc_qc=CcQcParams()))
+                        params=SuperobParams(dealias=None, cc_qc=CcQcParams()))
     off = superob_volume(_volume(grid, sweeps()), grid,
-                         params=SuperobParams())
+                         params=SuperobParams(dealias=None))
 
     # Reflectivity: the two bird gates died, the hail core and the rain
     # did not.  Velocity: the hail core died with them -- three gates.
@@ -186,7 +191,7 @@ def test_hail_core_keeps_its_echo_and_loses_its_velocity():
     # -- the hail core keeps its velocity and the birds still lose theirs.
     lenient = superob_volume(
         _volume(grid, sweeps()), grid,
-        params=SuperobParams(cc_qc=CcQcParams(rho_min_velocity=0.80)))
+        params=SuperobParams(dealias=None, cc_qc=CcQcParams(rho_min_velocity=0.80)))
     assert lenient.counts.cc_velocity_gates_rejected == 2 * radials
     assert lenient.counts.cc_velocity_gates_rejected_shielded_z == 0
     assert lenient.counts.cc_reflectivity_gates_rejected == 2 * radials
@@ -213,7 +218,7 @@ def test_the_shield_decides_reflectivity_and_only_the_correlation_decides_v():
         "RHO": _moment("RHO", rho, radials=3),
     })]
     on = superob_volume(_volume(grid, sweeps), grid,
-                        params=SuperobParams(cc_qc=CcQcParams()))
+                        params=SuperobParams(dealias=None, cc_qc=CcQcParams()))
     assert on.counts.cc_reflectivity_gates_rejected == 3   # low-Z gate only
     assert float(on.z_max_dbz.max()) == 55.0
     assert on.counts.cc_velocity_gates_rejected == 6       # both gates
@@ -250,9 +255,9 @@ def test_tornadic_debris_keeps_its_echo_and_loses_velocity_with_no_couplet():
         "RHO": _moment("RHO", [0.65, 0.65, 0.65], radials=3),
     })]
     on = superob_volume(_volume(grid, sweeps()), grid,
-                        params=SuperobParams(cc_qc=CcQcParams()))
+                        params=SuperobParams(dealias=None, cc_qc=CcQcParams()))
     off = superob_volume(_volume(grid, sweeps()), grid,
-                         params=SuperobParams())
+                         params=SuperobParams(dealias=None))
 
     # Reflectivity: only the sub-shield fringe gate dies.
     assert on.counts.cc_reflectivity_gates_rejected == 3
@@ -297,7 +302,7 @@ def test_a_floor_would_eat_the_debris_echo_which_is_why_it_defaults_off():
     })]
     floored = superob_volume(
         _volume(grid, sweeps()), grid,
-        params=SuperobParams(cc_qc=CcQcParams(rho_floor=0.7)))
+        params=SuperobParams(dealias=None, cc_qc=CcQcParams(rho_floor=0.7)))
     assert floored.counts.cc_reflectivity_gates_rejected == 9
     assert not np.any(np.isfinite(floored.z_max_dbz))     # the storm is gone
     assert floored.counts.cc_velocity_gates_rejected == 9
@@ -315,7 +320,7 @@ def test_bright_band_survives_via_the_shield_and_the_weak_edge_is_the_cost():
 
     The bright-band peak carries reflectivity above the shield and
     survives as echo.  The stratiform edge below the shield does not,
-    and this test records that honestly rather than hiding it: the
+    and this test records that rather than hiding it: the
     residual risk lives at 25-30 dBZ bright-band edges, which is the
     argument for tuning ``ref_shield_dbz`` down, not for trusting CC
     alone.  Both gates lose their velocity -- melting, mixed-phase
@@ -330,7 +335,7 @@ def test_bright_band_survives_via_the_shield_and_the_weak_edge_is_the_cost():
         "RHO": _moment("RHO", [0.92, 0.92], radials=3),
     })]
     on = superob_volume(_volume(grid, sweeps), grid,
-                        params=SuperobParams(cc_qc=CcQcParams()))
+                        params=SuperobParams(dealias=None, cc_qc=CcQcParams()))
     assert float(on.z_max_dbz.max()) == 42.0                  # peak lives
     assert on.counts.cc_reflectivity_gates_rejected == 3      # edge dies
     assert on.counts.cc_velocity_gates_rejected == 6          # both, in V
@@ -352,7 +357,7 @@ def test_off_is_the_identity_even_when_rho_planes_are_present():
         "REF": _moment("REF", [55.0, 10.0], radials=3),
         "VEL": _moment("VEL", [20.0, 8.0], radials=3),
     })]
-    params = SuperobParams()
+    params = SuperobParams(dealias=None)
     assert "cc_qc" not in params.to_payload()
     one = superob_volume(_volume(grid, with_rho), grid, params=params)
     other = superob_volume(_volume(grid, without), grid, params=params)
@@ -369,9 +374,9 @@ def test_a_volume_with_no_rho_changes_nothing_and_says_so():
         "VEL": _moment("VEL", [20.0, 8.0], radials=3),
     })]
     on = superob_volume(_volume(grid, sweeps()), grid,
-                        params=SuperobParams(cc_qc=CcQcParams()))
+                        params=SuperobParams(dealias=None, cc_qc=CcQcParams()))
     off = superob_volume(_volume(grid, sweeps()), grid,
-                         params=SuperobParams())
+                         params=SuperobParams(dealias=None))
     for name in ("z_linear_sum", "z_count", "z_max_dbz", "vr_sum",
                  "vr_count", "vr_rejected"):
         assert np.array_equal(getattr(on, name), getattr(off, name),
@@ -408,9 +413,9 @@ def test_gate_level_absence_passes_open_and_matches_by_range_not_index():
                        first_gate=FIRST_GATE + GATE_SIZE),
     }, azimuths=(90.0,))]
     on = superob_volume(_volume(grid, sweeps), grid,
-                        params=SuperobParams(cc_qc=CcQcParams()))
+                        params=SuperobParams(dealias=None, cc_qc=CcQcParams()))
     off = superob_volume(_volume(grid, sweeps), grid,
-                         params=SuperobParams())
+                         params=SuperobParams(dealias=None))
     # 9 finite RhoHV gates die; gate 0, the censored gate's target, and
     # the 9 beyond-extent gates all pass open -- 11 missing in total.
     assert on.counts.cc_reflectivity_gates_rejected == 9
@@ -442,7 +447,7 @@ def test_split_cut_velocity_borrows_the_surveillance_rhohv():
         "VEL": _moment("VEL", [8.0, 15.0], radials=3),
     }, elevation=0.53, azimuths=az_cd)
     on = superob_volume(_volume(grid, [cs, cd]), grid,
-                        params=SuperobParams(cc_qc=CcQcParams()))
+                        params=SuperobParams(dealias=None, cc_qc=CcQcParams()))
     assert on.counts.cc_sweeps_masked == 2
     assert on.counts.cc_sweeps_paired_companion == 1
     # The bird gate died on BOTH halves: CS reflectivity co-located, CD
@@ -468,7 +473,7 @@ def test_a_different_tilt_is_never_mistaken_for_a_companion():
         "VEL": _moment("VEL", [8.0], radials=3),
     }, elevation=0.5)
     on = superob_volume(_volume(grid, [high, low]), grid,
-                        params=SuperobParams(cc_qc=CcQcParams()))
+                        params=SuperobParams(dealias=None, cc_qc=CcQcParams()))
     assert on.counts.cc_sweeps_paired_companion == 0
     assert on.counts.cc_sweeps_without_rho == 1
     assert on.counts.cc_velocity_gates_rejected == 0
@@ -521,12 +526,12 @@ def test_parameters_refuse_what_cannot_work():
     with pytest.raises(CcQcParamsError):
         CcQcParams(companion_azimuth_tolerance_deg=-1.0)
     with pytest.raises(SuperobParamsError):
-        SuperobParams(cc_qc="on")           # the mask needs thresholds
+        SuperobParams(dealias=None, cc_qc="on")           # the mask needs thresholds
 
 
 def test_payload_carries_cc_qc_only_when_configured():
-    assert "cc_qc" not in SuperobParams().to_payload()
-    payload = SuperobParams(cc_qc=CcQcParams()).to_payload()
+    assert "cc_qc" not in SuperobParams(dealias=None).to_payload()
+    payload = SuperobParams(dealias=None, cc_qc=CcQcParams()).to_payload()
     assert payload["cc_qc"]["rho_min"] == 0.95
     assert payload["cc_qc"]["ref_shield_dbz"] == 35.0
     assert payload["cc_qc"]["rho_floor"] is None
@@ -543,7 +548,7 @@ def test_merge_carries_the_cc_account_through():
         "REF": _moment("REF", [10.0], radials=3),
         "RHO": _moment("RHO", [0.70], radials=3),
     }, nyquist=None)]
-    params = SuperobParams(cc_qc=CcQcParams())
+    params = SuperobParams(dealias=None, cc_qc=CcQcParams())
     contribution = superob_volume(_volume(grid, sweeps), grid,
                                   params=params)
     observations = merge_contributions([contribution], grid, params=params)
@@ -553,8 +558,8 @@ def test_merge_carries_the_cc_account_through():
 
     off = merge_contributions(
         [superob_volume(_volume(grid, sweeps), grid,
-                        params=SuperobParams())],
-        grid, params=SuperobParams())
+                        params=SuperobParams(dealias=None))],
+        grid, params=SuperobParams(dealias=None))
     assert off.cc_qc == [{}]
 
 
@@ -638,10 +643,10 @@ def test_the_debris_fringe_keeps_its_velocity_beside_a_couplet():
     grid = _grid()
     kept = superob_volume(
         _fringe_volume(grid, near_dbz=32.0, near_rho=0.65), grid,
-        params=SuperobParams(cc_qc=CcQcParams()))
+        params=SuperobParams(dealias=None, cc_qc=CcQcParams()))
     strict = superob_volume(
         _fringe_volume(grid, near_dbz=32.0, near_rho=0.65), grid,
-        params=SuperobParams(cc_qc=CcQcParams(tds_fringe_exempt=False)))
+        params=SuperobParams(dealias=None, cc_qc=CcQcParams(tds_fringe_exempt=False)))
 
     exempted = kept.counts.cc_velocity_gates_exempt_tds_fringe
     assert exempted == FRINGE_RADIALS * PATCH_GATES == 48
@@ -667,7 +672,7 @@ def test_the_same_fringe_dies_where_no_couplet_is_beside_it():
     grid = _grid()
     kept = superob_volume(
         _fringe_volume(grid, near_dbz=32.0, near_rho=0.65), grid,
-        params=SuperobParams(cc_qc=CcQcParams()))
+        params=SuperobParams(dealias=None, cc_qc=CcQcParams()))
     # The far patch is fringe-eligible on dual-pol evidence and still
     # dies: it is counted against the rotation criterion, by name.
     far_gates = FRINGE_RADIALS * PATCH_GATES
@@ -676,7 +681,7 @@ def test_the_same_fringe_dies_where_no_couplet_is_beside_it():
 
     flat = superob_volume(
         _fringe_volume(grid, near_dbz=32.0, near_rho=0.65, couplet=False),
-        grid, params=SuperobParams(cc_qc=CcQcParams()))
+        grid, params=SuperobParams(dealias=None, cc_qc=CcQcParams()))
     assert flat.counts.cc_couplet_seed_gates == 0
     assert flat.counts.cc_velocity_gates_exempt_tds_fringe == 0
     assert flat.counts.cc_velocity_tds_no_couplet_nearby == 96
@@ -693,7 +698,7 @@ def test_noise_below_the_debris_floor_dies_beside_the_couplet():
     grid = _grid()
     noise = superob_volume(
         _fringe_volume(grid, near_dbz=32.0, near_rho=0.30), grid,
-        params=SuperobParams(cc_qc=CcQcParams()))
+        params=SuperobParams(dealias=None, cc_qc=CcQcParams()))
     assert noise.counts.cc_couplet_seed_gates > 0      # rotation was there
     assert noise.counts.cc_velocity_gates_exempt_tds_fringe == 0
     assert noise.counts.cc_velocity_tds_rho_below_floor == 48
@@ -705,13 +710,13 @@ def test_biota_below_the_debris_reflectivity_dies_beside_the_couplet():
     Roosting-bird echo peaks near 25-30 dBZ, which is why the band opens
     at 30 and not lower.  Same construction as the exempted case with
     the reflectivity dropped: the perturbed control that keeps this test
-    honest.
+    accurate.
     """
 
     grid = _grid()
     biota = superob_volume(
         _fringe_volume(grid, near_dbz=20.0, near_rho=0.65), grid,
-        params=SuperobParams(cc_qc=CcQcParams()))
+        params=SuperobParams(dealias=None, cc_qc=CcQcParams()))
     assert biota.counts.cc_couplet_seed_gates > 0
     assert biota.counts.cc_velocity_gates_exempt_tds_fringe == 0
     assert biota.counts.cc_velocity_tds_below_reflectivity == 48
@@ -730,7 +735,7 @@ def test_the_debris_core_above_the_shield_still_loses_its_velocity():
     grid = _grid()
     core = superob_volume(
         _fringe_volume(grid, near_dbz=45.0, near_rho=0.65), grid,
-        params=SuperobParams(cc_qc=CcQcParams()))
+        params=SuperobParams(dealias=None, cc_qc=CcQcParams()))
     assert core.counts.cc_couplet_seed_gates > 0
     assert core.counts.cc_velocity_gates_exempt_tds_fringe == 0
     assert core.counts.cc_velocity_tds_at_or_above_shield == 48
@@ -752,7 +757,7 @@ def test_the_exemption_off_is_the_pre_ruling_build():
     grid = _grid()
     strict = superob_volume(
         _fringe_volume(grid, near_dbz=32.0, near_rho=0.65), grid,
-        params=SuperobParams(cc_qc=CcQcParams(tds_fringe_exempt=False)))
+        params=SuperobParams(dealias=None, cc_qc=CcQcParams(tds_fringe_exempt=False)))
     assert strict.counts.cc_velocity_gates_exempt_tds_fringe == 0
     assert strict.counts.cc_couplet_seed_gates == 0
     assert strict.counts.cc_velocity_gates_rejected == 96
@@ -772,7 +777,7 @@ def test_the_four_refusals_and_the_exemption_account_for_every_gate():
     grid = _grid()
     run = superob_volume(
         _fringe_volume(grid, near_dbz=32.0, near_rho=0.65), grid,
-        params=SuperobParams(cc_qc=CcQcParams()))
+        params=SuperobParams(dealias=None, cc_qc=CcQcParams()))
     counts = run.counts
     turned_away = (counts.cc_velocity_tds_rho_below_floor
                    + counts.cc_velocity_tds_below_reflectivity
@@ -781,7 +786,7 @@ def test_the_four_refusals_and_the_exemption_account_for_every_gate():
     assert turned_away == counts.cc_velocity_gates_rejected
     strict = superob_volume(
         _fringe_volume(grid, near_dbz=32.0, near_rho=0.65), grid,
-        params=SuperobParams(cc_qc=CcQcParams(tds_fringe_exempt=False)))
+        params=SuperobParams(dealias=None, cc_qc=CcQcParams(tds_fringe_exempt=False)))
     assert (turned_away + counts.cc_velocity_gates_exempt_tds_fringe
             == strict.counts.cc_velocity_gates_rejected)
 

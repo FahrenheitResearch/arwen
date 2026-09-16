@@ -383,7 +383,7 @@ def test_ww_pp_is_carried_by_a_checkpoint_but_not_by_the_state_identity():
 
     assert "ww_pp" in CHECKPOINT_ONLY_STATE
     assert classify_state_attr("ww_pp") == "checkpoint_only"
-    # The half that keeps the relocation parent-invariance check honest.
+    # The half that keeps the relocation parent-invariance check accurate.
     assert "ww_pp" not in STATE_SERIALIZED_ATTRS
 
 

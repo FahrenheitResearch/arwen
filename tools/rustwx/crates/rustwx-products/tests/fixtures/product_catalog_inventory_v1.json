@@ -351,7 +351,7 @@
       ],
       "slug": "fire_weather_composite",
       "status": "supported",
-      "supported_targets": 23,
+      "supported_targets": 24,
       "title": "Fire Weather Composite"
     },
     "derived:scp_mu_0_3km_0_6km_proxy": {
@@ -370,7 +370,7 @@
       ],
       "slug": "scp_mu_0_3km_0_6km_proxy",
       "status": "supported",
-      "supported_targets": 23,
+      "supported_targets": 24,
       "title": "SCP (MU / 0-3 km / 0-6 km PROXY)"
     },
     "derived:theta_e_2m_10m_winds": {
@@ -389,7 +389,7 @@
       ],
       "slug": "theta_e_2m_10m_winds",
       "status": "supported",
-      "supported_targets": 23,
+      "supported_targets": 24,
       "title": "2 m Theta-e, 10 m Wind Barbs"
     },
     "direct:2m_temperature": {
@@ -407,7 +407,7 @@
       ],
       "slug": "2m_temperature",
       "status": "partial",
-      "supported_targets": 22,
+      "supported_targets": 23,
       "title": "2m AGL Temperature"
     },
     "direct:composite_reflectivity_uh": {
@@ -425,7 +425,7 @@
       ],
       "slug": "composite_reflectivity_uh",
       "status": "partial",
-      "supported_targets": 7,
+      "supported_targets": 8,
       "title": "Composite Reflectivity / UH"
     },
     "direct:mslp_10m_winds": {
@@ -443,7 +443,7 @@
       ],
       "slug": "mslp_10m_winds",
       "status": "partial",
-      "supported_targets": 22,
+      "supported_targets": 23,
       "title": "MSLP / 10m Winds"
     },
     "direct:total_qpf": {
@@ -461,7 +461,7 @@
       ],
       "slug": "total_qpf",
       "status": "partial",
-      "supported_targets": 22,
+      "supported_targets": 23,
       "title": "Total QPF"
     },
     "heavy:severe_proof_panel": {
@@ -481,7 +481,7 @@
       ],
       "slug": "severe_proof_panel",
       "status": "supported",
-      "supported_targets": 23,
+      "supported_targets": 24,
       "title": "Severe Map Set"
     },
     "windowed:2m_temp_0_24h_max": {
@@ -497,7 +497,7 @@
       ],
       "slug": "2m_temp_0_24h_max",
       "status": "partial",
-      "supported_targets": 22,
+      "supported_targets": 23,
       "title": "2 m Temperature (0-24 h max)"
     },
     "windowed:qpf_1h": {
@@ -547,7 +547,7 @@
       ],
       "slug": "uh_2to5km_run_max",
       "status": "partial",
-      "supported_targets": 7,
+      "supported_targets": 8,
       "title": "Updraft Helicity: 2-5 km AGL (run max)"
     }
   },

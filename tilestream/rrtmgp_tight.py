@@ -213,12 +213,12 @@ def describe(nz: int, column_chunk: int, p_top: float = 10000.0) -> str:
             f"   {', '.join(r['dead']) or '-'}")
     t = report["_total"]
     lines.append("  " + "-" * 76)
+    saved_share = 100.0 * (t['shipped_bytes'] - t['tight_bytes']) / t['shipped_bytes']
     lines.append(
         f"  {'ALLOCATION':<12}{t['shipped_bytes'] / MIB:>14.2f}"
         f"{t['tight_bytes'] / MIB:>12.2f}"
         f"{(t['shipped_bytes'] - t['tight_bytes']) / MIB:>10.2f}"
-        f"   ({100.0 * (t['shipped_bytes'] - t['tight_bytes'])
-              / t['shipped_bytes']:.1f}% of the workspace)")
+        f"   ({saved_share:.1f}% of the workspace)")
     return "\n".join(lines)
 
 

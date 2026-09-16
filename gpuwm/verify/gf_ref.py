@@ -26,7 +26,7 @@ Everything else in the preparation is float32 end to end.
 
 Which double, though, is a question the source does not settle and the
 fixture does.  Assigned to a real(8) and written out, ``con_g`` reads
-``0x40239D0140000000`` = ``float64(float32(9.80665))``, not the honest
+``0x40239D0140000000`` = ``float64(float32(9.80665))``, not the accurate
 ``0x40239D013A92A305``.  But the arithmetic does not behave that way.
 Measured over the whole fixture -- 8640 lanes each of ``omeg`` and ``dhdt``
 from ``gf-stage-levels.csv``:
@@ -39,7 +39,7 @@ from ``gf-stage-levels.csv``:
     float32 throughout                      2700         360
     ================================  ==========  ==========
 
-so the constants below are the honest doubles, and the stored-word reading is
+so the constants below are the accurate doubles, and the stored-word reading is
 recorded in ``gf-pow-probe.txt`` as the trap it is.  Every miss in the middle
 row is exactly 1 ULP, which is precisely the size of error that survives a
 careless port and then gets amplified by a branch.
@@ -67,7 +67,7 @@ __all__ = [
 ]
 
 # --- the driver's constants, at the width its expressions evaluate in ------
-# Honest float64, per the fixture measurement in this module's docstring --
+# Accurate float64, per the fixture measurement in this module's docstring --
 # NOT float64(float32(v)), which is what the stored parameter word reads as.
 GFS_G = np.float64(9.80665e0)
 GFS_CP = np.float64(1.0046e3)

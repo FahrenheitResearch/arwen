@@ -239,7 +239,7 @@ def test_every_accepted_composition_can_be_priced(priced):
         "declared composition rule.  Every one of these is a scheme a user "
         "can select and cannot run: `gpuwm check` refuses it and "
         "gpuwm/core/model.py dies on the same call while building the "
-        "model.  Add the missing kernel-module row (with honest pricing "
+        "model.  Add the missing kernel-module row (with accurate pricing "
         "derived from the scheme's actual kernels), or declare the refusal "
         "in DECLARED_PRICING_RULES with its reason.\n  "
         + "\n  ".join(f"{key}: {message}" for key, message in undeclared[:10]))
@@ -285,7 +285,7 @@ def test_the_walk_priced_a_meaningful_share_of_its_accepted_set(priced,
         #
         # P3 is a HOST transcription and launches no kernel of its own, so
         # what its row must produce is the shared moisture validator -- and
-        # NOT ``refl``, whose absence is the other half of the honest price.
+        # NOT ``refl``, whose absence is the other half of the accurate price.
         ("mp_physics=50 (P3 one-category)",
          walk._suite(mp_physics=50, ra_lw_physics=0, ra_sw_physics=1),
          {"present": ("microphysics_validation",), "absent": ("refl",)}),
@@ -308,7 +308,7 @@ def test_the_1_9_resurrected_schemes_price(label, combination,
     The module assertions are what stop the blocker from being "fixed" by
     an empty row: a scheme priced at nothing prices fine and reserves
     nothing, which is the under-pricing direction that put a run 1,630 MiB
-    over.  ``absent`` pins the two honest exclusions -- P3's ``refl`` and
+    over.  ``absent`` pins the two accurate exclusions -- P3's ``refl`` and
     MYJ's YSU/MM5 modules -- so a copy-paste row fails too.
     """
 

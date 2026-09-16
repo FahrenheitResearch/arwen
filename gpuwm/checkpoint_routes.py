@@ -16,13 +16,6 @@ CHECKPOINTLESS_ROUTE_ADVISORY = (
     "configuration does not declare one."
 )
 
-#: The remedies, for ``--explain`` and for the resume refusal.
-CHECKPOINTLESS_ROUTE_REMEDY = (
-    "Validate the configuration with gpuwm check. Single-domain and "
-    "multi-domain runs can write gpuwmrst_d*.npz checkpoints when "
-    "restart_interval_s is positive; resume requires a complete valid set."
-)
-
 
 def config_has_case_data(path) -> bool:
     """True when the config declares the ``[case_data]`` input table."""

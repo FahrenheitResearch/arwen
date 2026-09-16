@@ -43,7 +43,13 @@ def test_every_shipped_profile_is_three_documents_pinned_by_digest(profile_id):
     profile = packaged_profile(profile_id)
     authorities = packaged_authorities(profile_id)
     pins = packaged_authority_sha256(profile_id)
-    assert set(authorities) == set(PROFILE_ROLES) == set(pins)
+    assert set(authorities) == set(PROFILE_ROLES)
+    # A profile whose source publishes bytes the mapped engine cannot read
+    # names an input normalizer, and pins that fourth document the same way.
+    # It is not one of PROFILE_ROLES: those are the roles the front door
+    # spells on the command line, and this one is resolved by name instead.
+    extra = {"normalization"} if profile.get("input_normalizer") else set()
+    assert set(pins) == set(PROFILE_ROLES) | extra
     for role in PROFILE_ROLES:
         path = authorities[role]
         assert path.is_file()
@@ -51,6 +57,13 @@ def test_every_shipped_profile_is_three_documents_pinned_by_digest(profile_id):
         # Shipped INSIDE the package, not beside the checkout: a wheel
         # user has no `configs/`.
         assert path.parent == ROOT / "gpuwm" / "authorities"
+    if extra:
+        from gpuwm.source_authorities import packaged_normalization
+        path = packaged_normalization(profile["input_normalizer"])
+        assert path.is_file()
+        assert path.parent == ROOT / "gpuwm" / "authorities"
+        assert (hashlib.sha256(path.read_bytes()).hexdigest()
+                == pins["normalization"])
     assert profile["source_format"] in {"grib1", "grib2", "netcdf"}
 
 

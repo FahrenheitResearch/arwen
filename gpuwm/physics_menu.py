@@ -514,7 +514,7 @@ def universally_admissible_profile() -> str | None:
     For the refusals that have no source in hand.  ``build_experiment``
     guards a loaded config, and a config carries no forcing source, so
     that refusal cannot be route-AWARE -- it can only be route-SAFE, and
-    the only honest example it can give is a suite that runs everywhere.
+    the only accurate example it can give is a suite that runs everywhere.
 
     Both radiation streams are required for the same reason
     :func:`default_profile_for` requires them: the refusals that reach

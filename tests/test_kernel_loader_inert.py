@@ -113,7 +113,7 @@ def test_non_aerosol_int_define_source_is_byte_identical(name):
 
 
 def test_thompson_cu_source_is_byte_identical():
-    """The single most load-bearing case, asserted without parametrization."""
+    """The single most essential case, asserted without parametrization."""
     assert "thompson" not in kernel_loader.EXTRA_HEADERS
     assert (kernel_loader.module_source("thompson")
             == _pre_hook_source("thompson"))

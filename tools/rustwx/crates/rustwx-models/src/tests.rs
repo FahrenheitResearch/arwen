@@ -1806,7 +1806,7 @@ fn hrrr_direct_composite_layout_recipes_expand_to_selector_backed_components() {
 }
 
 #[test]
-fn hrrr_blockers_point_non_native_surface_products_to_honest_lanes() {
+fn hrrr_blockers_point_non_native_surface_products_to_accurate_lanes() {
     let theta_e = plot_recipe_fetch_blockers("2m_theta_e_10m_winds", ModelId::Hrrr).unwrap();
     assert!(theta_e.iter().any(|blocker| {
         blocker.reason.contains("theta_e_2m_10m_winds")
@@ -3400,4 +3400,25 @@ fn aifs_public_schedule_does_not_advertise_local_archive_horizons() {
         assert!(!aifs_open_data_forecast_hour_supported(cycle,366));
     }
     assert!(supported_forecast_hours(ModelId::Aifs,3).is_empty());
+}
+
+/// A catalog row with no canonical selector is a product NO store lane
+/// can ever serve: the requirement resolves to "no canonical store
+/// selector exists for this field", so neither a wrfout import nor a
+/// fetched store can satisfy it, and no amount of import work fixes it.
+#[test]
+fn every_surface_catalog_row_can_be_resolved_from_some_store() {
+    let requirements = super::plot_recipe_store_requirements("lightning_flash_density")
+        .expect("the catalog carries this slug");
+    assert!(
+        !requirements.is_empty(),
+        "lightning_flash_density resolves no field at all"
+    );
+    for requirement in &requirements {
+        assert!(
+            requirement.selector.is_some(),
+            "{} has no canonical store selector, so no lane can serve it",
+            requirement.field_key
+        );
+    }
 }

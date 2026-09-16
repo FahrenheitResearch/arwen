@@ -182,7 +182,7 @@ impl BatchProductKind {
 /// One recipe available to the inspected run. Direct recipes are proven from
 /// selector metadata and derived recipes from stored slug grids. Windowed
 /// candidates are listed for multi-hour HRRR runs and may still report an
-/// honest blocker when their exact contiguous window is incomplete.
+/// accurate blocker when their exact contiguous window is incomplete.
 /// `source_fields` maps a store-browser selection to recipes that consume it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BatchProductOption {
@@ -669,7 +669,7 @@ pub fn run_batch_render(
                         total: planned,
                     });
                 }
-                // One multi-product call is load-bearing: windowed_store can
+                // One multi-product call is essential: windowed_store can
                 // read each (hour, source plane) once and fold it into every
                 // selected accumulator. Calling once per slug would turn a
                 // 40-product export into 40 full passes over the run.
@@ -1526,7 +1526,7 @@ fn dedup(values: &mut Vec<String>) {
 }
 
 /// A domain slug is only ever a filename *component* (never a path
-/// element), so `.` is admissible and load-bearing: a 3:1 nest of a 12 km
+/// element), so `.` is admissible and essential: a 3:1 nest of a 12 km
 /// parent is 1.333 km, and `d03-1_333km` would read as a typo.  Every
 /// separator character still collapses to `_`.
 fn safe_slug(value: &str, fallback: &str) -> String {

@@ -916,7 +916,7 @@ mod tests {
             }
         }
 
-        // degC inputs against degF/degC palettes keep the values honest.
+        // degC inputs against degF/degC palettes keep the values accurate.
         let ctt = curated_style_for_store_variable("wrf_ctt", &derived, "degC", model).unwrap();
         assert_eq!(ctt.convert, UnitConvert::None, "ctt values are already degC");
         assert_eq!(ctt.display_units, "degC");

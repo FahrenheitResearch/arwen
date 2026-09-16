@@ -22,14 +22,17 @@ buffer.**  The only per-PROCESS item in the whole configuration is the
 anything.
 
 And the largest single item does not shrink with the tile.  MYNN's declared
-workspace is sized against ``MYNN_PBL_COLUMN_CHUNK = 16384`` columns, not
-against ``ny*nx``: 52,352 bytes per column, so 818.0 MiB at ``nz = 49`` for
-any tile of 16,384 columns or more -- 128x128 exactly reaches it.  Of the
+workspace is sized against ``MYNN_PBL_COLUMN_CHUNK``, not against ``ny*nx``:
+52,352 bytes per column at ``nz = 49``, a fixed figure for every tile at or
+above the width.  The measurement below was taken while that width was
+16,384 columns -- 818.0 MiB, which a 128x128 tile exactly reaches.  Of the
 907.2 MiB of arena-eligible scratch a 128x128 tile declares, 836.4 MiB is
 MYNN's.  A second buffer therefore costs another 818 MiB of fixed workspace
 before it holds a single cell of weather, and on a 12 GB card that is 6.7% of
 the whole device per buffer, for a scheme that is running on exactly one
-buffer at a time.
+buffer at a time.  Since the 2026-09-15 sweeps the width ships at 8,192
+columns and that item is 409.0 MiB, which halves the number without changing
+what it is: the largest single one, and paid per buffer.
 
 WHAT THIS MODULE DOES
 ---------------------
@@ -331,36 +334,60 @@ _MYNN_CHUNK_MODULES = (
 
 
 def mynn_column_chunk() -> int:
-    """The chunk width MYNN will actually use for a wide tile."""
+    """The chunk width MYNN will actually use for a wide tile.
+
+    The published width: ``mynn_pbl_scratch`` settles it once per process
+    and writes it into all three bindings, and a pin from
+    :func:`set_mynn_column_chunk` replaces it.  Before either has happened
+    this is the shipped default -- 8,192 columns since the 2026-09-15
+    sweeps -- which is also what a process that never reaches a card uses.
+    """
     from gpuwm.core import mynn_pbl_runtime
 
     return int(mynn_pbl_runtime.MYNN_PBL_COLUMN_CHUNK)
 
 
-def set_mynn_column_chunk(chunk: int) -> int:
-    """Set the process-wide MYNN column chunk; returns the previous value.
+def set_mynn_column_chunk(chunk: int | None) -> int:
+    """Pin the process-wide MYNN column chunk; returns the previous value.
 
     ``mynn_pbl_step`` takes ``column_chunk`` as an argument but
-    ``PhysicsDriver._run_mynn_pbl`` does not pass one, so the module constant
-    is the only handle a caller has today.  Plumbing it through ``RunConfig``
-    is the right home for it and is NOT done here -- this function exists so
-    the capacity measurement can be made honestly, and so the number it
-    produces can justify that plumbing.
+    ``PhysicsDriver._run_mynn_pbl`` does not pass one, so a process-wide
+    handle is what a caller has.  There are two, and they are not the same
+    thing: ``GPUWM_MYNN_COLUMN_CHUNK`` is the operator's, read once when the
+    width is derived, while this function is the in-process one a capacity
+    measurement drives between builds.  It PINS the width -- a bare write to
+    the three module bindings no longer holds, because ``mynn_pbl_runtime``
+    asks the resolver rather than reading the constant, and the next
+    derivation would overwrite it.
+
+    RESTORING a width therefore pins that width: a probe that narrows the
+    chunk for a tiled arm and then hands back the number this returned
+    leaves the process at that number for good, which is what the tiled and
+    resident arms of a capacity comparison want -- both arms measured at one
+    width, as they were before the width was derived at all.  ``None``
+    releases the pin and hands the process back to the derivation.
 
     Every width is bit-identical: each MYNN kernel gives one thread one whole
     column and reads no neighbour, and ``tests/test_mynn_pbl_scratch.py``
     asserts the split matches the single wide call rather than assuming it.
     The workspace is exactly 52,352 bytes per column at ``nz = 49``
-    (818.0 MiB at the shipped 16,384), and the scheme's own timing table puts
-    the plateau at 8k-25k columns: ``8,192 = 1.5609 us/column`` against
-    ``16,384 = 1.4929`` -- 4.6% slower for half the workspace -- while
-    ``4,096 = 2.5064`` is 68% slower for a quarter.
+    (409.0 MiB at the 8,192 columns that ship, 818.0 MiB at the 16,384 that
+    used to) and 62,952 at ``nz = 59``.  The scheme's own ``nz = 49`` timing
+    table puts the plateau at 8k-25k columns and ranked
+    ``16,384 = 1.4929 us/column`` ahead of ``8,192 = 1.5609`` by 4.6%, with
+    ``4,096 = 2.5064`` 68% behind; it was taken on a card with fewer SMs than
+    the chunk had blocks, and the 2026-09-15 sweeps through the forecast door
+    at ``nz = 59`` reversed its top two, which is why 8,192 is the width that
+    ships.  What that table still bounds is what a TILE can afford BELOW the
+    shipped width, not what a card can fill.
     """
     import importlib
 
-    chunk = int(chunk)
-    if chunk < 1:
+    chunk = None if chunk is None else int(chunk)
+    if chunk is not None and chunk < 1:
         raise ValueError("MYNN column chunk must be positive")
+    from gpuwm.core.mynn_pbl_scratch import pin_mynn_column_chunk
+
     previous = mynn_column_chunk()
     for name in _MYNN_CHUNK_MODULES:
         module = importlib.import_module(name)
@@ -369,7 +396,7 @@ def set_mynn_column_chunk(chunk: int) -> int:
                 f"{name} no longer binds MYNN_PBL_COLUMN_CHUNK; the set of "
                 "modules that must move together has changed and this "
                 "function would silently leave one of them behind")
-        module.MYNN_PBL_COLUMN_CHUNK = chunk
+    pin_mynn_column_chunk(chunk)
     return previous
 
 

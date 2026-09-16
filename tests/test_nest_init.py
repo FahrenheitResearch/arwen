@@ -1156,3 +1156,87 @@ def test_n1_cli_accepts_a_declared_reference_frame(tmp_path, capsys):
 
     with pytest.raises(SystemExit):
         ni.main([*argv, "--reference-frame", "malformed"])
+
+
+# ---------------------------------------------------------------------
+# a child result carries every receipt its own initialize_real produced
+# ---------------------------------------------------------------------
+
+
+def _real_result_for_receipt_carry():
+    """A ``RealInitResult`` with every receipt field filled distinctly."""
+    from dataclasses import fields as dataclass_fields
+
+    from gpuwm.ingest.real import RealInitResult
+
+    array = np.zeros((2, 2), dtype=np.float64)
+    state = SimpleNamespace(
+        p=np.zeros((2, 2, 2), dtype=np.float64),
+        phb=np.zeros((3, 2, 2), dtype=np.float64),
+        php=np.zeros((3, 2, 2), dtype=np.float64),
+        alt=np.zeros((2, 2, 2), dtype=np.float64),
+        c3h=np.array([0.5, 1.0]), c4h=np.array([10.0, 0.0]),
+        p_top=5000.0, total_mu=lambda: np.full((2, 2), 90000.0),
+    )
+    receipts = {
+        "hydrometeor_initialization": {"source": "native"},
+        "aerosol_initialization": {"aerosol_source": "wif-climatology"},
+        "surface_moisture_floor": {"cells": 3},
+        "initial_perturbation": {"bubbles": 1},
+    }
+    # Every mapping-shaped receipt on the dataclass, not only the four
+    # that exist today: a floor or receipt added later must show up here
+    # filled, so the carry assertion below is not testing an absence.
+    for field in dataclass_fields(RealInitResult):
+        if field.name not in receipts and field.name.endswith(
+                ("_initialization", "_floor", "_perturbation")):
+            receipts[field.name] = {"filled": field.name}
+    return RealInitResult(
+        state=state, coord=object(), base=object(),
+        surface_pressure=array, surface_qv=array, dry_mass=array,
+        dry_pressure=array, total_pressure=array,
+        total_geopotential=array, total_specific_volume=array,
+        integrated_moisture_pressure=array, hypsometric_opt=2,
+        **receipts), receipts
+
+
+def test_a_child_result_carries_every_receipt_field_its_parent_carried():
+    """THE AEROSOL RECEIPT THAT VANISHED AT THE NEST BOUNDARY.
+
+    ``_updated_real_result`` spelled out the constructor by hand and
+    spelled one argument short, so a child's ``aerosol_initialization``
+    came back as the dataclass default -- an EMPTY receipt, which every
+    reader downstream reads as "no aerosol dataset was used".  The set of
+    carried fields is computed from ``dataclasses.fields`` here for the
+    same reason it is computed there: the next receipt added to
+    ``RealInitResult`` is covered without anyone editing this cell.
+    """
+
+    from dataclasses import fields as dataclass_fields
+
+    original, receipts = _real_result_for_receipt_carry()
+    updated = ni._updated_real_result(original, base="rederived-base")
+
+    assert updated.base == "rederived-base"
+    carried = [field.name for field in dataclass_fields(original)
+               if field.name not in ni._REDERIVED_CHILD_FIELDS]
+    for name in carried:
+        assert getattr(updated, name) is getattr(original, name), name
+    # And the receipts specifically, by value, so an empty default can
+    # never pass as a carried receipt.
+    for name, value in receipts.items():
+        assert getattr(updated, name) == value, name
+    assert updated.aerosol_initialization == {
+        "aerosol_source": "wif-climatology"}
+
+
+def test_a_child_result_that_drops_a_receipt_is_refused_by_name():
+    """The guard, exercised: the next hand-spelled omission is a refusal
+    naming the field, not a silently empty receipt in a proof."""
+
+    from dataclasses import replace
+
+    original, _ = _real_result_for_receipt_carry()
+    lost = replace(original, aerosol_initialization={})
+    with pytest.raises(ValueError, match="aerosol_initialization"):
+        ni._refuse_dropped_child_receipts(original, lost)

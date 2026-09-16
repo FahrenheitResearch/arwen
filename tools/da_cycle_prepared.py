@@ -301,9 +301,38 @@ def main() -> int:
     parser.add_argument("--prepared-root", type=Path, required=True)
     parser.add_argument("--authority-dir", type=Path, default=None,
                         help="defaults to <prepared-root>/../authority")
+    # NO `choices=` HERE, deliberately; the refusal is this driver's own
+    # sentence, raised while the value is converted so it lands before the
+    # required-argument sweep rather than after it.  Two reasons, both
+    # worth the lines.  argparse's invalid-choice wording is the
+    # interpreter's, not ours: the choice list lost its quotes in 3.12 and
+    # got them back in 3.13, so a caller reading it, or a test pinning it,
+    # is pinned to a Python version rather than to this tool.
+    # And `BACKGROUND_SOURCES` is a LIVE projection of the runnable source
+    # table, so a name argparse would have frozen into `choices` at parser
+    # build time is a name this driver never explains: a source the table
+    # HAS but marks not runnable was told only that it was not in a list.
+    def background_source(name: str) -> str:
+        if name in background.BACKGROUND_SOURCES:
+            return name
+        known = ", ".join(sorted(background.BACKGROUND_SOURCES))
+        raise argparse.ArgumentTypeError(
+            f"{name} has no background registry entry, so this driver "
+            "cannot state the cycle cadence, publication lag or forecast "
+            "horizon its legs are planned from. The sources it has a "
+            f"registry for are {known}. A source gpuwm's adapter table "
+            "carries but this registry does not is one the table marks "
+            "not runnable; prepare the case on a runnable source, or name "
+            "the source the prepared root was actually built on")
+
     parser.add_argument(
         "--source", default=background.DEFAULT_BACKGROUND_SOURCE,
-        choices=sorted(background.BACKGROUND_SOURCES),
+        type=background_source,
+        # The roster stays where `choices=` used to put it -- one
+        # unbroken brace list -- because argparse wraps a HELP paragraph
+        # at the terminal width and would hyphenate a source id across
+        # two lines, which is not a name anyone can copy back in.
+        metavar="{" + ",".join(sorted(background.BACKGROUND_SOURCES)) + "}",
         help=("which background the prepared case was built on.  This is "
               "the SELECTION recorded in the report, not a switch that "
               "changes how the case is read: the prepared root already "
@@ -983,7 +1012,7 @@ def main() -> int:
     # hash-bound run length.  Integrating past it would read boundary
     # data that does not exist, so it is a refusal here rather than a
     # surprise inside the integrator -- a resumed daemon hits this edge
-    # eventually by construction, and the honest answer is a new case.
+    # eventually by construction, and the accurate answer is a new case.
     span_end = base_seconds + sum(leg_length(i) for i in range(legs))
     if span_end > float(args.run_seconds) + 1e-6:
         raise SystemExit(

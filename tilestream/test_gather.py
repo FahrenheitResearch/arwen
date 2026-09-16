@@ -1002,7 +1002,7 @@ def report_transport_shape():
 def benchmark_gather_bandwidth(*, force=False):
     """Pinned-host H2D gather bandwidth.  DEFERS under GPU contention.
 
-    Honesty constraints this obeys:
+    Accuracy constraints this obeys:
       * working set is ~1.8 GB, far above the 96 MB L2 and the 200 MB floor,
         so no cache can inflate it;
       * timed with CUDA events plus a full device sync;

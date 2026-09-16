@@ -118,7 +118,7 @@ def test_the_selection_stays_a_selection():
 
 
 def test_a_non_python_change_falls_back_to_the_always_list():
-    """The honest answer to a ``.cu`` edit, and it must not be silence.
+    """The accurate answer to a ``.cu`` edit, and it must not be silence.
 
     Import analysis says nothing about a CUDA translation unit, a config
     TOML or a receipt JSON.  Selecting nothing would be a lane that
@@ -291,7 +291,25 @@ def test_a_receipt_gate_is_not_reachable_from_the_code_it_inventories():
 # the tool the audit built.
 # ---------------------------------------------------------------------------
 
-def test_a_deleted_product_module_still_selects_the_tests_that_import_it():
+def _probe_tree(root: pathlib.Path) -> None:
+    """A minimal repository the selector can walk: product trees + tests.
+
+    Every tree ``build_index`` reads exists, so the walk is the real one;
+    it is simply a tree this test owns.  The always list is written empty
+    so the selection under assertion is the import edge and nothing else.
+    """
+
+    for tree in (*fastfix.PRODUCT_TREES, *fastfix.TEST_TREES):
+        (root / tree).mkdir(parents=True, exist_ok=True)
+    battery = root / "tools" / "battery"
+    battery.mkdir(parents=True, exist_ok=True)
+    (battery / "always_files.txt").write_text(
+        "# no repo-scanning gate in the probe tree\n",
+        encoding="utf-8", newline="\n")
+
+
+def test_a_deleted_product_module_still_selects_the_tests_that_import_it(
+        tmp_path):
     """Deleting a module is when import analysis matters MOST.
 
     THE BREAKAGE.  ``build_index`` walks the working tree as it is now, so
@@ -309,11 +327,15 @@ def test_a_deleted_product_module_still_selects_the_tests_that_import_it():
 
     Written as a real deletion rather than a mocked index: the whole defect
     was that the on-disk walk and the lookup disagreed, and a fake index
-    cannot reproduce a disagreement between two things it replaces.
+    cannot reproduce a disagreement between two things it replaces.  The
+    deletion happens in a tree of this test's own rather than in the
+    working tree, because a probe module appearing and vanishing inside
+    ``gpuwm/`` is shared state every other ``-n`` worker walks.
     """
 
-    product = REPOSITORY_ROOT / "gpuwm" / "_fastfix_deletion_probe.py"
-    test_file = (REPOSITORY_ROOT / "tests"
+    _probe_tree(tmp_path)
+    product = tmp_path / "gpuwm" / "_fastfix_deletion_probe.py"
+    test_file = (tmp_path / "tests"
                  / "test_fastfix_deletion_probe_importer.py")
     product.write_text("VALUE = 1\n", encoding="utf-8", newline="\n")
     test_file.write_text(
@@ -323,24 +345,20 @@ def test_a_deleted_product_module_still_selects_the_tests_that_import_it():
         encoding="utf-8", newline="\n")
     rel = "gpuwm/_fastfix_deletion_probe.py"
     importer = "tests/test_fastfix_deletion_probe_importer.py"
-    try:
-        present = _load_selector().select([rel])
-        assert importer in present, (
-            "the control failed: the selector does not see this edge even "
-            "while the module exists, so the deletion half proves nothing")
 
-        product.unlink()                      # the defect's exact scenario
-        absent = _load_selector().select([rel])
-        assert importer in absent, (
-            "a deleted product module selected nothing; the tests that "
-            "import it are the ones that break")
-    finally:
-        if product.exists():
-            product.unlink()
-        test_file.unlink()
+    present = fastfix.select([rel], root=tmp_path)
+    assert importer in present, (
+        "the control failed: the selector does not see this edge even "
+        "while the module exists, so the deletion half proves nothing")
+
+    product.unlink()                          # the defect's exact scenario
+    absent = fastfix.select([rel], root=tmp_path)
+    assert importer in absent, (
+        "a deleted product module selected nothing; the tests that "
+        "import it are the ones that break")
 
 
-def test_an_unparseable_test_file_is_named_rather_than_dropped():
+def test_an_unparseable_test_file_is_named_rather_than_dropped(tmp_path):
     """A test file that does not parse is not one that does not matter.
 
     THE BREAKAGE.  ``_parse`` returns ``None`` on SyntaxError and the index
@@ -351,21 +369,52 @@ def test_an_unparseable_test_file_is_named_rather_than_dropped():
 
     Refusing by name, because the alternative is a warning nobody reads on
     a leg whose entire output is "0 selected".
+
+    The broken file is written into a tree of this test's own.  In the
+    working tree it was a file that does not parse, sitting in ``tests/``,
+    for as long as this test took to run: under ``-n`` any worker that
+    walked ``tests/`` in that window refused with ``UnreadableTestFile``
+    naming a probe it had never heard of, and any tool collecting
+    ``tests/`` saw a syntax error.
     """
 
-    broken = REPOSITORY_ROOT / "tests" / "test_fastfix_unparseable_probe.py"
+    _probe_tree(tmp_path)
+    broken = tmp_path / "tests" / "test_fastfix_unparseable_probe.py"
     broken.write_text("def test_x(:\n    pass\n",
                       encoding="utf-8", newline="\n")
-    try:
-        selector = _load_selector()
-        with pytest.raises(selector.UnreadableTestFile) as caught:
-            selector.build_index()
-        message = str(caught.value)
-        assert "tests/test_fastfix_unparseable_probe.py" in message, message
-        # The refusal must name the BREAKAGE, not merely the file.
-        assert "reports green" in message, message
-    finally:
-        broken.unlink()
+
+    with pytest.raises(fastfix.UnreadableTestFile) as caught:
+        fastfix.build_index(tmp_path)
+    message = str(caught.value)
+    assert "tests/test_fastfix_unparseable_probe.py" in message, message
+    # The refusal must name the BREAKAGE, not merely the file.
+    assert "reports green" in message, message
+
+
+def test_the_probe_tree_is_the_tree_the_selector_walked(tmp_path):
+    """The control for both tests above: ``root`` is obeyed, not decorative.
+
+    A ``root`` the walk ignored would leave both probes measuring the
+    repository again -- the same shared state, with the reassurance of a
+    parameter.  So a module that exists ONLY in the probe tree must be
+    seen there and must not be seen in the repository, and nothing may be
+    written into the repository to make that true.
+    """
+
+    _probe_tree(tmp_path)
+    (tmp_path / "gpuwm" / "_fastfix_root_probe.py").write_text(
+        "VALUE = 1\n", encoding="utf-8", newline="\n")
+    (tmp_path / "tests" / "test_fastfix_root_probe_importer.py").write_text(
+        "from gpuwm import _fastfix_root_probe\n\n\n"
+        "def test_probe():\n"
+        "    assert _fastfix_root_probe.VALUE == 1\n",
+        encoding="utf-8", newline="\n")
+    rel = "gpuwm/_fastfix_root_probe.py"
+    importer = "tests/test_fastfix_root_probe_importer.py"
+
+    assert importer in fastfix.select([rel], root=tmp_path)
+    assert importer not in fastfix.select([rel])
+    assert not (REPOSITORY_ROOT / rel).exists()
 
 
 def test_a_rename_still_selects_the_tests_that_import_the_old_name():

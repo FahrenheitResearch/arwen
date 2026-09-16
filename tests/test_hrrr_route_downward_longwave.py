@@ -226,7 +226,7 @@ def test_an_undeclared_downward_longwave_is_refused_not_seeded():
     this pairing -- no longwave scheme, Noah reading GLW every surface
     step -- is exactly the class ``_resolve_initial_glw`` refuses rather
     than fills.  That is strictly stronger than the number being an
-    honest zero: a zero sky is still not a sky, and a run that wants a
+    accurate zero: a zero sky is still not a sky, and a run that wants a
     fixed one now has to say so at the call site.  The refusal names the
     selector, what reads GLW, and the three ways out.
 

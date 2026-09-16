@@ -167,7 +167,7 @@ _HARNESS_FLAGS = ("-O2", "-std=c++17", "-ffp-contract=off",
 
 #: A translation unit that compiles anywhere a C++17 toolchain works.  It is
 #: the discriminator this gate turns on: if THIS fails there is no toolchain
-#: and skipping is honest, and if it passes then a harness failure is the
+#: and skipping is accurate, and if it passes then a harness failure is the
 #: harness's and must be reported as a failure.
 _TRIVIAL = ("#include <vector>\n"
             "int main() { return (int)std::vector<float>(4).size(); }\n")

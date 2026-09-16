@@ -3188,7 +3188,7 @@ def np_diff6(f, mut, c1, c2, factor, dt, opt, stagger="",
     normal staggered axis, so the outer 3 entries per non-periodic side
     are zeroed on EVERY axis and stagger, and the outermost computed
     staggered face (u's nx-3 under open_x, v's ny-3 under open_y) is
-    computed with WRF's honest read of the stored true boundary datum
+    computed with WRF's accurate read of the stored true boundary datum
     ``field(ide)``/``field(jde)`` -- u column nx / v row ny -- exactly as
     the Fortran's dflux_p1 (module_big_step_utilities_em.F:6465-6467 x /
     :6547-6549 y; loop bounds :6354-6358/:6381-6385).
@@ -3240,7 +3240,7 @@ def np_diff6(f, mut, c1, c2, factor, dt, opt, stagger="",
         r = lambda s: np.roll(q, -s, axis=ax)          # r(s)[i] = q[i+s]
         dflux = (10.0 * (q - r(-1)) - 5.0 * (r(1) - r(-2))
                  + (r(2) - r(-3)))
-        # Honest boundary-datum read at the outermost computed staggered
+        # Accurate boundary-datum read at the outermost computed staggered
         # face: WRF's dflux_p1 there (this array's face nx-2 / ny-2, the
         # p0 face of point nx-2 / ny-2) reads field(ide)/field(jde) --
         # the stored last column/row, which the periodic core lacks.
@@ -3352,7 +3352,7 @@ def np_smag2d_hd(f, xk, mut, c1, c2, dx, dy, stagger="",
     + ``dycore._zero_open_strips(width=1)``: WRF's open loop bounds
     (ids+1 / ide-1|2 per stagger) zero the outer entry of each open axis
     side, and the boundary-normal staggered face nx-1 (u, open_x) / ny-1
-    (v, open_y) is computed with WRF's honest boundary-datum read
+    (v, open_y) is computed with WRF's accurate boundary-datum read
     field(i+1) = field(ide) -- the stored last column/row -- instead of
     the periodic wrap (module_big_step_utilities_em.F:2786-2787/2819 for
     'u', 2834-2837/2861 for 'v').
@@ -3373,7 +3373,7 @@ def np_smag2d_hd(f, xk, mut, c1, c2, dx, dy, stagger="",
     if stagger == "x":                         # WRF 'u' branch
         uc = f[:, :, :nx]
         up1 = np.roll(uc, -1, axis=2)
-        if open_x:                             # honest east boundary datum
+        if open_x:                             # accurate east boundary datum
             up1[:, :, nx - 1] = f[:, :, nx]    # field(i+1) = u(ide)
         hx = chm * xk * rdx * (up1 - uc)
         tx = rdx * (hx - np.roll(hx, 1, axis=2))
@@ -3385,7 +3385,7 @@ def np_smag2d_hd(f, xk, mut, c1, c2, dx, dy, stagger="",
     elif stagger == "y":                       # WRF 'v' branch
         vc = f[:, :ny, :]
         vp1 = np.roll(vc, -1, axis=1)
-        if open_y:                             # honest north boundary datum
+        if open_y:                             # accurate north boundary datum
             vp1[:, ny - 1, :] = f[:, ny, :]    # field(j+1) = v(jde)
         # WRF quirk (see docstring): the v normal (y) fluxes have no chm.
         hy = xk * rdy * (vp1 - vc)

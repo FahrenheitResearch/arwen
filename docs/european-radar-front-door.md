@@ -71,7 +71,7 @@ scale, range start, start and end times — *and* their per-ray azimuths match.
 Elevation alone is not enough: a Dutch volume carries three sweeps at 0.30
 degrees with two different Nyquist intervals, and separate reflectivity and
 Doppler passes at one angle are ordinary radar practice. Files that do not
-match become two sweeps, which is the honest reading, and the pack records the
+match become two sweeps, which is the accurate reading, and the pack records the
 merge ratio so the reading is visible rather than assumed.
 
 An assembled volume has no bytes of its own, so its `source_sha256` is a

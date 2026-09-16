@@ -36,7 +36,7 @@ These tests pin the operator against the Fortran and the spawn-time
 assembly against the receipt discipline ``donor_fill_plan`` set: every
 land/water conflict COUNTED, never silent.  Everything here is host
 NumPy -- the operator is a one-shot at birth, and a CPU test is the
-honest instrument for it.
+accurate instrument for it.
 """
 
 from __future__ import annotations

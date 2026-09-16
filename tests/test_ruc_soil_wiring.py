@@ -759,3 +759,231 @@ def test_the_gate_above_can_see_a_noah_column_wearing_ruc_clothing() -> None:
         "fixture, so the distinguishing check in "
         "test_a_ruc_config_initializes_on_ruc_levels_not_noah_layers is not "
         "discriminating and must be replaced")
+
+
+# ---------------------------------------------------------------------------
+# 6.  one depth function, both doors: the validator checks the depths the
+#     remap actually interpolates
+# ---------------------------------------------------------------------------
+
+
+def _linear_contract(source_layers, *, source_value_location):
+    """A linear_point_samples contract over the declared source layers."""
+
+    return {
+        "temperature_field": "soil_temperature",
+        "moisture_field": "volumetric_soil_moisture",
+        "depth_units": "m",
+        "source_layers": [
+            {"top": top, "bottom": bottom, "selectors": {
+                "soil_temperature": {"format": "netcdf", "name": f"stl{i}"},
+                "volumetric_soil_moisture": {
+                    "format": "netcdf", "name": f"swvl{i}"}}}
+            for i, (top, bottom) in enumerate(source_layers, 1)],
+        "target_layers": [
+            {"top": 0.0, "bottom": 0.1}, {"top": 0.1, "bottom": 0.4},
+            {"top": 0.4, "bottom": 1.0}, {"top": 1.0, "bottom": 2.0}],
+        "remap": {
+            "kind": "linear_point_samples",
+            "source_value_location": source_value_location,
+            "target_value_location": "layer_midpoint",
+            "top_anchor": {"depth": 0.0, "temperature": "skin_temperature",
+                           "moisture": "repeat_shallowest"},
+            "bottom_anchor": {"depth": 3.0,
+                              "temperature": "deep_soil_temperature",
+                              "moisture": "repeat_deepest"}},
+        "missing": {"land": "reject",
+                    "ocean": {"stage": "after_horizontal_interpolation",
+                              "temperature": "skin_temperature",
+                              "moisture": 1.0}},
+    }
+
+
+def test_a_source_that_states_its_values_at_layer_bottoms_is_admitted():
+    """A declared sample geometry is a declaration, not a code change."""
+
+    from gpuwm.ingest.soil import _remap_declared_soil
+    from gpuwm.ingest.soil_contract import validate_soil_layer_contract
+
+    bottoms = [(0.0, 0.02), (0.02, 0.2), (0.2, 0.8), (0.8, 2.0)]
+    contract = _linear_contract(bottoms, source_value_location="layer_bottom")
+    validated = validate_soil_layer_contract(contract)
+    assert validated["remap"]["source_value_location"] == "layer_bottom"
+
+    shape = (2, 2)
+    temperature = np.stack([np.full(shape, v)
+                            for v in (281.0, 283.0, 287.0, 291.0)])
+    moisture = np.stack([np.full(shape, v)
+                         for v in (0.10, 0.20, 0.30, 0.40)])
+    tsk = np.full(shape, 275.0)
+    deep = np.full(shape, 295.0)
+    remapped_t, remapped_m = _remap_declared_soil(
+        temperature, moisture, validated, tsk=tsk, deep=deep)
+
+    # Hand-computed linear interpolation on the declared BOTTOMS, bracketed
+    # by TSK at 0 m and TMN at 3 m, evaluated at the four Noah midpoints.
+    depths = [0.0, 0.02, 0.2, 0.8, 2.0, 3.0]
+    t_nodes = [275.0, 281.0, 283.0, 287.0, 291.0, 295.0]
+    m_nodes = [0.10, 0.10, 0.20, 0.30, 0.40, 0.40]
+
+    def _line(nodes, z):
+        for lower in range(len(depths) - 1):
+            if depths[lower] <= z <= depths[lower + 1]:
+                span = depths[lower + 1] - depths[lower]
+                weight = (z - depths[lower]) / span
+                return nodes[lower] + weight * (
+                    nodes[lower + 1] - nodes[lower])
+        raise AssertionError(z)
+
+    for index, midpoint in enumerate((0.05, 0.25, 0.7, 1.5)):
+        assert np.allclose(remapped_t[index],
+                           _line(t_nodes, midpoint), rtol=0.0, atol=1e-12)
+        assert np.allclose(remapped_m[index],
+                           _line(m_nodes, midpoint), rtol=0.0, atol=1e-12)
+
+
+def test_a_location_the_sampler_has_no_rule_for_is_refused_by_name():
+    from gpuwm.ingest.soil_contract import validate_soil_layer_contract
+
+    contract = _linear_contract(
+        [(0.0, 0.07), (0.07, 0.28), (0.28, 1.0), (1.0, 2.89)],
+        source_value_location="layer_centroid_by_mass")
+    with pytest.raises(ValueError) as caught:
+        validate_soil_layer_contract(contract)
+    message = str(caught.value)
+    assert "layer_centroid_by_mass" in message
+    assert "wrf_integer_cm_layer_midpoint" in message
+    assert "layer_bottom" in message
+    assert "layer_top" in message
+
+
+def test_colliding_integer_centimetre_midpoints_are_refused_at_the_contract():
+    """The validator reads the depths the remap interpolates, not the bottoms.
+
+    These four layers have strictly ordered BOTTOMS (0.005, 0.02, 0.6, 2.8)
+    and colliding integer-centimetre MIDPOINTS (0, 1, 31, 170 cm, the first
+    landing on the 0 m skin anchor).  Validating the bottoms admitted the
+    contract and then handed ``_interp_nodes`` a duplicated node.
+    """
+
+    from gpuwm.ingest.soil_contract import validate_soil_layer_contract
+
+    layers = [(0.0, 0.005), (0.005, 0.02), (0.02, 0.6), (0.6, 2.8)]
+    contract = _linear_contract(
+        layers, source_value_location="wrf_integer_cm_layer_midpoint")
+    with pytest.raises(ValueError) as caught:
+        validate_soil_layer_contract(contract)
+    message = str(caught.value)
+    assert "strictly ordered" in message
+    assert "the top anchor" in message
+    assert "source layer 1" in message
+    assert "zero" in message
+
+
+def test_one_depth_function_answers_both_soil_doors():
+    """The depths the validator checks are the depths the remap samples."""
+
+    from gpuwm.ingest.soil_contract import linear_source_sample_depths
+
+    assert linear_source_sample_depths(_linear_contract(
+        [(0.0, 0.02), (0.02, 0.2), (0.2, 0.8), (0.8, 2.0)],
+        source_value_location="layer_bottom")) == (
+            0.0, 0.02, 0.2, 0.8, 2.0, 3.0)
+    # Re-anchored from (0.0, 0.0, 0.02, 0.2, 0.8, 3.0).  A layer_top source
+    # whose shallowest layer starts at the surface STATES the 0 m value, so
+    # the skin anchor is not a second node at that depth: it is dropped and
+    # the source's own surface value is the node.  The old shape was two
+    # values at one depth, which the collision refusal rejected -- for
+    # every layer_top source there is, since a soil column starts at 0 m.
+    assert linear_source_sample_depths(_linear_contract(
+        [(0.0, 0.02), (0.02, 0.2), (0.2, 0.8), (0.8, 2.0)],
+        source_value_location="layer_top")) == (
+            0.0, 0.02, 0.2, 0.8, 3.0)
+    # The deep end is symmetric: a layer_bottom source whose deepest layer
+    # ends at the deep anchor states that value too.
+    assert linear_source_sample_depths(_linear_contract(
+        [(0.0, 0.02), (0.02, 0.2), (0.2, 0.8), (0.8, 3.0)],
+        source_value_location="layer_bottom")) == (
+            0.0, 0.02, 0.2, 0.8, 3.0)
+    assert linear_source_sample_depths(_linear_contract(
+        [(0.0, 0.005), (0.005, 0.02), (0.02, 0.6), (0.6, 2.8)],
+        source_value_location="wrf_integer_cm_layer_midpoint")) == (
+            0.0, 0.0, 0.01, 0.31, 1.7, 3.0)
+
+
+def test_a_layer_top_source_starting_at_the_surface_remaps_on_its_own_value():
+    """The other half of the sampler's table, usable.
+
+    Every layer-form soil source starts its shallowest layer at 0 m, so a
+    `layer_top` declaration always put a source sample on the 0 m skin
+    anchor and always hit the collision refusal, whose way out ("separate
+    the layers, or declare the location their values are really stated
+    at") was not available: the values ARE stated at the layer tops.  The
+    source states the surface value, so it is the surface node and the
+    anchor is not one.
+    """
+
+    from gpuwm.ingest.soil import _remap_declared_soil
+    from gpuwm.ingest.soil_contract import (
+        linear_sample_plan, validate_soil_layer_contract)
+
+    tops = [(0.0, 0.02), (0.02, 0.2), (0.2, 0.8), (0.8, 2.0)]
+    contract = _linear_contract(tops, source_value_location="layer_top")
+    validated = validate_soil_layer_contract(contract)
+    plan = linear_sample_plan(validated)
+    assert plan.depths == (0.0, 0.02, 0.2, 0.8, 3.0)
+    assert plan.top_anchor is False and plan.bottom_anchor is True
+    assert plan.labels == (
+        "source layer 1", "source layer 2", "source layer 3",
+        "source layer 4", "the bottom anchor")
+
+    shape = (2, 2)
+    temperature = np.stack([np.full(shape, v)
+                            for v in (281.0, 283.0, 287.0, 291.0)])
+    moisture = np.stack([np.full(shape, v)
+                         for v in (0.10, 0.20, 0.30, 0.40)])
+    tsk = np.full(shape, 275.0)
+    deep = np.full(shape, 295.0)
+    remapped_t, remapped_m = _remap_declared_soil(
+        temperature, moisture, validated, tsk=tsk, deep=deep)
+
+    # Hand-computed on the declared TOPS.  TSK is not a node: the source
+    # states the 0 m value itself, and 275.0 appears nowhere in the answer.
+    depths = [0.0, 0.02, 0.2, 0.8, 3.0]
+    t_nodes = [281.0, 283.0, 287.0, 291.0, 295.0]
+    m_nodes = [0.10, 0.20, 0.30, 0.40, 0.40]
+
+    def _line(nodes, z):
+        for lower in range(len(depths) - 1):
+            if depths[lower] <= z <= depths[lower + 1]:
+                span = depths[lower + 1] - depths[lower]
+                weight = (z - depths[lower]) / span
+                return nodes[lower] + weight * (
+                    nodes[lower + 1] - nodes[lower])
+        raise AssertionError(z)
+
+    for index, midpoint in enumerate((0.05, 0.25, 0.7, 1.5)):
+        assert np.allclose(remapped_t[index],
+                           _line(t_nodes, midpoint), rtol=0.0, atol=1e-12)
+        assert np.allclose(remapped_m[index],
+                           _line(m_nodes, midpoint), rtol=0.0, atol=1e-12)
+
+
+def test_a_derived_sample_that_lands_on_the_anchor_is_still_a_collision():
+    """A rounded location collapsing onto 0 m is not a stated surface value.
+
+    The integer-centimetre midpoint of a 0-0.5 cm layer rounds DOWN onto
+    the skin anchor.  That is the derivation collapsing, not the source
+    saying where its value sits, so it stays refused with the two nodes
+    named.
+    """
+
+    from gpuwm.ingest.soil_contract import validate_soil_layer_contract
+
+    contract = _linear_contract(
+        [(0.0, 0.005), (0.005, 0.02), (0.02, 0.6), (0.6, 2.8)],
+        source_value_location="wrf_integer_cm_layer_midpoint")
+    with pytest.raises(ValueError) as caught:
+        validate_soil_layer_contract(contract)
+    assert "the top anchor" in str(caught.value)
+    assert "source layer 1" in str(caught.value)

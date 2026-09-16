@@ -303,7 +303,7 @@ def test_gpu_local_frames():
 
 
 def test_batched_vram_estimate(cases, C):
-    """lw_batched_vram_bytes honesty: estimate >= pool-measured peak >=
+    """lw_batched_vram_bytes accuracy: estimate >= pool-measured peak >=
     0.5*estimate, at two chunk sizes (single-chunk and multi-chunk)."""
     groups = _deck_groups(cases)
     idx = max(groups.values(), key=len)

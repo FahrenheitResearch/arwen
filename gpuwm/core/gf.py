@@ -231,7 +231,7 @@ class GrellFreitas:
         Grell-Freitas grew 35.04 MiB per relocation against New Tiedtke's
         61.20 and Kain-Fritsch's 1.28.
 
-        Returns bytes freed BY THIS ADAPTER, which is honestly zero, so
+        Returns bytes freed BY THIS ADAPTER, which is accurately zero, so
         the relocation receipt's cumulus_workspace_bytes does not claim
         credit for memory the collector reclaims elsewhere.
         """

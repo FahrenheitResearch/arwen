@@ -145,11 +145,31 @@ STREAMING_KEYS = frozenset({
 
 
 class StreamingRefused(RuntimeError):
-    """A configuration that asks for ``[tiles]`` and cannot legally have it."""
+    """A configuration that asks for ``[tiles]`` and cannot legally have it.
 
-    def __init__(self, *args, resource=None):
+    THE NUMBER THAT BOUND IT TRAVELS AS A NUMBER.  A caller that has to
+    quote what this walk compared against -- a sizing door reporting why
+    the layout it priced was refused -- had only the sentence to read it
+    out of, so it quoted its own budget instead and named a figure that
+    contradicted the refusal: at a 5.06 GiB nest budget the cyclone door
+    printed a 5,161,476,948 byte fit target ABOVE the 5,141,378,237 byte
+    price and refused the run anyway, because the tile road had weighed
+    that price against 5,139,501,921 bytes and nothing carried it out.
+    ``budget_bytes`` is that bound, net of ``withheld_bytes`` (held back
+    for ``withheld_for``'s rebuild), and ``remedy`` is this walk's own
+    way out, so a quoting caller states the walk's arithmetic rather
+    than a parallel one.  All four are optional: a refusal that is not a
+    comparison against a budget carries none of them.
+    """
+
+    def __init__(self, *args, resource=None, budget_bytes=None,
+                 withheld_bytes=0, withheld_for=None, remedy=None):
         super().__init__(*args)
         self.resource = resource
+        self.budget_bytes = None if budget_bytes is None else int(budget_bytes)
+        self.withheld_bytes = int(withheld_bytes or 0)
+        self.withheld_for = withheld_for or None
+        self.remedy = remedy
 
 
 class _Unset:
@@ -1569,7 +1589,7 @@ class StreamedDomain:
         Built by :class:`tilestream.output.StoreFrame`, whose classification
         of every frame field is MEASURED against the real
         ``wrfout._device_state_frame`` rather than transcribed, and whose
-        field order is the device frame's own -- load-bearing, because the
+        field order is the device frame's own -- essential, because the
         frame dict doubles as the writer's schema and HDF5 lays its name
         heap out in variable-creation order (the same numbers in a different
         order give a file 189 bytes larger in which every variable compares
@@ -1600,7 +1620,7 @@ class StreamedDomain:
         is the refusal, :func:`diagnostic_inventory` is the reason it no
         longer fires on the product route, and
         ``tests/test_streamed_frame_parity.py`` is what keeps the two
-        honest by comparing the streamed and resident FIELD SETS rather
+        accurate by comparing the streamed and resident FIELD SETS rather
         than trusting either description.
 
         TWO ROADS TO THE PLAN, ONE FRAME.  With a prepared resident state the
@@ -2605,7 +2625,7 @@ class StreamedStability:
             # THE ANALYSIS FRAME.  A route that publishes a t = 0 history
             # frame asks for its health before anything has been stepped, and
             # there is no fold yet because there has been no sweep -- not a
-            # short one, none.  The honest answer is the one the resident path
+            # short one, none.  The accurate answer is the one the resident path
             # would give: attach COPIED this state into the store and no sweep
             # has written either since, so the state still IS the initial
             # condition the frame contains.  This is the only moment that is
@@ -2737,7 +2757,7 @@ def domain_field_max(stepper, state, key: str, attr: str) -> float:
     ``runtime.integrate_prepared_case`` samples ``swdown``'s peak once per
     OUTER step off ``state.physics.fields``, which is the same corpse the
     stability reduction was reading.  Once per outer step over one 2-D field
-    is small enough that the honest fix is to read the store on the host --
+    is small enough that the accurate fix is to read the store on the host --
     no kernel, no sweep hook, and correct for a field no tile writes.
     """
     import cupy as cp
@@ -3417,7 +3437,7 @@ def attach(state, cfg, decision: StreamingDecision, *, tile_state_factory,
 
     ``tile_state_factory(tile_cfg)`` must build a state with THE SAME PHYSICS
     SELECTORS the domain was prepared with, already warmed by one step.  Both
-    conditions are load-bearing and both are checked rather than trusted: a
+    conditions are essential and both are checked rather than trusted: a
     buffer missing a scheme owns a different carrier set and the inventory
     comparison refuses it, and two carriers (Kain-Fritsch's ``cumulus/w0avg``
     above all) are allocated LAZILY on first use, so an unwarmed buffer is
@@ -3834,7 +3854,7 @@ def _assert_twin_reproduced_policy(scheme, twin, volatile):
 def _tile_scheme(scheme, lat, lon):
     """A FRESH twin of one scheme adapter, at a tile's extents.
 
-    Fresh is the load-bearing word, and it is a bug this function was
+    Fresh is the essential word, and it is a bug this function was
     written to fix rather than a precaution.  Handing every buffer the
     DOMAIN's adapter object looks harmless -- Kain-Fritsch's constructor
     takes no arguments and holds no configuration -- and is not: ``w0avg``
@@ -4303,7 +4323,7 @@ class _StandaloneNode:
     A ``DomainNode`` is a position in a tree, and the builder asks it exactly
     two questions: is this domain a NEST (``parent``), and what is its grid id
     (for one refusal message).  A domain that is its own root answers both
-    without a tree, and saying so in six lines is honest, whereas building a
+    without a tree, and saying so in six lines is accurate, whereas building a
     one-node tree to satisfy an attribute lookup would not be.
     """
 
@@ -4618,7 +4638,7 @@ def refuse_unrouted_streaming(exp, route: str, *,
     resident" -- it is never asked, and the run proceeds resident with
     nothing said.  That is precisely the silence this module's docstring
     forbids ("Refused rather than silently integrated resident"), and on a
-    route that cannot honour the mode the honest answer is a refusal, not a
+    route that cannot honour the mode the accurate answer is a refusal, not a
     decision it will not act on.
     """
     from gpuwm.explain import layered
@@ -5510,6 +5530,18 @@ def decide_tree(nodes, options=None, *, machine=None, decisions=None,
         return (f"{budget} byte admission budget, which withholds "
                 f"{withheld} bytes for {moving_names}'s rebuild")
 
+    def _terms(remedy: str) -> dict:
+        """The same three numbers the sentence prints, as numbers.
+
+        Every refusal below quotes ``_budget_phrase`` and ends in a
+        remedy; a caller that has to re-state either (see
+        :class:`StreamingRefused`) reads them from here instead of
+        parsing the sentence or computing a second budget of its own.
+        """
+        return dict(budget_bytes=int(budget), withheld_bytes=withheld,
+                    withheld_for=moving_names if withheld else None,
+                    remedy=remedy)
+
     # THE WAY OUT IS WHATEVER PUT THE TREE ON THIS ROAD.  Where a domain's
     # own table compelled the tiled road and the tree fits resident, the
     # remedy is that table -- naming the card instead sent the reader after
@@ -5541,6 +5573,7 @@ def decide_tree(nodes, options=None, *, machine=None, decisions=None,
                 "domains, fewer vertical levels, or a shorter nest.")
 
     if fixed_floor > budget:
+        remedy = _remedy()
         raise StreamingRefused(
             ((f"{_compelled_clause()} compels the tiled road, and that "
               f"road's shared process/radiation floor is {fixed_floor} "
@@ -5549,8 +5582,8 @@ def decide_tree(nodes, options=None, *, machine=None, decisions=None,
               f"the configured tree needs {envelope} bytes resident and the "
               f"shared process/radiation floor of the streamed road is "
               f"{fixed_floor} bytes, both above the {_budget_phrase()}.")
-             + " " + _remedy()),
-            resource="vram")
+             + " " + remedy),
+            resource="vram", **_terms(remedy))
     # A domain whose full store already exceeds the whole host allowance
     # cannot stream on ANY tile. Exclude that impossible choice before the
     # subset search; the ordinary walk still validates every actual candidate.
@@ -5578,12 +5611,14 @@ def decide_tree(nodes, options=None, *, machine=None, decisions=None,
         if required_envelope > budget:
             names = ", ".join(f"d{gid:02d}" for gid in sorted(host_blocked))
             minimum = min(host_blocked.values())
+            remedy = _remedy()
             raise StreamingRefused(
                 f"{names} must remain resident: each needs at least "
                 f"{int(minimum)} bytes of streamed host storage against a "
                 f"{int(host_budget)} byte host allowance, and their required "
                 f"resident envelope {int(required_envelope)} bytes is above "
-                f"the {_budget_phrase()}. " + _remedy(), resource="host")
+                f"the {_budget_phrase()}. " + remedy, resource="host",
+                **_terms(remedy))
     # A fitting automatic road is enough: do not enumerate 2**N subsets to
     # prove a minimum streamed-domain count. Try single changes first, then
     # cumulative changes from the last domain back toward the root. This
@@ -5663,7 +5698,8 @@ def decide_tree(nodes, options=None, *, machine=None, decisions=None,
                  f"{planner}.")
         remedy = _remedy()
     raise StreamingRefused(f"{cause} {remedy}",
-                           resource=None if tiling_refusal else "memory")
+                           resource=None if tiling_refusal else "memory",
+                           **_terms(remedy))
 
 
 def _decide_tree(nodes, options=None, *, machine=None,
@@ -6078,6 +6114,16 @@ class TreeRoadPlan:
     #: process/radiation terms as decide_tree. It is not a resident bound:
     #: a smaller auto configuration may still fit entirely resident.
     streaming_fixed_floor_bytes: int | None = None
+    #: WHAT THE REFUSAL COMPARED AGAINST, as a number.  ``refusal`` states
+    #: it in a sentence and a door that has to quote it cannot parse one,
+    #: so the three terms travel here too: the admission budget net of the
+    #: withholding, the withholding itself, the grid it is held for, and
+    #: the walk's own way out.  ``None``/0 on every plan that was not
+    #: refused against a budget, including a priced one.
+    admission_budget_bytes: int | None = None
+    admission_withheld_bytes: int = 0
+    admission_withheld_for: str | None = None
+    admission_remedy: str | None = None
 
     @property
     def peak_vram_bytes(self) -> int:
@@ -6275,12 +6321,20 @@ def tree_road_plan(exp, *, machine=None, resident_estimate=None) -> TreeRoadPlan
     refusal_resource = None
     report_error = None
     outcome = None
+    admission: dict = {}
     try:
         outcome = decide_tree(nodes, options, machine=machine,
                               decisions=decisions, resident_estimate=resident_estimate)
     except StreamingRefused as error:
         refusal = str(error)
         refusal_resource = error.resource
+        # The walk's own arithmetic, kept as arithmetic -- see
+        # :class:`StreamingRefused`.
+        admission = dict(
+            admission_budget_bytes=error.budget_bytes,
+            admission_withheld_bytes=error.withheld_bytes,
+            admission_withheld_for=error.withheld_for,
+            admission_remedy=error.remedy)
     except Exception as error:              # a report never dies on its estimate
         if isinstance(error, _CannotPlan()):
             # ``autoplan.CannotPlan`` for a domain no road can carry lands
@@ -6328,7 +6382,7 @@ def tree_road_plan(exp, *, machine=None, resident_estimate=None) -> TreeRoadPlan
             total_budget_bytes=0, process_overhead_bytes=0,
             host_budget_bytes=None, root_envelope=root_envelope,
             refusal_resource=refusal_resource, report_error=report_error,
-            streaming_fixed_floor_bytes=streaming_floor)
+            streaming_fixed_floor_bytes=streaming_floor, **admission)
     return TreeRoadPlan(
         rows=rows, refusal=refusal, priced=outcome.priced,
         streams_any=any(row["road"] == "streamed" for row in rows),
@@ -6349,7 +6403,7 @@ def streaming_receipt(options: StreamingOptions | None,
                       decisions: dict | None) -> dict:
     """What the run RECORDS about which way ``[tiles]`` went.
 
-    Empty for an unconfigured run, and that emptiness is load-bearing: it is
+    Empty for an unconfigured run, and that emptiness is essential: it is
     what keeps every receipt written before this mode existed byte-identical
     afterwards, the same promise :func:`identity_payload_entry` keeps for the
     restart identity.  A configured run gets a per-grid verdict::
@@ -6911,7 +6965,7 @@ def receipt_entry(options: StreamingOptions | None,
     contributes nothing.  Identity answers "may this checkpoint resume
     here?" and the mode must not bind it, because the whole claim of the
     mode is that it changes no byte of the forecast.  A receipt answers
-    "what produced these numbers?", and there the mode is load-bearing:
+    "what produced these numbers?", and there the mode is essential:
     the memory block of a run receipt carries
     ``preflight_alloc_estimate_bytes`` beside ``gpu_peak_used_bytes_
     observed``, and those two are only comparable if the reader knows the

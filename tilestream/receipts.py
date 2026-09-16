@@ -139,7 +139,7 @@ MUP_KEYS = ("state/mup", "mup")
 
 
 class ReceiptRefused(RuntimeError):
-    """A domain receipt that cannot be produced honestly under streaming."""
+    """A domain receipt that cannot be produced accurately under streaming."""
 
 
 class StoreDomainView:

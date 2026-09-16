@@ -782,7 +782,7 @@ class TestThePartialReceiptAStoppedRunLeaves:
         assert receipt["receipt_provenance"]["written_by"].endswith("obs")
 
     def test_a_run_that_never_planned_writes_nothing(self, tmp_path):
-        """No plan receipt means nothing honest to copy."""
+        """No plan receipt means nothing accurate to copy."""
         (tmp_path / "receipts").mkdir()
         assert write_partial_receipt(
             tmp_path, receipts=tmp_path / "receipts", dealias=DealiasChoice(),
@@ -1397,12 +1397,23 @@ class TestRadarSelectionArgv:
         # produces exactly those parameters.
         args = build_parser().parse_args([
             "--site", "QQQQ", "--valid-time", "2026-08-05T04:00:00Z",
-            "--grid-wrfout", "g", "--out", "o", "--work-dir", "w",
-            "--dealias"])
+            "--grid-wrfout", "g", "--out", "o", "--work-dir", "w"])
+        # Re-anchored: --dealias is gone, because dealiasing is what a bare
+        # ingest does.  Asked for NOTHING, the builder's parser produces
+        # exactly the shipped parameters.
+        assert args.dealias is True
         params = dealias_params_from_args(args, DealiasParams,
                                           lambda engine: None)
         assert params.engine == shipped.engine
         assert params.refinement is True
+        # And the off switch is the one that has to be spelled now.
+        off = build_parser().parse_args([
+            "--site", "QQQQ", "--valid-time", "2026-08-05T04:00:00Z",
+            "--grid-wrfout", "g", "--out", "o", "--work-dir", "w",
+            "--no-dealias"])
+        assert off.dealias is False
+        assert dealias_params_from_args(
+            off, DealiasParams, lambda engine: None) is None
 
     def test_refinement_beside_the_engine_without_one_is_refused(self):
         """Named at the door, not as a traceback from the parameters."""
@@ -1414,7 +1425,7 @@ class TestRadarSelectionArgv:
         args = build_parser().parse_args([
             "--site", "QQQQ", "--valid-time", "2026-08-05T04:00:00Z",
             "--grid-wrfout", "g", "--out", "o", "--work-dir", "w",
-            "--dealias", "--dealias-engine", "vad-region",
+            "--dealias-engine", "vad-region",
             "--dealias-refinement"])
         with pytest.raises(SystemExit) as error:
             dealias_params_from_args(args, DealiasParams,
@@ -1574,9 +1585,11 @@ class TestTheVerifierGradesAgainstWhatItAssimilated:
         """One flag, two builders, or the run grades itself crooked.
 
         ``obs_cmd`` serves the assimilated observations and the verifier's
-        truth composites both.  This pins that the flag is emitted, and
-        that leaving it off emits nothing -- the off path has to stay
-        byte-identical to every run recorded before the flag existed.
+        truth composites both.  Re-anchored now that dealiasing is the
+        default: what has to be spelled is OFF.  A receipt from a run that
+        did not dealias must re-run its composites without dealiasing, so
+        an empty tail on the off path would be the A/B break this object
+        exists to prevent.
         """
 
         from tools.da_nowcast import obs_cmd
@@ -1586,7 +1599,7 @@ class TestTheVerifierGradesAgainstWhatItAssimilated:
                       grid_wrfout=Path("wrfout"), out_nc=Path("out.nc"),
                       work_dir=Path("vols"), bucket=None)
         on = obs_cmd(**kwargs, dealias=DealiasChoice(on=True))
-        assert "--dealias" in on
+        assert "--no-dealias" not in on
         # The engine travels with the flag: a truth composite built by the
         # other solver is a differently-built truth.  So does the
         # refinement switch, spelled either way rather than left to
@@ -1598,9 +1611,13 @@ class TestTheVerifierGradesAgainstWhatItAssimilated:
         assert legacy[legacy.index("--dealias-engine") + 1] == "vad-region"
         assert "--no-dealias-refinement" in legacy
         assert "--dealias-refinement" not in legacy
-        off = obs_cmd(**kwargs, dealias=DealiasChoice())
-        assert "--dealias" not in off
+        off = obs_cmd(**kwargs, dealias=DealiasChoice(on=False))
+        assert "--no-dealias" in off
         assert "--dealias-engine" not in off
+        # A bare DealiasChoice() now means ON, like every door.
+        assert DealiasChoice().on is True
+        assert "--no-dealias" not in obs_cmd(
+            **kwargs, dealias=DealiasChoice())
 
     def test_a_verification_frame_is_built_from_every_radar(
             self, tmp_path, monkeypatch):

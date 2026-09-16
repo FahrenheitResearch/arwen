@@ -244,7 +244,7 @@ def _get_xp(*arrays):
     """numpy, or cupy when any input is a cupy array.
 
     No cupy import happens unless a cupy array actually shows up, which is
-    what keeps ``-m "not gpu"`` honest for callers of this module.
+    what keeps ``-m "not gpu"`` accurate for callers of this module.
     """
     for a in arrays:
         mod = type(a).__module__
@@ -671,7 +671,7 @@ class LetkfConfig:
         figure AND under ``_DEVICE_FREE_FRACTION`` of the memory the card
         actually has free at solve time.  A device allocation failure that
         arrives anyway halves the chunk and re-solves instead of failing
-        the analysis; the only refusal is the honest one, raised by name,
+        the analysis; the only refusal is the accurate one, raised by name,
         when even a single gridpoint cannot fit the ceiling.  (An earlier
         revision documented this figure as "not a hard limit" and priced
         only the member-slot arrays; sized that way, a single-radar
@@ -1759,7 +1759,7 @@ def analyze(
         # one.  Subtracting the mean of R identical floats does not give
         # exactly zero -- ``sum/R`` rounds -- so a genuinely constant
         # ensemble arrives here with a spread around 1e-16 and sails
-        # straight through an exact test.  The honest question is whether
+        # straight through an exact test.  The accurate question is whether
         # the spread is negligible against the field's own magnitude.
         scale = float(xp.abs(pri[f]).max())
         widest = float(sigma_b[f].max())
@@ -2371,7 +2371,7 @@ def analyze(
     # verdict on the chunk.  Halve it, hand the dead attempt's blocks
     # back, and re-solve the same span.  The refusal below fires only when
     # the chunk is already one gridpoint, at which point no smaller solve
-    # exists and the honest answer is the named remedy, not another retry.
+    # exists and the accurate answer is the named remedy, not another retry.
     pool = None
     pool_cap = None
     if solve_xp is not np:

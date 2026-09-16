@@ -555,7 +555,7 @@ CERTIFY_FILE_ARGUMENTS = [
 @pytest.mark.parametrize("flag,key,what", CERTIFY_FILE_ARGUMENTS)
 def test_a_zero_byte_argument_is_refused_by_its_own_name(
         tmp_path, capsys, flag, key, what):
-    """Which of the four is unreadable is the load-bearing part.
+    """Which of the four is unreadable is the essential part.
 
     `gpuwm certify` used to read all four inputs with a bare
     ``read_bytes`` + ``json.loads``, so ANY of them being empty produced

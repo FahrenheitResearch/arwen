@@ -339,7 +339,7 @@ def localise(ref: dict, got: dict, specs, halo: int, nx: int, ny: int
     ``spread``
         differing columns further from any seam than the halo is wide.  That
         indicts the halo (or something that is not column-local), and a
-        wider halo would be the honest response.
+        wider halo would be the accurate response.
 
     ``edge-local``
         differences hug the TRUE domain edges only.  The tile treats its real

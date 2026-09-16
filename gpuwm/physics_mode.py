@@ -3,7 +3,7 @@
 ArWen ships one physics identity today: every selector is transcribed from
 WRF v4.6.1 and pinned against it.  A *patch* is a place where ArWen would
 deliberately do something else because the physics is believed to be better,
-and the only honest way to find out is to score both against observations.
+and the only accurate way to find out is to score both against observations.
 This module is the machinery that lets one configuration file express both
 sides of that question without a second file that can drift from the first.
 
@@ -211,7 +211,7 @@ class PatchSet:
         return tuple(LEDGER_BY_ID[eid] for eid in self.entries)
 
 
-#: Registered patch-set versions.  v1 is {L3, L4}: small, honest, and each
+#: Registered patch-set versions.  v1 is {L3, L4}: small, accurate, and each
 #: with a real counterfactual.  L5 is conditional on its entry gate and is
 #: therefore deliberately NOT a member.
 PATCHSETS: dict[str, PatchSet] = {

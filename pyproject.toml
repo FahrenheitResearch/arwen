@@ -9,7 +9,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "gpuwm"
-version = "2.7.4"
+version = "2.7.5"
 description = "Native WRF preprocessing and GPU-native limited-area weather modeling"
 readme = "README.md"
 # The SPDX expression (PEP 639), not `{ file = "LICENSE" }`: the file
@@ -26,7 +26,7 @@ license = "Apache-2.0"
 # which a `pip install gpuwm` user receives them.
 license-files = ["LICENSE", "NOTICE", "licenses/*"]
 requires-python = ">=3.11"
-# numpy>=2 is load-bearing: the legacy-RRTMG FP32 max_ulp-0 discipline
+# numpy>=2 is essential: the legacy-RRTMG FP32 max_ulp-0 discipline
 # relies on NEP-50 weak promotion (float32 op python-scalar stays
 # float32); numpy 1.26 would silently widen those chains to float64.
 # The rrtmg modules also guard this at import time.
@@ -144,7 +144,7 @@ requires-python = ">=3.11"
 # tests/test_companion_distribution.py fails if the two ever disagree.
 dependencies = ["numpy>=2.0", "netCDF4>=1.6", "matplotlib>=3.8",
                 "jsonschema>=4.0",
-                "scipy>=1.11", "pyshp>=2.3", "cdsapi>=0.7.7", "gpuwm-data==2.7.4"]
+                "scipy>=1.11", "pyshp>=2.3", "cdsapi>=0.7.7", "gpuwm-data==2.7.5"]
 keywords = ["WRF", "WPS", "GRIB", "NetCDF", "weather", "CUDA"]
 # No `License ::` classifier: PEP 639 deprecates them outright and
 # setuptools >=77 refuses to combine one with the SPDX expression above.
@@ -172,7 +172,7 @@ Changelog = "https://github.com/FahrenheitResearch/arwen/blob/main/CHANGELOG.md"
 # would break those boxes.  They are ALIASES for the cu12 pair, not a
 # third policy: there is exactly one place each wheel is pinned.
 #
-# The honest-intent rule this table cannot enforce by itself is enforced
+# The accurate-intent rule this table cannot enforce by itself is enforced
 # by `gpuwm doctor`, which reads the box's CUDA major straight off the
 # driver -- with or without CuPy installed -- and prints the extra that
 # matches it rather than a cu12 default.
@@ -454,7 +454,7 @@ arwen-mcp = "gpuwm.mcp.server:main"
 # at all -- 97 files in the repository, 0 in every wheel -- while
 # docs/public/VERIFICATION.md's reproduce recipe and docs/public/LES.md's
 # "see configs/ for a real, config-driven run" both send readers there.  The
-# resolver's refusal was honest and the remedies (`--config`,
+# resolver's refusal was accurate and the remedies (`--config`,
 # GPUWM_CONFIGS_ROOT) were real; a headline claim that requires a git
 # checkout to follow is still a headline claim nobody can reach.
 # tests/test_configs_are_packaged.py measures both halves.
@@ -662,5 +662,5 @@ markers = ["gpu: requires a CUDA GPU + cupy",
 # top-level test_ functions, so collecting their modules adds no tests, and
 # tools/battery/tiles_gates.txt remains their runner.  tilestream/conftest.py
 # extends the GPU-marking discipline over the new tree so `-m "not gpu"` and
-# GPUWM_NO_LOCAL_GPU=1 stay honest there.
+# GPUWM_NO_LOCAL_GPU=1 stay accurate there.
 testpaths = ["tests", "tilestream"]

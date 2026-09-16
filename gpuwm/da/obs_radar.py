@@ -4,7 +4,7 @@ The radar lane writes the file; :mod:`gpuwm.da.letkf` consumes
 :class:`~gpuwm.da.letkf.GriddedObs`.  Neither lane owns the translation, and
 the translation is where the two schemas actually differ, so it lives here.
 
-Three properties of the file are load-bearing and are the reason this is a
+Three properties of the file are essential and are the reason this is a
 module rather than four lines at a call site.
 
 **Radial velocity carries a leading radar axis, and it must survive.**

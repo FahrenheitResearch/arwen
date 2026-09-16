@@ -114,7 +114,7 @@ fn icosahedron_vertices() -> Vec<V3> {
 /// cannot afford, and the triple count is checked instead.
 ///
 /// Every face is returned wound COUNTER-CLOCKWISE seen from outside, and that
-/// is load-bearing for a CHIRAL breakdown (n != 0, n != m): GP(m, n) mapped
+/// is essential for a CHIRAL breakdown (n != 0, n != m): GP(m, n) mapped
 /// onto a clockwise face is its mirror GP(n, m), and a sphere tiled with both
 /// chiralities meets itself along twin seams where the two lattices misalign
 /// by a fraction of a spacing -- near-coincident generators, which is the

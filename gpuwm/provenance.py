@@ -15,7 +15,7 @@ paid for the difference more than once.
     Two false version readings came from exactly this.
   * A user reports plots labelled 1.6.2 while believing they installed
     1.8, and until this module existed there was no way to tell them
-    whether the label was honest.
+    whether the label was accurate.
 
 So :func:`resolve` answers the five things a version number cannot, for
 the process that is asking:
@@ -70,7 +70,7 @@ PROVENANCE_SCHEMA = "gpuwm-provenance-v1"
 
 #: What ``gpuwm/__init__.py`` reports when no distribution metadata
 #: exists at all.  Distinguishing it from a real number is what makes a
-#: BORROWED version detectable: a bare source tree honestly says it does
+#: BORROWED version detectable: a bare source tree accurately says it does
 #: not know, while a borrowed one confidently states someone else's.
 UNKNOWN_VERSION = "0+unknown"
 

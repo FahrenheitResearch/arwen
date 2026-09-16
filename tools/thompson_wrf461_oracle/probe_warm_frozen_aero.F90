@@ -51,7 +51,7 @@
 ! build_probe_warm_frozen.sh is the sibling script; it reuses the objects
 ! build_aero.sh already produced and never rebuilds a .dat.  Compiler and
 ! flags are build_aero.sh's: gfortran -O2 -ffree-form, baseline x86-64, i.e.
-! no FMA instruction.  That is load-bearing: nvrtc defaults to --fmad=true,
+! no FMA instruction.  That is essential: nvrtc defaults to --fmad=true,
 ! so the CUDA side must contraction-pin every chain it compares here.
 !
 ! TYPE FIDELITY IS THE POINT

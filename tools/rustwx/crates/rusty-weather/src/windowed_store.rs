@@ -597,7 +597,7 @@ fn plan_product(
     // Callers guarantee `window <= end`; the window minimum is checked
     // before this runs, so F000 never gets a predecessor invented for it.
     //
-    // What makes the "{window} h" label honest is `reject_exact_time_axis`:
+    // What makes the "{window} h" label accurate is `reject_exact_time_axis`:
     // a store whose frames are not whole forecast hours cannot reach this
     // lane at all, so the gap between two hour indices IS that many hours
     // of accumulation. No sub-hourly frame can slip a shorter span in
@@ -903,7 +903,7 @@ fn snapshot_plan(product: HrrrWindowedProduct) -> Option<SnapshotPlan> {
 }
 
 /// What one hour's source plane actually measures — recorded so the
-/// product's strategy note can label the fold honestly.  The
+/// product's strategy note can label the fold accurately.  The
 /// distinction matters scientifically: an instantaneous snapshot makes
 /// the fold a lower bound on the sub-hourly max, while WRF's
 /// UP_HELI_MAX plane is itself an exact per-interval max.
@@ -2339,7 +2339,7 @@ mod tests {
     #[test]
     fn a_half_folded_difference_blocks_instead_of_publishing_the_run_total() {
         // The store-level gate normally makes this unreachable, but the
-        // accumulator must not depend on that gate to stay honest: with
+        // accumulator must not depend on that gate to stay accurate: with
         // only the earlier endpoint folded it holds a run accumulation,
         // and it must refuse rather than hand it out wearing a 1 h label.
         let spec = plan_product(

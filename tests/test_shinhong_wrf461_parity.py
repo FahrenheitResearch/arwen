@@ -959,7 +959,7 @@ def test_shinhong_cuda_column_holds_its_measured_distance_from_wrf():
 def test_shinhong_cuda_kpbl_matches_wrf_exactly():
     """The 1-based Fortran level index, exact on every one of the 180
     columns -- there are no held-out cases (GPU_BRANCH_DIVERGENCE_CASES is
-    empty, and this test is part of what keeps it honest)."""
+    empty, and this test is part of what keeps it accurate)."""
     import cupy  # noqa: F401
 
     fixture = _fixture()

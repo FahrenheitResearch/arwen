@@ -36,6 +36,10 @@ The modules, by mechanism:
     the pins, hashed before any score is looked at.
 :mod:`~gpuwm.verify.obs.battery`
     the scoring pass and the score file it writes.
+:mod:`~gpuwm.verify.obs.nowcast`
+    the nowcast registration: the same FSS engine over 15 to 60 minute
+    leads, with the radar-persistence baseline every first-hour number
+    needs beside it.
 :mod:`~gpuwm.verify.obs.controls`
     the instrument-qualification controls.
 :mod:`~gpuwm.verify.obs.promotion`
@@ -55,11 +59,11 @@ importing the scorer does not require the science core to be installed.
 """
 
 from gpuwm.verify.obs import (
-    battery, contingency, contracts, controls, fss, promotion, regrid,
-    registration, stations, stubs,
+    battery, contingency, contracts, controls, fss, nowcast, promotion,
+    regrid, registration, stations, stubs,
 )
 
 __all__ = [
-    "battery", "contingency", "contracts", "controls", "fss", "promotion",
-    "regrid", "registration", "stations", "stubs",
+    "battery", "contingency", "contracts", "controls", "fss", "nowcast",
+    "promotion", "regrid", "registration", "stations", "stubs",
 ]

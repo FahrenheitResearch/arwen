@@ -24,7 +24,7 @@
 #   BEFORE RUNNING THE LEG
 #   The battery runs in a throwaway worktree, which carries no build
 #   output, so the rust binaries every real-artifact suite drives are
-#   absent -- and those suites SKIP honestly rather than fail, so the leg
+#   absent -- and those suites SKIP rather than fail, so the leg
 #   goes green with the rust half of the product untested.  Stage the
 #   binaries first, and let the script prove they took:
 #
@@ -715,7 +715,7 @@ tests/test_obs_cross_reader.py
 # The GPU shard list's own gate: it checks every path on
 # tools/battery/gpu_shard_files.txt resolves and every entry is real.  It is
 # named in that file's comments as "the gate" and was an entry on no list,
-# so the instrument that keeps the shard list honest was itself unrun.  CPU
+# so the instrument that keeps the shard list accurate was itself unrun.  CPU
 # only -- it reads the list, it does not touch a card.
 tests/test_gpu_shard_manifest.py
 # 2.3.3: 2.3.2 shipped worldwide 30 m terrain that no documented install
@@ -747,7 +747,7 @@ tests/test_certify_compile_platform.py
 tests/test_dependency_declaration_parity.py
 tests/test_verification_recipe_flags.py
 tests/test_doctor_extras.py
-tests/test_doctor_route_honesty.py
+tests/test_doctor_route_accuracy.py
 tests/test_cli_capability_refusals.py
 tests/test_obs_front_doors_are_shipped.py
 tests/test_render_pyshp_front_door.py
@@ -1245,7 +1245,7 @@ tests/test_microphysics_transition.py
 # initialize/list-tools, doctor, sources, estimate on the shipped
 # quickstart config, the full job lifecycle on a cardless render, and
 # the GPU-lock refusal.  CPU-only; needs the mcp SDK (importorskip) and
-# skips honestly without it -- which the census deselection floor then
+# skips without it -- which the census deselection floor then
 # names instead of letting the leg shrink.
 tests/test_mcp_server.py
 
@@ -1619,3 +1619,6 @@ tests/test_cyclone_setup.py
 tests/test_domain_target_hardware.py
 tests/test_lifecycle_reflectivity_restart.py
 tests/test_remote_processed_v2.py
+tests/test_capability_gates.py
+tests/test_noahmp_no_consumer_knobs.py
+tests/test_banned_words.py

@@ -40,6 +40,7 @@ from gpuwm.core.mynn_pbl_scratch import (
     SLOT_STAGE_LAYER,
     SLOT_ZERO_COLUMN,
     mynn_pbl_tendency_field_shapes,
+    resolve_mynn_column_chunk,
 )
 from gpuwm.core.state import DTYPE
 
@@ -171,7 +172,9 @@ def mynn_pbl_step(
     branch comes from the routine that would have had to implement it.
 
     The domain is walked in chunks of ``column_chunk`` columns
-    (:data:`gpuwm.core.mynn_pbl_scratch.MYNN_PBL_COLUMN_CHUNK` by default).
+    (:func:`gpuwm.core.mynn_pbl_scratch.resolve_mynn_column_chunk`, this
+    process's settled width, by default -- the same width the preflight
+    registry sized the shared arena with).
     Every MYNN kernel gives one CUDA thread one complete column and reads no
     neighbour, so the chunk boundary is not a seam: the split is bitwise
     identical to the single wide call at every width measured, and that is
@@ -193,7 +196,8 @@ def mynn_pbl_step(
         raise ValueError("MYNN PBL needs w on the lower interface of each "
                          "layer, i.e. at least nz levels")
 
-    chunk = MYNN_PBL_COLUMN_CHUNK if column_chunk is None else int(column_chunk)
+    chunk = (resolve_mynn_column_chunk(nz) if column_chunk is None
+             else int(column_chunk))
     if chunk < 1:
         raise ValueError("MYNN PBL column_chunk must be a positive integer")
     chunk = min(chunk, ncol)

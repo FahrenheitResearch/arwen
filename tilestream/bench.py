@@ -994,7 +994,7 @@ def physics_rung(name: str = "full+MYNN+Noah-MP") -> dict:
 
     The same definitions ``test_gate`` runs its bit-exact matrix over, kept
     here so a benchmark can name a rung without importing the gate.
-    ``ztop=20000`` is load-bearing: at the harness default of 8 km RRTMGP pads
+    ``ztop=20000`` is essential: at the harness default of 8 km RRTMGP pads
     to 140 layers against its own limit of 128 and raises.
     """
     moist = dict(moist=True, mp_physics=10, ztop=20000.0)

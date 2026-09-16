@@ -161,16 +161,16 @@ def periodic_face_lie(cfg) -> dict:
     not an assertion that "a specified domain has real edges, so obviously
     do not duplicate".
     """
-    honest = harness.make_geography(cfg, terrain=True, periodic_faces=False)
+    accurate = harness.make_geography(cfg, terrain=True, periodic_faces=False)
     lie = harness.make_geography(cfg, terrain=True, periodic_faces=True)
-    du = np.abs(honest.msfu[:, -1] - lie.msfu[:, -1])
-    dv = np.abs(honest.msfv[-1, :] - lie.msfv[-1, :])
+    du = np.abs(accurate.msfu[:, -1] - lie.msfu[:, -1])
+    dv = np.abs(accurate.msfv[-1, :] - lie.msfv[-1, :])
     return {
-        "msfu_face_max_rel": float((du / np.abs(honest.msfu[:, -1])).max()),
-        "msfv_face_max_rel": float((dv / np.abs(honest.msfv[-1, :])).max()),
+        "msfu_face_max_rel": float((du / np.abs(accurate.msfu[:, -1])).max()),
+        "msfv_face_max_rel": float((dv / np.abs(accurate.msfv[-1, :])).max()),
         "columns_equated_km": float(cfg.dx * cfg.nx / 1000.0),
-        "lon_span_deg": float(honest.lon[:, -1].mean()
-                              - honest.lon[:, 0].mean()),
+        "lon_span_deg": float(accurate.lon[:, -1].mean()
+                              - accurate.lon[:, 0].mean()),
     }
 
 
@@ -709,7 +709,7 @@ def main(argv=None) -> int:
         del got
         cp.get_default_memory_pool().free_all_blocks()
 
-    # ------------------------------------- the true edges must be load-bearing
+    # ------------------------------------- the true edges must be essential
     print()
     print("-- THE TRUE-EDGE TABLES REACH THE ANSWER")
     scaled = _scaled_boundaries(bnd, 1.000001)

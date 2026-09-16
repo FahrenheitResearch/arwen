@@ -12,7 +12,7 @@ Three independent jobs, each with its own exit condition:
                   against the *live* glibc symbol through
                   ``libm_probe_radiation.c``, over
                     (a) the exact argument stream replaying all six fixtures
-                        produces -- the load-bearing set, and
+                        produces -- the essential set, and
                     (b) a structured + randomised sweep of the reachable
                         domain, hitting every table subinterval and both arms
                         of every special-case branch.

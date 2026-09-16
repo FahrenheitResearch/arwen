@@ -366,7 +366,7 @@ def measured_pinned_bytes_per_second(*, device: int = 0,
     except Exception:
         # Including ImportError, CuPy's own runtime errors, and a driver
         # that refuses to pin.  ``None`` means "not measured here", which
-        # is a different and honest answer from a guess.
+        # is a different and accurate answer from a guess.
         return None
 
 

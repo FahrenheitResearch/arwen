@@ -107,7 +107,7 @@ THE TWO WAYS TO GET THE DERIVE WRONG, BOTH MEASURED
 
 AND THE THIRD, WHICH IS NOT ARITHMETIC AT ALL
 ---------------------------------------------
-**Field presentation order is load-bearing.**  The frame dict doubles as the
+**Field presentation order is essential.**  The frame dict doubles as the
 writer's schema, so it fixes the order ``WrfoutWriter`` creates netCDF
 variables in, and HDF5 lays its name heap out in creation order.  The same
 data in a different order gives a file that is 189 bytes larger and hashes
@@ -259,7 +259,7 @@ class FramePlan:
 
     ``order`` is the device frame's own iteration order and is what
     :meth:`StoreFrame.fields` yields; see the module docstring on why that is
-    load-bearing rather than cosmetic.
+    essential rather than cosmetic.
     """
 
     order: tuple[str, ...]

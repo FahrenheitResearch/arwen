@@ -171,7 +171,7 @@ def test_the_run_route_no_longer_refuses_a_dormant_nest_for_land_state():
 
 
 def test_the_land_state_machinery_the_lift_claims_really_exists():
-    """A lift is only honest if the capability it cites is wired.
+    """A lift is only accurate if the capability it cites is wired.
 
     Not a source scan for its own sake: this asserts the operator is
     importable, that the route's spawn preparer actually calls it, and
@@ -215,7 +215,7 @@ def test_the_run_route_still_refuses_a_dormant_nest_with_no_parent():
 
 
 def test_the_driver_exists_where_the_lift_claims_it_does():
-    """The lift is only honest if the route really wires the runner."""
+    """The lift is only accurate if the route really wires the runner."""
     from gpuwm import runtime
 
     assert callable(runtime.walk_spawn_legs)

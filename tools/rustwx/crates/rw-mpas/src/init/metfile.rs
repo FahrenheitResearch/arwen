@@ -137,7 +137,7 @@ impl<'a> Cursor<'a> {
 
 /// Read every field in one intermediate file, in file order.
 ///
-/// File order is load-bearing downstream: the level table the case-7 code
+/// File order is essential downstream: the level table the case-7 code
 /// builds is "first sighting wins", so re-ordering the slabs re-orders the
 /// first-guess levels and moves every vertically interpolated number.
 pub fn read_met_file(path: &Path) -> MpasResult<Vec<MetSlab>> {

@@ -590,6 +590,36 @@ _ADAPTERS = (
         ),
     ),
     _adapter(
+        "icon-global",
+        name="ICON global 13 km (DWD)",
+        aliases=("icon", "icon-13km", "dwd-icon", "dwd-icon-global"),
+        upstream_model_id="icon",
+        default_product="icosahedral-pressure-level",
+        required_products=("pressure-level", "single-level", "soil-level",
+                           "time-invariant", "grid-coordinates"),
+        max_hour=180,
+        decoder="gdt101_remap + vendored grib-core + mapped engine",
+        upstream_ingest="native_gdt101_normalization_then_packaged_profile",
+        status=AdapterStatus.RUNNABLE_NOT_CERTIFIED,
+        field_mapping="packaged-rw-wps-icon-global-grib2-v1",
+        level_mapping="18-pressure-level-to-explicit-wrf-eta-v2",
+        cadence_mapping="selected-uniform-three-hour-forecast-series-v1",
+        stock_wrf_gate="live-unchanged-stock-wrf-gate-pending",
+        runnable=True,
+        runner="mapped_composition_v1",
+        packaged_profile="icon-global-grib2-v1",
+        forcing_interval_seconds=10800.0,
+        notes=(
+            "DWD global R03B07, nominal 13 km, 2,949,120 native cells. "
+            "A native Rust input normalizer verifies the external grid "
+            "identity, remaps only the WPS domain plus a halo to 0.125 "
+            "degrees, and seals raw-to-normalized provenance before prep. "
+            "18 pressure levels (30..1000 hPa), TERRA soil and sea ice. "
+            "Three-hour forcing; 00/12Z to f180, 06/18Z to f120. "
+            "No observation assimilation or stock-WRF certification is implied."
+        ),
+    ),
+    _adapter(
         "icon-eu",
         name="ICON-EU (DWD regional)",
         aliases=("dwd-icon-eu", "icon-eu-regular"),

@@ -51,7 +51,7 @@ pub enum TitleProvenance {
     /// Imported from local model output.  No catalog dataset token is ever
     /// stamped.  `grid_label` is the headline parenthetical when the
     /// importer could read a grid identity (`d02 750 m`); when it could
-    /// not, the headline simply carries no parenthetical, which is honest
+    /// not, the headline simply carries no parenthetical, which is accurate
     /// where a borrowed dataset token would not be.
     LocalImport {
         #[serde(default, skip_serializing_if = "Option::is_none")]

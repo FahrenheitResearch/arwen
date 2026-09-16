@@ -6,7 +6,7 @@ to switch to") and gridded radar observations.
 
 Like ``tests/test_render_rust.py``, nothing here mocks an engine: the
 end-to-end tests drive the real executables this checkout built, and skip
-honestly when it has not built them.  What IS stubbed is the subprocess
+accurately when it has not built them.  What IS stubbed is the subprocess
 layer of the resolver's decision table, because a stale-build refusal
 cannot be produced without shipping a stale build.
 """
@@ -14,6 +14,7 @@ cannot be produced without shipping a stale build.
 from __future__ import annotations
 
 import datetime
+import re
 import struct
 import subprocess
 from pathlib import Path
@@ -148,12 +149,14 @@ def test_an_override_naming_a_missing_file_is_a_hard_error(monkeypatch,
 # The engine resolver `gpuwm enprod --engine` uses
 # ---------------------------------------------------------------------------
 
-def test_an_explicit_rust_request_refuses_where_auto_degrades(monkeypatch):
-    """The pair the render-engine defect was invisible to.
+def test_a_stale_binary_refuses_on_auto_as_well_as_on_rust(monkeypatch):
+    """``auto`` has two answers, rust or a refusal; it does not degrade.
 
-    With a stale binary staged, ``auto`` must fall back naming the
-    mismatch and ``rust`` must refuse.  Asserting only the refusal would
-    leave the fallback free to become a refusal too.
+    This replaces the pair that pinned the degrade.  The render law
+    permits ONE fallback and this is not it: an auto that quietly drew
+    the same weather fields with matplotlib exited 0, so nothing in the
+    run said which engine made the pictures.  The fallback stays
+    reachable BY NAME, and is still never probed.
     """
 
     from gpuwm.da.enprod import resolve_enprod_engine
@@ -162,11 +165,10 @@ def test_an_explicit_rust_request_refuses_where_auto_degrades(monkeypatch):
                         lambda: Path("staged-rw_ensbatch"))
     monkeypatch.setattr(rustwx_lanes, "probe_ensemble_bin",
                         lambda path: (False, "abi mismatch"))
-    engine, why = resolve_enprod_engine("auto")
-    assert engine == "matplotlib"
-    assert "abi mismatch" in why
-    with pytest.raises(RuntimeError, match="abi mismatch"):
-        resolve_enprod_engine("rust")
+    for request in ("auto", "rust"):
+        with pytest.raises(RuntimeError, match="abi mismatch") as excinfo:
+            resolve_enprod_engine(request)
+        assert "--engine matplotlib" in str(excinfo.value)
 
     # ... and the fallback is never probed at all.
     def explode(path):
@@ -176,13 +178,162 @@ def test_an_explicit_rust_request_refuses_where_auto_degrades(monkeypatch):
     assert resolve_enprod_engine("matplotlib")[0] == "matplotlib"
 
 
-def test_an_unbuilt_engine_names_the_build_line(monkeypatch):
+def test_an_unbuilt_engine_names_the_build_line_and_the_way_out(monkeypatch):
     from gpuwm.da.enprod import resolve_enprod_engine
 
     monkeypatch.setattr(rustwx_lanes, "find_ensemble_bin", lambda: None)
-    engine, why = resolve_enprod_engine("auto")
-    assert engine == "matplotlib"
-    assert "cargo build" in why
+    with pytest.raises(RuntimeError) as excinfo:
+        resolve_enprod_engine("auto")
+    message = str(excinfo.value)
+    assert "rw_ensbatch" in message
+    assert "cargo build" in message
+    assert "--engine matplotlib" in message
+
+
+def test_both_lanes_resolve_their_engine_through_one_function(monkeypatch):
+    """Lane rule 2: one question, one answer, two lanes."""
+
+    from gpuwm.da import enprod
+
+    seen = []
+
+    def record(request, **kwargs):
+        seen.append((request, kwargs["name"]))
+        return "rust", "recorded"
+
+    monkeypatch.setattr(rustwx_lanes, "resolve_lane_engine", record)
+    assert enprod.resolve_enprod_engine("auto") == ("rust", "recorded")
+    assert rustwx_lanes.resolve_obsgrid_engine("auto") == ("rust", "recorded")
+    assert seen == [("auto", rustwx_lanes.ENSEMBLE_NAME),
+                    ("auto", rustwx_lanes.OBSGRID_NAME)]
+
+
+def test_the_observation_grid_lane_refuses_by_name(monkeypatch):
+    monkeypatch.setattr(rustwx_lanes, "find_obsgrid_bin", lambda: None)
+    with pytest.raises(RuntimeError) as excinfo:
+        rustwx_lanes.resolve_obsgrid_engine("rust")
+    message = str(excinfo.value)
+    assert rustwx_lanes.OBSGRID_NAME in message
+    assert "cargo build" in message
+    assert rustwx_lanes.resolve_obsgrid_engine("matplotlib")[0] == "matplotlib"
+
+
+def test_the_matplotlib_ensemble_route_reports_itself_as_a_workaround():
+    notice = rustwx_lanes.ensemble_workaround_notice()
+    assert notice.startswith("WORKAROUND:")
+    for field in rustwx_lanes.ENSEMBLE_FIELDS:
+        assert field in notice
+    for product in rustwx_lanes.ENSEMBLE_PRODUCTS:
+        assert product in notice
+
+
+def test_the_ensemble_engine_is_told_which_nest_to_reduce(monkeypatch, tmp_path):
+    """``--domain dNN`` is the disambiguation the engine's refusal asks for."""
+
+    seen = {}
+
+    class Result:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    def record(command, **kwargs):
+        seen["command"] = command
+        return Result()
+
+    monkeypatch.setattr(rustwx_lanes.subprocess, "run", record)
+    rustwx_lanes.run_ensemble_renderer(
+        tmp_path / "rw_ensbatch", tmp_path / "manifest.json",
+        store_root=tmp_path, out_dir=tmp_path, domain="d02")
+    assert "--domain" in seen["command"]
+    assert seen["command"][seen["command"].index("--domain") + 1] == "d02"
+    rustwx_lanes.run_ensemble_renderer(
+        tmp_path / "rw_ensbatch", tmp_path / "manifest.json",
+        store_root=tmp_path, out_dir=tmp_path)
+    assert "--domain" not in seen["command"]
+
+
+# ---------------------------------------------------------------------------
+# The two halves of one command line
+#
+# The python half builds the argv and the RUST half parses it, and the
+# only thing that ever made them agree was that somebody had run the
+# pair.  A flag python emits that the engine has no arm for is not a
+# refusal at plan review: it is `unknown option --domain` from the
+# engine, raised after the manifest was read and the scratch store was
+# opened.  These two read the engine's own grammar out of its source, so
+# they answer with no build.
+# ---------------------------------------------------------------------------
+
+_ENSBATCH_SOURCE = (Path(__file__).resolve().parents[1] / "tools" / "rustwx"
+                    / "crates" / "rw-wrfbatch" / "src" / "bin" / "ensbatch.rs")
+
+_ARM = re.compile(
+    r'^\s*("(?:--?[A-Za-z0-9-]+)"(?:\s*\|\s*"(?:--?[A-Za-z0-9-]+)")*)\s*=>',
+    re.MULTILINE)
+
+
+def _engine_option_arms() -> set[str]:
+    """Every option literal ``rw_ensbatch``'s ``parse_args`` matches on.
+
+    Read from the match arms and not from the usage line, because the
+    usage line is prose and the arms are what actually accept a flag.
+    """
+
+    source = _ENSBATCH_SOURCE.read_text(encoding="utf-8")
+    start = source.index("fn parse_args()")
+    end = source.index("\nfn ", start + 1)
+    arms: set[str] = set()
+    for match in _ARM.finditer(source[start:end]):
+        for literal in match.group(1).split("|"):
+            arms.add(literal.strip().strip('"'))
+    return arms
+
+
+def test_the_engine_accepts_the_nest_choice_it_is_sent():
+    """``--domain dNN`` is a flag the engine parses, not one it rejects."""
+
+    arms = _engine_option_arms()
+    assert "--store-root" in arms, (
+        f"the arm scan found nothing useful: {sorted(arms)}")
+    assert "--domain" in arms, (
+        "gpuwm/rustwx_lanes.py emits --domain to rw_ensbatch, so the "
+        "engine has to have an arm for it; without one the enprod door "
+        "passes plan review and the engine says 'unknown option "
+        "--domain' after the roster is read")
+    usage = _ENSBATCH_SOURCE.read_text(encoding="utf-8")
+    assert "[--domain dNN]" in usage, "the usage line names the flag too"
+
+
+def test_every_flag_the_ensemble_lane_emits_has_an_engine_arm(
+        monkeypatch, tmp_path):
+    """One command line, two halves, one vocabulary."""
+
+    seen: dict[str, list[str]] = {}
+
+    class Result:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    def record(command, **kwargs):
+        seen["command"] = list(command)
+        return Result()
+
+    monkeypatch.setattr(rustwx_lanes.subprocess, "run", record)
+    rustwx_lanes.run_ensemble_renderer(
+        tmp_path / "rw_ensbatch", tmp_path / "manifest.json",
+        store_root=tmp_path, out_dir=tmp_path, field="refl",
+        products="mean,spread", threshold=35.0, neighborhood_km=40.0,
+        frames=3, nan_policy="mask", pmm_tie_rule="flat-index",
+        accept_status="DONE", source_label="ArWen", domain="d02",
+        width=1200, height=900, members={0: tmp_path / "m0"})
+    arms = _engine_option_arms()
+    emitted = {token for token in seen["command"] if token.startswith("--")}
+    assert emitted, "the builder emitted no flags at all"
+    assert emitted <= arms, (
+        f"rw_ensbatch has no arm for {sorted(emitted - arms)}; the engine "
+        f"would answer 'unknown option' after the roster was read")
 
 
 # ---------------------------------------------------------------------------
@@ -285,7 +436,16 @@ def test_two_neighborhood_radii_are_two_files(ensemble_root, tmp_path):
 @needs_ensemble
 def test_the_render_layout_ruling_is_applied_at_write_time(ensemble_root,
                                                            tmp_path):
-    """``<out>/<domain>/<product>/<valid-day>/`` -- never flat."""
+    """Never flat, at either end of the seam.
+
+    The engine files under its OWN segments, which is why this call --
+    which drives the engine directly, with no delivery -- still asserts
+    them.  ``gpuwm enprod`` points the engine at scratch and files the
+    results itself, because the engine's first segment is a member count
+    and its third is the literal word ``ensemble``, so two nests of one
+    ensemble under one ``--out`` shared a folder.  That delivered tree is
+    asserted in ``tests/test_enprod.py``.
+    """
 
     from gpuwm.da.enprod import MANIFEST_FILENAME
 

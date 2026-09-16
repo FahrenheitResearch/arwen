@@ -23,6 +23,7 @@ from pathlib import Path
 
 import pytest
 
+from gpuwm import first_products
 from gpuwm.first_products import (FIRST_PRODUCTS_RECEIPT,
                                   FIRST_PRODUCTS_SCHEMA, FirstProducts,
                                   early_render_requested, published_frames,
@@ -138,6 +139,385 @@ def test_arming_a_run_that_named_no_products_leaves_nothing_armed(tmp_path):
     tags = [record["event"] for record in
             read_events(tmp_path / "events.jsonl")]
     assert tags == ["output_committed"]
+
+
+# ---------------------------------------------------------------------------
+# One function arms every door
+# ---------------------------------------------------------------------------
+
+
+def test_arming_through_the_shared_function_answers_none_for_no_products(
+        tmp_path):
+    """The decision is the shared function's, not each door's copy."""
+
+    recorder = _Recorder()
+    assert first_products.arm(
+        _plan(tmp_path, products="none"), report=recorder.report,
+        warn=recorder.warn) is None
+    assert first_products.arm(
+        _plan(tmp_path, products=None), report=recorder.report,
+        warn=recorder.warn) is None
+
+
+def test_the_shared_arming_builds_the_trigger_from_the_plan(tmp_path):
+    """What it returns is armed with the plan it was handed, unchanged."""
+
+    recorder = _Recorder()
+    trigger = first_products.arm(
+        _plan(tmp_path, products="refl,t2"), report=recorder.report,
+        warn=recorder.warn)
+
+    assert isinstance(trigger, FirstProducts)
+    assert trigger.render_dir == tmp_path / "png"
+    assert trigger.render_products == "refl,t2"
+    assert not trigger.dispatched
+
+
+def test_the_child_door_arms_through_the_shared_function(
+        tmp_path, monkeypatch):
+    """The converted door decides nothing itself: it calls the function.
+
+    Recorded through the module attribute the door imports at call
+    time, so a door that grew its own copy of
+    ``early_render_requested`` would record no call here and fail.
+    """
+
+    from gpuwm.offline_child_run import _ChildProgress
+
+    calls = []
+    shared = first_products.arm
+
+    def recording(render_plan, **kwargs):
+        calls.append(dict(render_plan))
+        return shared(render_plan, **kwargs)
+
+    monkeypatch.setattr(first_products, "arm", recording)
+
+    outdir = tmp_path / "child-run"
+    outdir.mkdir()
+    progress = _ChildProgress()
+    plan = progress.arm_render(outdir=outdir, render_products="refl")
+
+    assert calls == [{"run": outdir, "wrfout_dir": outdir,
+                      "render": outdir / "png", "render_products": "refl"}]
+    assert plan == calls[0]
+    assert progress.render_plan == calls[0]
+    assert progress.first_products is not None
+    assert progress.first_products.render_dir == outdir / "png"
+    assert progress.first_products.render_products == "refl"
+
+    # And "no pictures" is the same function's answer on the same door.
+    quiet = _ChildProgress()
+    assert quiet.arm_render(outdir=outdir, render_products="none") is None
+    assert quiet.render_plan is None and quiet.first_products is None
+    assert len(calls) == 2
+
+
+# ---------------------------------------------------------------------------
+# Pictures asked for, no frames written: the one refusal this owns
+# ---------------------------------------------------------------------------
+
+
+def test_pictures_of_a_run_that_writes_no_frames_are_refused_in_a_sentence():
+    """One sentence, naming the breakage and both ways out of it."""
+
+    sentence = first_products.render_without_output_refusal("all", "none")
+
+    assert isinstance(sentence, str)
+    # The breakage.
+    assert "writes no frames to render" in sentence
+    # Both ways out, each spelled as the command line spells it.
+    assert "--io-mode history" in sentence
+    assert "--render-products none" in sentence
+    # One or two short sentences, on one line.
+    assert "\n" not in sentence
+    assert len(sentence) <= 240
+    assert sentence.rstrip(".").count(". ") <= 1
+
+
+@pytest.mark.parametrize("products,io_mode", [
+    ("all", "history"),
+    (None, "none"),
+    ("", "none"),
+    ("none", "none"),
+])
+def test_the_refusal_never_fires_on_a_run_that_asked_for_no_pictures(
+        products, io_mode):
+    """A run that draws nothing is not broken by writing nothing."""
+
+    assert first_products.render_without_output_refusal(
+        products, io_mode) is None
+
+
+@pytest.mark.parametrize("products", [
+    None, "", "   ", "none", "NONE", " None ", "refl", "all", "refl,t2",
+])
+@pytest.mark.parametrize("io_mode", ["none", "history", None])
+def test_the_refusal_and_the_arming_read_the_same_field_the_same_way(
+        products, io_mode):
+    """Two answers to "did this run ask for pictures" cannot drift.
+
+    The refusal is the arming predicate AND the io-mode fact, so it
+    fires on exactly the runs the early render would have armed, and on
+    no others.
+    """
+
+    refused = first_products.render_without_output_refusal(
+        products, io_mode) is not None
+    assert refused == (early_render_requested(products)
+                       and str(io_mode).strip() == "none")
+
+
+# ---------------------------------------------------------------------------
+# The ensemble driver arms the same render at its own door
+# ---------------------------------------------------------------------------
+
+
+class _Overlay:
+    """Everything ``run_ensemble`` reads off an ensemble configuration.
+
+    A stand-in rather than the real dataclass, so this is a test of the
+    ARMING and of nothing else: it drives the engine identically on a
+    tree whose ensemble configuration has no products field at all, and
+    the question it asks there is the one the defect is about -- did a
+    member's first committed frame get drawn while the member ran.
+    """
+
+    def __init__(self, tmp_path, *, products, n_members=1):
+        self.source = tmp_path / "ensemble.toml"
+        self.source_sha256 = "0" * 64
+        self.base_config = tmp_path / "base.toml"
+        self.base_config.write_text("# the stand-in runner reads nothing\n",
+                                    encoding="utf-8")
+        self.base_config_sha256 = "1" * 64
+        self.n_members = n_members
+        self.base_seed = 7
+        self.perturbation = "experimental-stub"
+        self.perturbation_options = {}
+        self.perturbation_options_sha256 = "2" * 64
+        self.ens_root = None
+        self.render_products = products
+
+    def describe(self):
+        return {"source": str(self.source), "n_members": self.n_members,
+                "render_products": self.render_products}
+
+
+def _overlay_file(tmp_path, *, products=None):
+    """A real ``[ensemble]`` overlay, for the real parser."""
+
+    base = tmp_path / "base.toml"
+    base.write_text("# the stand-in runner reads nothing\n", encoding="utf-8")
+    body = ["[ensemble]", 'base_config = "base.toml"', "n_members = 1",
+            "base_seed = 7", 'perturbation = "experimental-stub"']
+    if products is not None:
+        body.append(f'render_products = "{products}"')
+    path = tmp_path / "ensemble.toml"
+    path.write_text("\n".join(body) + "\n", encoding="utf-8")
+    return path
+
+
+def _committing_member_runner(seen):
+    """A member that commits one frame, as the integrator does.
+
+    It makes exactly the two calls
+    :func:`gpuwm.runtime.integrate_prepared_case` makes on whatever is
+    in its ``progress_callback`` slot: it CALLS the object for a step
+    heartbeat (gpuwm/runtime.py:4155) and raises ``output_committed``
+    for the frame it has just made durable (gpuwm/runtime.py:4095).
+    """
+
+    from gpuwm.ensemble.member import MemberOutcome
+
+    def run(*, base_config, member_dir, index, seed, perturbation,
+            perturbation_options, run_seconds, restart,
+            progress_callback=None):
+        seen.append(progress_callback)
+        member_dir = Path(member_dir)
+        member_dir.mkdir(parents=True, exist_ok=True)
+        frame = member_dir / "wrfout_d01_1974-04-03_18_00_00"
+        frame.write_bytes(b"the analysis frame this member started from")
+        if progress_callback is not None:
+            progress_callback(model_elapsed_seconds=0.0, outer_step=0,
+                              last_durable_wrfout=frame, last_checkpoint=None,
+                              phase="initialized-or-restored",
+                              step_wall_seconds=0.0)
+            progress_callback.output_committed(
+                domain=1, valid_time=_VALID, path=frame)
+        return MemberOutcome(
+            index=index, seed=seed, member_dir=member_dir,
+            initial_state_sha256="a" * 64, final_state_sha256="b" * 64,
+            wall_seconds=0.1, sim_seconds=float(run_seconds or 60.0),
+            wrfout_count=1, last_checkpoint=None)
+
+    return run
+
+
+def test_the_ensemble_driver_draws_each_member_first_frame_early(
+        tmp_path, monkeypatch):
+    """Every member's analysis frame is drawn while that member runs.
+
+    The ensemble driver is a forecast door like any other: it commits
+    the t = 0 frame before a step is integrated, and nothing drew it.
+    Asked of the engine and not of the arming function, so what fails
+    when this regresses is "no member drew anything", which is the
+    defect itself.
+    """
+
+    from gpuwm.ensemble.engine import run_ensemble
+    from gpuwm.ensemble.manifest import member_directory_name
+
+    # The renderer, and only the renderer, is a stand-in: the engine
+    # runs its own arming, on its own plan, through the real trigger.
+    real = first_products.FirstProducts
+
+    class _StandInRender(real):
+        def __init__(self, render_plan, **kwargs):
+            super().__init__(render_plan,
+                             **{**kwargs, "runner": _stand_in_renderer()})
+
+    monkeypatch.setattr(first_products, "FirstProducts", _StandInRender)
+
+    root = tmp_path / "ens"
+    events = []
+    hooks = []
+    cfg = _Overlay(tmp_path, products="refl", n_members=2)
+    result = run_ensemble(cfg, root, runner=_committing_member_runner(hooks),
+                          run_seconds=60.0, on_event=events.append)
+
+    assert result.status == "COMPLETE"
+    members = [root / member_directory_name(index) for index in (0, 1)]
+    # The member runner was handed the landing hook, not a bare flag:
+    # the frame reaches the render as it lands, not after the member.
+    assert [getattr(hook, "output_committed", None) is not None
+            for hook in hooks] == [True, True]
+
+    # The pictures are on disk under each member, and the run was told
+    # about them by index while the ensemble was still going.
+    drawn = [event for event in events
+             if event["event"] == "member-first-products"]
+    assert [event["index"] for event in drawn] == [0, 1]
+    for index, event in enumerate(drawn):
+        receipt = event["receipt"]
+        assert receipt["schema"] == FIRST_PRODUCTS_SCHEMA
+        assert receipt["render_products"] == "refl"
+        assert (members[index] / "png" / "refl_d01-1km_x.png").is_file()
+        # And the receipt that licenses a later render to skip this
+        # frame was left beside those pictures, naming this member's
+        # own frame.
+        written = read_receipt(members[index] / "png")
+        assert written["frame"] == str(
+            members[index] / "wrfout_d01_1974-04-03_18_00_00")
+        assert [entry["name"] for entry in written["written"]] == [
+            "refl_d01-1km_x.png"]
+
+
+def test_a_member_that_fell_over_still_leaves_its_render_collected(
+        tmp_path, monkeypatch):
+    """A failed member does not walk out on a render still running.
+
+    The frame was committed and drawn before the member fell over, so
+    the pictures and their receipt are real and stay; what must not
+    survive is a render still holding its scratch directory open when
+    the engine gives up on the member.
+    """
+
+    from gpuwm.ensemble.engine import run_ensemble
+    from gpuwm.ensemble.manifest import member_directory_name
+
+    real = first_products.FirstProducts
+
+    class _StandInRender(real):
+        def __init__(self, render_plan, **kwargs):
+            super().__init__(render_plan,
+                             **{**kwargs, "runner": _stand_in_renderer()})
+
+    monkeypatch.setattr(first_products, "FirstProducts", _StandInRender)
+
+    def run(*, base_config, member_dir, index, seed, perturbation,
+            perturbation_options, run_seconds, restart,
+            progress_callback=None):
+        member_dir = Path(member_dir)
+        member_dir.mkdir(parents=True, exist_ok=True)
+        frame = member_dir / "wrfout_d01_1974-04-03_18_00_00"
+        frame.write_bytes(b"the analysis frame this member started from")
+        progress_callback.output_committed(
+            domain=1, valid_time=_VALID, path=frame)
+        raise RuntimeError("this member fell over after its first frame")
+
+    root = tmp_path / "ens"
+    cfg = _Overlay(tmp_path, products="refl")
+    with pytest.raises(RuntimeError):
+        run_ensemble(cfg, root, runner=run, run_seconds=60.0)
+
+    pictures = root / member_directory_name(0) / "png"
+    assert (pictures / "refl_d01-1km_x.png").is_file()
+    assert read_receipt(pictures) is not None
+    # The render's scratch is cleaned up, which it only is once the
+    # render has been collected rather than abandoned.
+    assert not (pictures / ".first-products-scratch").exists()
+
+
+def test_the_ensemble_overlay_spells_products_the_way_every_door_does(
+        tmp_path, monkeypatch):
+    """The spelling is one field on the ensemble's own configuration.
+
+    Not a second flag: naming products is what arms the early render
+    here, exactly as ``run_options.render_products`` arms it for a run
+    plan and ``--render-products`` arms it for the child runner.
+    """
+
+    from gpuwm.ensemble.config import load_ensemble_config
+    from gpuwm.ensemble.engine import member_render_plan, run_ensemble
+
+    cfg = load_ensemble_config(_overlay_file(tmp_path, products="refl,t2"))
+    assert cfg.render_products == "refl,t2"
+    assert cfg.describe()["render_products"] == "refl,t2"
+    assert member_render_plan(cfg, tmp_path)["render_products"] == "refl,t2"
+
+    shared = first_products.arm
+    armed = []
+
+    def recording(render_plan, **kwargs):
+        armed.append(dict(render_plan))
+        return shared(render_plan,
+                      **{**kwargs, "runner": _stand_in_renderer()})
+
+    monkeypatch.setattr(first_products, "arm", recording)
+    run_ensemble(cfg, tmp_path / "ens",
+                 runner=_committing_member_runner([]), run_seconds=60.0)
+    assert [plan["render_products"] for plan in armed] == ["refl,t2"]
+
+
+def test_an_ensemble_that_named_no_products_runs_its_members_untouched(
+        tmp_path):
+    """No products named is the default, and it changes nothing.
+
+    The runner here does not accept a ``progress_callback`` at all,
+    which is every member runner written before the early render
+    reached this engine: handing it one would be a TypeError.
+    """
+
+    from gpuwm.ensemble.config import load_ensemble_config
+    from gpuwm.ensemble.engine import run_ensemble
+    from gpuwm.ensemble.manifest import member_directory_name
+    from gpuwm.ensemble.member import MemberOutcome
+
+    def run(*, base_config, member_dir, index, seed, perturbation,
+            perturbation_options, run_seconds, restart):
+        Path(member_dir).mkdir(parents=True, exist_ok=True)
+        return MemberOutcome(
+            index=index, seed=seed, member_dir=Path(member_dir),
+            initial_state_sha256="a" * 64, final_state_sha256="b" * 64,
+            wall_seconds=0.1, sim_seconds=60.0, wrfout_count=0,
+            last_checkpoint=None)
+
+    root = tmp_path / "ens"
+    cfg = load_ensemble_config(_overlay_file(tmp_path))
+    result = run_ensemble(cfg, root, runner=run, run_seconds=60.0)
+
+    assert result.status == "COMPLETE"
+    assert not (root / member_directory_name(0) / "png").exists()
 
 
 # ---------------------------------------------------------------------------
@@ -873,7 +1253,7 @@ def test_the_render_front_door_creates_no_cuda_context(tmp_path):
     cupy is imported transitively by the package, so "does it import
     cupy" is the wrong question and answers yes.  The question is
     whether a context exists on the device, and the driver is the only
-    honest witness: ``cuCtxGetCurrent`` reports 3
+    accurate witness: ``cuCtxGetCurrent`` reports 3
     (``CUDA_ERROR_NOT_INITIALIZED``) until something initialises CUDA.
     """
 

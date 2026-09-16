@@ -5,7 +5,7 @@ Four questions the gate answers by assertion rather than by measurement:
 ``--mode instrument``  does ``_require_fired`` actually FAIL when a scheme
                        does not fire?  A refusal that has never been made to
                        refuse is not a control.
-``--mode refusals``    do the two REFUSALS the report calls "honest failure"
+``--mode refusals``    do the two REFUSALS the report calls "accurate failure"
                        -- a streamed CHILD, and a cross-scheme microphysics
                        edge off a streamed parent -- actually raise?
 ``--mode vram``        what does streaming the parent COST on the device?

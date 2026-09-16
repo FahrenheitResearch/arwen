@@ -184,7 +184,7 @@ def test_reach_reject_is_bitwise_identical_to_no_reject(monkeypatch, n_radars):
     is the only way the reject fires at all: a chunk spanning the whole
     grid reaches every radar in it by definition, so the interesting case
     is the one memory forces at CONUS scale, where a span is a fraction of
-    a row.  The assertion at the end is what keeps this honest.
+    a row.  The assertion at the end is what keeps this accurate.
     """
     prior, obs, grid = _case(n_radars)
     cfg = _config(chunk_points=8)

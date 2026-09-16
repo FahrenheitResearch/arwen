@@ -49,6 +49,7 @@ use rw_wrfbatch::wrf_process::{WrfProcessMessage, WrfProcessOptions, spawn_proce
 /// The `--abi` contract line, in the shape the two sibling binaries use:
 /// the vocabulary the PYTHON half parses, not a version number.
 const ABI_MARKER: &str = "gpuwm-rw-ensbatch-products-v1\tmean\tspread\tprob\tpmm\tpaintball\t\
+gpuwm-rw-ensbatch-fields-v1\tFIELD\tname\ttitle\tunits\tdefault_threshold\tunit_slug\t\
 gpuwm-rw-ensbatch-events-v1\tRENDERED\tSKIPPED\tFAILED\t\
 gpuwm-rw-ensbatch-vocabulary-v1\tMEMBERS\tCOVERAGE\tTIES";
 
@@ -161,7 +162,7 @@ fn usage() -> &'static str {
 (--manifest FILE.json | --member N=WRFOUT_OR_MEMBER_DIR ...) [--field refl|uh|precip|t2|wspd10] \
 [--products mean,spread,prob,pmm,paintball] [--threshold V] [--neighborhood-km V] \
 [--frames all|N] [--nan-policy mask|refuse] [--pmm-tie-rule flat-index|average] \
-[--accept-status LIST] [--width N] [--height N] [--source-label TEXT] \
+[--accept-status LIST] [--domain dNN] [--width N] [--height N] [--source-label TEXT] \
 [--overlays FILE.json] [--annotate FILE.json]\n       \
 rw_ensbatch --list-fields | --help | --abi"
 }
@@ -177,7 +178,11 @@ fn parse_args() -> Result<Invocation, String> {
     let mut store_root = None;
     let mut out_dir = None;
     let mut manifest: Option<PathBuf> = None;
-    let mut explicit: Vec<(u32, Vec<PathBuf>)> = Vec::new();
+    let mut explicit: Vec<(u32, PathBuf)> = Vec::new();
+    // Which NEST to reduce, when a member holds more than one.  Kept as
+    // a request rather than applied as it is parsed, because the flag
+    // may arrive after the --member it selects within.
+    let mut domain: Option<String> = None;
     let mut field = "refl".to_string();
     let mut products = "mean,spread,prob,pmm,paintball".to_string();
     let mut threshold: Option<f64> = None;
@@ -214,15 +219,10 @@ fn parse_args() -> Result<Invocation, String> {
                     .map_err(|err| format!("--member {spec:?}: {err}"))?;
                 // One file, or the member DIRECTORY holding its frames --
                 // the manifest route and this one describe the same thing,
-                // so they accept the same thing.
-                let path = PathBuf::from(path);
-                let frames = if path.is_dir() {
-                    member_wrfout_series(&path)
-                        .map_err(|problem| format!("--member {number}: {problem}"))?
-                } else {
-                    vec![path]
-                };
-                explicit.push((number, frames));
+                // so they accept the same thing.  The directory is walked
+                // after the whole command line is read, so --domain
+                // selects within it wherever the two flags were typed.
+                explicit.push((number, PathBuf::from(path)));
             }
             "--field" => field = value()?,
             "--products" => products = value()?,
@@ -271,6 +271,18 @@ fn parse_args() -> Result<Invocation, String> {
                     .parse()
                     .map_err(|err| format!("invalid --height: {err}"))?
             }
+            // Which nest to reduce.  A member directory holding two
+            // nests is two forecasts, and the roster loader refuses it
+            // rather than pick; this is how the operator picks.
+            "--domain" => {
+                let token = value()?;
+                if !domain_token_shape(&token) {
+                    return Err(format!(
+                        "--domain wants a nest token like d02, got {token:?}"
+                    ));
+                }
+                domain = Some(token);
+            }
             "--source-label" => source_label = value()?,
             "--overlays" => overlays_path = Some(PathBuf::from(value()?)),
             "--annotate" => annotate_path = Some(PathBuf::from(value()?)),
@@ -281,9 +293,18 @@ fn parse_args() -> Result<Invocation, String> {
         }
     }
 
-    let mut members = explicit;
+    let mut members: Vec<(u32, Vec<PathBuf>)> = Vec::new();
+    for (number, path) in explicit {
+        let frames = if path.is_dir() {
+            member_wrfout_series(&path, domain.as_deref())
+                .map_err(|problem| format!("--member {number}: {problem}"))?
+        } else {
+            vec![path]
+        };
+        members.push((number, frames));
+    }
     if let Some(path) = &manifest {
-        members.extend(load_manifest(path, &accept_status)?);
+        members.extend(load_manifest(path, &accept_status, domain.as_deref())?);
     }
     members.sort_by_key(|(number, _)| *number);
     members.dedup_by_key(|(number, _)| *number);
@@ -347,9 +368,14 @@ fn parse_args() -> Result<Invocation, String> {
 /// status is not accepted is REPORTED with its status, so the operator
 /// learns the right `--accept-status` from the refusal rather than from
 /// documentation.
+///
+/// `domain` is the operator's nest choice (`--domain d02`), applied to
+/// every member by the same token, which is the disambiguation the
+/// per-member ambiguity refusal below asks for.
 fn load_manifest(
     path: &Path,
     accept_status: &[String],
+    domain: Option<&str>,
 ) -> Result<Vec<(u32, Vec<PathBuf>)>, String> {
     let bytes =
         std::fs::read(path).map_err(|err| format!("read manifest {}: {err}", path.display()))?;
@@ -393,7 +419,7 @@ fn load_manifest(
             .find_map(|key| record.get(*key).and_then(serde_json::Value::as_str))
             .map(|value| root.join(value))
             .unwrap_or_else(|| root.join(format!("member_{number:03}")));
-        match member_wrfout_series(&directory) {
+        match member_wrfout_series(&directory, domain) {
             Ok(wrfouts) => members.push((number, wrfouts)),
             Err(problem) => refused.push(format!("member {number}: {problem}")),
         }
@@ -423,6 +449,31 @@ fn load_manifest(
     Ok(members)
 }
 
+/// `true` for a nest token the filenames can actually carry: `d` and two
+/// digits, the shape `wrfout_dNN_...` is written with.
+///
+/// The shape is checked at the DOOR so `--domain 2` is one sentence about
+/// the flag rather than "no d2 wrfout" repeated once per member.
+fn domain_token_shape(token: &str) -> bool {
+    let mut chars = token.chars();
+    chars.next() == Some('d')
+        && token.len() == 3
+        && chars.all(|c| c.is_ascii_digit())
+}
+
+/// The `dNN` token of one wrfout filename, or `None`.
+///
+/// The FILENAME token and not a global attribute, so the engine and the
+/// python half that asks for `--domain d02` are reading the same fact
+/// off the same string.
+fn wrfout_domain_token(path: &Path) -> Option<String> {
+    let name = path.file_name()?.to_str()?;
+    let rest = name.strip_prefix("wrfout_d")?;
+    let digits: String = rest.chars().take(2).collect();
+    (digits.len() == 2 && digits.chars().all(|c| c.is_ascii_digit()))
+        .then(|| format!("d{digits}"))
+}
+
 /// One member's wrfout time series, in model-time order, or `Err` naming
 /// the ambiguity.
 ///
@@ -430,7 +481,9 @@ fn load_manifest(
 /// it is two forecasts, and picking one of them by filename order would
 /// average d01 for some members and d02 for others with nothing on the
 /// transcript saying so.  The domain is therefore required to be
-/// unambiguous, and the refusal names both domains it found.
+/// unambiguous, and the refusal names both domains it found and the flag
+/// that picks one: `--domain dNN` selects the nest in every member by the
+/// same token, so the choice is made once for the whole ensemble.
 ///
 /// Several files of ONE domain are a TIME SERIES, and all of them are the
 /// member: `frames_per_outfile = 1` is WRF's default and what every
@@ -447,7 +500,10 @@ fn load_manifest(
 /// name, the same rule `local_import::parse_wrf_timestamp` exists to
 /// serve; a file whose name carries no parsable stamp sorts after the
 /// stamped ones, by name, rather than being dropped.
-fn member_wrfout_series(directory: &Path) -> Result<Vec<PathBuf>, String> {
+fn member_wrfout_series(
+    directory: &Path,
+    domain: Option<&str>,
+) -> Result<Vec<PathBuf>, String> {
     let mut found: Vec<PathBuf> = Vec::new();
     let entries = std::fs::read_dir(directory)
         .map_err(|err| format!("read {}: {err}", directory.display()))?;
@@ -465,19 +521,30 @@ fn member_wrfout_series(directory: &Path) -> Result<Vec<PathBuf>, String> {
     }
     let domains: std::collections::BTreeSet<String> = found
         .iter()
-        .filter_map(|path| {
-            let name = path.file_name()?.to_str()?;
-            let rest = name.strip_prefix("wrfout_d")?;
-            let digits: String = rest.chars().take(2).collect();
-            (digits.len() == 2 && digits.chars().all(|c| c.is_ascii_digit()))
-                .then(|| format!("d{digits}"))
-        })
+        .filter_map(|path| wrfout_domain_token(path))
         .collect();
-    if domains.len() > 1 {
+    if let Some(wanted) = domain {
+        // The operator has named the nest, so this is a selection and
+        // not an ambiguity: keep that nest's frames and nothing else.
+        found.retain(|path| wrfout_domain_token(path).as_deref() == Some(wanted));
+        if found.is_empty() {
+            return Err(format!(
+                "{} holds no {} wrfout; it holds {}. Name a nest every \
+                 member carries with --domain dNN",
+                directory.display(),
+                wanted,
+                if domains.is_empty() {
+                    "no wrfout_dNN file".to_string()
+                } else {
+                    domains.into_iter().collect::<Vec<_>>().join(", ")
+                }
+            ));
+        }
+    } else if domains.len() > 1 {
         return Err(format!(
             "{} holds more than one domain ({}); an ensemble product of \
-             mixed nests is not an ensemble product. Point --member at the \
-             file you mean",
+             mixed nests is not an ensemble product. Pick the nest with \
+             --domain dNN, or point --member at the file you mean",
             directory.display(),
             domains.into_iter().collect::<Vec<_>>().join(", ")
         ));
@@ -556,9 +623,17 @@ fn main() -> ExitCode {
         }
         Ok(Invocation::ListFields) => {
             for spec in field_specs() {
+                // The unit SLUG travels with the row: it reaches the
+                // delivered filename, and a caller that kept its own
+                // copy of it spelled one field's threshold in different
+                // units from the engine that drew it.
                 println!(
-                    "FIELD\t{}\t{}\t{}\tdefault_threshold={}",
-                    spec.name, spec.title, spec.units, spec.default_threshold
+                    "FIELD\t{}\t{}\t{}\tdefault_threshold={}\tunit_slug={}",
+                    spec.name,
+                    spec.title,
+                    spec.units,
+                    spec.default_threshold,
+                    spec.unit_slug
                 );
             }
             println!("PRODUCTS\tmean\tspread\tprob\tpmm\tpaintball");
@@ -1024,7 +1099,7 @@ fn render_product(
 ///
 /// The stamp is not optional decoration.  A masked reduction that does not
 /// publish its denominator is the thing the propagate-NaN policy was right
-/// to refuse; publishing it is what makes masking honest, and the panel is
+/// to refuse; publishing it is what makes masking accurate, and the panel is
 /// where a reader will see it.
 fn coverage_line(
     coverage: &rustwx_ensemble::MissingnessReport,
@@ -1173,7 +1248,7 @@ mod tests {
         );
         let manifest = write_manifest(root, "{\"member\":0,\"status\":\"DONE\"}");
 
-        let members = load_manifest(&manifest, &accepted()).expect("roster");
+        let members = load_manifest(&manifest, &accepted(), None).expect("roster");
 
         assert_eq!(members.len(), 1);
         let (number, files) = &members[0];
@@ -1209,10 +1284,62 @@ mod tests {
         );
         let manifest = write_manifest(root, "{\"member\":0,\"status\":\"DONE\"}");
 
-        let err = load_manifest(&manifest, &accepted()).expect_err("mixed nests refuse");
+        let err = load_manifest(&manifest, &accepted(), None).expect_err("mixed nests refuse");
 
         assert!(err.contains("d01"), "{err}");
         assert!(err.contains("d02"), "{err}");
+        assert!(err.contains("--domain"), "the refusal names the way out: {err}");
+    }
+
+    #[test]
+    fn domain_picks_the_nest_the_ambiguity_refusal_asks_for() {
+        // The python half removed its own "--domain is not implemented
+        // on --engine rust" refusal and forwards the flag here.  The
+        // flag has to exist, and it has to mean the selection the
+        // ambiguity refusal names.
+        let scratch = Scratch::new("pick");
+        let root = scratch.0.as_path();
+        write_member(
+            root,
+            "member_000",
+            &[
+                "wrfout_d01_2026-08-17_00_00_00",
+                "wrfout_d02_2026-08-17_00_00_00",
+                "wrfout_d02_2026-08-17_01_00_00",
+            ],
+        );
+        let manifest = write_manifest(root, "{\"member\":0,\"status\":\"DONE\"}");
+
+        let members = load_manifest(&manifest, &accepted(), Some("d02")).expect("roster");
+
+        let (_, files) = &members[0];
+        let names: Vec<String> = files
+            .iter()
+            .map(|path| path.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                "wrfout_d02_2026-08-17_00_00_00".to_string(),
+                "wrfout_d02_2026-08-17_01_00_00".to_string(),
+            ],
+            "--domain d02 reduces d02, all of its frames, and nothing else"
+        );
+
+        let err = load_manifest(&manifest, &accepted(), Some("d03"))
+            .expect_err("a nest no member holds is not a roster");
+        assert!(err.contains("d03"), "{err}");
+        assert!(err.contains("d01"), "{err}");
+    }
+
+    #[test]
+    fn a_domain_token_is_checked_for_shape_at_the_door() {
+        assert!(domain_token_shape("d01"));
+        assert!(domain_token_shape("d02"));
+        assert!(!domain_token_shape("2"));
+        assert!(!domain_token_shape("d2"));
+        assert!(!domain_token_shape("domain02"));
+        assert!(!domain_token_shape(""));
     }
 
     #[test]
@@ -1222,7 +1349,8 @@ mod tests {
         write_member(root, "member_000", &["wrfout_d01_2026-08-17_00_00_00"]);
         let manifest = write_manifest(root, "{\"member\":0,\"status\":\"RUNNING\"}");
 
-        let err = load_manifest(&manifest, &accepted()).expect_err("RUNNING is not averaged");
+        let err =
+            load_manifest(&manifest, &accepted(), None).expect_err("RUNNING is not averaged");
 
         assert!(err.contains("RUNNING"), "{err}");
     }
@@ -1243,7 +1371,7 @@ mod tests {
             ],
         );
 
-        let files = member_wrfout_series(&root.join("member_007")).expect("series");
+        let files = member_wrfout_series(&root.join("member_007"), None).expect("series");
 
         assert_eq!(files.len(), 2);
     }

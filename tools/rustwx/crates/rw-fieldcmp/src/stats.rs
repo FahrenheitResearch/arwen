@@ -407,7 +407,7 @@ impl Summary {
 ///
 /// Squares and element counts accumulate across the samples and the square
 /// root is taken once, so a loud window is not averaged away by a run of
-/// quiet ones.  The two-level shape is the reference's and is load-bearing:
+/// quiet ones.  The two-level shape is the reference's and is essential:
 /// each sample's squares are summed pairwise, and the per-sample totals are
 /// then added into one running total in sample order.  Summing the samples
 /// pairwise as well would be the more accurate arrangement and the wrong

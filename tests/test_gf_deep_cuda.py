@@ -48,7 +48,7 @@ What this file proves, in order:
    caller was the LGPL gamma block, so they graded dead code.
 3. CUDA's builtin tgammaf and powf are DIFFERENT functions again -- neither
    glibc's nor correctly rounded -- negative controls that fire, so
-   gfk_tgamma and gfk_pow are provably load-bearing, not decoration.
+   gfk_tgamma and gfk_pow are provably essential, not decoration.
 4. fzu = gamma(a+b)/(gamma(a)*gamma(b)) is bitwise against the correctly
    rounded reference gf-crgamma-fzu.csv over the whole probe grid.
 5. gf_deep_stage reproduces every graded field of gf-deep-levels.csv /

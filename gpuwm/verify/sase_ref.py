@@ -583,7 +583,7 @@ THE FORM, mirroring S3-6i's two-product K_v blend term for term:
     eps    = C_eps*e^{3/2}/l_d
 
 (:func:`stable_dissipation_coefficient`).  Three properties, each
-pinned, each load-bearing:
+pinned, each essential:
 
 * STABLE LIMIT BITWISE: :func:`dissipation_length` ends
   ``l = np.where(stable, np.minimum(l, ls), l)``, so l_d == l_s BITWISE
@@ -1458,7 +1458,7 @@ column, 4.5e7 times a 1e-12 kg/kg perturbation) and theta_es is a
 function of (theta, p) ONLY, so k_base, k_top, k_lid and k_r are all
 INVARIANT under +-1e-12 kg/kg condensate shifts at every cell of the
 column (98 perturbations, round-4 probe r4_p5).  The FLUXES are not
-bitwise invariant and no honest reading of the closure would make them
+bitwise invariant and no accurate reading of the closure would make them
 so: qt itself enters the entraining parcel, so the response is
 CONTINUOUS and LINEAR in the perturbation -- max relative flux
 movement 5.84e-10 at 1e-12 kg/kg (worst cell k10), and the response
@@ -2111,7 +2111,7 @@ N^2 = 3.566e-5, the measured 12.2 km value, l_ref = BLACKADAR_LAMBDA):
       0.160      2.840        0.005976    475x           9.839
       0.180      0            0             --          --
 
-  READ THIS HONESTLY.  The channel is worth 5x to 475x in the
+  READ THIS ACCURATELY.  The channel is worth 5x to 475x in the
   Ri = 0.12-0.16 band -- which is where the defect actually lives, a
   hair under Ri* = 0.16471, and where the census found 72% of live
   cells against a 0.36% base rate -- and worth only 2-18% at Ri <= 0.1.
@@ -2237,7 +2237,7 @@ import numpy as np
 #: by the SAME factor, 0.25 -> 0.04580.  That number is NOT registered,
 #: because choosing it to hold one case's amplitude at one level would
 #: be fitting, not calibration.  C_KS and C_ES are already recorded as
-#: jointly falsified and requiring joint re-registration; the honest
+#: jointly falsified and requiring joint re-registration; the accurate
 #: blocker is that no defensible stable-limb calibration target exists
 #: yet.
 #:
@@ -3967,7 +3967,7 @@ def bl89_displacement_lengths(theta, e, z, thick):
     taken linear between adjacent layer centers, held constant from the
     lowest center to the surface (z' in [0, z_0]) and from the highest
     center to the top interface -- the sub-half-layer profile is
-    unresolved, so constant extension is the honest discrete choice.
+    unresolved, so constant extension is the accurate discrete choice.
     Each full segment then contributes its exact quadrature
     (c1 + c2*h)*h and the fractional last segment solves the quadratic
     I(s) = rem exactly (:func:`_bl89_first_crossing` has the
@@ -4407,7 +4407,7 @@ def additive_dissipation_coefficient(l_d, l_ref, e, n2=None, f=1.0,
     exact: the sum is still of the form -K*e^{3/2}, so
     e = e*/(1 + K*sqrt(e*)*dt/2)^2 holds with no new integrator.
 
-    Four properties, each pinned, each load-bearing:
+    Four properties, each pinned, each essential:
 
     * NOWHERE WEAKER.  Every factor of the added term is non-negative
       and l_d/l_ref is finite, so C_eps >= c_base POINTWISE and the

@@ -1,6 +1,6 @@
 """The speedrun course table, the capsule, and the comparability refusals.
 
-The capsule's whole job is to make a dishonest record impossible rather
+The capsule's whole job is to make an inaccurate record impossible rather
 than discouraged, so most of what is measured here is a refusal: an
 unknown course, a broken seal, a cross-course comparison, a record with
 no evidence that any work happened.  A test that only exercised the

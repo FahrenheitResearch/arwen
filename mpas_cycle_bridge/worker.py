@@ -11,7 +11,10 @@ imports ``gpuwm.cycle`` -- structurally, not by convention:
   refuses ``gpuwm`` itself until the guard is armed with the pinned
   checkout;
 * the bootstrap removes the repository root from ``sys.path`` before it
-  binds the port, so the spine tree is not even reachable;
+  binds the port, so the spine tree is not even reachable -- unless the
+  bridge is installed, where that root is the interpreter's library
+  directory and dropping it would strip the pinned tree's own
+  dependencies, and the guard carries the constraint alone;
 * the guard's after-the-fact verification -- where ``gpuwm`` actually
   came from -- is written into the segment receipt, so the constraint is
   *evidenced* per run rather than asserted once in a docstring.
@@ -43,7 +46,9 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import site
 import sys
+import sysconfig
 import traceback
 from pathlib import Path
 from typing import Any, Mapping
@@ -53,6 +58,39 @@ from typing import Any, Mapping
 
 _BRIDGE_DIR = Path(__file__).resolve().parent
 _REPO_ROOT = _BRIDGE_DIR.parent
+
+
+def _interpreter_library_dirs() -> frozenset[str]:
+    """Every directory this interpreter keeps INSTALLED distributions in.
+
+    Asked of the interpreter rather than guessed from the path's shape:
+    a venv, a user install and a system install spell it differently and
+    the answer decides whether the scrub below is free or catastrophic.
+    """
+
+    found: set[str] = set()
+    paths = sysconfig.get_paths()
+    for key in ("purelib", "platlib"):
+        entry = paths.get(key)
+        if entry:
+            found.add(str(Path(entry).resolve()))
+    for getter in ("getsitepackages", "getusersitepackages"):
+        call = getattr(site, getter, None)
+        if call is None:          # a python whose site module was stripped
+            continue
+        try:
+            got = call()
+        except Exception:         # site disabled (-S): nothing to report
+            continue
+        for entry in ([got] if isinstance(got, str) else list(got)):
+            if entry:
+                found.add(str(Path(entry).resolve()))
+    return frozenset(found)
+
+
+#: True when this bridge is an INSTALLED distribution -- its root is the
+#: interpreter's own library directory -- rather than a source checkout.
+_ROOT_IS_LIBRARY = str(_REPO_ROOT) in _interpreter_library_dirs()
 
 if str(_REPO_ROOT) not in sys.path:
     sys.path.append(str(_REPO_ROOT))
@@ -66,8 +104,22 @@ from mpas_cycle_bridge.spine_guard import install_guard  # noqa: E402
 # tree is not on the import path while the port pins its Arwen checkout.
 # The guard would refuse a spine import anyway; this makes it unreachable
 # as well, which is the belt to the guard's braces.
-while str(_REPO_ROOT) in sys.path:
-    sys.path.remove(str(_REPO_ROOT))
+#
+# Not when that root is the interpreter's own library directory.  An
+# INSTALLED bridge sits in site-packages, so the root is site-packages,
+# and dropping it takes every other installed distribution with it.  The
+# breakage this refuses: the pinned Arwen tree imports cupy at module
+# scope, so the installed worker died with "No module named 'cupy'" at
+# the seed leg of cycle 1 -- while the same commit run from a checkout
+# was fine, because there the root holds only the tree.  numpy survived
+# the scrub and hid it, being already in sys.modules by this line.  What
+# the belt was for is held by the braces either way: the guard refuses
+# gpuwm.cycle by name from anywhere, refuses gpuwm at all until it is
+# armed, puts the pinned checkout at sys.path[0] when it arms, and the
+# receipt records which tree gpuwm actually came from.
+if not _ROOT_IS_LIBRARY:
+    while str(_REPO_ROOT) in sys.path:
+        sys.path.remove(str(_REPO_ROOT))
 
 import numpy as np  # noqa: E402
 

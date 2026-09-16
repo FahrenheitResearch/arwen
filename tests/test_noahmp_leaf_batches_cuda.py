@@ -215,7 +215,7 @@ def test_the_batch_comparison_can_fail(leaf):
 
 @requires_gpu
 def test_a_transposed_radiation_slot_is_rejected():
-    """The RADIATION packer's slot order is load-bearing and is shown to be.
+    """The RADIATION packer's slot order is essential and is shown to be.
 
     SOLAD and SOLAI are adjacent, carry different numbers, and reach different
     terms of SURRAD.  Transposing them is the packing defect this seam is most

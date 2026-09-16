@@ -302,7 +302,7 @@ def test_the_engine_writes_single_digit_cycle_hours_and_they_parse():
         "arwen_wrf_19740403_18z_f001_d02-3km_composite_reflectivity.png"
     ) == ("d02-3km", "composite_reflectivity", "1974-04-03")
 
-    # A cycle "hour" no clock has stays honest: dated buckets are for
+    # A cycle "hour" no clock has stays accurate: dated buckets are for
     # evidence, and 99z is evidence of nothing.
     assert render_layout.parse_engine_output(
         "arwen_wrf_19740403_99z_f000_d02-3km_composite_reflectivity.png"
@@ -949,7 +949,7 @@ def test_a_delivered_path_fits_the_windows_tools_that_open_it(tmp_path,
 #: that cost is stated here rather than discovered on a delivery: the
 #: measured 310-character tree that produced :func:`delivered_name` was
 #: found by a recipient, not by a test.  Still under Windows' 260 --
-#: with less slack than an ordinary delivery has, which is the honest
+#: with less slack than an ordinary delivery has, which is the accurate
 #: price of separating a nest's two lives.
 EPISODIC_PATH_BUDGET = (DELIVERED_PATH_BUDGET
                         + len(render_layout.episode_segment(999)) + 1)

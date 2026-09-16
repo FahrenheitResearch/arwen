@@ -65,6 +65,7 @@ from gpuwm.ingest.soil_downscale import (
 from gpuwm.ingest.water_overlay import (
     load_bound_water_overlay, overlay_snapshot_sequence, verify_overlay_sequence,
 )
+from gpuwm.moisture_floor_receipt import moisture_floor_proof_entry
 from gpuwm.native_domain_artifacts import _atomic_staging_sibling
 from gpuwm.native_wrf_contract import (
     NATIVE_STATIC_REQUIRED,
@@ -246,7 +247,7 @@ def load_era5_adapter_config(
 ) -> tuple[ExperimentConfig, CaseDataConfig | None]:
     """The ERA5 adapter's one config door (task #204).
 
-    Both config shapes this source honestly has are accepted: the
+    Both config shapes this source accurately has are accepted: the
     ONE-FILE config ``gpuwm domain --source era5`` writes (experiment
     tables plus ``[case_data]``/``[fetch]``) and the bare experiment
     config.  Before this door existed the adapter loaded through
@@ -874,6 +875,12 @@ def prepare_era5_wrf(
                 **water_overlay_binding,
                 "root_static_provider": root_static_provider,
                 "root_static_receipt": root_static_receipt,
+                # WHETHER EACH DOMAIN'S INITIALIZATION MODIFIED VAPOUR ON
+                # THE WAY IN, root and children alike.  Unconditional, and
+                # stated even when no floor fired: an absent key would read
+                # as "prepared before the receipt existed", a different
+                # claim and one no reader of the bundle could check.
+                **dict(hierarchy.hierarchy.moisture_floor_receipts),
                 "hierarchy_workers": selected_workers,
                 "static_catalog": dict(hierarchy.static_catalog_receipt),
                 "source_coverage": dict(
@@ -987,6 +994,16 @@ def prepare_era5_wrf(
                 "files": manifest["files"],
             },
             "initialization_artifacts": initialization_artifacts,
+            # WHETHER THIS INITIALIZATION MODIFIED VAPOUR ON THE WAY IN.
+            # Unconditional, and stated even when no floor fired.
+            **moisture_floor_proof_entry(
+                initial_result,
+                when_unrecorded=(
+                    "this preparation's initialization result carries "
+                    "no moisture-floor field, so it came from an ingest "
+                    "predating the receipt; re-prepare the case to "
+                    "record whether its vapour was floored on the way "
+                    "in")),
             "prepared_cache": portable_cache_receipt,
             "export": export_receipt,
             "timing_seconds": {

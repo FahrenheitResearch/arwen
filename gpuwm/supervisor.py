@@ -43,6 +43,7 @@ from gpuwm.certify.capsule import emit_run_capsule
 # reach a terminal -- so anything lifted OUT of a capsule and printed
 # has to go through this first.
 from gpuwm.explain import split as explain_split
+from gpuwm.explain import warn
 # A killed run's only chance to say anything.  Both processes below are
 # front doors that own a whole run, and neither had a signal handler:
 # SIGTERM killed them at SIG_DFL with nothing printed.
@@ -1039,20 +1040,159 @@ def query_compute_processes(gpu_uuid: str) -> tuple[GPUProcess, ...]:
     return tuple(enriched)
 
 
+def _gib(value: int | float) -> str:
+    return f"{float(value) / float(1024 ** 3):.2f} GiB"
+
+
+def _cotenant_detail(conflicts) -> str:
+    return ", ".join(
+        f"pid={process.pid} name={process.process_name!r} "
+        f"memory={'unmeasured' if process.used_gpu_memory_mib in (None, 0) else f'{process.used_gpu_memory_mib}MiB'}"
+        for process in conflicts)
+
+
+#: The admission sentences this process has already said.  ``explain.warn``
+#: has no de-duplication of its own, and the run doors ask this question
+#: more than once -- the supervisor on every recovery attempt, the stream
+#: controller before every stage command -- so without this a shared card
+#: printed the same sentence per command instead of once.  The key is the
+#: sentence itself, so a co-tenant that appears, grows, shrinks or leaves
+#: changes the line and IS named again: this suppresses repetition, never
+#: news.
+_ADMISSION_WARNED: set[str] = set()
+
+
+def _warn_once(action: str, *, why: str) -> None:
+    """Say one admission sentence at most once per process."""
+
+    key = " ".join(str(action).split())
+    if key in _ADMISSION_WARNED:
+        return
+    _ADMISSION_WARNED.add(key)
+    warn(action, why=why)
+
+
+def shared_gpu_admission(gpu_uuid: str, conflicts, reservation_bytes=None, *,
+                         decide: bool = True) -> dict:
+    """Price one shared card rather than refusing it for being shared.
+
+    Sharing a GPU is not a policy question, it is a VRAM question, and the
+    number that answers it is measurable from the same tool the contender
+    rows came from: NVML's device total minus the DEVICE-WIDE used figure.
+    That figure counts a co-tenant's memory whether or not its per-process
+    framebuffer was reported, which is exactly why an unmeasured per-process
+    row is priced here instead of being refused: it is the conservative
+    recorded basis, and the run is admitted or refused against it with both
+    numbers on the page.
+
+    Returns the admission receipt (the two numbers and the basis).  Raises
+    :class:`GPUPreflightError` only when the run's PRICED reservation does
+    not fit the device's measured free memory, and only when ``decide`` is
+    true; a recovery attempt re-measures the device and names what it found
+    but can never re-refuse a run that has already started.  nvidia-smi
+    itself failing still fails closed, through ``device_wide_used_bytes``.
+    """
+
+    from gpuwm.core.preflight import (device_physical_total_bytes,
+                                      device_wide_used_bytes)
+
+    detail = _cotenant_detail(conflicts)
+    basis = ("NVML device total minus device-wide used, which counts a "
+             "co-tenant's memory whether or not its per-process framebuffer "
+             "was reported")
+    if not conflicts:
+        # An exclusive card asks the device nothing: there is no co-tenant
+        # to price against, and a query here would be a second nvidia-smi
+        # call on every launch for an answer nobody reads.
+        return {
+            "gpu_uuid": gpu_uuid,
+            "cotenants": "",
+            "device_total_bytes": None,
+            "device_wide_used_bytes": None,
+            "device_free_bytes": None,
+            "reservation_bytes": (None if reservation_bytes is None
+                                  else int(reservation_bytes)),
+            "basis": "no CUDA co-tenant on this device",
+            "verdict": "exclusive",
+        }
+    used = device_wide_used_bytes(device_id=gpu_uuid)
+    total = device_physical_total_bytes(device_id=gpu_uuid)
+    free = None if total is None else max(0, int(total) - int(used))
+    receipt = {
+        "gpu_uuid": gpu_uuid,
+        "cotenants": detail,
+        "device_total_bytes": total,
+        "device_wide_used_bytes": int(used),
+        "device_free_bytes": free,
+        "reservation_bytes": (None if reservation_bytes is None
+                              else int(reservation_bytes)),
+        "basis": basis,
+        "verdict": "admitted",
+    }
+    if free is None:
+        _warn_once(
+            f"GPU {gpu_uuid} is shared with CUDA compute process(es) "
+            f"({detail}) and this device's total memory could not be read, "
+            f"so the run is admitted on the co-tenants' own reported "
+            f"footprint; NVML reports {_gib(used)} used device-wide",
+            why=basis)
+        receipt["verdict"] = "admitted-unpriced-device"
+        return receipt
+    if reservation_bytes is None:
+        _warn_once(
+            f"GPU {gpu_uuid} is shared with CUDA compute process(es) "
+            f"({detail}); this run's reservation could not be priced from "
+            f"its configuration, so it is admitted against the "
+            f"{_gib(free)} this device reports free",
+            why=basis)
+        receipt["verdict"] = "admitted-unpriced-run"
+        return receipt
+    reservation = int(reservation_bytes)
+    if reservation <= free or not decide:
+        receipt["verdict"] = ("admitted" if reservation <= free
+                              else "admitted-already-started")
+        _warn_once(
+            f"GPU {gpu_uuid} is shared with CUDA compute process(es) "
+            f"({detail}); this run's priced reservation of "
+            f"{_gib(reservation)} is measured against {_gib(free)} free on "
+            f"the device"
+            + ("" if reservation <= free else
+               ", which it exceeds; the run has already started, so it is "
+               "not refused here"),
+            why=basis)
+        return receipt
+    raise GPUPreflightError(
+        f"GPU {gpu_uuid} cannot admit this run beside its CUDA co-tenant(s) "
+        f"({detail}): the run's priced reservation is {_gib(reservation)} "
+        f"and the device reports {_gib(free)} free "
+        f"({_gib(total)} total minus {_gib(used)} used device-wide). "
+        f"Stop the co-tenant(s), or run this configuration on a device with "
+        f"more free memory, or make it smaller. Basis: {basis}")
+
+
 def preflight_exclusive_gpu(gpu_uuid: str, *,
                             approved_pids: set[int] | None = None,
                             memory_threshold_mib: int =
                             COMPUTE_MEMORY_THRESHOLD_MIB,
-                            allow_shared_gpu: bool = False) -> None:
-    """Verify identity and reject substantial pure-CUDA contenders.
+                            allow_shared_gpu: bool = False,
+                            reservation_bytes: int | None = None,
+                            decide: bool = True) -> dict:
+    """Verify identity and price the card against this run's reservation.
 
     The UUID file lock is authoritative for excluding other gpuwm runs.
     WDDM reports desktop graphics contexts in ``query-compute-apps``; pmon
     labels those ``C+G`` and they are explicitly permitted.  A pure ``C``
-    process is a contender when its memory is unmeasured/zero (the normal
-    WDDM failure mode) or its measured memory exceeds the small context-noise
-    threshold.  Tool/parse failures still fail closed.  ``allow_shared_gpu``
-    bypasses only a proven contender and is an unsupported operator escape.
+    process above the small context-noise threshold, or one whose own
+    framebuffer figure is unmeasured, is a CO-TENANT: the run is priced
+    against the device's measured free memory through
+    :func:`shared_gpu_admission` and admitted when it fits, refused with
+    both numbers when it does not.  Tool/parse failures still fail closed.
+
+    ``allow_shared_gpu`` is accepted and has no effect: sharing is decided
+    by measurement now, so the flag is a workaround for a capability that
+    is default-on.  Its argparse help text feeds a generated document that
+    is out of this lane's bounds, so it is retired in effect here and its
+    wording is deferred.
     """
     if memory_threshold_mib < 0:
         raise ValueError("memory_threshold_mib must be nonnegative")
@@ -1061,7 +1201,8 @@ def preflight_exclusive_gpu(gpu_uuid: str, *,
     select_gpu(gpu_uuid)
     approved = set() if approved_pids is None else set(approved_pids)
     # WDDM pmon can report fb=0 for an active pure-C row, so zero is not
-    # evidence that the context is harmless; treat it as unmeasured.
+    # evidence that the context is harmless; it is an unmeasured PER-PROCESS
+    # figure, and the device-wide figure prices it.
     conflicts = [
         process for process in query_compute_processes(gpu_uuid)
         if (process.pid not in approved
@@ -1069,16 +1210,14 @@ def preflight_exclusive_gpu(gpu_uuid: str, *,
             and (process.used_gpu_memory_mib in (None, 0)
                  or process.used_gpu_memory_mib > memory_threshold_mib))
     ]
-    if conflicts and not allow_shared_gpu:
-        detail = ", ".join(
-            f"pid={process.pid} name={process.process_name!r} "
-            f"memory={'unmeasured' if process.used_gpu_memory_mib in (None, 0) else f'{process.used_gpu_memory_mib}MiB'}"
-            for process in conflicts)
-        raise GPUPreflightError(
-            f"GPU {gpu_uuid} has CUDA compute contender(s) with unmeasured "
-            f"memory or above {memory_threshold_mib} MiB: {detail}; stop "
-            "them or use "
-            "--allow-shared-gpu (unsupported)")
+    if conflicts and allow_shared_gpu:
+        _warn_once(
+            "--allow-shared-gpu is redundant: a shared GPU is admitted or "
+            "refused by measuring this run's priced reservation against "
+            "the device's free memory, not by a flag",
+            why="")
+    return shared_gpu_admission(
+        gpu_uuid, conflicts, reservation_bytes, decide=decide)
 
 
 def default_lock_path(gpu_uuid: str) -> Path:
@@ -1629,6 +1768,47 @@ def _bind_attempt_heartbeat(
     return effective_worker_pid, None
 
 
+def priced_reservation_bytes(configuration) -> int | None:
+    """This run's priced peak envelope, or None when it cannot be priced.
+
+    The same number plan review prices a configuration from
+    (:func:`gpuwm.core.preflight.admission_estimate`), so the run door and
+    the review do not invent two answers.  ONE function, every run door:
+    :func:`supervise_experiment` prices `gpuwm run` here and
+    ``gpuwm.stream``'s controller prices `gpuwm stream` here, because two
+    doors that priced a shared card differently would admit a
+    configuration at one and refuse it at the other.
+
+    Takes either a configuration path or an already loaded
+    :class:`~gpuwm.experiment.ExperimentConfig`, so a caller that has
+    already read the file does not read it a second time and risk pricing
+    a different object than it runs.
+
+    Unpriceable is None, never a number: an unpriced run is admitted
+    against the device's measured free memory and says so, because
+    refusing something for being unmeasured is exactly what this admission
+    stopped doing.
+    """
+
+    try:
+        from gpuwm.core.preflight import admission_estimate
+
+        experiment = configuration
+        if isinstance(configuration, (str, os.PathLike)):
+            from gpuwm.experiment import load_experiment
+
+            experiment = load_experiment(configuration)
+        estimate = admission_estimate(experiment)
+        value = int(estimate.peak_envelope_bytes)
+    except Exception:  # noqa: BLE001 - pricing is advisory, never a gate
+        return None
+    return value if value > 0 else None
+
+
+#: The name this function carried while only one door called it.
+_priced_reservation_bytes = priced_reservation_bytes
+
+
 def supervise_experiment(
         config_path: str | Path, outdir: str | Path, *,
         restart: str | Path | None = None, gpu_uuid: str | None = None,
@@ -1676,14 +1856,26 @@ def supervise_experiment(
     stderr_logs: list[Path] = []
     attempts = 0
 
+    reservation_bytes = priced_reservation_bytes(config_path)
+
     with GPUFileLock(gpu.uuid, path=lock_path, run_id=run_id):
+        # The admission decision is taken ONCE, here, before the first
+        # worker exists.  It used to sit inside the recovery loop, where a
+        # co-tenant that appeared mid-run could refuse a run that had
+        # already produced output.
+        preflight_exclusive_gpu(
+            gpu.uuid, approved_pids={os.getpid()},
+            allow_shared_gpu=allow_shared_gpu,
+            reservation_bytes=reservation_bytes)
         while True:
-            # Repeat before every fresh worker.  The UUID lock excludes other
-            # gpuwm supervisors; this NVML/nvidia-smi view catches unrelated
-            # compute processes that appeared between recovery attempts.
-            preflight_exclusive_gpu(
-                gpu.uuid, approved_pids={os.getpid()},
-                allow_shared_gpu=allow_shared_gpu)
+            if attempts:
+                # A recovery attempt re-measures the device, so a co-tenant
+                # that appeared between attempts is still named; it can
+                # never re-refuse the run.
+                preflight_exclusive_gpu(
+                    gpu.uuid, approved_pids={os.getpid()},
+                    allow_shared_gpu=allow_shared_gpu,
+                    reservation_bytes=reservation_bytes, decide=False)
             attempts += 1
             # Every fresh process gets fresh preparation and step clocks.  A
             # recovery launch can never inherit the dead worker's stale age or
@@ -1948,6 +2140,27 @@ def _success_output(summary) -> dict[str, Any]:
             "trajectory_digest": summary.trajectory_digest}
 
 
+def _success_receipts(outdir: Path, summary) -> dict[str, Any]:
+    """The success capsule's ``receipts`` block.
+
+    WHY THE FLOORS ARE HERE.  ``gpuwm run`` supervises unless
+    ``--no-supervise`` is passed, so this capsule is what a DEFAULT run
+    leaves behind.  The run route writes its own capsule into this same
+    directory under the same fixed name first, and this one replaces it:
+    a two-domain run through `gpuwm go` stated ``moisture_floors_by_domain``
+    for both domains and the identical run through `gpuwm run` stated
+    ``run_progress`` alone, so whether a forecast's initial vapour was
+    modified on the way in was recorded and then written over.  The run
+    route hands its own fragment back on the summary and it is carried
+    through here, so the replacing capsule cannot say less than the
+    capsule it replaced.
+    """
+
+    floors = getattr(summary, "moisture_floor_receipts", None)
+    return {"run_progress": {"path": str((outdir / HEARTBEAT_NAME).resolve())},
+            **(dict(floors) if floors else {})}
+
+
 def _worker_main(args: argparse.Namespace) -> int:
     """Fresh CUDA worker entry.  Never called inside the supervisor process."""
     config_path = Path(args.config).resolve()
@@ -2032,8 +2245,7 @@ def _worker_main(args: argparse.Namespace) -> int:
                        "domain_count": len(exp.domains),
                        "run_seconds": float(exp.run_seconds)},
             output=_success_output(summary),
-            receipts={"run_progress": {
-                "path": str((outdir / HEARTBEAT_NAME).resolve())}},
+            receipts=_success_receipts(outdir, summary),
         )
         progress.complete(summary.completed_seconds)
         return 0
@@ -2217,8 +2429,10 @@ __all__ = [
     "atomic_write_json", "config_digest", "directory_hash_mode",
     "fsync_file", "is_cuda_fatal",
     "parse_compute_apps_output", "preflight_exclusive_gpu",
-    "quarantine_file", "read_heartbeat", "register_cli",
+    "priced_reservation_bytes", "quarantine_file", "read_heartbeat",
+    "register_cli",
     "replace_file_with_retry", "resolved_input_hashes", "select_gpu",
+    "shared_gpu_admission",
     "SHARED_INPUT_AUTHORITY_ROOT_ENV", "snapshot_resolved_input_files",
     "stale_threshold_seconds", "supervise_experiment",
     "supervise_from_cli", "utc_now", "validate_manifest_checkpoint",

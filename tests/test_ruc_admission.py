@@ -425,7 +425,7 @@ def test_the_layer_mapped_source_is_deliberately_not_offered_ruc():
     4-layer geometry into a nine-level column.  The ingest no longer
     refuses it.
 
-    What still keeps 20crv3 off the template is a separate, honest gate:
+    What still keeps 20crv3 off the template is a separate, accurate gate:
     ``runner_routes.<route>.source_template_ids`` is the route's
     per-source VERIFICATION-EVIDENCE declaration, and no RUC run has been
     receipted on a mapped layer source.  That is a registry statement
@@ -725,7 +725,7 @@ def test_the_width_rail_covers_noahmp_and_not_ruc(capsys) -> None:
     # performance projection and not a correctness gap.  The rail this
     # test exists to record is that the width question is asked of
     # Noah-MP and is NOT asked of RUC; the discriminator is the same
-    # either way, and reading it from the warning keeps it honest.
+    # either way, and reading it from the warning keeps it accurate.
     capsys.readouterr()
     noahmp = pending_wrf_physics_components(
         sf_surface_physics=4, num_soil_layers=4,

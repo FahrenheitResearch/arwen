@@ -55,7 +55,7 @@ see TURBULENCE below):
   F_qv = -2.5045341775200348e-08, F_qc = +5.7495439187758184e-08 and
   export F_qv + F_qc = 3.2450097412557837e-08 kg m^-2 s^-1.
 
-  NOTE, and it is the honest reading of this fixture: the single live
+  NOTE, and it is the accurate reading of this fixture: the single live
   face IS the anchor face, so M_hat = (z_f[1]/z_f[1])**VENT_ENT_COEF =
   1 exactly on it.  This column therefore pins the RULING (a
   surface-based run stands the limb down) and does NOT by itself

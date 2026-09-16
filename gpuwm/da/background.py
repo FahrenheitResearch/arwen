@@ -392,7 +392,7 @@ def plan_member_backgrounds(
 
     The construction this driver implements gives every trajectory the
     SAME deterministic background and makes them distinct by perturbing
-    each member with its own seed.  Three things make that honest, and
+    each member with its own seed.  Three things make that accurate, and
     each is a refusal here rather than a comment:
 
     * a construction this driver does not implement is named and

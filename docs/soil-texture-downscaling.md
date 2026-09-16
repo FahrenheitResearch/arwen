@@ -180,7 +180,7 @@ apart, measured with the instruments above:
   humidity field to reconstitute against the way there is a soil map.
 
 Anyone claiming this fix removes visible boxes from a dewpoint plot should
-show which hour they mean and measure it, because on this run the honest
+show which hour they mean and measure it, because on this run the accurate
 answer is "hour 0 is unchanged and later hours were already at the null".
 What it unambiguously removes is the forcing mesh from the soil state,
 where it was large, permanent, and physically inconsistent with the soil

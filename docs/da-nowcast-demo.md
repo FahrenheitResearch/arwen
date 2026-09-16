@@ -25,7 +25,7 @@ python -m tools.da_nowcast watch  --case-dir CASE_DIR   # roll until graded
 python -m tools.da_nowcast verify --case-dir CASE_DIR   # one pass, then stop
 ```
 
-## What it honestly is
+## What it accurately is
 
 A **demo**, productized from the live-fire engineering exercises
 (receipts under `evidence/da-demo/`).  It is UNSCORED and outside any
@@ -83,7 +83,7 @@ Known limits, stated up front:
 ## What to expect from the pictures
 
 Read this before comparing a forecast panel to a radar panel, because
-the honest target is narrower than the imagery suggests:
+the accurate target is narrower than the imagery suggests:
 
 > **Band placement, orientation and convective mode by T+30..T+60 is
 > the winnable target. A cell-for-cell match at T+90 storm scale is
@@ -138,7 +138,7 @@ Three separate reasons, none of them a defect:
    observation.
 7. **render** -- the map-styled gallery (`tools/da_nowcast_render.py`):
    ArWen product-map frame from the vendored basemap assets, one
-   reflectivity scale, honesty stamps throughout.
+   reflectivity scale, accuracy stamps throughout.
 
 8. **verify** -- the handoff: a detached `watch` process polls the
    archive, builds each free-forecast frame's observed composite as
@@ -365,7 +365,7 @@ the receipt records the skew separately.  The live and archive routes'
 finished volumes are **byte-identical** -- same sha256 -- because a
 chunk-prefix concatenation is the archive file, not a re-encoding of it.
 
-One instant is not an honest number for the archive, whose lag swings
+One instant is not an accurate number for the archive, whose lag swings
 from ~0 right after a volume lands to the whole volume period just
 before the next one does.  Polled every 30 s across more than one volume
 period on two sites, listing only:

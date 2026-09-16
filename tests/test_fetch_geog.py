@@ -862,7 +862,7 @@ def test_bundle_refuses_datasets_it_does_not_contain(tmp_path, monkeypatch):
 def test_doctor_remedy_is_the_fetch_geog_command():
     from gpuwm.doctor import GEOG_HINT
     assert "gpuwm fetch-geog" in GEOG_HINT
-    # the honest size warning survives rewording
+    # the accurate size warning survives rewording
     assert "GB" in GEOG_HINT
 
 

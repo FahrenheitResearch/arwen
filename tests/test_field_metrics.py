@@ -1,6 +1,6 @@
 """The metric extraction moved arithmetic, and moved nothing else.
 
-Two halves, and the second is the load-bearing one:
+Two halves, and the second is the essential one:
 
 * the campaign scorer, re-pointed at ``gpuwm.verify.field_metrics``, returns
   the SAME numbers it returned before the move -- compared as ``float.hex()``

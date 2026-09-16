@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 /// The scorer parses with `%Y-%m-%dT%H:%M:%S` and refuses a zone rather than
 /// interpreting one, on the grounds that a string carrying a zone is a
 /// string somebody built from a local clock. So this is not `iso8601()` from
-/// the S3 client, which appends `Z`, and the difference is load-bearing.
+/// the S3 client, which appends `Z`, and the difference is essential.
 pub const TIME_FORMAT: &str = "%Y-%m-%dT%H:%M:%S";
 
 /// Spell an instant the way the seam reads it.

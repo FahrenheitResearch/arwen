@@ -9,7 +9,7 @@ registered campaign, and no skill claim is made or implied.  The figures
 say so on every panel, and the numbers on them (>=35 dBZ column counts,
 FSS at 30 dBZ / 27 km) are diagnostics to look at, not scores to quote.
 
-If you want the deeper version of that honesty statement -- how this
+If you want the deeper version of that accuracy statement -- how this
 configuration differs from the Warn-on-Forecast System, and why its FSS
 does not sit next to a published WoFS number -- read
 [`da-vs-wofs.md`](da-vs-wofs.md) before you draw conclusions from
@@ -252,7 +252,7 @@ Beside them the renderer writes `_manifest.json` and, once any frame has
 been graded, `_verification.json` (`gpuwm-da.nowcast-gallery-verification.v1`)
 carrying the metric definitions and per-frame numbers.  The last two
 figures do not exist yet on a run that has just finished -- see
-[honesty labels](#5-what-the-labels-on-the-figures-mean).
+[accuracy labels](#5-what-the-labels-on-the-figures-mean).
 
 Everything is CLI plus versioned JSON.  `CASE_DIR/nowcast-receipt.json`
 (`gpuwm-da.nowcast.v1`) names every output and carries the verification

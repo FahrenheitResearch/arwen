@@ -367,9 +367,9 @@ def test_a_matrix_still_rotating_at_the_cap_is_refused_not_returned():
     from gpuwm.core import jacobi_eigh as je
 
     a = _batch("letkf", 32, 10, seed=9002)
-    honest = je.plan(10, np.dtype(np.float64).str)
-    crippled = je.Tier(**{**honest.__dict__, "sweep_cap": 1})
-    assert crippled.defines != honest.defines
+    accurate = je.plan(10, np.dtype(np.float64).str)
+    crippled = je.Tier(**{**accurate.__dict__, "sweep_cap": 1})
+    assert crippled.defines != accurate.defines
 
     fn = je._kernel(crippled.defines, crippled.shared_bytes)
     n = a.shape[0]

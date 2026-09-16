@@ -13,7 +13,7 @@ control."* That document's short-window test (its §11) was added after its
 long runs were read and is labelled post-hoc wherever it appears; its own
 receipt says so in its `note` field. A post-hoc pass is evidence, but it is
 not a pre-registered gate, and the difference is the entire reason that
-lane's V3 failed: a condition chosen blind was chosen wrong, and the honest
+lane's V3 failed: a condition chosen blind was chosen wrong, and the accurate
 repair is not to reuse the post-hoc window's numbers — it is to declare the
 gate first and run second. This file is that declaration.
 

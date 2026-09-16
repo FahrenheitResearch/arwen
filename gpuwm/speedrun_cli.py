@@ -626,7 +626,7 @@ def course_driver(row: Mapping[str, Any]) -> str:
     SAME chain entered with trees allowed, so a tree course goes there.
 
     Derived from ``domains`` rather than declared as a column: a future
-    course gets the right door by describing itself honestly, which is
+    course gets the right door by describing itself accurately, which is
     one less field to get wrong.
     """
 

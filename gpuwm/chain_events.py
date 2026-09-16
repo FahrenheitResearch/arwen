@@ -536,7 +536,7 @@ def load_baseline(path) -> dict[str, Any]:
         raise ValueError(
             f"{path} carries no {absent} in its provenance; a baseline "
             "whose box, card, date, version and case are not stated is a "
-            "number no later run can honestly compare itself against")
+            "number no later run can accurately compare itself against")
     return payload
 
 

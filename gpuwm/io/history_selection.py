@@ -178,6 +178,43 @@ HISTORY_PRESETS: dict[str, frozenset[str] | None] = {
     "severe": _MINIMAL_FIELDS | _SEVERE_EXTRA_FIELDS,
 }
 
+#: What each named preset costs in RENDER PRODUCTS, not in variables.
+#:
+#: The ladder at the head of this module was measured one field at a
+#: time against the real binary (``rw_wrfbatch --list-products``) on one
+#: 1 km frame of the proof run; these are its rungs read as products
+#: rather than as prose.  ``severe`` keeps every volume a render product
+#: reads and sheds only the restart-only scheme carriers none of them
+#: touches, so it prices at the full inventory's count.
+#:
+#: The figure is computed from THIS table inside
+#: :meth:`HistorySelection.warn_lost_products`, never from what a caller
+#: passes as ``produced``, so the two plan-review doors print the same
+#: number for one configuration no matter what either of them hands in.
+PRESET_PRODUCT_COUNTS: dict[str, int] = {
+    "full": 162,
+    "severe": 162,
+    "minimal": 30,
+}
+
+#: Which fields the loss is attributable to, largest first, read off the
+#: same ladder by subtraction: 160 - 66 for ``U,V,W``, 66 - 42 for
+#: ``QVAPOR``, 38 - 30 for ``P,PB``, 42 - 38 for ``PH``.  The remainder
+#: is whatever the rest of the full inventory serves, and
+#: :meth:`HistorySelection.warn_lost_products` names it as such rather
+#: than leaving a reader to find that the figures do not add up.
+PRODUCT_LOSS_ATTRIBUTION: tuple[tuple[tuple[str, ...], int], ...] = (
+    (("U", "V", "W"), 94),
+    (("QVAPOR",), 24),
+    (("P", "PB"), 8),
+    (("PH",), 4),
+)
+
+#: How the counts above were obtained, in one clause a warning can carry.
+PRODUCT_COUNT_BASIS = (
+    "measured with rw_wrfbatch --list-products on one 1 km frame of the "
+    "proof run (49 levels, WSM6, RRTMG), one field at a time")
+
 #: The keys ``[output]`` accepts.
 OUTPUT_KEYS: frozenset[str] = frozenset(
     {"preset", "history_vars", "history_drop"})
@@ -197,15 +234,18 @@ _NAMED_DROP_LIMIT = 12
 #: Two tables describing one dependency is how a listing and a render
 #: come to disagree about whether a product can be drawn.
 #:
-#: The rust-catalog rows are the four slugs
-#: ``gpuwm.render.RUST_PRODUCT_ALIASES`` maps the shared names onto, and
-#: their inputs are the wrfout variables whose absence the renderer
-#: itself reports as missing-fields.  Slugs beyond these four are not
-#: claimed: the renderer owns 151 products, it answers for their inputs
-#: against a real file through ``--list-products``, and inventing rows
-#: here for recipes this module has not verified would be the
-#: correct-looking-wrong-mapping defect that ``wind10`` already cost
-#: once.
+#: The rust-catalog rows are the slugs
+#: ``gpuwm.render.RUST_PRODUCT_ALIASES`` maps the shared names onto, plus
+#: the generic ``var:`` token for a stored variable the engine draws
+#: directly; their inputs are the wrfout variables whose absence the
+#: renderer itself reports as missing-fields.  Slugs beyond these are
+#: still not claimed: the renderer owns its whole catalog, it answers
+#: for their inputs against a real file through ``--list-products``, and
+#: inventing rows here for recipes this module has not verified would be
+#: the correct-looking-wrong-mapping defect that ``wind10`` already cost
+#: once.  What a caller with a WIDER verified mapping does is pass it to
+#: :func:`lost_products`, which is the seam that exists for exactly that
+#: and keeps these rows as the answer when nobody has one.
 PRODUCT_HISTORY_INPUTS: dict[str, tuple[str, ...]] = {
     # The shared product names (the matplotlib engine's whole catalog).
     "refl": ("REFL_10CM",),
@@ -214,8 +254,15 @@ PRODUCT_HISTORY_INPUTS: dict[str, tuple[str, ...]] = {
     "precip": ("RAINC|RAINNC",),
     # OLR is present exactly when the attached longwave scheme produced
     # it, so a radiation-off run lists this product as missing-fields
-    # rather than failing -- which is the honest report of that run.
+    # rather than failing -- which is the accurate report of that run.
     "olr": ("OLR",),
+    # The GENERIC token for the same field.  The rust engine imports
+    # WRF's OLR by default and draws any stored 2-D variable through
+    # ``--products var:<name>``, so ``var:wrf_olr`` is how OLR is asked
+    # for on that lane -- and without this row a run that shed OLR met a
+    # bare engine skip after its run directory had been claimed instead
+    # of the named [output] refusal at the door.
+    "var:wrf_olr": ("OLR",),
     # The rust catalog slugs the shared names resolve to.
     "composite_reflectivity": ("REFL_10CM",),
     "2m_temperature": ("T2",),
@@ -229,16 +276,28 @@ def _requirement_lost(requirement: str, dropped: frozenset[str]) -> bool:
     return all(option in dropped for option in requirement.split("|"))
 
 
-def lost_products(dropped) -> dict[str, tuple[str, ...]]:
+def lost_products(dropped, requirements=None) -> dict[str, tuple[str, ...]]:
     """Which catalog products these dropped variables kill, and by what.
 
     The value is the requirement(s) that can no longer be met, spelled
     the way the table spells them (``RAINC or RAINNC`` for an either-or
     row), so the reader gets the mapping and not merely a count.
+
+    ``requirements`` replaces :data:`PRODUCT_HISTORY_INPUTS` for a
+    caller that HAS a wider verified mapping, in the same
+    ``slug -> ("A|B", ...)`` grammar over WRFOUT VARIABLE NAMES.  It is
+    deliberately not the renderer's own requirement rows: those are
+    spelled in the store's selector vocabulary, and a selector is not a
+    netCDF variable name -- the hop between them runs through wrf-core
+    diagnostics that declare no input list at all, so joining them here
+    would invent exactly the kind of correct-looking wrong mapping this
+    table's own note refuses.  Absent, the verified rows answer, which
+    is what every caller in the tree does today.
     """
     dropped = frozenset(dropped)
+    table = PRODUCT_HISTORY_INPUTS if requirements is None else dict(requirements)
     lost: dict[str, tuple[str, ...]] = {}
-    for product, requirements in PRODUCT_HISTORY_INPUTS.items():
+    for product, requirements in table.items():
         missing = tuple(" or ".join(requirement.split("|"))
                         for requirement in requirements
                         if _requirement_lost(requirement, dropped))
@@ -455,6 +514,26 @@ class HistorySelection:
             parts.append("history_drop=" + ",".join(self.history_drop))
         return " ".join(parts)
 
+    def product_cost(self) -> tuple[int, int, bool]:
+        """``(products kept, products in the full inventory, exact)``.
+
+        Computed from :data:`PRESET_PRODUCT_COUNTS` INSIDE this object,
+        never from what a caller passes as ``produced``: the two
+        plan-review doors hand in different inventories, and a
+        configuration that prints two different figures depending on
+        which door read it is the disagreement this lane exists to end.
+
+        ``exact`` is False for a selection that is not exactly a named
+        preset.  ``history_vars`` and ``history_drop`` narrow the tape
+        further than the preset they start from, so the preset's figure
+        is an UPPER BOUND there, and the caller says so rather than
+        printing a measured-looking number nobody measured.
+        """
+
+        total = PRESET_PRODUCT_COUNTS["full"]
+        kept = PRESET_PRODUCT_COUNTS.get(self.preset, total)
+        return kept, total, not (self.history_vars or self.history_drop)
+
     def warn_lost_products(self, produced, *, where: str) -> None:
         """Name the render products this selection kills, at plan time.
 
@@ -463,6 +542,14 @@ class HistorySelection:
         that BEFORE the run rather than discover it at render time.  It
         is a warning and not a refusal: shedding a product deliberately
         is exactly what this feature is for.
+
+        It LEADS WITH PRODUCTS.  A variable count answers "how much disk
+        did I save"; the reader is choosing between pictures and disk,
+        and the product figure is the other half of that trade.  It used
+        to be absent entirely, so ``preset = "minimal"`` reported two
+        products by name and a bare variable count while the measured
+        ladder in this module recorded that the same preset leaves 30 of
+        162 renderable.
         """
         dropped = self.dropped(produced)
         if not dropped:
@@ -470,6 +557,32 @@ class HistorySelection:
         lost = lost_products(dropped)
         if not lost:
             return
+        kept, total, exact = self.product_cost()
+        if kept < total:
+            # The named rungs do not exhaust the loss: the ladder's own
+            # 162 -> 160 step belongs to the rest of the inventory, and
+            # a sentence whose figures do not add up reads as an error
+            # in the measurement rather than as what it is.
+            named = [f"{count} to {','.join(fields)}"
+                     for fields, count in PRODUCT_LOSS_ATTRIBUTION]
+            remainder = (total - kept) - sum(
+                count for _, count in PRODUCT_LOSS_ATTRIBUTION)
+            if remainder > 0:
+                named.append(f"{remainder} to the rest of the full "
+                             f"inventory")
+            attribution = ", ".join(named)
+            cost = (f"keeps {kept} of {total} render products, "
+                    f"{total - kept} lost: {attribution}"
+                    if exact else
+                    f"keeps at most {kept} of {total} render products "
+                    f"(an upper bound: this selection narrows "
+                    f"preset={self.preset} further)")
+        else:
+            cost = (f"keeps all {total} render products"
+                    if exact else
+                    f"keeps at most {total} render products "
+                    "(an upper bound: this selection narrows the preset "
+                    "it starts from)")
         mapping = "; ".join(
             f"{product} needs {', '.join(missing)}"
             for product, missing in sorted(lost.items()))
@@ -486,15 +599,23 @@ class HistorySelection:
                 if len(dropped) <= _NAMED_DROP_LIMIT
                 else f"{len(dropped)} variables")
         warn(
-            f"{where}: [output] {self.spelling()} drops {shed}, so these "
-            "render products can no longer be drawn from this run's "
-            f"history: {mapping}.  Keep the variable(s) if you want the "
-            "product(s); otherwise this is the storage you asked for.",
-            "The mapping is gpuwm's own render product catalog "
-            "(gpuwm.io.history_selection.PRODUCT_HISTORY_INPUTS), which "
-            "the render front door and its --list-products availability "
-            "report read as well, so a product listed here is the same "
-            "product that will refuse by name at render time.")
+            f"{where}: [output] {self.spelling()} {cost}.  It drops "
+            f"{shed}, so these render products can no longer be drawn "
+            f"from this run's history: {mapping}.  Keep the variable(s) "
+            "if you want the product(s); otherwise this is the storage "
+            "you asked for.",
+            "The product figure comes from this module's own measured "
+            f"ladder ({PRODUCT_COUNT_BASIS}), read as products rather "
+            "than as prose.  The NAMED mapping beside it is a narrower "
+            "thing: gpuwm.io.history_selection.PRODUCT_HISTORY_INPUTS "
+            f"carries {len(PRODUCT_HISTORY_INPUTS)} verified rows, so of "
+            f"the {PRESET_PRODUCT_COUNTS['full']} products the measured "
+            "full inventory renders, roughly "
+            f"{PRESET_PRODUCT_COUNTS['full'] - len(PRODUCT_HISTORY_INPUTS)} "
+            "were NOT checked by name here.  The renderer answers for "
+            "those itself, against a real file, through --list-products: "
+            "a product named above will refuse by name at render time, "
+            "and one that is not named may still be lost.")
 
 
 #: The default: write everything the run produces, stamp nothing.
@@ -518,6 +639,9 @@ def resolve(tree, domain) -> HistorySelection:
 __all__ = [
     "FULL",
     "HISTORY_PRESETS",
+    "PRESET_PRODUCT_COUNTS",
+    "PRODUCT_COUNT_BASIS",
+    "PRODUCT_LOSS_ATTRIBUTION",
     "HISTORY_VOCABULARY",
     "HistorySelection",
     "OUTPUT_KEYS",

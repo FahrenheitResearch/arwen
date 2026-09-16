@@ -3614,7 +3614,17 @@ const FIELD_LIGHTNING_FLASH_DENSITY: GribFieldSpec = field_spec(
     ProductFamily::Surface,
     GribLevelKind::HeightAboveGround,
     Some(1),
-    None,
+    // A canonical selector, like every other surface spec here.  Passing
+    // `None` meant the slug could not resolve from ANY store: the
+    // requirement came back as "no canonical store selector exists for
+    // this field", so no import on any lane could ever satisfy it, and
+    // the catalog carried a product nothing could serve.  The canonical
+    // field already exists with its units and label
+    // (rustwx-core: LightningFlashDensity, km^-2 day^-1).
+    Some(FieldSelector::height_agl(
+        CanonicalField::LightningFlashDensity,
+        1,
+    )),
     &[
         "LTNGSD:1 m above ground",
         "LTNGSD:2 m above ground",
@@ -8412,7 +8422,7 @@ fn model_specific_surface_field_gap(field: &GribFieldSpec, model: ModelId) -> Op
         )),
         (_, "cloud_cover_levels") => None,
         (ModelId::Hrrr, "one_hour_qpf") => Some(
-            "1h QPF is handled honestly in the HRRR windowed lane as 'qpf_1h' (legacy plot-recipe slug '1h_qpf'); do not treat it as a native/direct APCP recipe.".to_string(),
+            "1h QPF is handled accurately in the HRRR windowed lane as 'qpf_1h' (legacy plot-recipe slug '1h_qpf'); do not treat it as a native/direct APCP recipe.".to_string(),
         ),
         (_, "one_hour_qpf") => Some(
             "1h QPF is not yet exposed as a generic native recipe because APCP accumulation windows vary by model and forecast hour.".to_string(),

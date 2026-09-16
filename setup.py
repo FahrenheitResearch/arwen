@@ -210,8 +210,23 @@ class _BinaryDistribution(Distribution):
 
 #: Unix mode the staged executables and shared libraries must carry
 #: inside the wheel.
-_EXECUTABLE_MODE = 0o755
-_DEFAULT_MODE = 0o644
+#:
+#: The regular-file type bit (``stat.S_IFREG``, 0o100000) is part of the
+#: constant, not decoration.  A zip's ``external_attr`` high half is a
+#: WHOLE ``st_mode``, type bits included, and pip's installer tests it as
+#: one -- ``pip._internal.utils.unpacking.zip_item_is_executable`` is
+#: ``mode and stat.S_ISREG(mode) and mode & 0o111`` -- so a bare 0o755
+#: fails ``S_ISREG`` and pip drops the execute bits it was asked to keep.
+#: Measured on the published 2.7.4 manylinux wheel: ``pip install`` wrote
+#: the bridge binaries 0644 and the first door to reach one refused by
+#: name with rc 2, while ``uv``, which does not apply that predicate,
+#: installed the same wheel 0775 and never showed it.
+#: ``tools/build_bridge_bundle.py`` already writes ``0o100755 << 16``,
+#: which is why the standalone bundles were unaffected and only the wheel
+#: carried the defect.  tests/test_wheel_bridge_staging.py holds both
+#: constants against pip's own predicate.
+_EXECUTABLE_MODE = 0o100755
+_DEFAULT_MODE = 0o100644
 
 #: Archive prefix of the staged artifacts, as it appears in the wheel.
 _STAGED_PREFIX = "gpuwm/libexec/bridges/"
@@ -297,7 +312,7 @@ class _PlatformWheel(_BdistWheel):
                 continue
             stamped = _force_executable_bits(wheel_path)
             self.announce(
-                f"stamped 0{_EXECUTABLE_MODE:o} on {stamped} staged "
+                f"stamped 0{_EXECUTABLE_MODE & 0o7777:o} on {stamped} staged "
                 f"artifact(s) in {wheel_path.name}", level=2)
 
 

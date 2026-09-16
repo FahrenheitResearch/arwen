@@ -1,19 +1,26 @@
 """The wheel carries the Rust, and carries it in a usable state.
 
-Three defects are pinned here, all of them found by building and
+Four defects are pinned here, all of them found by building and
 installing rather than by reading:
 
 1. setuptools' ``build/lib*`` copy tree is not pruned between builds, so
    staging a second platform shipped BOTH platforms' binaries -- a
    "manylinux" wheel containing Windows ``.exe`` files, 105.99 MB, over
    PyPI's 100 MB cap.
-2. ``pip`` does not preserve unix modes on package data, so the staged
-   binaries install 0644 and the first ``subprocess.run`` dies with
-   ``PermissionError``.  Measured on a real Linux userland: 11/11
-   artifacts lacked the executable bit after ``pip install``.
+2. The staged binaries installed 0644 under ``pip`` and the first
+   ``subprocess.run`` died with ``PermissionError``.  Measured on a real
+   Linux userland: 11/11 artifacts lacked the executable bit after
+   ``pip install``.  Defect 4 below is the reason, found later; the
+   repair in :func:`gpuwm.bridges.ensure_executable` stays for wheels
+   published before that fix.
 3. A wheel with an empty ``libexec/bridges`` is indistinguishable from a
    correct one until a door is opened, so the staging tool must refuse
    rather than produce one.
+4. The wheel stamped its staged artifacts ``0o755`` with no file-type
+   bits, and pip's ``zip_item_is_executable`` requires ``S_ISREG``, so
+   pip dropped the execute bits the stamping exists to set.  ``uv``,
+   which does not apply that predicate, installed the same wheel 0775
+   and hid it.
 """
 
 from __future__ import annotations
@@ -185,6 +192,120 @@ def test_mode_repair_leaves_files_outside_the_package_alone(tmp_path,
     assert not foreign.stat().st_mode & stat.S_IXUSR, (
         "a file outside the package was re-permissioned; gpuwm does not own "
         "a checkout build, a ~/.gpuwm copy, or an override")
+
+
+#: Stamps a synthetic wheel with ``setup.py``'s own code, then asks pip
+#: itself whether each member would install executable.
+#:
+#: It runs in a child interpreter, and that is not caution.  Two of the
+#: three imports it needs poison the parent, both measured: ``setup.py``
+#: calls ``setup()`` at import, and importing ``pip._internal`` pulls in
+#: ``distutils`` before setuptools has replaced it.  Either one splits
+#: ``Distribution`` into two classes, after which
+#: ``tests/test_sdist_excludes_staged_bridges.py`` fails two tests with
+#: ``TypeError: dist must be a Distribution instance`` in the same run.
+#:
+#: ``zip_item_is_executable`` is the predicate that decides whether an
+#: installed file keeps its execute bits, so the real one is the right
+#: oracle.  The fallback is that function's body, kept so the probe still
+#: measures something in an environment without pip.
+_WHEEL_MODE_PROBE = """
+import importlib.util, json, pathlib, stat, sys, zipfile
+
+import setuptools
+setuptools.setup = lambda *args, **kwargs: None
+spec = importlib.util.spec_from_file_location("_gpuwm_setup_probe", sys.argv[1])
+setup = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(setup)
+
+wheel = pathlib.Path(sys.argv[2])
+staged = [setup._STAGED_PREFIX + "rw_mpas_mesh",
+          setup._STAGED_PREFIX + "librw_netcdf.so"]
+plain = ["gpuwm/__init__.py", setup._STAGED_PREFIX + "BUNDLE.json"]
+with zipfile.ZipFile(wheel, "w") as archive:
+    for name in staged + plain:
+        # 0o100644: what bdist_wheel records for a data file, copied from
+        # os.stat, and what a cross-built binary carries as well because
+        # Windows has no executable bit to copy.
+        info = zipfile.ZipInfo(name, (2026, 1, 1, 0, 0, 0))
+        info.external_attr = 0o100644 << 16
+        archive.writestr(info, b"x")
+
+stamped = setup._force_executable_bits(wheel)
+
+try:
+    from pip._internal.utils.unpacking import zip_item_is_executable
+    oracle = "pip"
+except Exception:
+    oracle = "restated"
+
+    def zip_item_is_executable(info):
+        mode = info.external_attr >> 16
+        return bool(mode and stat.S_ISREG(mode) and mode & 0o111)
+
+with zipfile.ZipFile(wheel) as archive:
+    modes = {info.filename: info.external_attr >> 16
+             for info in archive.infolist()}
+    executable = {info.filename: bool(zip_item_is_executable(info))
+                  for info in archive.infolist()}
+print(json.dumps({"stamped": stamped, "modes": modes, "oracle": oracle,
+                  "executable": executable,
+                  "staged": staged, "plain": plain}))
+"""
+
+
+def test_the_wheel_stamps_a_mode_pip_will_honour_on_every_staged_artifact(
+        tmp_path):
+    """Defect 4: a mode with no file-type bits is dropped by pip.
+
+    ``_force_executable_bits`` wrote ``0o755 << 16`` into each staged
+    member's ``external_attr``.  A zip's high half is a whole ``st_mode``,
+    file-type bits included, and pip tests it as one, so
+    ``S_ISREG(0o755)`` was false and pip installed the bridge binaries
+    0644.  Measured on the published 2.7.4 manylinux wheel: the first
+    door to reach a bridge refused by name with rc 2, ``chmod +x`` fixed
+    it, and ``uv`` -- which does not apply that predicate -- installed
+    the same wheel 0775 and never showed it.
+
+    The fixture gives every member the 0o100644 a cross-built wheel
+    carries, because Windows has no executable bit for bdist_wheel to
+    copy; that is the state the stamping exists to correct.  The archive
+    is then read back through pip's own predicate rather than against the
+    constant, so a future edit that drops the type bits trips here
+    instead of in a release check.
+    """
+
+    import subprocess
+
+    setup_py = Path(bridges.__file__).resolve().parent.parent / "setup.py"
+    if not setup_py.exists():      # an installed copy carries no setup.py
+        pytest.skip("setup.py is not present outside a source tree")
+    wheel = tmp_path / "gpuwm-0.0.0-py3-none-manylinux_2_28_x86_64.whl"
+    completed = subprocess.run(
+        [sys.executable, "-c", _WHEEL_MODE_PROBE, str(setup_py), str(wheel)],
+        capture_output=True, text=True, timeout=600)
+    assert completed.returncode == 0, completed.stderr
+    report = json.loads(completed.stdout.strip().splitlines()[-1])
+
+    assert report["stamped"] == len(report["staged"]), (
+        f"stamped {report['stamped']} artifact(s); the wheel staged "
+        f"{len(report['staged'])}")
+    for name in report["staged"]:
+        mode = report["modes"][name]
+        assert stat.S_ISREG(mode), (
+            f"{name} carries mode 0o{mode:o}, which has no regular-file type "
+            "bits, so pip's zip_item_is_executable rejects it and installs "
+            "the binary without its execute bits")
+        assert mode & 0o111, f"{name} carries mode 0o{mode:o}"
+        assert report["executable"][name], (
+            f"pip would not preserve the execute bits on {name} "
+            f"(oracle: {report['oracle']})")
+    for name in report["plain"]:
+        mode = report["modes"][name]
+        assert stat.S_ISREG(mode), (
+            f"{name} carries mode 0o{mode:o}, which names no file type")
+        assert not report["executable"][name], (
+            f"{name} is not a staged program and must not install executable")
 
 
 def test_netcdf_decoder_is_a_declared_bundled_artifact():

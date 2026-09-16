@@ -493,3 +493,115 @@ def test_k0_temperature_batch_through_analyze():
     before = float(np.mean(t2[:, j, i]))
     after = before + float(np.mean(dt[:, 0, j, i]))
     assert abs(293.0 - after) < abs(293.0 - before)
+
+
+# ---------------------------------------------------------------------------
+# the seam quantity table: one row per quantity, one lookup at both doors
+# ---------------------------------------------------------------------------
+
+
+def test_naming_dewpoint_is_refused_by_name_not_by_typeerror():
+    """A caller CAN name dewpoint_2m, and gets told why it is declined."""
+
+    with pytest.raises(SurfaceObsError, match="dewpoint_2m") as caught:
+        SurfaceObsConfig(temperature_error_k=1.0,
+                         quantity_error_stddev={"dewpoint_2m": 1.0})
+    message = str(caught.value)
+    # The missing operator, named.
+    assert "q2" in message
+    assert "saturation" in message
+    # The way out, named: the v2 seam plus a pinned formulation.
+    assert "asos-surface.v2" in message
+
+
+def test_naming_mslp_names_the_reduction_formula_mixing():
+    with pytest.raises(SurfaceObsError, match="mslp") as caught:
+        SurfaceObsConfig(quantity_error_stddev={"mslp": 100.0})
+    message = str(caught.value)
+    assert "reduction" in message
+    assert "asos-surface.v2" in message
+
+
+def test_an_unknown_quantity_is_named_against_the_supported_set():
+    with pytest.raises(SurfaceObsError, match="soil_temperature") as caught:
+        SurfaceObsConfig(temperature_error_k=1.0,
+                         quantity_error_stddev={"soil_temperature": 1.0})
+    message = str(caught.value)
+    assert "temperature_2m" in message
+    assert "wind_speed_10m" in message
+
+
+def test_the_table_channel_enables_the_same_batches_as_the_named_fields():
+    grid = _grid()
+    record = _record()
+    t2, u10, v10 = _members(grid)
+    named, _ = surface_to_gridded_obs(
+        record, target_grid=grid, analysis_time=T12,
+        config=SurfaceObsConfig(temperature_error_k=2.0,
+                                wind_speed_error_ms=2.0),
+        simulated_t2=t2, simulated_u10=u10, simulated_v10=v10)
+    tabled, _ = surface_to_gridded_obs(
+        record, target_grid=grid, analysis_time=T12,
+        config=SurfaceObsConfig(
+            quantity_error_stddev={"temperature_2m": 2.0,
+                                   "wind_speed_10m": 2.0}),
+        simulated_t2=t2, simulated_u10=u10, simulated_v10=v10)
+    assert [b.name for b in named] == ["temperature_2m:asos",
+                                       "wind_speed_10m:asos"]
+    assert [b.name for b in tabled] == [b.name for b in named]
+    for left, right in zip(named, tabled):
+        assert np.array_equal(np.asarray(left.values),
+                              np.asarray(right.values), equal_nan=True)
+        assert np.array_equal(np.asarray(left.mask), np.asarray(right.mask))
+        assert np.array_equal(np.asarray(left.errors),
+                              np.asarray(right.errors))
+
+
+def test_a_config_naming_no_quantity_still_refuses_to_assimilate_nothing():
+    with pytest.raises(SurfaceObsError, match="assimilate nothing"):
+        SurfaceObsConfig()
+    with pytest.raises(SurfaceObsError, match="assimilate nothing"):
+        SurfaceObsConfig(quantity_error_stddev={})
+
+
+def test_declined_quantities_are_counted_and_named_in_the_provenance():
+    """The record carries dewpoint and mslp; the receipt says they went."""
+
+    grid = _grid()
+    record = _record()
+    carried = set()
+    for report in record["reports"]:
+        carried.update(report["values"])
+    assert {"dewpoint_2m", "mslp"} <= carried
+
+    t2, _u10, _v10 = _members(grid)
+    batches, provenance = surface_to_gridded_obs(
+        record, target_grid=grid, analysis_time=T12,
+        config=_config(wind_speed_error_ms=None), simulated_t2=t2)
+    assert [b.name for b in batches] == ["temperature_2m:asos"]
+
+    declined = provenance["counts"]["values_declined_by_quantity"]
+    assert declined["dewpoint_2m"] > 0
+    assert declined["mslp"] > 0
+    # A supported quantity this config simply did not enable is declined
+    # too, and for its own reason.
+    assert declined["wind_speed_10m"] > 0
+    assert provenance["counts"]["reports_with_declined_quantities"] > 0
+
+    notes = "\n".join(provenance["notes"])
+    assert "declined quantity dewpoint_2m" in notes
+    assert "saturation" in notes
+    assert "declined quantity mslp" in notes
+    assert "reduction" in notes
+    assert "declined quantity wind_speed_10m" in notes
+    assert "wind_speed_error_ms" in notes
+
+
+def test_a_fully_configured_run_declines_only_the_seam_quantities():
+    grid = _grid()
+    t2, u10, v10 = _members(grid)
+    _batches, provenance = surface_to_gridded_obs(
+        _record(), target_grid=grid, analysis_time=T12, config=_config(),
+        simulated_t2=t2, simulated_u10=u10, simulated_v10=v10)
+    declined = provenance["counts"]["values_declined_by_quantity"]
+    assert set(declined) == {"dewpoint_2m", "mslp"}

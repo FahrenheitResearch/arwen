@@ -1071,7 +1071,7 @@ def test_launcher_module_does_not_import_the_frozen_mp8_launchers():
 # Warm-level snow/graupel number and aerosol sinks.
 # ---------------------------------------------------------------------------
 #
-# HONEST SCOPE STATEMENT.  pnc_scw, pnc_gcw, pna_sca, pnd_scd, pna_gca and
+# ACCURATE SCOPE STATEMENT.  pnc_scw, pnc_gcw, pna_sca, pnd_scd, pna_gca and
 # pnd_gcd (module_mp_thompson.F:2403-2471) are NOT gated against the Fortran
 # oracle here.  The WP-07 oracle program covers :2144-2232 only.  What is
 # gated below is their structure and their WRF caps, and what backs the
@@ -2445,7 +2445,7 @@ def test_the_balance_limiter_reads_the_gamma_column_its_own_nu_c_selects(
 # TASK 3: WP-07's four NAMED oracle fixtures.
 # ---------------------------------------------------------------------------
 #
-# WHAT THESE FIXTURES ARE, AND WHAT ONE PACKAGE CAN HONESTLY DO WITH THEM
+# WHAT THESE FIXTURES ARE, AND WHAT ONE PACKAGE CAN ACCURATELY DO WITH THEM
 # -----------------------------------------------------------------------
 # aero-nc-auto (106), aero-nc-accrete (107), aero-scav-rain (110) and
 # aero-warm-overlap (117) are full mp_gt_driver columns: their ``after`` rows
@@ -2496,7 +2496,7 @@ _NAMED_FIXTURES = {
 #: WP-09 turns the four FULL-COLUMN comparisons on by setting this to the
 #: dotted path of its adapter entry point, e.g.
 #: "gpuwm.core.microphysics_aerosol:_apply_thompson_aerosol".  That is the
-#: one line.  Until then the assertion below states the honest scope, and it
+#: one line.  Until then the assertion below states the accurate scope, and it
 #: goes red the moment the adapter lands so the conversation cannot be
 #: forgotten.
 ADAPTER_ENTRY_POINT: str | None = (
@@ -2632,7 +2632,7 @@ def test_named_fixture_after_nwfa_is_bounded_below_by_pna_rca_alone(name):
 
 
 def test_named_fixture_full_column_comparison_is_owned_by_the_adapter():
-    """The honest scope statement, plus WP-09's one-line switch.
+    """The accurate scope statement, plus WP-09's one-line switch.
 
     qc/qr/nr/nc/effc in these four ``after`` rows compose five packages.
     This package gates the two fields it provably owns (above) and refuses

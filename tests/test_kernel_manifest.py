@@ -76,6 +76,11 @@ RAWMODULE_CONSTRUCTORS_OUTSIDE_THE_MANIFEST = {
     "gpuwm/doctor.py": (
         "a one-kernel self-contained probe inside a subprocess source string, "
         "compiled to prove the toolchain works; not a forecast translation unit"),
+    "gpuwm/core/mynn_pbl_gpu.py": (
+        "a one-kernel finiteness and range check over the MYNN inputs, built "
+        "from a predicate string at call time; it reads the arrays and sets "
+        "flags, computes no forecast field and is not a translation unit the "
+        "manifest freezes"),
 }
 
 #: ``compile_using_nvrtc`` sites among :data:`SITE_FILES`: rrtmg_sw only.

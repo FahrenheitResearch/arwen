@@ -11,7 +11,16 @@ in their own docstrings:
 * **gridded radar observations** -- ``tools/da_level2_render.py`` and
   ``tools/da_nowcast_render.py``, which already borrow the Rust
   renderer's assets and palette while re-implementing its fill in
-  matplotlib.
+  matplotlib.  Both now carry ``--engine`` and resolve it through the one
+  :func:`resolve_obsgrid_engine`.  ``da_level2_render`` DRIVES
+  ``rw_obsgrid`` for the five single-panel products and names the reason
+  in one sentence when it falls back instead.  ``da_nowcast_render``
+  composes its sheets itself and drives no engine yet, so it prints the
+  DEPRECATED FALLBACK sentence every run and adds the resolution reason
+  beside it when there is one.  What keeps their own figures is the
+  SHAPE, not the science: three of the four are side-by-side or
+  per-radar GRIDS of panels and the engine composes one, so the sheets
+  stay until there is a compositor to tile the engine's PNGs with.
 
 ``rw_ensbatch`` and ``rw_obsgrid`` are those two engines.  This module is
 the seam the three callers reach them through, built exactly like
@@ -60,6 +69,8 @@ CARGO_BUILD_HINT = cargo_build_one_liner(RUSTWX_CRATE_RELATIVE)
 #: quietly answering the old grammar.
 ENSEMBLE_ABI_MARKER = (
     "gpuwm-rw-ensbatch-products-v1\tmean\tspread\tprob\tpmm\tpaintball\t"
+    "gpuwm-rw-ensbatch-fields-v1\tFIELD\tname\ttitle\tunits\t"
+    "default_threshold\tunit_slug\t"
     "gpuwm-rw-ensbatch-events-v1\tRENDERED\tSKIPPED\tFAILED\t"
     "gpuwm-rw-ensbatch-vocabulary-v1\tMEMBERS\tCOVERAGE\tTIES")
 
@@ -72,7 +83,16 @@ OBSGRID_ABI_MARKER = (
 #: Ensemble products, in the order ``all`` expands to.
 ENSEMBLE_PRODUCTS = ("mean", "spread", "prob", "pmm", "paintball")
 
-#: Ensemble fields the engine can reduce.
+#: Ensemble fields, as of the build this wrapper was written against.
+#:
+#: NOT the authority any more, and the difference matters: the engine
+#: answers ``--list-fields`` with each field's name, title, units,
+#: default threshold and unit slug, and
+#: :func:`list_ensemble_fields` reads it.  What stays here is the
+#: no-engine fallback -- the vocabulary a message can name when there is
+#: no binary to ask -- so a caller states a list it can prove rather
+#: than none at all.  A field added to ``ensbatch.rs`` is reachable
+#: without touching this tuple.
 ENSEMBLE_FIELDS = ("refl", "uh", "precip", "t2", "wspd10")
 
 #: Observation-grid products.
@@ -172,12 +192,148 @@ def _probe(path: Path, marker: str, name: str) -> tuple[bool, str]:
     return True, "--abi matches the contract"
 
 
+def resolve_lane_engine(request: str, *, find, probe, name: str,
+                        remedy: str, workaround: str) -> tuple[str, str]:
+    """``(engine, why)`` for one lane's ``--engine``; THE contract.
+
+    Three answers and one law, spelled once so two lanes cannot spell it
+    differently.  ``matplotlib`` is selectable BY NAME only and is never
+    probed: a caller who names it is choosing the documented workaround.
+    ``rust`` that cannot be honoured RAISES, because naming an engine is
+    a statement about which one must draw.  And ``auto`` has exactly two
+    answers, rust or a refusal -- it does not degrade.
+
+    That last clause is the render law, not a preference: weather-field
+    plots come from the real engine, the law permits one fallback, and
+    this is not it.  A degradation here drew the same fields with the
+    other engine and exited 0, so nothing in the run said the pictures
+    were not the engine's.
+
+    The refusal names the breakage and the way out in one sentence each,
+    which is what makes it a refusal rather than an absence.
+    """
+
+    if request == "matplotlib":
+        return "matplotlib", "requested"
+    try:
+        path = find()
+    except FileNotFoundError as error:
+        raise RuntimeError(_lane_refusal(name, str(error), remedy, workaround)) from error
+    if path is None:
+        raise RuntimeError(_lane_refusal(
+            name, f"{name} is not built", remedy, workaround))
+    usable, evidence = probe(path)
+    if not usable:
+        raise RuntimeError(_lane_refusal(
+            name, f"{path}: {evidence}", remedy, workaround))
+    return "rust", str(path)
+
+
+def _lane_refusal(name: str, failure: str, remedy: str,
+                  workaround: str) -> str:
+    """One refusal sentence, plus the mechanism behind it."""
+
+    from gpuwm.explain import layered
+
+    return layered(
+        f"weather-field panels on this lane come from the rust engine "
+        f"{name}, and it could not be resolved: {failure}.  Build it "
+        f"({CARGO_BUILD_HINT}), or draw them with {workaround}, which is "
+        f"a named workaround and reports itself as one.",
+        f"The render law permits ONE fallback and this is not it: an "
+        f"--engine auto that quietly drew the same weather fields with "
+        f"matplotlib exited 0, so nothing in the run said which engine "
+        f"made the pictures.  {remedy}")
+
+
 def probe_ensemble_bin(path: Path) -> tuple[bool, str]:
     return _probe(path, ENSEMBLE_ABI_MARKER, ENSEMBLE_NAME)
 
 
 def probe_obsgrid_bin(path: Path) -> tuple[bool, str]:
     return _probe(path, OBSGRID_ABI_MARKER, OBSGRID_NAME)
+
+
+def list_ensemble_fields(engine: Path) -> dict[str, dict]:
+    """The ENGINE's field vocabulary: name -> title/units/threshold/slug.
+
+    Asked, never transcribed.  A hand-kept copy of this table had ``t2``
+    at 30 in degrees Celsius while the engine drew it at 303 in kelvin,
+    so one panel's threshold meant two different temperatures depending
+    on which half of the pair you read.
+
+    Empty when the engine cannot be asked, which a caller states rather
+    than treating as an empty vocabulary.
+    """
+
+    try:
+        result = subprocess.run(
+            [str(engine), "--list-fields"], capture_output=True, text=True,
+            errors="replace", timeout=_PROBE_TIMEOUT_S)
+    except (OSError, subprocess.SubprocessError):
+        return {}
+    if result.returncode != 0:
+        return {}
+    fields: dict[str, dict] = {}
+    for line in (result.stdout or "").splitlines():
+        parts = line.split("\t")
+        if parts[0] != "FIELD" or len(parts) < 4:
+            continue
+        row = {"title": parts[2], "units": parts[3]}
+        for extra in parts[4:]:
+            key, _, value = extra.partition("=")
+            if key == "default_threshold":
+                try:
+                    row["default_threshold"] = float(value)
+                except ValueError:
+                    continue
+            elif key == "unit_slug":
+                row["unit_slug"] = value
+        fields[parts[1]] = row
+    return fields
+
+
+def resolve_ensemble_engine(request: str) -> tuple[str, str]:
+    """The ensemble lane's ``--engine``, through the shared contract."""
+
+    return resolve_lane_engine(
+        request, find=find_ensemble_bin, probe=probe_ensemble_bin,
+        name=ENSEMBLE_NAME, remedy=ensemble_remedy(),
+        workaround="--engine matplotlib")
+
+
+def resolve_obsgrid_engine(request: str) -> tuple[str, str]:
+    """The observation-grid lane's ``--engine``, through the same one.
+
+    Its matplotlib route is not merely a second drawing of the same
+    panel: two of the tools that own it compose SHEETS (side-by-side and
+    per-radar grids) the single-panel engine cannot lay out, so the
+    fallback is reached by name, with the reason printed, and the sheets
+    are otherwise composed by tiling the engine's own PNGs.
+    """
+
+    return resolve_lane_engine(
+        request, find=find_obsgrid_bin, probe=probe_obsgrid_bin,
+        name=OBSGRID_NAME, remedy=obsgrid_remedy(),
+        workaround="--engine matplotlib")
+
+
+def ensemble_workaround_notice() -> str:
+    """What the matplotlib ensemble route must say, every run.
+
+    Fixed means default-on; an opt-in route is a workaround and reports
+    itself as one.  The numbers are this lane's own -- five fields by
+    five products -- not the wrfout catalog's.
+    """
+
+    return (f"WORKAROUND: these panels are drawn by matplotlib, not by "
+            f"{ENSEMBLE_NAME}.  The rust ensemble lane covers the same "
+            f"{len(ENSEMBLE_FIELDS)} fields "
+            f"({', '.join(ENSEMBLE_FIELDS)}) by "
+            f"{len(ENSEMBLE_PRODUCTS)} products "
+            f"({', '.join(ENSEMBLE_PRODUCTS)}), so nothing is gained by "
+            f"drawing them here; build it with {CARGO_BUILD_HINT} and "
+            f"drop --engine matplotlib.")
 
 
 def _renderer_env() -> dict[str, str]:
@@ -194,7 +350,7 @@ def _read_events(stdout: str, stderr: str, subject: str
 
     All three, because reading only two is exactly the defect
     :func:`gpuwm.rustwx.run_renderer`'s docstring records: a product the
-    engine honestly skipped became invisible to every caller, and a
+    engine skipped for a stated reason became invisible to every caller, and a
     reader saw one image fewer than the catalog with nothing saying why.
     """
 
@@ -227,6 +383,7 @@ def run_ensemble_renderer(
         source_label: str | None = None,
         overlays: Path | None = None, annotate: Path | None = None,
         members: dict[int, Path] | None = None,
+        domain: str | None = None,
         ) -> tuple[list[Path], list[str], list[tuple[str, str]], dict]:
     """One ensemble batch; ``(written, failures, skipped, report)``.
 
@@ -268,6 +425,11 @@ def run_ensemble_renderer(
         command.extend(("--overlays", str(overlays)))
     if annotate is not None:
         command.extend(("--annotate", str(annotate)))
+    # Which nest to reduce, when a member directory holds more than one.
+    # Every member is selected the same way by the same token, which is
+    # the disambiguation the engine's own ambiguity refusal asks for.
+    if domain:
+        command.extend(("--domain", str(domain)))
     for number, path in sorted((members or {}).items()):
         command.extend(("--member", f"{number}={path}"))
 
@@ -280,6 +442,15 @@ def run_ensemble_renderer(
     written, failures, skipped = _read_events(
         result.stdout, result.stderr, str(manifest))
     report: dict = {}
+    # The RENDERED event's SLUG as well as its path.  The shared event
+    # reader answers "what was written"; a caller that has to FILE those
+    # pictures needs to know which product each one is, and the engine
+    # already says so on the same line.
+    report["rendered"] = [
+        (line[len("RENDERED "):].partition(" ")[0],
+         Path(line[len("RENDERED "):].partition(" ")[2]))
+        for line in (result.stdout or "").splitlines()
+        if line.startswith("RENDERED ") and line[len("RENDERED "):].partition(" ")[2]]
     for line in (result.stdout or "").splitlines():
         if line.startswith("MEMBERS "):
             report["members"] = line[len("MEMBERS "):]
@@ -360,7 +531,9 @@ __all__ = [
     "CARGO_BUILD_HINT", "ENSEMBLE_ABI_MARKER", "ENSEMBLE_ENV",
     "ENSEMBLE_FIELDS", "ENSEMBLE_NAME", "ENSEMBLE_PRODUCTS",
     "OBSGRID_ABI_MARKER", "OBSGRID_ENV", "OBSGRID_NAME", "OBSGRID_PRODUCTS",
-    "crate_dir", "ensemble_remedy", "find_ensemble_bin", "find_obsgrid_bin",
+    "crate_dir", "ensemble_remedy", "ensemble_workaround_notice",
+    "find_ensemble_bin", "find_obsgrid_bin", "list_ensemble_fields",
     "obsgrid_remedy", "probe_ensemble_bin", "probe_obsgrid_bin",
+    "resolve_ensemble_engine", "resolve_lane_engine", "resolve_obsgrid_engine",
     "run_ensemble_renderer", "run_obsgrid_renderer",
 ]

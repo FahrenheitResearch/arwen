@@ -187,7 +187,8 @@ from gpuwm.obs.cc_qc import (REASON_COMPANION, REASON_NO_REF, REASON_NO_RHO,
                              CcQcParams, CcQcParamsError, build_cc_plans)
 from gpuwm.obs.dealias import (ENGINE_VAD_REGION, STATE_REJECTED,
                                DealiasParams, DealiasParamsError,
-                               dealias_sweep, volume_wind_profile)
+                               dealias_sweep, resolve_default_dealias,
+                               volume_wind_profile)
 from gpuwm.obs.geometry import (REFRACTION_FACTOR, gate_locations)
 from gpuwm.obs.sweeps import SWEEPS_SCHEMA_ODIM, Censor, RadarVolume
 from gpuwm.obs.target_grid import TargetGrid
@@ -208,7 +209,7 @@ VELOCITY = "VEL"
 #: The censored zeroes additionally cover everywhere the radar reported
 #: below-threshold, which is most of the clear sky it looked at.  Reading
 #: one as the other misstates how much of the domain was observed, which is
-#: exactly the error that turns a thin honest product into a confident
+#: exactly the error that turns a thin accurate product into a confident
 #: wrong one.
 CLEAR_AIR_SOURCE = "finite_below_floor"
 CLEAR_AIR_SOURCE_CENSOR = "below_threshold_and_finite_below_floor"
@@ -605,17 +606,27 @@ class SuperobParams:
     #: sigma_o than echo for exactly this reason, and this default follows
     #: that practice rather than inheriting the echo error by omission.
     clear_air_error_dbz: float = 7.5
-    #: Region-based velocity dealiasing, or ``None`` for the masking-only
-    #: behaviour this stage has always had.
+    #: Region-based velocity dealiasing.  ON by default; ``None`` is the
+    #: masking-only behaviour this stage used to have, and is now something
+    #: a caller states.
     #:
-    #: ``None`` is not merely the default, it is the *identity*: every other
-    #: field here is a float, ``to_payload`` emits only floats while this is
-    #: None, and the observation file's ``superob_params`` attribute and
-    #: ``dealiasing`` statement are therefore unchanged to the byte.  A
-    #: consumer reading a file written without dealiasing cannot tell that
-    #: this field was ever added, which is the point: turning the capability
-    #: on is a decision someone makes, and off is not a decision at all.
-    dealias: DealiasParams | None = None
+    #: The masks find SIGNATURES of aliasing, not aliasing.  A spatially
+    #: coherent fold covering a whole region passes all four of them, so a
+    #: default that masked and did not unfold published a smooth, plausible,
+    #: wrong wind field and handed it to the filter.  Off was therefore
+    #: never the identity it was documented as: it was a decision, made by
+    #: omission, for every run that did not know to ask.
+    #:
+    #: The DEFAULT is resolved against this install as it is built
+    #: (:func:`gpuwm.obs.dealias.resolve_default_dealias`): the shipped
+    #: region-global engine, else the scipy one, else masking only, warned
+    #: once and recorded in the file's own ``superob_params`` and
+    #: ``dealiasing`` statement.  A ``DealiasParams`` a caller PASSES is
+    #: honoured exactly and is never resolved away: the resolution lives in
+    #: the default factory, so it can only ever apply to a request nobody
+    #: made by name.
+    dealias: DealiasParams | None = field(
+        default_factory=lambda: resolve_default_dealias(DealiasParams()))
     #: Correlation-coefficient QC, or ``None`` for the behaviour this
     #: stage has always had.  ``None`` is not merely the default, it is
     #: the *identity*: ``to_payload`` omits the key entirely while this
@@ -1110,7 +1121,7 @@ def superob_volume(volume: RadarVolume, grid: TargetGrid, *,
         if volume.pack_schema == SWEEPS_SCHEMA_ODIM:
             # Arm the ODIM-only counters at zero. Zero and absent are
             # different statements and the pack schema is what decides
-            # which one is honest here: a v3 pack can mint 4 and 5, so
+            # which one is accurate here: a v3 pack can mint 4 and 5, so
             # "none were seen" is a measurement; a v2 pack cannot, so the
             # keys stay out of its provenance entirely.
             censor_counts.reflectivity_nodata = 0
@@ -1287,7 +1298,7 @@ def superob_volume(volume: RadarVolume, grid: TargetGrid, *,
                                     dtype=np.float64)
                 # The decoder's reason for each NaN, when the pack carried
                 # one.  Read for both moments so the range-folded refusal
-                # can be counted honestly, consulted for clear air only on
+                # can be counted accurately, consulted for clear air only on
                 # reflectivity.
                 codes = (None if moment.censor is None or censor_counts is None
                          else moment.censor[start:stop][:, in_range])
@@ -1363,7 +1374,7 @@ def superob_volume(volume: RadarVolume, grid: TargetGrid, *,
                 # the plan build INTO this loop and the exemption silently
                 # starts reasoning about dealiased velocity.  As it
                 # stands, WHICH gates are dropped is identical either way
-                # and the counters below stay honest.  Running the mask
+                # and the counters below stay accurate.  Running the mask
                 # before the substitution would have been strictly worse:
                 # the NaNs would be overwritten by
                 # `dealiased["velocity"]` on the very next line while the
@@ -1497,7 +1508,7 @@ def superob_volume(volume: RadarVolume, grid: TargetGrid, *,
                     # nothing significant ---
                     #
                     # A gate reaches this line only after four independent
-                    # conditions, and every one of them is load-bearing for
+                    # conditions, and every one of them is essential for
                     # the claim "observed clear" rather than "no data":
                     #
                     # 1. ACCOUNTED FOR.  ``on_grid`` above ANDs in
@@ -1912,7 +1923,7 @@ def merge_contributions(contributions, grid: TargetGrid, *,
 
     # --- clear-air zeroes -------------------------------------------------
     #
-    # Two conditions, and the second is the one that keeps this honest.
+    # Two conditions, and the second is the one that keeps this accurate.
     #
     # ``z0_count >= clear_air_min_gates`` says enough gates independently
     # measured this cell and found nothing.  ``~has_z`` says *no* radar saw

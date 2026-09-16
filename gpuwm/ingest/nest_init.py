@@ -29,7 +29,7 @@ from collections.abc import Sequence as _ABCSequence
 from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import datetime
 import json
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field, fields as dataclass_fields, replace
 from functools import lru_cache
 from pathlib import Path
 import time
@@ -752,6 +752,55 @@ def _adjust_and_rederive(state: DomainState, cfg, coord: VerticalCoord,
     return base
 
 
+#: The ONLY :class:`RealInitResult` fields the child's terrain blend,
+#: theta/qv adjustment and base-state re-derivation actually change.
+#: Everything else -- every receipt this initialization wrote down -- is
+#: the parent call's own answer and is carried through unchanged.
+#:
+#: THE DEFECT THIS NAMING PREVENTS.  This function used to spell out all
+#: seventeen constructor arguments by hand, and it spelled sixteen: a
+#: child's ``aerosol_initialization`` was silently replaced by the
+#: dataclass default, so an mp_physics=28 nest that read WRF's monthly
+#: water/ice-friendly climatology reported an EMPTY aerosol receipt and a
+#: reader could not tell it from a child that fell back to the synthetic
+#: profile.  Naming what CHANGES, and forwarding the rest from
+#: :func:`dataclasses.fields`, makes the next field added to
+#: ``RealInitResult`` carried by default instead of dropped by omission.
+_REDERIVED_CHILD_FIELDS = frozenset({
+    "base", "dry_mass", "dry_pressure", "total_pressure",
+    "total_geopotential", "total_specific_volume",
+})
+
+
+def _refuse_dropped_child_receipts(original: RealInitResult,
+                                   updated: RealInitResult) -> None:
+    """Refuse a child result that lost a receipt its parent call held.
+
+    The concrete breakage: a receipt field that reaches the child as the
+    dataclass default is indistinguishable, downstream, from a run that
+    genuinely had nothing to report -- an empty aerosol receipt reads as
+    "no dataset was used", an empty moisture-floor receipt reads as
+    "nothing was floored".  Both are false statements about the forecast,
+    written into ``proof.json`` and ``report.json``, with nothing left to
+    catch them.  Computed from :func:`dataclasses.fields` so a field
+    added to :class:`RealInitResult` after this line is covered without
+    anyone remembering to come back here.
+    """
+
+    dropped = sorted(
+        field.name for field in dataclass_fields(original)
+        if field.name not in _REDERIVED_CHILD_FIELDS
+        and getattr(updated, field.name) is not getattr(original, field.name))
+    if dropped:
+        raise ValueError(
+            "child initialization dropped the receipt field(s) "
+            f"{dropped} its own initialize_real call produced; a child "
+            "result carries every field the blend and base-state "
+            "re-derivation do not compute, which is everything outside "
+            f"{sorted(_REDERIVED_CHILD_FIELDS)}. Forward the field in "
+            "_updated_real_result, or name it as re-derived there")
+
+
 def _updated_real_result(original: RealInitResult,
                          base: BaseState) -> RealInitResult:
     state = original.state
@@ -759,20 +808,26 @@ def _updated_real_result(original: RealInitResult,
     c3h = _host(state.c3h)[:, None, None]
     c4h = _host(state.c4h)[:, None, None]
     p_top = float(state.p_top)
-    return RealInitResult(
-        state=state, coord=original.coord, base=base,
-        surface_pressure=original.surface_pressure,
-        surface_qv=original.surface_qv,
-        dry_mass=total_mu,
-        dry_pressure=c3h * total_mu[None] + c4h + p_top,
-        total_pressure=_host(state.p),
-        total_geopotential=_host(state.phb + state.php),
-        total_specific_volume=_host(state.alt),
-        integrated_moisture_pressure=original.integrated_moisture_pressure,
-        hypsometric_opt=original.hypsometric_opt,
-        hydrometeor_initialization=original.hydrometeor_initialization,
-        surface_moisture_floor=original.surface_moisture_floor,
-        initial_perturbation=original.initial_perturbation)
+    rederived = {
+        "base": base,
+        "dry_mass": total_mu,
+        "dry_pressure": c3h * total_mu[None] + c4h + p_top,
+        "total_pressure": _host(state.p),
+        "total_geopotential": _host(state.phb + state.php),
+        "total_specific_volume": _host(state.alt),
+    }
+    if set(rederived) != _REDERIVED_CHILD_FIELDS:
+        raise ValueError(
+            "the child re-derivation and its declared field set disagree: "
+            f"{sorted(set(rederived) ^ _REDERIVED_CHILD_FIELDS)}")
+    carried = {
+        field.name: getattr(original, field.name)
+        for field in dataclass_fields(original)
+        if field.name not in _REDERIVED_CHILD_FIELDS
+    }
+    updated = RealInitResult(**carried, **rederived)
+    _refuse_dropped_child_receipts(original, updated)
+    return updated
 
 
 def _prepare_child_input_on_grid(

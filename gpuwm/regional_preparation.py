@@ -514,3 +514,160 @@ def prepare_legacy_background(go, root, exp, *, geog, cadence, review_sha256):
     write_json_atomically(record_path, dict(schema='gpuwm.regional-legacy-preparation.v1',
         review_sha256=review_sha256, recipe=recipe, result=result))
     return inputs, resolved
+
+
+RENEWAL_SCHEMA = 'arwen.local-da-forcing-renewal.v1'
+
+
+class ForcingRenewal:
+    """One renewed preparation: the same initial state under longer forcing."""
+    def __init__(self, inputs, receipt_path, receipt):
+        self.inputs = inputs
+        self.receipt_path = Path(receipt_path)
+        self.receipt = receipt
+        self.generation = receipt['generation']
+        start = inputs.experiment.start_time.replace(tzinfo=timezone.utc)
+        self.forcing_times = tuple(start + timedelta(hours=h) for h in inputs.forcing_hours)
+
+    @property
+    def prepared_cache_path(self):
+        return self.inputs.prepared_cache_path
+
+    @property
+    def cache_identity(self):
+        return self.inputs.cache_identity
+
+    @property
+    def forcing_hours(self):
+        return self.inputs.forcing_hours
+
+
+def _renewal_identity(exp):
+    """The reviewed experiment with its window length taken out.
+
+    The length is stated twice, on the experiment and again on every
+    domain's run configuration, and a renewal changes exactly those two.
+    """
+    value = _experiment_identity(exp)
+    value.pop('run_seconds')
+    for domain in value['domains']:
+        domain.pop('run_seconds', None)
+    return value
+
+
+def _check_renewal(original, kept_hours, inputs):
+    """A renewal keeps the initial state and every frame it has run under."""
+    if _renewal_identity(original.experiment) != _renewal_identity(inputs.experiment):
+        raise ValueError('The renewed preparation changed the reviewed geometry, physics, output or clock; the analysed state cannot continue under it. Restore the reviewed configuration before renewing.')
+    if original.proof.get('initial_condition') != inputs.proof.get('initial_condition'):
+        raise ValueError('The renewed preparation initialised from another source cycle or lead; the analysed state belongs to the original initial condition. Renew from the same cycle.')
+    kept = tuple(kept_hours)
+    renewed = tuple(inputs.forcing_hours)
+    if renewed[:len(kept)] != kept or len(renewed) <= len(kept):
+        raise ValueError(f'The renewed forcing must keep the frames already run under ({list(kept)} h) and append later ones; it carries {list(renewed)} h. Renew over a longer window from the same source cycle.')
+
+
+def renew_background(plan, root, original, *, previous, end_time, directory, geog, now=None, probe=None):
+    """Prepare the reviewed source cycle over a window reaching ``end_time``.
+
+    Nothing already run under is replaced: the source, its cycle, the
+    initial condition and every forcing frame of ``previous`` (or of the
+    original preparation) are kept, and later frames of the same cycle are
+    appended. Frames the source has not published raise
+    :class:`gpuwm.background_contract.BackgroundWindowError`, which a caller
+    may wait on; a reviewed input kind that cannot be extended is refused
+    by name.
+    """
+    import tomllib
+    from gpuwm import runplan
+    from gpuwm.background_contract import from_record, plan as select
+    from gpuwm.ensemble.manifest import write_json_atomically
+    from gpuwm.experiment import load_experiment
+    from gpuwm.go_cli import managed_download_dir
+    from gpuwm.prepared_documents import write_document
+    from gpuwm.starter_template import render_tables
+    background = plan.get('background')
+    if background is None:
+        raise ValueError('This saved review predates the background contract, so its forcing cannot be renewed; publish a new review to cycle continuously.')
+    binding = background['inputs']
+    if binding['kind'] != 'automatic':
+        raise ValueError(f"Forcing renewal runs the automatic preparation chain, and this review binds {binding['kind']} inputs; supply inputs that already cover the whole continuous window, or review on an automatically prepared source.")
+    selected = from_record(background['selection'])
+    init = _stamp(plan['request']['epoch'])
+    end_time = _stamp(end_time) if isinstance(end_time, str) else end_time.astimezone(timezone.utc)
+    duration = (end_time - init).total_seconds()
+    base = previous.inputs if previous is not None else original
+    request = plan['request']
+    renewed = select(selected.source, init=init, now=now or datetime.now(timezone.utc), run_seconds=duration,
+        product=request.get('source_product'), member=selected.member, provider=request.get('source_provider'),
+        cadence_hours=selected.forcing_interval_seconds // 3600,
+        cycle=None if selected.cycle is None else _stamp(selected.cycle), probe=probe)
+    if renewed.cycle != selected.cycle or renewed.init != selected.init or renewed.source != selected.source:
+        raise ValueError('The renewal selected another source cycle or initial time than the review; the analysed state belongs to the reviewed cycle.')
+    hints = dict(renewed.fetch_hints())
+    for key in ('out', 'area'):
+        if key in background['fetch_hints']:
+            hints[key] = background['fetch_hints'][key]
+    directory = Path(directory)
+    generation = 1 if previous is None else previous.generation + 1
+    authority = directory / 'authority'
+    authority.mkdir(parents=True, exist_ok=True)
+    raw = tomllib.loads((root / 'experiment.toml').read_text(encoding='utf-8'))
+    raw['experiment']['run_seconds'] = duration
+    raw['fetch'] = hints
+    config = authority / 'experiment.toml'
+    namelist = authority / 'experiment.namelist.wps'
+    write_document(config, ('# Renewed forcing window.\n' + render_tables(raw)).encode('utf-8'), reused=config.exists())
+    write_document(namelist, (root / 'experiment.namelist.wps').read_bytes(), reused=namelist.exists())
+    exp = load_experiment(config)
+    chain = runplan.prepared_chain_for_source(selected.source)
+    owner = preparation_chains()[chain]
+    options = dict(geog_root=str(geog), supplement=background['supplements'],
+                   data_dir=str(managed_download_dir(root, hints)))
+    prepared_plan = SimpleNamespace(run_options=options, config_intent={}, sha256=plan['review_sha256'])
+    attempt = 0
+    while True:
+        run_dir = directory / ('generation' if attempt == 0 else f'generation-attempt-{attempt:03d}')
+        try:
+            run_dir.mkdir()
+            break
+        except FileExistsError:
+            attempt += 1
+    events = runplan.EventStream(directory / 'events.jsonl', mirror=None)
+    try:
+        result = owner(prepared_plan, config_path=config, exp=exp, observer=runplan.RunObserver(events),
+                       run_dir=run_dir, prepare_only=True)
+    finally:
+        events.close()
+    result = {key: result[key] for key in ('prepared_root', 'experiment_config', 'wps_namelist')}
+    _owned_result(result, root)
+    inputs = read_prepared(result['prepared_root'], result['experiment_config'], result['wps_namelist'],
+        source=selected.source, run_seconds=duration, history_interval_seconds=plan['selected']['cadence_seconds'])
+    _check_renewal(original, base.forcing_hours, inputs)
+    receipt = dict(schema=RENEWAL_SCHEMA, review_sha256=plan['review_sha256'], generation=generation,
+        selection=renewed.record(), fetch_hints=hints, end_time=end_time.isoformat(), run_seconds=duration,
+        previous_receipt=None if previous is None else str(previous.receipt_path),
+        kept_forcing_hours=list(base.forcing_hours), forcing_hours=list(inputs.forcing_hours),
+        result=result, files=_files([inputs.proof_path, inputs.source_manifest_path,
+                                     inputs.experiment_config, inputs.wps_namelist]))
+    receipt_path = directory / 'renewal.json'
+    write_json_atomically(receipt_path, receipt)
+    return ForcingRenewal(inputs, receipt_path, receipt)
+
+
+def read_background_renewal(receipt_path, *, plan, root, original):
+    """Reopen a committed renewal, verifying its bytes before anything reads them."""
+    receipt_path = Path(receipt_path)
+    receipt = json.loads(receipt_path.read_text(encoding='utf-8'))
+    if receipt.get('schema') != RENEWAL_SCHEMA or receipt.get('review_sha256') != plan['review_sha256']:
+        raise ValueError(f'{receipt_path} is not a forcing renewal of this saved review; restore the original renewal receipt.')
+    verify_files(receipt['files'])
+    result = receipt['result']
+    _owned_result(result, Path(root))
+    inputs = read_prepared(result['prepared_root'], result['experiment_config'], result['wps_namelist'],
+        source=receipt['selection']['source'], run_seconds=receipt['run_seconds'],
+        history_interval_seconds=plan['selected']['cadence_seconds'])
+    if list(inputs.forcing_hours) != receipt['forcing_hours']:
+        raise ValueError(f'{receipt_path}: the renewed preparation no longer carries the forcing hours it was committed with; restore the original preparation.')
+    _check_renewal(original, receipt['kept_forcing_hours'], inputs)
+    return ForcingRenewal(inputs, receipt_path, receipt)

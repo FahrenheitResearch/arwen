@@ -61,7 +61,7 @@ import numpy as np
 #: matrix, and a benchmark that cannot run where the hardware is is useless.
 #: Keep in sync with ``test_gate.PHYSICS_RUNGS``; the gate remains the
 #: authority on which of these are bit-exact.
-#: ``ztop=20000.0`` is load-bearing, not decoration: the harness default is an
+#: ``ztop=20000.0`` is essential, not decoration: the harness default is an
 #: 8 km top, and RRTMGP then pads to 140 layers against its own limit of 128
 #: and raises.  Copied verbatim from ``test_gate.PHYSICS_MOIST``.
 _MOIST = dict(moist=True, mp_physics=10, ztop=20000.0)

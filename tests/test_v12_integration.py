@@ -411,7 +411,7 @@ def test_an_inventory_digest_that_is_not_a_digest_is_refused(
     """The field the whole binding rests on has a shape.
 
     A ``sha256`` that cannot be a sha256 used to be compared to the real
-    one and reported as a hash mismatch -- honest, but it says the bytes
+    one and reported as a hash mismatch -- accurate, but it says the bytes
     are stale when the truth is that nothing was ever declared about
     them.  Four values because a length check alone passes ``"not a
     digest but 64 characters long ................................."``.
@@ -583,7 +583,7 @@ _PERTURB_OPTIONS = {
 
 
 def test_the_perturbation_stales_the_diagnostics_and_the_refresh_fixes_it():
-    """The post-condition is load-bearing, demonstrated both ways.
+    """The post-condition is essential, demonstrated both ways.
 
     ``gpuwm.da.perturb`` says in its own provenance that ``p``/``al``/
     ``alt`` are stale afterwards.  Show that they are -- byte-identical
@@ -929,7 +929,7 @@ def test_a_restart_that_restores_and_advances_is_accepted(monkeypatch,
 
 def test_an_exact_steady_state_restart_leg_is_not_falsely_refused(
         monkeypatch, tmp_path):
-    """A leg whose state is unchanged but whose clock moved is honest.
+    """A leg whose state is unchanged but whose clock moved is accurate.
 
     The hash cannot distinguish "restored and integrated an exact steady
     state" from "did nothing"; the clock can, and it is the checkpoint's
@@ -1112,7 +1112,7 @@ def test_radial_velocity_accepts_the_supplied_geometry(tmp_path):
     assert finite.size > 0
     assert np.abs(finite).max() <= np.hypot(12.0, 4.0) + 1e-5
     # East of the radar the flow is outbound, west of it inbound: the
-    # sign convention is positive away, and it is load-bearing.
+    # sign convention is positive away, and it is essential.
     mid_j, mid_i = grid.ny // 2, grid.nx // 2
     assert vr[0, mid_j, mid_i + 6] > 0.0
     assert vr[0, mid_j, mid_i - 6] < 0.0
@@ -1673,7 +1673,7 @@ def test_the_gate_binds_every_stage_to_one_grid_identity(gate_report):
 
 
 def test_the_gate_report_says_what_it_does_not_support(gate_report):
-    """The caveats are load-bearing and must survive a refactor."""
+    """The caveats are essential and must survive a refactor."""
 
     caveats = " ".join(gate_report["caveats"])
     assert "perfect model" in caveats

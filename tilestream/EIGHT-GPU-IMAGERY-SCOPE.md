@@ -24,13 +24,13 @@ completely differently:
   storms*. Initialise from an HRRR analysis at a time when the event is already
   under way and the very first output frame has organised convection in it,
   because the convection came in with the initial condition and the model only
-  has to keep it honest.
+  has to keep it accurate.
 
 So pick an HRRR-era case at its peak — 2021-12-10 (the Quad-State derecho, a
 spectacular long-lived QLCS, nocturnal so it is unmistakable) or 2019-05-28
 (Plains outbreak) — and initialise ON the event rather than before it.
 
-Label it honestly: a short-lead run from a convection-allowing analysis is a
+Label it accurately: a short-lead run from a convection-allowing analysis is a
 legitimate and common configuration, but the caption must say the lead time so
 nobody reads a 30-minute forecast as a 12-hour one.
 

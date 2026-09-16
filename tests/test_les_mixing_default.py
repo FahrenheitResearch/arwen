@@ -105,7 +105,7 @@ def test_the_recommended_subkm_closure_names_the_mixing_length():
     250 m produced 0.702.  The recipe now carries the mixing length.
     """
     lines = gray_zone_advisory([3.0, 0.75, 0.25], _SHARED_CERTIFIED)
-    assert len(lines) == 1, "still one honest sentence, not a lecture"
+    assert len(lines) == 1, "still one accurate sentence, not a lecture"
     recipe = lines[0]
     # The closure it already recommended, unchanged...
     assert "km_opt = 3" in recipe and "km_opt = 2" in recipe
@@ -172,7 +172,7 @@ def test_the_remedy_is_stated_as_the_remedy_not_as_one_of_two_options():
 # ---------------------------------------------------------------------------
 
 def test_it_is_still_an_advisory_and_records_load():
-    """Refusals are load-bearing -- and so is this one's ABSENCE.
+    """Refusals are essential -- and so is this one's ABSENCE.
 
     Converting the criterion into a load-time refusal would make every
     frozen record unloadable, deleting the ability to reproduce a

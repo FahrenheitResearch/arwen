@@ -46,7 +46,7 @@ def _write_snapshot_wrfout(npz_path, snap: dict, cfg, tag: str, *, grid=None):
     matplotlib.  ``--no-wrfout`` is the escape.
 
     Additive in both directions: the ``.npz`` is written first and is
-    untouched, and a snapshot this writer cannot honestly convert (no
+    untouched, and a snapshot this writer cannot accurately convert (no
     latitude/longitude in the geography store) is REPORTED and skipped
     rather than allowed to abort a forecast that is otherwise fine.  The
     run's own product is the ``.npz``; this is a second copy in a format

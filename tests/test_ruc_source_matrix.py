@@ -64,6 +64,7 @@ EXPECTED_POLICY = {
     "gefs": "layer_midpoint_samples",
     "hrrr-prs": "node_point_samples",
     "icon-eu": "node_point_samples",
+    "icon-global": "node_point_samples",
     "rap": "node_point_samples",
     "rrfs": "node_point_samples",
 }
@@ -83,7 +84,10 @@ NAMED_IMPOSSIBILITIES = {
 #: centimetres, and every source metgrid can express keeps it -- which is
 #: what makes the oracle bit-identity below a statement about all of them.
 EXPECTED_SCALE = {
+    # Both DWD rows carry TERRA's node depths, whose shallowest is 0.005 m:
+    # centimetres cannot express it, so the ladder rides in millimetres.
     "icon-eu": 1000,
+    "icon-global": 1000,
 }
 
 

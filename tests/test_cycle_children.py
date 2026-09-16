@@ -200,7 +200,7 @@ class TestDormantDomains:
             assert block["spawn"]["trigger"] in ("uh", "reflectivity",
                                                  "time")
         # Every slot is priced at t=0 whether it fills or not, which is
-        # the honest cost of deterministic VRAM.
+        # the accurate cost of deterministic VRAM.
         assert len(blocks) == len(pool.free())
 
 

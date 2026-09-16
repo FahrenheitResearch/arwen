@@ -105,16 +105,18 @@ def build_parser() -> argparse.ArgumentParser:
                              "regime's clear_air_source would claim a "
                              "coverage it does not have. Range-folded gates "
                              "stay excluded either way")
-    parser.add_argument("--dealias", action="store_true",
-                        help="unfold radial velocity per sweep before "
-                             "gridding instead of masking every gate that "
-                             "might be folded. Same flag, same defaults and "
-                             "same provenance as "
-                             "tools.obs_radar_grid_build --dealias, so a "
-                             "pack rebuilt through this path is comparable "
-                             "with one built through that one. The default "
-                             "engine needs the region-global shared "
-                             "library; gpuwm doctor prints how to get it")
+    parser.add_argument("--no-dealias", dest="dealias",
+                        action="store_false", default=True,
+                        help="grid radial velocity WITHOUT unfolding it, "
+                             "masking every gate that might be folded "
+                             "instead. Same flag, same defaults and same "
+                             "provenance as tools.obs_radar_grid_build "
+                             "--no-dealias, so a pack rebuilt through this "
+                             "path is comparable with one built through "
+                             "that one. The default engine resolves down a "
+                             "stated chain when the region-global shared "
+                             "library is not staged; gpuwm doctor prints "
+                             "how to get it")
     add_dealias_engine_arguments(parser)
     return parser
 

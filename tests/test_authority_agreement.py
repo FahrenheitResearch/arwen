@@ -831,8 +831,11 @@ def test_every_install_state_row_names_the_domain_it_is_about(
     asset_rows = [row for row in rows if row["code"] == "asset-unresolved"]
     assert sorted(_domain_index_of(row["path"]) for row in asset_rows) == [
         0, 1], [row["path"] for row in asset_rows]
+    requirement = registry["components"]["microphysics"]["options"][
+        mp8]["asset_requirements"][0]["id"]
     for row in asset_rows:
-        assert row["path"].endswith(".asset_requirements.thompson-mp8-v1")             or ".asset_requirements." in row["path"], row["path"]
+        assert row["path"].endswith(
+            f".asset_requirements.{requirement}"), row["path"]
     # The aggregate block still answers "which domains", by grid id.
     entry = next(row for row in report["asset_requirements"]
                  if "thompson-mp8" in str(row["requirement"]["id"]))

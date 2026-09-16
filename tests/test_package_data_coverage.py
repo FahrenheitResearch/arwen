@@ -17,6 +17,14 @@ it reports is what the wheel would actually contain.  It is a filesystem walk,
 not a ``git ls-files`` walk, so an undeclared file trips it before it is ever
 committed.
 
+(It also walks ``mpas_cycle_bridge/``, the other top-level package the
+wheel carries.  That package's worker runs from the INSTALLED copy, in an
+interpreter the cycle door names, and resolves what it reads beside its own
+modules -- so a data file that grows there and is not declared is dropped
+from the wheel and missed by every in-tree run, which finds it through the
+checkout.  It carries no data file today; the walk is what keeps the first
+one from being lost.)
+
 Why the walk stops at ``gpuwm/``
 -------------------------------
 ``tools`` is a declared package too, but it is not a data directory: it is
@@ -53,6 +61,14 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PYPROJECT = REPO_ROOT / "pyproject.toml"
 PACKAGE_ROOT = REPO_ROOT / "gpuwm"
+#: The far side of the MPAS port seam: a top-level package the wheel must
+#: carry (see ``_DECLARED_TOP_LEVEL``) whose worker runs from the INSTALLED
+#: copy and resolves what it reads beside its own modules.  Walked like
+#: ``gpuwm/`` so that the first data file it grows cannot be dropped from
+#: the wheel unnoticed -- every in-tree test would keep finding that file
+#: through the checkout while an installed copy refused the configuration
+#: that needs it.
+BRIDGE_ROOT = REPO_ROOT / "mpas_cycle_bridge"
 
 #: The companion distribution: one repository, two pyproject.toml files.
 #: ``gpuwm-data`` carries the RRTMGP and Thompson table directories since
@@ -319,6 +335,35 @@ def test_every_data_file_under_gpuwm_is_declared(
         "wheel because [tool.setuptools.package-data] in pyproject.toml does "
         "not cover them. Widen an existing glob (do not append a filename):\n  "
         + "\n  ".join(undeclared)
+    )
+
+
+def test_every_data_file_under_the_bridge_is_declared(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The same rule for ``mpas_cycle_bridge/``, whose worker runs installed.
+
+    The shape of the breakage this forecloses: the worker is invoked from
+    site-packages, in the interpreter the cycle door names, and resolves
+    what it reads beside its own file.  A wheel that drops such a file
+    makes the installed copy refuse the configuration that needs it, while
+    the whole in-tree suite stays green because it finds the file through
+    the checkout.  The bridge carries no data file yet, so today this
+    passes over an empty set -- which is the point: the assertion is in
+    place before the first file, not after it is lost.
+    """
+
+    _require_source_tree()
+    present = _files_on_disk(BRIDGE_ROOT, REPO_ROOT)
+
+    shipped = _files_setuptools_would_ship(monkeypatch, package_root=BRIDGE_ROOT)
+    undeclared = sorted(present - shipped)
+    assert not undeclared, (
+        f"{len(undeclared)} data file(s) under mpas_cycle_bridge/ would be "
+        "omitted from a wheel because [tool.setuptools.package-data] in "
+        "pyproject.toml does not cover them, and the installed worker reads "
+        "them beside itself. Widen an existing glob (do not append a "
+        "filename):\n  " + "\n  ".join(undeclared)
     )
 
 

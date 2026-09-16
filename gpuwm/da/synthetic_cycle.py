@@ -871,7 +871,7 @@ def _render_products(leg_root, out):
     except Exception as error:                       # pragma: no cover
         return {"rendered": False, "reason": f"matplotlib unavailable: "
                                              f"{error}"}
-    from gpuwm import cli
+    from gpuwm import cli, render_layout
 
     out = Path(out)
     code = cli.main(["enprod", str(leg_root), "--field", "refl",
@@ -881,7 +881,12 @@ def _render_products(leg_root, out):
     return {
         "rendered": code == 0,
         "exit_code": code,
-        "files": sorted(path.name for path in out.glob("*.png")),
+        # THE reader for a render directory: enprod files its panels
+        # under <domain>/<product>/<valid-day>/ like every other
+        # delivery, and a flat glob reports zero files for a run that
+        # produced a full set.
+        "files": sorted(path.name
+                        for path in render_layout.iter_rendered(out)),
     }
 
 

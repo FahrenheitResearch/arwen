@@ -632,7 +632,8 @@ def run_metem_forecast(directory, outdir, *, run_seconds=None, restart=None,
         # has already printed the pair at plan review.
         missing = announce_render_readiness(DOOR, announce=not relaunched)
         if exclusive_gpu:
-            from gpuwm.supervisor import select_gpu, preflight_exclusive_gpu, GPUFileLock
+            from gpuwm.supervisor import (select_gpu, preflight_exclusive_gpu,
+                                          priced_reservation_bytes, GPUFileLock)
             gpu = select_gpu(gpu_uuid)
             command = [sys.executable,'-m','gpuwm.metem_forecast','--met-em',str(Path(directory).resolve()),
                        '--outdir',str(outdir),'--io-mode',io_mode,'--_worker',
@@ -650,8 +651,14 @@ def run_metem_forecast(directory, outdir, *, run_seconds=None, restart=None,
             if render_dir is not None: command += ['--render-dir',str(Path(render_dir).resolve())]
             command += ProgressOptions.worker_flags(progress_options)
             with GPUFileLock(gpu.uuid, run_id=f'metgrid-{os.getpid()}'):
+                # The card is priced against THIS run's reservation, from the
+                # experiment the door has already resolved and through the
+                # same function `gpuwm run` prices from, so a co-tenant that
+                # fits beside this run is admitted at both doors and one that
+                # does not is refused at both.
                 preflight_exclusive_gpu(gpu.uuid, approved_pids={os.getpid()},
-                                        allow_shared_gpu=allow_shared_gpu)
+                                        allow_shared_gpu=allow_shared_gpu,
+                                        reservation_bytes=priced_reservation_bytes(run.experiment))
                 return worker_exit_status(subprocess.run(command,
                     env=dict(os.environ,CUDA_VISIBLE_DEVICES=gpu.uuid),check=False).returncode)
         if gpu_uuid is not None:

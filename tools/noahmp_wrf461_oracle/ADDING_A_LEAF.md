@@ -296,7 +296,7 @@ once" is a different function, not a more accurate one. On `TDFCND`'s
 * **The patched module cannot be linked with WRF's Noah-MP driver.** Lifting
   the leaf routine `ALBEDO` to public collides with the dummy argument
   `ALBEDO` at `module_sf_noahmpdrv.F:227`
-  (`Error: Name 'albedo' ... is an ambiguous reference`). This is load-bearing,
+  (`Error: Name 'albedo' ... is an ambiguous reference`). This is essential,
   not an obstacle: it means the visibility-patched module physically cannot
   reach a real forecast build. `build_visibility_crosscheck.sh` stage 4 fails
   if that stops being true. It is also why the patched-vs-pristine

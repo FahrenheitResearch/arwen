@@ -204,8 +204,50 @@ def test_the_driver_offers_the_background_roster_and_defaults_to_gfs(
 
 def test_the_driver_refuses_a_source_it_has_no_background_registry_for(
         monkeypatch, capsys):
+    """THE DRIVER'S OWN SENTENCE, not the interpreter's.
+
+    This cell used to assert argparse's "invalid choice", which bound it
+    to two moving things at once.  ``--source`` carried
+    ``choices=sorted(BACKGROUND_SOURCES)``, and that registry is a LIVE
+    projection of the runnable source table -- so when 20CRv3 became
+    runnable the name this cell passed turned into a VALID choice, the
+    parser fell through to "the following arguments are required", and
+    the file failed for a reason that had nothing to do with what it was
+    written to pin.  argparse's wording is not ours to pin either: 3.12
+    dropped the quotes from the choice list and 3.13 put them back.  The
+    driver now states the refusal itself, and this asserts that sentence.
+    """
+
     import sys
 
+    from gpuwm.da import background
+    from tools import da_cycle_prepared
+
+    # A source gpuwm's adapter table HAS and the background registry does
+    # not: the table marks it not runnable.  Read from the registry rather
+    # than typed, so a source that becomes runnable cannot quietly turn
+    # this cell into the pass-by-accident it was.
+    assert "nam" not in background.BACKGROUND_SOURCES
+    monkeypatch.setattr(
+        sys, "argv", ["da_cycle_prepared", "--source", "nam"])
+    with pytest.raises(SystemExit) as exit_info:
+        da_cycle_prepared.main()
+    assert exit_info.value.code == 2
+    stderr = capsys.readouterr().err
+    assert "nam has no background registry entry" in stderr
+    assert "not runnable" in stderr
+    for known in sorted(background.BACKGROUND_SOURCES):
+        assert known in stderr
+
+
+def test_the_driver_still_accepts_every_source_the_registry_carries(
+        monkeypatch, capsys):
+    """The other half: a registry source reaches the required-argument
+    check instead of being refused for its name."""
+
+    import sys
+
+    from gpuwm.da import background
     from tools import da_cycle_prepared
 
     monkeypatch.setattr(
@@ -213,7 +255,10 @@ def test_the_driver_refuses_a_source_it_has_no_background_registry_for(
     with pytest.raises(SystemExit) as exit_info:
         da_cycle_prepared.main()
     assert exit_info.value.code == 2
-    assert "invalid choice" in capsys.readouterr().err
+    stderr = capsys.readouterr().err
+    assert "20crv3" in background.BACKGROUND_SOURCES
+    assert "has no background registry entry" not in stderr
+    assert "the following arguments are required" in stderr
 
 
 # ---------------------------------------------------------------------

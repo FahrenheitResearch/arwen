@@ -35,7 +35,7 @@ def _supervised(monkeypatch, calls):
     from gpuwm import go_cli, supervisor, wrfinput_door
 
     monkeypatch.setattr(go_cli, 'render_extra_missing', lambda: None)
-    monkeypatch.setattr(wrfinput_door, 'resolve_wrfinput_run', lambda *args, **kwargs: SimpleNamespace())
+    monkeypatch.setattr(wrfinput_door, 'resolve_wrfinput_run', lambda *args, **kwargs: SimpleNamespace(experiment=None))
     monkeypatch.setattr(supervisor, 'select_gpu',
                         lambda uuid=None: calls.setdefault('gpu', []).append(uuid)
                         or SimpleNamespace(uuid='GPU-0'))
@@ -200,7 +200,7 @@ def test_an_install_that_cannot_draw_says_so_before_the_card(tmp_path, monkeypat
     from gpuwm.wrfinput_forecast import run_wrf_forecast
 
     order = []
-    monkeypatch.setattr(wrfinput_door, 'resolve_wrfinput_run', lambda *args, **kwargs: SimpleNamespace())
+    monkeypatch.setattr(wrfinput_door, 'resolve_wrfinput_run', lambda *args, **kwargs: SimpleNamespace(experiment=None))
     monkeypatch.setattr(go_cli, 'render_extra_missing',
                         lambda: order.append('asked') or 'the rust render engine is not available')
     monkeypatch.setattr(supervisor, 'select_gpu',

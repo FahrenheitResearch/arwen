@@ -320,7 +320,7 @@ struct ResolvedRun {
 
 /// Find the run dir for `run_base` whose stored grid is bit-identical to
 /// `grid`, or pick the next free suffixed name. This is what keeps moving
-/// mesoscale sectors honest: a sector move changes the fixed grid, which
+/// mesoscale sectors accurate: a sector move changes the fixed grid, which
 /// opens a fresh run dir instead of corrupting the existing one.
 fn resolve_run_dir(
     model_dir: &Path,

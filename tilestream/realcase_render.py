@@ -26,7 +26,7 @@ Reuses the repo's rendering machinery rather than inventing a look:
 
     python -m tilestream.realcase_render DUMPDIR OUTDIR --tag superoutbreak
 
-HONESTY, on the figure and not only here: the plotted field is
+ACCURACY, on the figure and not only here: the plotted field is
 ``REFL_10CM``'s column maximum -- a MODEL diagnostic computed by
 ``gpuwm.core.refl.compute_refl_10cm`` from the model's own hydrometeors.  It
 is not radar.  Where an observed counterpart is drawn it is drawn from the

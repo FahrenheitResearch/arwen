@@ -7,6 +7,7 @@ from dataclasses import fields
 from types import NoneType, SimpleNamespace
 from typing import Literal, cast, get_type_hints
 
+import numpy as np
 import pytest
 
 from gpuwm.config import RunConfig
@@ -54,7 +55,10 @@ def _cfg(grid_id: int, parent_id: int, *,
 
 
 def _clock(grid_id: int) -> DomainClock:
-    spec = cast(DomainTicks, SimpleNamespace(grid_id=grid_id))
+    # The clock copies the configured step and dt into its live fields at
+    # construction, so the stub carries both beside the grid id.
+    spec = cast(DomainTicks, SimpleNamespace(
+        grid_id=grid_id, step_ticks=1, dt_fp32=np.float32(1.0)))
     return DomainClock(spec, tick_den=1, run_ticks=60)
 
 

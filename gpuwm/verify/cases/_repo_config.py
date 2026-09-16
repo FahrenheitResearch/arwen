@@ -23,7 +23,7 @@ the tree all still land in the refusal path, which is why
 :func:`shipped_in_wheel` asks the filesystem rather than trusting a
 release note.
 
-This module holds the one honest answer.  :func:`locate` returns the
+This module holds the one accurate answer.  :func:`locate` returns the
 config when it is really there, and :func:`missing_config_message` builds
 the refusal that names *why* it is not there and what the reader can
 actually do, given the flag the calling module offers.  Nothing here

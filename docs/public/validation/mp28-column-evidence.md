@@ -28,7 +28,7 @@ quantities; the seven that do not are published field by field, here and
 on the registry option, with the ULP distance where a relative number
 would mislead; and every open divergence is enumerated in §6 with WRF
 line citations. What would make the label indefensible is a claim that the
-column deck is clean, and it is not — §3 is honestly red, and the gate
+column deck is clean, and it is not -- §3 is red and says so, and the gate
 that measures it fails.
 
 Two things would make it *over*claimed, and neither is asserted anywhere:
@@ -186,7 +186,7 @@ is exactly 2⁻³⁶, and exactly **1.000 float32 ULP** of that entry value —
 and `nc` = 1.8333361 per kg (0.229 ULP). ArWen ends at exactly `0.0`.
 `effc` follows: with no cloud water ArWen takes the 2.49 µm floor while
 WRF's remainder gives 1.31176e-05 m, hence 8.102e-01. It is recorded as a
-MISS rather than absorbed into an allowance, because the honest thing to
+MISS rather than absorbed into an allowance, because the accurate thing to
 publish is that a relative metric is the wrong instrument here — not to
 widen the instrument. The fixture's *other* residual is separate and real:
 `nr` 1.261e-04 and `qr` 4.443e-05 at level 6, where the rain number falls
@@ -994,7 +994,7 @@ gone with it and the two gates run everywhere.
 
 **679 collected: 664 passed, 14 skipped, 1 failed.**
 
-The failing test is named rather than hidden, because an honestly red gate
+The failing test is named rather than hidden, because a gate that is red and says so
 is the point of this document:
 
 | test | why it is red |
@@ -1030,7 +1030,7 @@ attached:
   above.
 
 Two further modules are excluded from every count on this page, on the
-same grounds and with the same honesty: `tests/test_flagship_tools.py`
+same grounds and with the same accuracy: `tests/test_flagship_tools.py`
 cannot be **collected** (no `matplotlib` in this virtualenv) and every test
 in `tests/test_rrtmg_sw_cuda.py` fails with `NVRTC_ERROR_INVALID_OPTION`
 because this cupy appends `-ftz=true` to a compile line that already

@@ -28,9 +28,17 @@ def _hash(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _family(path: Path, root: Path, layout: str) -> str:
+def _family(path: Path, root: Path, layout: str, families=None) -> str:
     from gpuwm import render_layout
     relative = path.relative_to(root)
+    if families:
+        # A lane whose filenames are not the wrfout engine's grammar
+        # (an ensemble panel, a node-side gallery plate) knows its own
+        # product slug and says so, rather than every one of its rows
+        # landing as ``unclassified`` in the published summary.
+        named = families.get(str(path)) or families.get(relative.as_posix())
+        if named:
+            return str(named)
     if layout == render_layout.NESTED and len(relative.parts) >= 4:
         return relative.parts[-3]
     parsed = render_layout.parse_engine_output(path.name)
@@ -46,8 +54,18 @@ def _output_path(root: Path, name: str) -> Path:
 
 
 def publish_invocation(*, root: Path, engine: str, requested_spec: str,
-                       written, failures, skipped, layout: str, inputs=(), context_inputs=()) -> dict:
-    """Record exact output/skip facts and publish their bounded aggregate."""
+                       written, failures, skipped, layout: str, inputs=(), context_inputs=(),
+                       degraded=(), families=None) -> dict:
+    """Record exact output/skip facts and publish their bounded aggregate.
+
+    ``degraded`` carries ``(path, reason)`` for every frame that reached
+    the reader by a route the layout does not promise -- filed by copy
+    after the move was refused, or left where it was drawn.  Those
+    degradations used to exist only as a line on stderr, which meant a
+    run that inverted its own layout said so nowhere a later reader
+    could find it.  ``families`` names a product slug per written path
+    for a lane whose filenames are not the engine's grammar.
+    """
     from gpuwm.render_layout import fs_path
     from gpuwm.supervisor import atomic_write_json
     root = Path(fs_path(root, descend=True)).resolve()
@@ -57,7 +75,7 @@ def publish_invocation(*, root: Path, engine: str, requested_spec: str,
     rendered = []
     for name in paths:
         path = _output_path(root, name)
-        rendered.append({"path": str(path), "family": _family(path, root, layout),
+        rendered.append({"path": str(path), "family": _family(path, root, layout, families),
                          "size_bytes": path.stat().st_size, "sha256": _hash(path)})
     invocation = {"schema": INVOCATION_SCHEMA, "id": uuid.uuid4().hex,
         "created_utc": datetime.now(timezone.utc).isoformat(), "output_root": str(root),
@@ -65,11 +83,58 @@ def publish_invocation(*, root: Path, engine: str, requested_spec: str,
         "inputs": [str(Path(path).resolve()) for path in inputs],
         "context_inputs": [str(Path(path).resolve()) for path in context_inputs],
         "rendered": rendered, "skipped": [{"family": str(family), "reason": str(reason)} for family, reason in skipped],
-        "failures": [str(reason) for reason in failures]}
+        "failures": [str(reason) for reason in failures],
+        "degraded": [{"path": str(path), "reason": str(reason)} for path, reason in degraded]}
     atomic_write_json(directory / (invocation["id"] + ".json"), invocation)
     summary = summarize(root)
     atomic_write_json(root / SUMMARY_FILENAME, summary)
     return summary
+
+
+def deliver(*, root: Path, engine: str, requested_spec: str, written,
+            failures=(), skipped=(), layout: str, inputs=(), context_inputs=(),
+            families=None, degraded=()) -> dict:
+    """Record one lane's delivery and publish its receipt; the summary.
+
+    THE delivery seam for every lane that draws pictures.
+    :func:`publish_invocation` had exactly one caller, so an ensemble
+    suite and a node-side gallery delivered their PNGs with no
+    ``render-summary.json`` beside them at all, and the desktop and
+    remote surfaces that read that file saw nothing for those runs.  A
+    receipt is a property of a DELIVERY, not of one door.
+
+    It also enforces the half of the layout contract a receipt is the
+    only place to state: under ``layout=nested`` a delivered picture
+    lives at ``<domain>/[<episode>/]<product>/<day>/<file>``, so a path
+    with fewer segments than that did not reach the layout.  Those rows
+    are recorded as FAILURES naming the file, kept out of the rendered
+    count, and the caller gets a summary that says the delivery was
+    partial -- rather than a clean receipt for a run whose pictures are
+    lying at the root.  ``layout=flat`` has no folders to reach and is
+    left exactly alone.
+
+    ``families`` names the product slug per written path for a lane
+    whose filenames are not the engine's own grammar, and ``degraded``
+    carries the ``(path, reason)`` pairs :func:`gpuwm.render_layout.deliver`
+    returned for frames that reached the reader by a lesser route.
+    """
+
+    from gpuwm.render_layout import NESTED, fs_path
+    resolved_root = Path(fs_path(root, descend=True)).resolve()
+    kept, broken = [], [str(reason) for reason in failures]
+    for name in written:
+        path = Path(fs_path(name, descend=True)).resolve()
+        if layout == NESTED and (not path.is_relative_to(resolved_root)
+                                 or len(path.relative_to(resolved_root).parts) < 4):
+            broken.append(
+                f"delivered outside the nested layout: {path} is not "
+                f"<domain>/[<episode>/]<product>/<day>/<file> under {resolved_root}")
+            continue
+        kept.append(path)
+    return publish_invocation(
+        root=root, engine=engine, requested_spec=requested_spec, written=kept,
+        failures=broken, skipped=skipped, layout=layout, inputs=inputs,
+        context_inputs=context_inputs, degraded=degraded, families=families)
 
 
 def summarize(root: Path) -> dict:
@@ -124,6 +189,7 @@ def _summarize_documents(root: Path, documents, *, verify_images: bool) -> dict:
     skipped = Counter()
     reasons = defaultdict(set)
     failures = []
+    degraded = []
     for document, _path, _payload in documents:
         if document["requested_spec"] not in specs:
             specs.append(document["requested_spec"])
@@ -136,6 +202,9 @@ def _summarize_documents(root: Path, documents, *, verify_images: bool) -> dict:
             skipped[row["family"]] += 1
             reasons[row["family"]].add(row["reason"])
         failures.extend(document["failures"])
+        # ``.get``: receipts written before the layout carried its own
+        # degradations are still valid receipts and still summarize.
+        degraded.extend(document.get("degraded", ()))
     rendered = Counter()
     for name, row in current.items():
         if verify_images:
@@ -164,6 +233,9 @@ def _summarize_documents(root: Path, documents, *, verify_images: bool) -> dict:
         "skipped_families": skipped_rows[:64], "additional_skipped_families": max(0, len(skipped_rows)-64),
         "failure_count": len(failures), "failures": shown_failures,
         "additional_failures": len(failures)-len(shown_failures),
+        "degraded_count": len(degraded),
+        "degraded": [{"path": row["path"], "reason": row["reason"]} for row in degraded[:8]],
+        "additional_degraded": max(0, len(degraded)-8),
         "invocation_count": len(documents), "receipt_paths": [str(path) for _doc, path, _payload in documents[-8:]],
         "additional_receipts": max(0, len(documents)-8),
         "first_products_included": any(doc.get("publication", {}).get("kind") == "first-products"
@@ -184,6 +256,8 @@ def _bounded_summary(summary):
             row["reasons"].pop(); row["additional_reasons"] += 1
         elif summary["failures"]:
             summary["failures"].pop(); summary["additional_failures"] += 1
+        elif summary.get("degraded"):
+            summary["degraded"].pop(); summary["additional_degraded"] += 1
         elif len(summary["receipt_paths"]) > 1:
             summary["receipt_paths"].pop(0); summary["additional_receipts"] += 1
         else:

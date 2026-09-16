@@ -129,7 +129,7 @@ FSS rewards quiet area, and Roberts et al. (2020) found CAM skill is
 "modestly better when computed over the entire CONUS than when limited to
 the SFE daily domains ... presumably due to the abundance of easy nulls".
 
-### What can honestly be said
+### What can accurately be said
 
 - The DA works.  Going from 0.236 to 0.727 -- roughly tripling -- against
   an identically-configured, identically-scored control is a real
@@ -459,7 +459,7 @@ our current count, `dt = 5 s`):
 **36 members at 1 km over a storm-scale box is real-time-feasible on one
 5090, and the localization radius is the knob that decides it.**
 
-With one honest caveat that could overturn the `N = 36` rows: the 43.1%
+With one accurate caveat that could overturn the `N = 36` rows: the 43.1%
 active-point fraction above is a property of *this* radar geometry on a
 396 km box.  A 152 km box sitting wholly inside one radar's coverage could
 approach 100%, which raises the solve by up to 2.3x.  At that ceiling the
@@ -725,5 +725,5 @@ condensate, and there the ensemble has spread, so the filter can remove
 spurious echo.  Where the radar sees a storm and every member is clear
 the prior variance is zero and no observation can create one --
 `gpuwm.da.perturb` perturbs only jointly-active species pairs, by design.
-That is the honest split: reflectivity DA in this system removes storms
+That is the accurate split: reflectivity DA in this system removes storms
 the model should not have and cannot conjure storms it never made.

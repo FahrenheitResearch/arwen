@@ -32,7 +32,7 @@ Princeton KY at ~04:30Z is inside d03 but outside d04, and Bremen KY at
 ~05:05Z is outside d03. The box holds one segment of one storm and claims
 nothing about the rest of the track.
 
-One honest note on the vertical grid: this is a **nocturnal cool-season**
+One accurate note on the vertical grid: this is a **nocturnal cool-season**
 event. The 1.7 km threshold the ladder was ratified against is a daytime CBL
 depth and does not describe this boundary layer. Every screen below that
 needs a depth takes it from the parent's diagnosed PBLH rather than assuming
@@ -188,7 +188,7 @@ happened there.**
 | # | Screen | Band |
 |---|---|---|
 | D1 | Maximum CFL per domain, full series | REPORT-ONLY. Context from the plan's sizing: `dt = 5*dx` puts CFL near 0.5 at 100 m s-1, and a core above ~130 m s-1 breaks it |
-| D2 | `w_damping` activation count and locations, per domain | REPORT-ONLY. The count is the honest measure of how much the run leaned on the damper |
+| D2 | `w_damping` activation count and locations, per domain | REPORT-ONLY. The count is the accurate measure of how much the run leaned on the damper |
 | D3 | The run completes without the stability gate firing | Banded — this is A3 |
 | D4 | Mass-conservation residual via the committed conservation machinery | REPORT-ONLY unless the machinery carries its own committed gate, in which case that gate applies unchanged |
 

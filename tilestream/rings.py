@@ -679,7 +679,7 @@ def ring_report(plan: RingPlan, *, bytes_per_cell: float = 1.0) -> dict:
     the host store multiplier the scheme needs where the shadow needs 2.0.
     Staggered variants carry their extra row/column, so the fraction is over
     the whole plan's saved cells and can exceed a naive mass-only estimate by
-    a little; that is the honest number.
+    a little; that is the accurate number.
     """
     s0 = plan.specs[0]
     domain = float(s0.nx * s0.ny)

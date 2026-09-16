@@ -90,14 +90,80 @@ def validate_center(source: str, point: tuple[float, float]) -> None:
             f"{global_alternatives()}")
 
 
+def forecast_horizon(source: str, moment: datetime) -> int | None:
+    """The last lead this source publishes for THIS cycle, or ``None``.
+
+    The cycle grid answers first because a horizon is a property of the
+    cycle hour on several producers -- one runs 48 h at 00/06/12/18Z and
+    18 h otherwise -- and the registry row's ``max_forecast_hour`` is the
+    fallback for a source with no grid.  ONE function, because the lead a
+    run may begin at and the window it may cover are judged against the
+    same number, and two spellings of it would disagree on exactly the
+    cycles where it matters.
+    """
+    from gpuwm.source_cycles import cycle_grid_for
+
+    adapter = source_adapter(source)
+    grid = cycle_grid_for(adapter.source_id)
+    horizon = grid.horizon(moment) if grid is not None else None
+    if horizon is None:
+        horizon = adapter.max_forecast_hour or None
+    return None if horizon is None else int(horizon)
+
+
+def resolve_start_hour(start_hour, *, source: str, moment: datetime,
+                       hours: int = 0) -> int:
+    """The forecast LEAD this setup begins at, judged against the source.
+
+    ONE validator for both surfaces this door has -- the selection map,
+    which has no fetch table to be checked by, and the configuration,
+    whose fetch table is checked by the route itself -- so the preview
+    and the configuration cannot disagree about which leads a cycle has.
+    ``hours`` is the window that begins at the lead: zero asks only
+    whether the lead itself is published, which is the map's question.
+    """
+    from gpuwm import domain_wizard as dw
+
+    adapter = source_adapter(source)
+    if type(start_hour) is not int or start_hour < 0:
+        raise ValueError("--start-hour must be a nonnegative whole forecast lead")
+    if start_hour and not dw.source_reaches_forecast_leads(adapter.source_id):
+        raise ValueError(
+            f"--start-hour {start_hour}: {adapter.display_title} publishes no "
+            "forecast leads (its registry row declares max_forecast_hour = 0), "
+            "so every time in it is an analysis at its own valid time and there "
+            "is no lead to begin at; name the time you want with --cycle")
+    horizon = forecast_horizon(adapter.source_id, moment)
+    if horizon is not None and start_hour + hours > horizon:
+        # The lead AND the window, against the horizon this cycle declares:
+        # a run that begins at f186 and covers six hours needs f192, and
+        # which of the two walked off the end is what the reader has to know
+        # to choose between --start-hour and --hours.
+        needed = (f"begins at f{start_hour:03d} and needs f{start_hour + hours:03d}"
+                  if hours else f"begins at f{start_hour:03d}")
+        raise ValueError(
+            f"{adapter.display_title}'s {moment:%H} UTC cycle ends at "
+            f"f{horizon:03d}, but this setup {needed}; start at an earlier "
+            "lead, shorten --hours, or choose a cycle with a longer forecast")
+    return start_hour
+
+
 def fetch_hints(*, source: str, moment: datetime, hours: int,
                 projection: dict, dims: tuple[int, int], dx_m: float,
-                member: str | None = None) -> dict:
-    """A source's actual fetch contract, validated before configuration output."""
+                member: str | None = None, start_hour: int = 0) -> dict:
+    """A source's actual fetch contract, validated before configuration output.
+
+    ``start_hour`` is the forecast LEAD the run begins at, so the window
+    this table asks for is f``start_hour`` through f``start_hour + hours``
+    of the named cycle rather than that cycle's analysis.  It is the fetch
+    route's own grammar -- the same ``forecast_start_hour`` key
+    ``gpuwm fetch`` takes and the same ladder :func:`resolve_leads`
+    checks -- so a source publishes leads to this door exactly when it
+    publishes them to that one, and no source is named here.
+    """
     from gpuwm import domain_wizard as dw
     from gpuwm.fetch import fetch_accepts_area, validate_fetch_hints
     from gpuwm.fetch_routes import route_for, route_ids, resolve_leads
-    from gpuwm.source_cycles import cycle_grid_for
 
     adapter = source_adapter(source)
     source = adapter.source_id
@@ -109,18 +175,13 @@ def fetch_hints(*, source: str, moment: datetime, hours: int,
         raise ValueError(
             f"{adapter.display_title}'s forcing interval is {interval_h:g} hours, "
             "which the hourly acquisition interface cannot express; supply prepared inputs")
-    cadence = dw._fetch_cadence_h(source, 0)
     rounded = int(math.ceil(hours / interval_h) * interval_h)
-    grid = cycle_grid_for(source)
-    horizon = grid.horizon(moment) if grid is not None else None
-    if horizon is None:
-        horizon = adapter.max_forecast_hour or None
-    if horizon is not None and rounded > horizon:
-        raise ValueError(
-            f"{adapter.display_title}'s {moment:%H} UTC cycle ends at f{horizon:03d}, "
-            f"but this setup needs f{rounded:03d}; shorten --hours or choose a longer cycle")
+    start_hour = resolve_start_hour(start_hour, source=source, moment=moment,
+                                    hours=rounded)
+    cadence = dw._fetch_cadence_h(source, start_hour)
     if source in route_ids():
-        resolve_leads(route_for(source), moment, rounded, cadence=cadence)
+        resolve_leads(route_for(source), moment, rounded, cadence=cadence,
+                      start_hour=start_hour)
     refusal = dw.source_coverage_refusal(projection, *dims, source=source, root_dx_m=dx_m)
     if refusal:
         raise ValueError(refusal + "; covering sources: " + global_alternatives())
@@ -128,6 +189,10 @@ def fetch_hints(*, source: str, moment: datetime, hours: int,
              "hours": rounded, "out": f"data/{source}-cyclone-{moment:%Y%m%d%H}"}
     if cadence is not None:
         hints["cadence"] = cadence
+    if start_hour:
+        # Written only when there IS a lead, so an analysis-initialized
+        # setup emits the table every prior release emitted, byte for byte.
+        hints["forecast_start_hour"] = start_hour
     if selection is not None:
         hints["member"] = selection
         hints["out"] += "-" + selection
@@ -228,6 +293,16 @@ def source_options() -> list[dict]:
                         "members": members, "default_member": selected_member(source),
                         "forcing_interval_seconds": adapter.forcing_interval_seconds,
                         "cycle_hours": list(grid.hours) if grid else [],
+                        # THE LEAD A RUN MAY BEGIN AT, on the row where the
+                        # source is chosen.  A form that offers --start-hour
+                        # has to bound the field before a cycle exists, and
+                        # this is the registry's own declared ceiling: 0
+                        # means the row publishes analyses only, so the field
+                        # does not apply to it at all.  The per-cycle horizon
+                        # is still the authority and still refuses
+                        # (:func:`forecast_horizon`); this is what a picker
+                        # can check without asking the mirrors anything.
+                        "max_forecast_hour": int(adapter.max_forecast_hour or 0),
                         "coverage_envelope": (list(adapter.coverage_window.envelope())
                                               if adapter.coverage_window else None),
                         # The run door's answer, on the row where the source

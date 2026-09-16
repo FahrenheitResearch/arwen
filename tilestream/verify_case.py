@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Score one real-case run against the SPC storm reports of that day.
 
-The claim a convection-allowing model started hours out can honestly make is
+The claim a convection-allowing model started hours out can accurately make is
 MESOSCALE: convection in roughly the right region, in roughly the right
 window, with roughly the right mode and coverage.  It cannot claim the right
 county at the right minute, and a metric that pretends otherwise is worse
@@ -10,7 +10,7 @@ than no metric.  So this reports three things and nothing else:
 ``nearest``
     For every observed report, the great-circle distance from it to the
     NEAREST simulated cell exceeding a threshold, at the history frame
-    closest in time.  A distribution of those distances is the honest
+    closest in time.  A distribution of those distances is the accurate
     statement of "how far off was it".
 
 ``coverage``

@@ -8,7 +8,7 @@ column exactly as the driver built it, beside the raw 3-D inputs in
 
 Every assertion here is ``max_ulp == 0``.  The preparation is straight
 arithmetic on measured constants -- no libm, no branches that a rounding can
-flip -- so there is no honest reason for it to be anything else, and a
+flip -- so there is no accurate reason for it to be anything else, and a
 tolerance here would hide exactly the mixed-precision mistake this stage
 exists to prevent.
 """
@@ -117,10 +117,10 @@ def test_the_two_constant_sets_disagree():
     assert np.float32(GFS_RV) != DEEP_RV
 
 
-def test_gfs_constants_are_the_honest_doubles():
+def test_gfs_constants_are_the_accurate_doubles():
     """The trap: assigned to a real(8) and written out, ``con_g`` reads
     ``float64(float32(9.80665))``.  Its arithmetic does not behave that way --
-    the fixture needs the honest double on all 8640 lanes of ``omeg``, and the
+    the fixture needs the accurate double on all 8640 lanes of ``omeg``, and the
     float32-widened value misses 1488 of them by 1 ULP.  This test exists so a
     future reader of ``gf-pow-probe.txt``'s stored-word rows cannot quietly
     "correct" the constants back."""

@@ -27,6 +27,15 @@ move (``identical source + identical cells = identical bytes``), and
 tests/test_statics_corridor.py proves it against the build rather than
 assuming it.
 
+It also needs the SOURCE side to be placement-independent, which is what
+the corridor's own extent put at risk: a corridor over a parent that
+spans the antimeridian reads a source window crossing the wrap seam
+while its child's footprint window does not.  The build bins every
+source pixel at its canonical column for exactly that reason, and each
+sealed corridor records the contract it was built under
+(:data:`STATICS_CORRIDOR_BUILD_CONTRACT`) because the digest relay
+proves WHICH BYTES preparation wrote and not which build wrote them.
+
 MEMORY POSTURE.  The corridor is a DISK artifact loaded into HOST memory
 by the runner's preflight; crops are host arrays consumed by the same
 rebuild path the case-data route uses.  It adds no GPU residency: the
@@ -65,6 +74,23 @@ STATICS_CORRIDOR_RECEIPT = "receipt.json"
 #: remedy is one re-preparation away, and the spelling lives in exactly
 #: one place.
 STATICS_CORRIDOR_FLAG = "--statics-corridor"
+
+#: What the sealed FIELD BYTES were produced by, recorded per corridor and
+#: required at load.  The digest binding proves the bytes are the ones
+#: preparation wrote; it cannot prove WHICH build wrote them, and that is
+#: the difference between a corridor whose crop equals a footprint build
+#: and one whose crop does not.
+#:
+#: ``canonical-source-column-binning-v1``: every source pixel was binned at
+#: its CANONICAL column.  Before 2.7.5 a build whose source window crossed
+#: the x-wrap seam kept the unwrapped column index, and a WPS_GEOG index
+#: declares a truncated decimal (30-arcsec trees say dx = 0.00833333, whose
+#: 43200-fold is 359.999856 deg), so those pixels were placed 1.44e-4 deg
+#: west of the ground whose bytes they carried.  A corridor over a
+#: dateline-spanning parent therefore disagreed with the footprint build on
+#: the categorical fields, and the first relocation refused on the
+#: overlap-statics equality.
+STATICS_CORRIDOR_BUILD_CONTRACT = "canonical-source-column-binning-v1"
 
 #: Receipt-stated provenance for statics a relocation crops from the
 #: corridor (the prepared-route counterpart of
@@ -498,6 +524,7 @@ def build_child_statics_corridor(*, child_dc, parent_run, reference_grid,
     entry = {
         "schema": STATICS_CORRIDOR_SCHEMA,
         "status": "READY",
+        "build_contract": STATICS_CORRIDOR_BUILD_CONTRACT,
         **geometry,
         "grid_identity_probes": grid_identity_probes(grid),
         "landuse": {name: landuse[name]
@@ -815,6 +842,18 @@ def load_child_statics_corridor(
              and entry.get("status") == "READY",
              f"{label} statics corridor entry is not a READY "
              f"{STATICS_CORRIDOR_SCHEMA} document")
+    _require(entry.get("build_contract") == STATICS_CORRIDOR_BUILD_CONTRACT,
+             f"{label} statics corridor was sealed under build contract "
+             f"{entry.get('build_contract')!r}, not "
+             f"{STATICS_CORRIDOR_BUILD_CONTRACT!r}. A corridor built before "
+             "that contract binned source pixels at UNWRAPPED column "
+             "indices wherever its window crossed the x-wrap seam, so its "
+             "crop differs from the footprint build on shared ground and "
+             "the first relocation refuses on the overlap-statics equality "
+             "(measured: 198 LANDUSEF cells and 40 soil cells on a "
+             "dateline-spanning parent). The bytes cannot be repaired in "
+             "place because the geography source is not on hand at run "
+             f"time: re-prepare the tree with {STATICS_CORRIDOR_FLAG}")
 
     geometry = corridor_geometry(child_dc, parent_run, **(frame_kwargs or {}))
     for key, value in geometry.items():
@@ -891,6 +930,7 @@ __all__ = [
     "CORRIDOR_BYTES_PER_CELL", "CORRIDOR_PLANES_PER_CELL",
     "CORRIDOR_REBUILT_STATICS", "CORRIDOR_STRIP_FILL_SOURCE",
     "ChildStaticsCorridor", "CorridorBuild", "CorridorRefusal",
+    "STATICS_CORRIDOR_BUILD_CONTRACT",
     "STATICS_CORRIDOR_DIRNAME", "STATICS_CORRIDOR_FLAG",
     "STATICS_CORRIDOR_RECEIPT", "STATICS_CORRIDOR_SCHEMA",
     "STATICS_CORRIDOR_SET_SCHEMA", "build_child_statics_corridor",

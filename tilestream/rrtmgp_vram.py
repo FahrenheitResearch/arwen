@@ -18,7 +18,7 @@ can land in the intercept rather than the slope:
     Genuinely constant: the k-distribution and cloud-optics lookups, shared
     per process by ``lru_cache``.
 ``column``
-    Sized by ``ncol = ny*nx``.  These are the honest slope; they are listed so
+    Sized by ``ncol = ny*nx``.  These are the accurate slope; they are listed so
     the split is auditable, not because they can be reclaimed.
 
 ``layer`` marks the ``nz`` dependence within each of the above.

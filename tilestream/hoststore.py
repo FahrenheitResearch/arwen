@@ -5,7 +5,7 @@ persistent state -- exactly the ``STATE_SERIALIZED_ATTRS`` inventory that
 :mod:`tilestream.harness` hashes -- lives here, in PINNED host RAM, at FULL
 domain shape.  Only halo tiles ever visit the GPU.
 
-Three things in here are load-bearing and worth reading before you use it.
+Three things in here are essential and worth reading before you use it.
 
 1.  THE MANIFEST IS PROBED, NOT HARDCODED.  Which of the contract
     attributes (47 as of the mp9/P3 restart fixes; ``test_gather`` pins the
@@ -105,7 +105,7 @@ DEFAULT_MAX_TOTAL_FRACTION = 0.47
 #: Smallest transfer a bandwidth number may be reported from.  Below this the
 #: 10.9 us fixed per-transfer overhead and the measurement noise floor make
 #: the number meaningless; PCIe saturates at 32 MB.
-MIN_HONEST_BANDWIDTH_BYTES = 256 << 20
+MIN_ACCURATE_BANDWIDTH_BYTES = 256 << 20
 
 GIB = 1 << 30
 
@@ -1258,7 +1258,7 @@ class HostDomainStore:
     # -- bandwidth -------------------------------------------------------
 
     def measure_h2d_bandwidth(self, *, min_bytes: int =
-                              MIN_HONEST_BANDWIDTH_BYTES, repeats: int = 5,
+                              MIN_ACCURATE_BANDWIDTH_BYTES, repeats: int = 5,
                               ) -> dict[str, Any]:
         """Time a real H2D out of THIS store's own pinned memory.
 
@@ -1276,7 +1276,7 @@ class HostDomainStore:
         if not self.arrays:
             raise HostStoreError("store was built with allocate=False")
         if self.nbytes < min_bytes:
-            return {"honest": False, "bytes": self.nbytes,
+            return {"accurate": False, "bytes": self.nbytes,
                     "min_bytes": int(min_bytes), "gb_per_s": None,
                     "note": (f"store is only {self.nbytes / (1 << 20):.1f} MB; "
                              f"refusing to report a bandwidth below "
@@ -1318,7 +1318,7 @@ class HostDomainStore:
                 elapsed_ms = cp.cuda.get_elapsed_time(start, stop)
                 samples.append(total / (elapsed_ms * 1e-3) / 1e9)
         del buf
-        return {"honest": True, "bytes": total, "fields": selected,
+        return {"accurate": True, "bytes": total, "fields": selected,
                 "n_transfers": len(selected),
                 "gb_per_s": max(samples), "gb_per_s_median": float(
                     np.median(samples)), "samples_gb_per_s": samples,
@@ -1374,7 +1374,7 @@ __all__ = [
     "BudgetExceeded", "CUDA_MEMORY_TYPE_HOST", "DEFAULT_MAX_TOTAL_FRACTION",
     "DEFAULT_RESERVE_BYTES", "FieldSpec", "HostDomainStore",
     "HostMemoryExhausted", "HostStoreError", "InventoryMismatch",
-    "MIN_HONEST_BANDWIDTH_BYTES", "PINNED_CEILING_FRACTION", "PinnedBlock",
+    "MIN_ACCURATE_BANDWIDTH_BYTES", "PINNED_CEILING_FRACTION", "PinnedBlock",
     "alloc_pinned_array", "build_manifest", "bytes_per_cell",
     "capacity_report", "check_allocatable", "domain_bytes", "host_memory",
     "manifest_from_arrays",

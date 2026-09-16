@@ -106,7 +106,7 @@ def run_door(door_args: list[str], *, timeout_s: float = DEFAULT_TIMEOUT_S,
 
     command = f"gpuwm {door_args[0]}" if door_args else "gpuwm"
     try:
-        # stdin=DEVNULL is load-bearing: this process's stdin is the MCP
+        # stdin=DEVNULL is essential: this process's stdin is the MCP
         # protocol pipe, and a child that inherited it could read (and
         # eat) protocol frames addressed to the server.
         proc = subprocess.run(

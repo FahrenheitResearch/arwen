@@ -687,7 +687,7 @@ def test_a_domain_the_registry_table_could_not_be_read_on_is_reported(
     the reader with the generic sentence, no tailored repair, and no way
     to tell that answer apart from "no rule owns this refusal".  The
     failure is now a row in the payload, named, beside a summary that is
-    honest about being generic.
+    accurate about being generic.
     """
     from gpuwm import physics_compat
     from gpuwm.companion_physics import GENERIC_SUMMARY

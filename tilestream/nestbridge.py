@@ -51,7 +51,7 @@ resident run with the no-refresh case as its negative control.
 They do NOT make a nested streamed forecast work, and reporting them as if
 they did would be the sixth false result.  The executor
 (``gpuwm.core.model.execute_experiment``) still calls neither, no route wires
-them, and until it does the honest behaviour for a tree whose parent streams
+them, and until it does the accurate behaviour for a tree whose parent streams
 is REFUSAL -- ``steppers_for_tree`` currently returns a streamed stepper for a
 parent with children without comment, which is how a user gets the stale nest
 above.  Cost, for the record: one refresh is a whole-domain H2D of the

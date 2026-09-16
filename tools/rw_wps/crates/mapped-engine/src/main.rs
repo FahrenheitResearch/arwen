@@ -18,16 +18,16 @@
 //! with one JSON object, schema `gpuwm-mapped-refusal-v1`, as the LAST
 //! stderr line — Python maps `class` onto the exception type it raises.
 //!
-//! The ABI marker `gpuwm-mapped-frameset-v1` is compiled in from
-//! `mapped_engine::FRAMESET_SCHEMA` and anchored in `.rodata` by the usage
-//! text below, so a stale staged binary fails the static handshake instead
-//! of writing a shape the Python side no longer reads.
+//! The ABI marker is compiled in from `mapped_engine::ABI_CONTRACT` and
+//! anchored in `.rodata` by the usage text below, so a stale staged binary
+//! fails the static handshake instead of writing a shape the Python side no
+//! longer reads OR refusing bytes this release decodes.
 
 use std::process::ExitCode;
 
 use mapped_engine::engine::{Invocation, USAGE};
 use mapped_engine::refusal::Refusal;
-use mapped_engine::{FRAMESET_SCHEMA, PROGRESS_SCHEMA, REFUSAL_SCHEMA};
+use mapped_engine::{ABI_CONTRACT, FRAMESET_SCHEMA, PROGRESS_SCHEMA, REFUSAL_SCHEMA};
 
 /// `GPUWM_BRIDGE_SOURCE_REV=<40-hex commit>`: the source revision this
 /// binary was built from, embedded so the gpuwm release cut can prove a
@@ -53,6 +53,7 @@ fn run() -> Result<(), Refusal> {
             "writes {FRAMESET_SCHEMA}; progress {PROGRESS_SCHEMA}; \
              refusals {REFUSAL_SCHEMA}"
         );
+        eprintln!("{ABI_CONTRACT}");
     })?;
     let mut progress = |event: serde_json::Value| {
         let mut line = serde_json::json!({"schema": PROGRESS_SCHEMA});
@@ -96,6 +97,7 @@ fn run() -> Result<(), Refusal> {
 
 fn main() -> ExitCode {
     let _ = std::hint::black_box(GPUWM_BRIDGE_SOURCE_REV_STAMP);
+    let _ = std::hint::black_box(ABI_CONTRACT);
     match run() {
         Ok(()) => ExitCode::SUCCESS,
         Err(refusal) => {

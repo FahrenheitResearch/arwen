@@ -9,7 +9,7 @@ import netCDF4
 import numpy as np
 import pytest
 
-from conftest import assert_gates, requires_gpu
+from conftest import assert_gates, requires_gpu, requires_wrf_rust
 
 from gpuwm.io.wrfout import WrfoutWriter
 
@@ -452,6 +452,7 @@ def test_era5_metrics_do_not_mask_candidate_t2_nan(monkeypatch):
     assert np.isnan(result.t2_snow_free_mean_bias_k)
 
 
+@requires_wrf_rust
 def test_identical_wrfout_comparison_and_required_maps(tmp_path):
     from gpuwm.verify.cases.real74_d01 import (
         compare_head_to_head,

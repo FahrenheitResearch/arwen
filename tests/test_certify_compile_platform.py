@@ -255,7 +255,7 @@ def test_two_unresolved_fingerprints_do_not_read_as_agreement():
     """``describe_drift`` returning [] is not evidence of a verified platform.
 
     This is the exact-zero-delta trap in fingerprint form.  ``describe_drift``
-    is honest -- these two dicts really are identical -- so the guard must sit
+    is accurate -- these two dicts really are identical -- so the guard must sit
     in the caller, and it must suppress the verdict rather than compute one.
     """
     nothing = {key: UNRESOLVED for key in FINGERPRINT_KEYS}

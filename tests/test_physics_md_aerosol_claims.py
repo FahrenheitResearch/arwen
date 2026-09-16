@@ -1051,7 +1051,7 @@ def test_the_committed_deck_carries_wrfs_own_exner_constant():
 
     assert levels == 528, levels
     # RE-PINNED 40 -> 47, owner-approved 2026-08-03, correction note in the
-    # evidence document.  The deck bytes never changed and the load-bearing
+    # evidence document.  The deck bytes never changed and the essential
     # half of this test never moved: 528 of 528 levels invert under WRF's
     # own constant, asserted above.  The count under the SUPERSEDED constant
     # is a property of the host libm's float32 ``power``, not of the deck:

@@ -623,7 +623,7 @@ def test_an_empty_slab_launches_nothing_and_returns_empty_columns():
 
 @requires_gpu
 def test_the_slab_refuses_an_option_identity_it_does_not_transcribe():
-    """The per-column guards are load-bearing; the slab must carry them too."""
+    """The per-column guards are essential; the slab must carry them too."""
     calls = _vege_calls()
     fields = _vege_fields(calls)
     for option in ("opt_sfc", "opt_crs", "opt_stc"):

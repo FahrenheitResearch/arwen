@@ -509,7 +509,7 @@ contains
     end do
     ppddum = 0.0
     prunsrf = 0.0
-    ! These two emits are load-bearing, not diagnostics.  INFIL declares PDDUM
+    ! These two emits are essential, not diagnostics.  INFIL declares PDDUM
     ! and RUNSRF INTENT(OUT), so with the explicit interface in scope gfortran
     ! at -O2 treats the two stores above as dead and removes them -- and INFIL
     ! leaves both untouched when QINSUR <= 0, which would let the previous

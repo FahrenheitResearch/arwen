@@ -6,7 +6,7 @@ reading the ARTIFACTS -- the manifest file, ``proof.json`` -- rather
 than the printed prose, and runs the same commands a person would so
 the provenance in the artifacts is the same either way.
 
-The load-bearing tests here are the two equivalence gates.  ``go``'s
+The essential tests here are the two equivalence gates.  ``go``'s
 composed ``rw-wps`` line must equal the one ``gpuwm fetch
 --author-front-door-manifest`` prints, and its composed forecast line
 must equal the one the front door prints, because those printed
@@ -236,7 +236,7 @@ def _a_card_whose_free_vram_this_file_decides(monkeypatch):
 
 
 def test_the_pinned_card_is_what_the_gate_reads(gfs_config, tmp_path):
-    """The fixture above is load-bearing; prove it reaches the gate."""
+    """The fixture above is essential; prove it reaches the gate."""
 
     plan = go_cli.plan_from_config(gfs_config, outdir=tmp_path / "out")
     gate = go_cli.memory_gate(plan)
@@ -458,14 +458,21 @@ def _stage_a_fetched_directory(out: Path, gfs_config: Path, authority: Path):
     (authority / "namelist.wps").write_bytes(
         gfs_config.with_suffix(".namelist.wps").read_bytes())
     (authority / "experiment.toml").write_bytes(gfs_config.read_bytes())
-    (out / "gfs-series.tsv").write_text("0\tgfs.f000.grib2\t81\n",
-                                        encoding="utf-8")
-    (out / "gfs.f000.grib2").write_bytes(b"GRIB-stub")
+    # Three forcing times, the 6 h window the config asks for at the 3 h
+    # cadence: a manifest with one frame is refused because lateral
+    # boundaries are interpolated between frames.
+    hours = (0, 3, 6)
+    (out / "gfs-series.tsv").write_text(
+        "".join(f"{hour}\tgfs.f{hour:03d}.grib2\t81\n" for hour in hours),
+        encoding="utf-8")
+    for hour in hours:
+        (out / f"gfs.f{hour:03d}.grib2").write_bytes(b"GRIB-stub")
     (out / "fetch-manifest.json").write_text(json.dumps({
         "schema": "gpuwm-fetch-manifest-v1", "source": "gfs",
-        "cycle": "2026-07-29T18:00:00Z", "forecast_hours": [0],
-        "files": [{"name": "gfs.f000.grib2", "role": "gfs-subset",
-                   "forecast_hour": 0, "sha256": "0" * 64}],
+        "cycle": "2026-07-29T18:00:00Z", "forecast_hours": list(hours),
+        "files": [{"name": f"gfs.f{hour:03d}.grib2", "role": "gfs-subset",
+                   "forecast_hour": hour, "sha256": "0" * 64}
+                  for hour in hours],
     }), encoding="utf-8")
 
 
@@ -1181,7 +1188,7 @@ def test_saved_latest_is_refused_before_a_dry_run_probes_or_selects_cache(
     monkeypatch.setattr(subprocess, "Popen", unexpected)
     config = tmp_path / "saved-latest.toml"
     config.write_text(gfs_config.read_text(encoding="utf-8").replace(
-        'cycle = "2026-07-29T18"', 'cycle = "Latest"').replace(
+        'cycle = "2026-07-29T18"', 'cycle = "latest"').replace(
         'source = "gfs"', f'source = "{source}"'), encoding="utf-8")
     root = tmp_path / "runs"
     argv = ["go", str(config), "--dry-run", "--outdir", str(root)]
@@ -1441,7 +1448,7 @@ def test_the_memory_gate_refuses_ahead_of_the_fetch_stage(gfs_config,
     message = str(refusal.value)
     assert "BEFORE the fetch stage" in message
     assert "memory-binding phase" in message
-    # The measured free-VRAM honesty stays; the remedy must be
+    # The measured free-VRAM accuracy stays; the remedy must be
     # REACHABLE: the 3080 walk followed `gpuwm domain --vram-gib <free>`
     # verbatim and was refused at every grid size, because the flag
     # names a card and the number fed to it was a free-VRAM figure.
@@ -1482,7 +1489,7 @@ def test_unstaged_geography_is_refused_ahead_of_the_fetch_stage(
     assert "gpuwm fetch-geog" in message
     assert str(absent) in message
     assert "--geog-root" in message
-    # The layered half carries the why, including the honest account of
+    # The layered half carries the why, including the accurate account of
     # doctor's exit 0 on the same gap.
     assert "before the fetch stage" in message
     assert "exits 0" in message
@@ -1711,7 +1718,7 @@ def _args(config, outdir, geog_root=None):
 # ---------------------------------------------------------------------------
 
 def test_go_carries_the_configs_forecast_lead_into_its_fetch(tmp_path):
-    """A lead in [fetch] is load-bearing, exactly like cycle/hours/area.
+    """A lead in [fetch] is essential, exactly like cycle/hours/area.
 
     ``gpuwm go`` is step 3 of what the wizard itself prints, so a config
     whose start_time is cycle + K has to reach a fetch that downloads

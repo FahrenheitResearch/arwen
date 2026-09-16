@@ -41,7 +41,7 @@ Two download sources serve byte-identical archives:
 * ``ncar`` -- the upstream NCAR server (:data:`NCAR_BASE_URL`), a single
   host that can be slow.  NCAR publishes no checksums, so the same pins
   apply; they were computed from a TLS download from UCAR on
-  2026-07-29, which is the honest limit of first-download integrity for
+  2026-07-29, which is the accurate limit of first-download integrity for
   this source (see docs/public/DATA.md).  If NCAR republishes an
   archive the pin mismatch refuses loudly; ``--allow-upstream-drift``
   accepts the new bytes when the size stays inside a sanity band, and

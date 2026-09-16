@@ -431,7 +431,7 @@ _FIELD_SETS = {
     "full": None,   # everything in FIELD_MAP
     # A global 0.25 degree window carries four million points per level; the
     # surface set keeps only what the surface, precipitation, MSLP and
-    # precipitable-water products read, which is the honest content of a
+    # precipitable-water products read, which is the accurate content of a
     # coarse overview anyway.
     "surface": frozenset(
         {"T", "P", "PB", "QVAPOR", "PH", "PHB"}

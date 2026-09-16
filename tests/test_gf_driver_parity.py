@@ -334,7 +334,7 @@ def test_rthcuten_is_the_only_output_divided_by_exner(drv):
     want = drv["gl"]["rthcuten"][ok]
     assert _ulp(got, want)[0] == 0
     # the same sum without the division is not the answer anywhere it is
-    # nonzero, which is what makes the assertion above load-bearing
+    # nonzero, which is what makes the assertion above essential
     live = np.abs(want) > 0
     assert np.any(live)
     assert not np.allclose((got * pi).astype(np.float32)[live], want[live])

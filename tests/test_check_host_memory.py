@@ -156,7 +156,7 @@ def _fetch_only_config(tmp_path, name="fetchonly"):
         [fetch]
         source = "era5"
         cycle = "2024-05-03T12"
-        hours = 1
+        hours = 6
         """), encoding="utf-8")
     return path
 

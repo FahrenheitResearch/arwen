@@ -242,7 +242,7 @@ def test_thompson_tables_check_uses_the_load_time_hash_validation(
     the check verifies.  A fresh clone of the PUBLIC repository has
     not: `freezeH2O.dat` is 243 MiB, past GitHub's blob limit, and is
     published as a release asset rather than committed -- so `missing`
-    there is the honest answer, and the assertion that it be `verified`
+    there is the accurate answer, and the assertion that it be `verified`
     was a statement about the author's disk.  It passed on every
     developer box and failed on the ubuntu publish runner's clean
     checkout, which is the worst place to learn it.
@@ -567,7 +567,7 @@ def test_report_and_exit_code_distinguish_verified_from_present():
     assert "present shallow" in text
     assert "presence-only" in text
 
-    # present is honest, not a gap; missing is the only nonzero driver.
+    # present is accurate, not a gap; missing is the only nonzero driver.
     rc_present = 1 if any(c.status == "missing" for c in checks) else 0
     assert rc_present == 0
     checks.append(doctor.Check("gap", "missing", "absent", "install it"))
@@ -978,7 +978,7 @@ _REMEDY_COMMANDS = frozenset({
     # The wiring step, which the pip bootstrap now RUNS rather than
     # describing in a comment: a literal paste that builds six bridges
     # and installs none of them left a node-8 validation run at six
-    # MISSING while every line it pasted was, technically, honest.
+    # MISSING while every line it pasted was, technically, accurate.
     "mkdir", "cp", "New-Item", "Copy-Item",
     # The CuPy remedy's first step when the box's CUDA major could not
     # be read: the reader has to look it up before choosing an extra,
@@ -1414,7 +1414,7 @@ def _shell_steps(line, *, windows):
     Only `cd` and `git clone` are acted on, so the crude split is
     enough: a `;` inside a quoted string (the PowerShell PATH
     activation has one) yields fragments that are neither, and a shell
-    parser here would be a second implementation to keep honest.
+    parser here would be a second implementation to keep accurate.
     """
 
     separator = ";" if windows else "&&"
@@ -1529,7 +1529,7 @@ def _set_staging(monkeypatch, tmp_path, *, available):
     Both are real states of a real install: a release that published a
     bundle for this platform, and one that did not (every tree before
     the first bundled release, plus every platform that has no bundle).
-    doctor's report has to be honest and pasteable in both.
+    doctor's report has to be accurate and pasteable in both.
     """
 
     from gpuwm import bridge_assets
@@ -1835,7 +1835,7 @@ def test_the_whole_printed_report_pastes_as_one_sequence(
                         if line.strip() and not line.strip().startswith("#")]
             if not commands:
                 # A comment-only block offers no command, so there is no
-                # ordering to get wrong.  It is the honest shape for a
+                # ordering to get wrong.  It is the accurate shape for a
                 # gap with no one-liner on a wheel, and one artifact has
                 # that shape: gpuwm_mapped_engine is in no bundle roster,
                 # so `gpuwm fetch-bridges` cannot supply it and printing
@@ -2018,7 +2018,7 @@ def test_the_checkout_path_is_still_the_last_candidate():
 
 def test_a_real_doctor_gap_prints_a_comment_only_remedy(monkeypatch,
                                                         tmp_path):
-    """The honest case the README now admits, proved from doctor.
+    """The accurate case the README now admits, proved from doctor.
 
     An unset-then-wrong `GPUWM_CASE_DATA_ROOT` is a gap whose fix is a
     path only the user knows, so doctor prints a `#`-comment remedy with
@@ -2578,7 +2578,7 @@ def test_the_gap_count_agrees_with_the_exit_code():
 # before the first matmul of the campaign killed it.  Doctor performs
 # that first load deliberately, and when it fails, the remedy must name
 # the extra whose wheel matches the box.  These monkeypatch the probe:
-# the trap cannot be staged honestly on a healthy box, and the check's
+# the trap cannot be staged accurately on a healthy box, and the check's
 # judgment is a pure function of the probe's report.
 
 

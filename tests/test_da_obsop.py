@@ -162,7 +162,7 @@ def test_beam_unit_vector_is_a_unit_vector():
     east, north, up = beam.unit_vector_enu()
     magnitude = np.sqrt(east ** 2 + north ** 2 + up ** 2)
     # The chord length carries a cancellation of order (1 - cos theta),
-    # so a few ulp of float64 slack is the honest tolerance here.
+    # so a few ulp of float64 slack is the accurate tolerance here.
     np.testing.assert_allclose(magnitude, 1.0, rtol=1e-10)
 
 
@@ -191,7 +191,7 @@ def test_equal_height_beam_elevation_is_half_the_effective_central_angle():
 
 
 def test_a_spherical_earth_would_give_a_steeper_beam_than_four_thirds():
-    """The refraction ratio is load-bearing, not decoration."""
+    """The refraction ratio is essential, not decoration."""
     state = _state(nz=1, ny=1, nx=1)
     geometry = _flat_geometry(state, 0.0, 0.0, height_m=5000.0)
     site = obsop.RadarSite(0.0, -1.0, 0.0)
@@ -470,13 +470,13 @@ def test_the_fixed_reference_pressure_is_not_the_surface_pressure():
     pressure = np.full((1, 1, 1), 5.0e4)
     active = np.ones((1, 1, 1), bool)
     for ps_hpa, bias in ((900.0, 0.043), (800.0, 0.093), (700.0, 0.153)):
-        honest = _one(obsop.reflectivity_fall_speed(
+        accurate = _one(obsop.reflectivity_fall_speed(
             dbz, pressure, active,
             surface_pressure=np.full((1, 1), ps_hpa * 100.0))[0, 0, 0])
         wrong = _one(obsop.reflectivity_fall_speed(
             dbz, pressure, active,
             surface_pressure=np.full((1, 1), c.P0))[0, 0, 0])
-        assert wrong / honest == pytest.approx(1.0 + bias, abs=5e-4)
+        assert wrong / accurate == pytest.approx(1.0 + bias, abs=5e-4)
 
 
 def test_the_fall_speed_refuses_to_guess_a_surface_pressure():

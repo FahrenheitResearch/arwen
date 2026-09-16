@@ -622,45 +622,30 @@ def test_same_scheme_p3_nesting_still_resolves_same_scheme():
     assert contract.source_mp_physics == contract.target_mp_physics == 50
 
 
-def test_the_offline_cross_scheme_mirror_no_longer_refuses_p3():
-    """The offline mirror is DERIVED, so retiring 50 online retired it
-    offline in the same change -- the mirror invariant the WDM6 tests pin.
-
-    mp=50 IS offline-readable (same-scheme P3 downscaling landed its
-    qir/qib field-map rows), so the retired closure mirror cannot be
-    covered by an "unreadable" gate either.  What refuses a P3
-    cross-scheme edge offline is the lane's own NAMED gate
-    (``_P3_OFFLINE_EDGE_UNBUILT_MP_PHYSICS``): the ratified merge/split
-    maps have no offline leg wired (follow-up offline-p3-edge-closure).
-    ``PARENT_SCHEME_CONTRACT`` therefore still excludes 50, now through
-    that named subtraction instead of the closure mirror.
-    """
+def test_the_offline_cross_scheme_contract_is_derived_from_the_ported_set():
+    """The offline lane runs THIS module's contract and kernel on a parent
+    archive, so its admitted cross-scheme set is PORTED_MP_PHYSICS
+    intersected with what it can read, never a re-spelled list, and a
+    scheme ratified here is admitted there in the same change."""
     from gpuwm import offline_child as oc
     from gpuwm.core import microphysics_transition as mt
 
-    # The mirror is DERIVED, so mp=16's and mp=28's ratification emptied
-    # it the same way mp=50's did: no selector is refused offline for a
-    # missing closure any more.
-    assert (set(oc._CROSS_SCHEME_REFUSED_MP_PHYSICS)
-            == set(mt.UNVALIDATED_MIXED_EDGE_SELECTORS) == set())
-    assert 50 not in oc._CROSS_SCHEME_REFUSED_MP_PHYSICS
-    assert 50 in oc.OFFLINE_CHILD_MP_PHYSICS
-    # P3 alone is held at the named offline gate: leaving WDM6 or
-    # Thompson aerosol-aware for NSSL needs no entry closure, and 16 is
-    # not read by the offline lane at all (no scheme-qualified QNCCN
-    # row), so the gate has one row.
-    assert oc._P3_OFFLINE_EDGE_UNBUILT_MP_PHYSICS == frozenset({50})
-    assert 50 not in oc.PARENT_SCHEME_CONTRACT
-    # 0, 1 and 9 are READ by the offline lane now (audit R-017) but are
-    # held out of the CROSS-scheme contract by their own named reasons
-    # (_OFFLINE_CROSS_LEG_UNBUILT_REASONS), so the converting site is
-    # unchanged.
-    # mp=28 joined the cross-scheme contract when its edge was ratified:
-    # its masses are classic Thompson's and its nc rides the qndrop alias,
-    # so the conversion is the one mp=8 already runs.
-    assert oc.PARENT_SCHEME_CONTRACT == frozenset({6, 8, 10, 18, 28})
-    assert set(oc._OFFLINE_CROSS_LEG_UNBUILT_MP_PHYSICS) == {0, 1, 9}
-    assert {0, 1, 9} <= oc.OFFLINE_CHILD_MP_PHYSICS
+    assert oc.PARENT_SCHEME_CONTRACT == (
+        oc.OFFLINE_CHILD_MP_PHYSICS & frozenset(PORTED_MP_PHYSICS))
+    assert 50 in oc.PARENT_SCHEME_CONTRACT
+    assert 16 in oc.PARENT_SCHEME_CONTRACT
+    assert 9 in oc.PARENT_SCHEME_CONTRACT
+    assert 0 not in oc.PARENT_SCHEME_CONTRACT
+    assert oc.offline_cross_scheme_refusal(8, 50) is None
+    assert oc.offline_cross_scheme_refusal(50, 9) is None
+    assert "mp_physics=0" in oc.offline_cross_scheme_refusal(0, 50)
+    # The target inventory the offline lane walks is the kernel's own.
+    contract = resolve_microphysics_transition(
+        _run(8), _run(50, nested=True, transition=EDGE_MATRIX_POLICY))
+    assert mt.transition_target_fields(contract) == (
+        "qv", "qc", "qr", "qi", "nr", "ni", "qir", "qib")
+    assert mt.transition_target_fields(
+        resolve_microphysics_transition(_run(8), _run(8))) == ()
 
 
 @pytest.mark.gpu
@@ -908,10 +893,10 @@ def _parent_planes_a_launcher_reads() -> set[str]:
 
     tree = ast.parse(inspect.getsource(transition))
     wanted = {
-        "launch_microphysics_edge_parent_field",
+        "launch_microphysics_edge_field",
         "launch_mp8_to_mp18_parent_field",
         "_validate_transition_arrays",
-        "transition_parent_field_shape",
+        "transition_source_field_shape",
     }
     planes: set[str] = set()
     for node in ast.walk(tree):
@@ -943,7 +928,7 @@ def test_the_windowed_donor_carries_every_plane_a_launcher_reads():
     """The guard the tile-streamed mp=9 edge defect earned.
 
     ``parent_only_init(window=...)`` hands the edge launcher the namespace
-    ``transition_parent_window`` builds and nothing else, so a plane the
+    ``transition_source_window`` builds and nothing else, so a plane the
     launcher reads and that helper omits is an ``AttributeError`` on a run
     plan review has already admitted -- which is what a windowed mp=9 edge
     was.  This holds the two sides equal from the source, without a card.
@@ -965,7 +950,7 @@ def test_the_windowed_donor_carries_every_plane_a_launcher_reads():
 def test_the_windowed_donor_carries_nothing_it_is_not_asked_for():
     """The other direction: a windowed plane is a copy, and copies cost.
 
-    ``transition_parent_window`` allocates one contiguous device array per
+    ``transition_source_window`` allocates one contiguous device array per
     entry on every slab of a tile-streamed child, so an entry nothing reads
     is measurable waste, not harmless.
     """
@@ -1089,3 +1074,96 @@ def test_the_registry_publishes_every_ratified_cross_edge():
                  for row in rows}
     assert ("wdm6-mp16", "thompson-aerosol-mp28") in published
     assert ("thompson-aerosol-mp28", "wdm6-mp16") in published
+
+
+# --------------------------------------------------------------------------
+# The FEEDBACK direction of the same matrix
+# --------------------------------------------------------------------------
+
+def test_reverse_edge_resolves_with_an_explicit_policy():
+    """Both directions of a ported pair resolve, and the policy is an arg.
+
+    The matrix is a matrix: if MPp -> MPc resolves, so does MPc -> MPp, and
+    the CUDA entry is parameterized by (source_mp, target_mp) and already
+    takes ``coupled=False``, which is what a restriction reads.  What did
+    not exist was a resolver for the reverse order.
+
+    The second half is the reason the policy is a PARAMETER rather than a
+    key read off the target.  Reversed, the target is the parent, and a
+    middle parent's ``nest_microphysics_transition`` is the policy of its
+    OWN upward edge: d2 here carries the mp8 -> mp18 id because that is how
+    it is forced from d1, and a reverse d3(mp6) -> d2(mp18) edge read off
+    the target would be measured against the wrong closure.
+    """
+    from gpuwm.core.microphysics_transition import (
+        REVERSE_EDGE_POLICY, REVERSE_TRANSITION_ORDER,
+        resolve_reverse_microphysics_transition)
+
+    parent = _run(18, transition=MP8_TO_MP18_POLICY)
+    child = _run(6, nested=True)
+
+    contract = resolve_reverse_microphysics_transition(parent, child)
+    assert contract.source_mp_physics == 6
+    assert contract.target_mp_physics == 18
+    assert contract.mixed is True
+    assert contract.policy_id == REVERSE_EDGE_POLICY == \
+        "mp-edge-mass-diagnosed-reverse-v1"
+    assert contract.translation_order == REVERSE_TRANSITION_ORDER == \
+        "diagnose-child-then-spatially-restrict"
+    assert contract.receipt()["translation_order"] == REVERSE_TRANSITION_ORDER
+
+    # The concrete reason the parameter exists: read off the target, this
+    # pair is measured against the other edge's closure and refused.
+    with pytest.raises(ValueError, match="takes nest_microphysics_transition="):
+        resolve_microphysics_transition(child, parent)
+
+
+def test_the_reverse_resolver_refuses_another_edges_closure_by_name():
+    """A named policy still means something in the reverse direction too."""
+    from gpuwm.core.microphysics_transition import (
+        resolve_reverse_microphysics_transition)
+
+    parent = _run(18, transition=MP8_TO_MP18_POLICY)
+    child = _run(6, nested=True)
+    with pytest.raises(ValueError, match="closure of another edge"):
+        resolve_reverse_microphysics_transition(
+            parent, child, policy=MP8_TO_MP18_POLICY)
+
+
+def test_a_same_scheme_pair_has_nothing_to_reverse():
+    """The control: same scheme both ways, and no diagnosis is claimed."""
+    from gpuwm.core.microphysics_transition import (
+        resolve_reverse_microphysics_transition)
+
+    parent = _run(6)
+    child = _run(6, nested=True)
+    contract = resolve_reverse_microphysics_transition(parent, child)
+    assert contract.mixed is False
+    assert contract.policy_id == SAME_SCHEME_POLICY
+
+
+def test_every_ported_mixed_pair_resolves_in_both_directions():
+    """The table claim, held against the live tuple rather than a list.
+
+    ``UNVALIDATED_MIXED_EDGE_SELECTORS`` is empty today; if a scheme is
+    added to it, this test follows it rather than contradicting it.
+    """
+    from gpuwm.core.microphysics_transition import (
+        UNVALIDATED_MIXED_EDGE_SELECTORS,
+        resolve_reverse_microphysics_transition)
+
+    unvalidated = set(UNVALIDATED_MIXED_EDGE_SELECTORS)
+    pairs = 0
+    for source in PORTED_MP_PHYSICS:
+        for target in PORTED_MP_PHYSICS:
+            if source == target or {source, target} & unvalidated:
+                continue
+            pairs += 1
+            forward = resolve_microphysics_transition(
+                _run(source), _run(target, nested=True))
+            reverse = resolve_reverse_microphysics_transition(
+                _run(target), _run(source, nested=True))
+            assert forward.mixed and reverse.mixed
+            assert (reverse.source_mp_physics, reverse.target_mp_physics) == \
+                (forward.source_mp_physics, forward.target_mp_physics)
+    assert pairs == len(PORTED_MP_PHYSICS) * (len(PORTED_MP_PHYSICS) - 1)

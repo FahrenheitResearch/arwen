@@ -1,7 +1,7 @@
 """The ArWen moist LES case, validated against the banked WRF oracle.
 
 CPU-only, and deliberately so: every claim here is checkable before any
-ArWen moist run exists, which is the order the P1 instrument-honesty rule
+ArWen moist run exists, which is the order the P1 instrument-accuracy rule
 requires (``tools/wrf_em_les_oracle/INSTRUMENT-HISTORY.md``).
 
 Three things are pinned.
@@ -19,7 +19,7 @@ is a transcription of the oracle's ``same_instrument_moist.reduce_moist``.
 Transcriptions rot.  These tests run both routines on the four banked
 oracle fixtures and require *bit* equality on every scalar, and separately
 require the transcription to reproduce the numbers the oracle published in
-its own receipt JSONs.  The load-bearing case is ``zi_thetav_load_m``:
+its own receipt JSONs.  The essential case is ``zi_thetav_load_m``:
 one name, two heights (cloud base in a cloudy run, the inversion in a
 clear one), so a drift here would silently compare two different
 quantities.

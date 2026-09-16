@@ -264,7 +264,7 @@ def test_every_domainstate_attribute_is_classified(monkeypatch, overrides):
     expected = {f"state/{name}" for name in restart.STATE_SERIALIZED_ATTRS
                 if getattr(state, name, None) is not None}
     # CHECKPOINT-ONLY carriers ride their OWN namespace, and the
-    # separation is load-bearing rather than cosmetic: `state/` is what
+    # separation is essential rather than cosmetic: `state/` is what
     # live_state_sha256 hashes, and therefore what relocate_child
     # compares to assert a parent is never written across a move.  A
     # dycore-workspace view in there makes that assertion fire on
@@ -2832,15 +2832,28 @@ def test_tree_restart_past_the_stop_tick_refuses_and_names_the_remedy(
 # The nest-lifecycle block on a tree checkpoint (the write side)
 # ---------------------------------------------------------------------------
 #
-# Compatibility is the load-bearing half here.  A run that declares no
+# Compatibility is the essential half here.  A run that declares no
 # dormant nest and no follower must keep writing the checkpoint it always
 # wrote, byte for byte, because every checkpoint on disk was written by
 # such a run and a moved header key is a checkpoint that refuses to
 # restore.  The digest below is that claim, made as a number.
 
 #: Header fields a SECOND write of the same state legitimately moves:
-#: a wall-clock stamp, the installed release, and the publish UUID.
-_VOLATILE_CHECKPOINT_HEADER = ("created", "producer", "checkpoint_set_id")
+#: a wall-clock stamp, the installed release, the publish UUID, and the
+#: memory road the writer was on.
+#:
+#: ``written_mode`` is in this list for the same reason ``producer`` is,
+#: and for one stronger one.  It describes the WRITER, not the state:
+#: ``gpuwm.io.restart.written_mode_note`` records which memory road the
+#: file came off, and the whole restart x memory mode contract is that
+#: the two roads produce the same checkpoint for the same weather;
+#: ``gpuwm/state_digest.py`` requires them to agree BIT FOR BIT.  A
+#: provenance stamp inside this digest would make that contract false by
+#: construction, so it is excluded here, and the digests below keep the
+#: values they were pinned at before it existed.  Nothing else about the
+#: header moved with it.
+_VOLATILE_CHECKPOINT_HEADER = ("created", "producer", "checkpoint_set_id",
+                               "written_mode")
 
 #: The format stamp every historical digest in this file and its two
 #: per-change siblings was harvested under.  v6 declared the 2.7.0 break
@@ -3171,7 +3184,19 @@ def test_a_lifecycle_free_tree_checkpoint_names_no_lifecycle_key(
         "physics_setup_fingerprint", "placement", "producer",
         "root_external_lbc_clock",
         "run_trackers", "setup_fingerprint", "tick_den",
+        # Provenance, not identity: which memory road WROTE the file.
+        # Listed here because this assertion is the guard that names an
+        # addition instead of reporting a hash, and this addition is
+        # deliberate (gpuwm.io.restart.written_mode_note).
+        "written_mode",
     ]
+    # The resident writer's stamp, beside the producer stamp it belongs
+    # with: both describe the writer rather than the weather, and both
+    # are excluded from the pinned digests above for that reason.
+    assert header["written_mode"]["mode"] == "resident"
+    keys = list(header)
+    assert keys[keys.index("producer") + 1] == "written_mode"
+    assert keys[keys.index("written_mode") + 1] == "elapsed_seconds"
     assert not any(name.startswith("scratch/uh_")
                    for name in _member_names(root_path))
 
@@ -4653,7 +4678,7 @@ def _grell_freitas_state(cp):
     RRTMGP temperature-range floor, not a physics choice.
 
     ``cp`` is the caller's cupy module.  It is a parameter, not an ``import
-    cupy`` in this body, and that is load-bearing: conftest marks a module
+    cupy`` in this body, and that is essential: conftest marks a module
     ``gpu`` *in its entirety* when any non-test function imports cupy,
     because a helper's callers are not decidable from the AST.  These three
     state builders are called only from the five explicitly

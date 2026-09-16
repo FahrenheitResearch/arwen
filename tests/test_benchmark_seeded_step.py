@@ -97,7 +97,7 @@ def test_seeded_step_provenance_uses_the_shared_install_identity(monkeypatch):
 
     assert identity["identity_source"] == "installed-wheel-record"
     assert identity["installed_wheel"]["distribution_version"] == "1.5.0"
-    # The v1 key survives, honestly empty rather than absent or invented.
+    # The v1 key survives, accurately empty rather than absent or invented.
     assert identity["commit"] is None
 
 

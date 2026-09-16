@@ -101,7 +101,7 @@ def build_case():
 
     exp = synchronized_identity_config(load_scaffold(variant="n2b"))
     # Both identity domains inherit the WK82 no-PBL km_opt=4 combination.
-    # Admission is load-bearing: this now selects WRF vertical_diffusion_2's
+    # Admission is essential: this now selects WRF vertical_diffusion_2's
     # ported momentum stresses and surface-flux policy as well as horizontal
     # Smagorinsky diffusion.
     for domain in exp.domains:

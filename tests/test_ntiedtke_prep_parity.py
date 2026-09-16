@@ -19,7 +19,7 @@ graded before any physics:
    arithmetic rounding differently; putting both arms in one launch is what
    makes that visible here rather than somewhere non-obvious later.
 
-max_ulp == 0 throughout.  There is no honest reason for it to be anything
+max_ulp == 0 throughout.  There is no accurate reason for it to be anything
 else, and a tolerance would hide exactly the mixed-precision and
 reassociation mistakes this stage exists to prevent.
 """

@@ -47,7 +47,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SETUP = ROOT / "setup.py"
 REAL_PINS = ROOT / "gpuwm" / "data" / "bridges" / "bridge-pins.json"
 
-#: The committed (honestly unpinned) document, byte-shape the release
+#: The committed (unpinned on purpose) document, byte-shape the release
 #: checklist requires of a tagged source tree.
 UNPINNED_PINS = {
     "schema": "gpuwm-bridge-pins-v1",

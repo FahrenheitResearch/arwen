@@ -62,6 +62,7 @@ from gpuwm.ingest.soil import (door_reconciled_soil_category,
 from gpuwm.ingest.water_temperature import (
     MODIS_LAKE_CATEGORY, WaterTemperatureStatics,
     announce_water_temperature, assemble_for_route)
+from gpuwm.moisture_floor_receipt import moisture_floor_proof_entry
 from gpuwm.native_domain_artifacts import _atomic_staging_sibling
 from gpuwm.native_wrf_contract import (
     native_geometry_contract,
@@ -199,7 +200,7 @@ def _implementation_sha256() -> dict[str, str]:
         # Installed wheels do not carry the repo-only paths (tools/,
         # Rust workspace sources).  A sealed runtime binds its own
         # distribution manifest here; a plain pip install records the
-        # absent inventory honestly instead of demanding one.
+        # absent inventory accurately instead of demanding one.
         if os.environ.get("GPUWM_NATIVE_DISTRIBUTION_MANIFEST"):
             manifest_path, _ = _distribution_manifest()
             result["distribution/manifest.json"] = _sha256(manifest_path)
@@ -257,7 +258,7 @@ def _git_source_identity() -> dict[str, object]:
         return completed.stdout.strip()
 
     # An installed wheel is neither a git checkout nor a sealed runtime:
-    # record the identity as honestly unavailable instead of refusing to
+    # record the identity as accurately unavailable instead of refusing to
     # run (the input manifest, decoder digest, and implementation hashes
     # above still bind the run's provenance).
     unavailable = {
@@ -1650,6 +1651,13 @@ def prepare_gfs_wrf(
                         hierarchy.topology_receipt),
                     "artifact_receipt": dict(
                         hierarchy.hierarchy.artifacts.receipt),
+                    # WHETHER EACH DOMAIN'S INITIALIZATION MODIFIED VAPOUR
+                    # ON THE WAY IN, root and children alike.
+                    # Unconditional, and stated even when no floor fired:
+                    # an absent key would read as "prepared before the
+                    # receipt existed", a different claim and one no reader
+                    # of the bundle could check.
+                    **dict(hierarchy.hierarchy.moisture_floor_receipts),
                     **({"initial_perturbation": initial_perturbation}
                        if initial_perturbation is not None else {}),
                     "wrf_manifest": dict(
@@ -1798,6 +1806,16 @@ def prepare_gfs_wrf(
                     "files": manifest["files"],
                 },
                 "initialization_artifacts": initialization_artifacts,
+                # WHETHER THIS INITIALIZATION MODIFIED VAPOUR ON THE WAY
+                # IN.  Unconditional, and stated even when no floor fired.
+                **moisture_floor_proof_entry(
+                    initial_result,
+                    when_unrecorded=(
+                        "this preparation's initialization result carries "
+                        "no moisture-floor field, so it came from an "
+                        "ingest predating the receipt; re-prepare the "
+                        "case to record whether its vapour was floored "
+                        "on the way in")),
                 "source_coverage": coverage_receipt,
                 # The soil-state SOURCE resolution, on every run: a reader of
                 # this forecast must be able to answer "how coarse was the
@@ -1897,7 +1915,7 @@ def prepared_forecast_next_command(
     config was materialized for>`` and ``--outdir OUTPUT_DIR``: two
     placeholders in a command whose entire value was that a user did not
     have to reconstruct it, and the second one is a shell metacharacter
-    error rather than an honest gap.  Both are resolved here -- the
+    error rather than an accurate gap.  Both are resolved here -- the
     profile by asking the same table the runner's guard asks, the outdir
     by naming a real directory beside the preparation.  Where a value
     genuinely cannot be resolved, this prints prose saying so instead of
@@ -2117,7 +2135,7 @@ def main(argv: list[str] | None = None) -> int:
     print(json.dumps(proof, indent=2, sort_keys=True))
     corridor = proof.get("statics_corridor")
     if isinstance(corridor, dict):
-        # Size honesty at the door: the corridor is parent-extent at
+        # Size accuracy at the door: the corridor is parent-extent at
         # child resolution, and its cost is stated where it is paid.
         for label, entry in sorted(corridor.get("domains", {}).items()):
             print(

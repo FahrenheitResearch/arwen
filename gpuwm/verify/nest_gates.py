@@ -261,7 +261,7 @@ The FP32-format-precision floor alternative was considered and rejected
 because format floors (e.g. ~0.008 Pa for MU vs measured implementation-scale
 differences of 1-2 hPa) are orders of magnitude below
 implementation-difference scale — it would convert the degenerate gate into
-a differently-unpassable one, not an honest bound.
+a differently-unpassable one, not an accurate bound.
 
 CORRECTED 2026-09-03 (gate-integrity defect fix ver-05-01/nst-04-02; NOT an
 owner amendment -- no threshold, no envelope and no adjudication label

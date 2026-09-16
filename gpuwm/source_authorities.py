@@ -39,6 +39,8 @@ def _profile(
     provenance_role: str | None = None,
     composition_state: str = "composed",
     contributing_mappings: Mapping[str, Mapping[str, str]] | None = None,
+    input_normalizer: str | None = None,
+    normalization: str | None = None,
 ) -> Mapping[str, object]:
     """One packaged profile: file names, byte pins, and its two roles.
 
@@ -82,6 +84,14 @@ def _profile(
         raise ValueError(
             f"unknown composition_state {composition_state!r} for {stem}"
         )
+    if (input_normalizer is None) != (normalization is None):
+        raise ValueError(
+            f"profile {stem} must declare an input normalizer NAME and the "
+            "SHA-256 of the normalization document that defines it, or "
+            "neither"
+        )
+    if input_normalizer is not None and composition_state != "composed":
+        raise ValueError("an input normalizer requires a composed profile")
     roles_declared = data_role is not None and provenance_role is not None
     if composition_state == "composed" and not roles_declared:
         raise ValueError(
@@ -116,20 +126,40 @@ def _profile(
             "mapping": f"{stem}.mapping.json",
             "composition": f"{stem}.composition.json",
             "provenance": f"{stem}.provenance.json",
+            **({"normalization": f"{stem}.normalization.json"}
+               if input_normalizer else {}),
         }),
         "sha256": MappingProxyType({
             "mapping": mapping,
             "composition": composition,
             "provenance": provenance,
+            **({"normalization": normalization} if input_normalizer else {}),
         }),
         "data_role": data_role,
         "provenance_role": provenance_role,
         "composition_state": composition_state,
         "contributing_mappings": MappingProxyType(contributing),
+        # Absent for a profile whose source publishes bytes the mapped engine
+        # already reads: their public declarations remain unchanged.
+        **({"input_normalizer": input_normalizer} if input_normalizer else {}),
     })
 
 
 _PACKAGED_PROFILES = MappingProxyType({
+    # Native global ICON carries its coordinates in separate GDT-101
+    # CLAT/CLON records. Normalize before the existing mapped authority is
+    # authored, never disguise its unstructured array as an embedded grid.
+    "icon-global-grib2-v1": _profile(
+        "rw-wps-icon-global-grib2",
+        source_format="grib2",
+        mapping="7b89f58445a959b2e3af6eb63429d0f7dbf02624f9b0e77bebba08a5ef394ead",
+        composition="a75dc9deabf72d750eb5d3f333274ed85d2d190e69a09f5aaf08f5c44891604b",
+        provenance="1770e4b1c4092d53db0ee5b18aa371465215c04325f4de2610f0d4f740eb0b09",
+        data_role="icon_global_invariant_surface",
+        provenance_role="icon_global_invariant_surface_provenance",
+        input_normalizer="icon-gdt101-pressure-v1",
+        normalization="631506352f390d13bfd952ceecc76a716581a70b7d7ec515f882bde95fedfdb6",
+    ),
     "20crv3-member-grib2-v1": _profile(
         "rw-wps-20crv3-member-grib2",
         source_format="grib2",
@@ -236,7 +266,7 @@ _PACKAGED_PROFILES = MappingProxyType({
     # f000..f009 only, ~+7 h latency.  The four Noah soil layers are
     # bound by their scaled type-106 depth pairs (the integer level key
     # collides between the first two layers), soil moisture is an NCEP
-    # local-table row selected by octets, and the honesty facts ride the
+    # local-table row selected by octets, and the accuracy facts ride the
     # provenance document: even f000 is stamped a forecast in the bytes,
     # and the one analysis-stamped product has no land surface at all.
     # Selectors were authored from real 2026-08-17 06Z bytes through the
@@ -514,6 +544,47 @@ def packaged_member_grammar(grammar_id: str) -> Path:
     return path
 
 
+def packaged_normalizer_ids() -> tuple[str, ...]:
+    """Every input normalizer this distribution ships, sorted."""
+
+    return tuple(sorted(
+        str(row["input_normalizer"]) for row in _PACKAGED_PROFILES.values()
+        if row.get("input_normalizer")))
+
+
+def _normalizer_profile(name: str) -> str:
+    for profile_id, row in _PACKAGED_PROFILES.items():
+        if row.get("input_normalizer") == name:
+            return profile_id
+    raise KeyError(
+        f"unknown packaged input normalizer {name!r}; this distribution "
+        f"ships {list(packaged_normalizer_ids())}"
+    )
+
+
+def packaged_normalization(name: str) -> Path:
+    """Resolve and byte-verify one packaged normalization document.
+
+    The argument is the NORMALIZER NAME a profile declares, not a path: a
+    name this distribution does not ship never becomes a file read.
+    """
+
+    profile_id = _normalizer_profile(name)
+    profile = _PACKAGED_PROFILES[profile_id]
+    file_name = profile["files"]["normalization"]      # type: ignore[index]
+    expected = profile["sha256"]["normalization"]      # type: ignore[index]
+    path = (_AUTHORITY_ROOT / str(file_name)).resolve()
+    if not path.is_file():
+        raise FileNotFoundError(
+            f"packaged {profile_id} normalization authority is missing: {path}")
+    observed = hashlib.sha256(path.read_bytes()).hexdigest()
+    if observed != expected:
+        raise RuntimeError(
+            f"packaged {profile_id} normalization authority hash differs: "
+            f"expected {expected}, got {observed}")
+    return path
+
+
 def packaged_profile(profile_id: str) -> Mapping[str, object]:
     """The declaration for one packaged profile, or a useful refusal."""
 
@@ -692,6 +763,7 @@ def packaged_gfs_vtable_sha256() -> str:
 
 __all__ = [
     "PROFILE_ROLES", "packaged_authorities", "packaged_authority_sha256",
+    "packaged_normalization", "packaged_normalizer_ids",
     "packaged_composition",
     "packaged_contributing_mappings", "packaged_contributing_sha256",
     "packaged_gfs_vtable", "packaged_gfs_vtable_sha256",

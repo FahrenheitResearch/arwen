@@ -230,10 +230,10 @@ def test_bandwidth(cfg_nx: int = 1024, cfg_ny: int = 1024,
     store.assert_pinned()
 
     result = store.measure_h2d_bandwidth(min_bytes=512 << 20, repeats=7)
-    gate("bandwidth measured from >= 256 MB", result["honest"],
+    gate("bandwidth measured from >= 256 MB", result["accurate"],
          f"{result['bytes'] / (1 << 20):.1f} MB in "
          f"{result['n_transfers']} transfers")
-    if result["honest"]:
+    if result["accurate"]:
         print(f"    PINNED H2D: peak {result['gb_per_s']:.1f} GB/s, "
               f"median {result['gb_per_s_median']:.1f} GB/s")
         print(f"    samples: "
@@ -343,7 +343,7 @@ def test_larger_than_vram() -> None:
           f"GiB total, {mem['available'] / HS.GIB:.1f} GiB available")
 
     # Start at 1.15x VRAM and back off.  A neighbouring workload can make the
-    # big size genuinely impossible, and the honest thing is to report the
+    # big size genuinely impossible, and the accurate thing is to report the
     # largest store actually achieved rather than to fail or to silently pass.
     store = None
     elapsed = 0.0

@@ -1060,8 +1060,12 @@ def test_containment_unknown_key_refuses_by_name():
             "containment": {"grid_id": 2, "deadband_cell": 8}}})
 
 
-def _tree3():
-    """d01 -> d02 (real CPU state) -> d03 (stub, earth-fixed under slides)."""
+def _tree3(d03_start=(70, 56)):
+    """d01 -> d02 (real CPU state) -> d03 (stub, earth-fixed under slides).
+
+    ``d03_start`` places the mover inside d02: centred is (56, 56), so
+    the deviation the containment leg answers is the offset from there.
+    """
     from dataclasses import replace
 
     parent_plane, parent, child = _cpu_tree()
@@ -1069,7 +1073,8 @@ def _tree3():
                       dx=child.cfg.run.dx / 3, dy=child.cfg.run.dy / 3,
                       dt=child.cfg.run.dt / 3)
     d03_cfg = replace(child.cfg, grid_id=3, parent_id=2,
-                      i_parent_start=70, j_parent_start=56,
+                      i_parent_start=int(d03_start[0]),
+                      j_parent_start=int(d03_start[1]),
                       parent_grid_ratio=3, run=d03_run)
     d03 = SimpleNamespace(
         cfg=d03_cfg, state=SimpleNamespace(), grid="d03-grid",
@@ -1110,12 +1115,16 @@ def test_earth_fixed_descendant_holds_still_while_its_parent_slides():
 
 
 def _containment_runner(parent, child, d03, parent_plane, *,
-                        deadband=8, receipts_path=None):
-    cfg = _build3({"relocation": {
-        "enabled": True, "grid_id": 3, "max_move_parent_cells": 4,
+                        deadband=8, receipts_path=None, mover_cap=4,
+                        contain_cap=2, min_overlap_fraction=None):
+    relocation = {
+        "enabled": True, "grid_id": 3, "max_move_parent_cells": mover_cap,
         "cadence_seconds": 600.0, "follow": dict(_PRESSURE_FOLLOW),
         "containment": {"grid_id": 2, "deadband_cells": deadband,
-                        "max_move_parent_cells": 2}}})
+                        "max_move_parent_cells": contain_cap}}
+    if min_overlap_fraction is not None:
+        relocation["min_overlap_fraction"] = min_overlap_fraction
+    cfg = _build3({"relocation": relocation})
     schedule = SimpleNamespace(
         clock=SimpleNamespace(tick_den=1), period_ticks=60)
     runner = RelocationRunner(
@@ -1154,10 +1163,13 @@ def test_containment_slides_the_parent_and_compensates_the_mover():
     assert events == ["contained", "held"]
     contained = runner.receipts[0]
     # d03 span 10 in d02 cells; centered start (120-10)//2+1 = 56, so a
-    # placement of 70 deviates +14; want = round(14/3) = 5, clamped to 2.
+    # placement of 70 deviates +14; the slide ASKS for round(14/3) = 5
+    # and its own cap of 2 cuts it, which the row now names rather than
+    # rewriting the request in place and reporting them equal.
     assert contained["mover_deviation_cells"] == [14, 0]
-    assert contained["requested_shift_parent_cells"] == [2, 0]
+    assert contained["requested_shift_parent_cells"] == [5, 0]
     assert contained["executed_shift_parent_cells"] == [2, 0]
+    assert contained["clamped_by"] == ["containment.max_move_parent_cells"]
     assert child.cfg.i_parent_start == 85 + 2
     assert d03.cfg.i_parent_start == 70 - 6
     assert d03.state is d03_state

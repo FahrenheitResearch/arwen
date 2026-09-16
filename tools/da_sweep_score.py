@@ -715,7 +715,7 @@ def score_leg(*, composites: Path, obs_path: Path, leg: int, dx_km: float,
             "box_km_requested": requested,
             "half_width_cells": hw,
             "box_cells_across": 2 * hw + 1,
-            # What was actually scored: the honest label, which is not
+            # What was actually scored: the accurate label, which is not
             # always what was asked for.
             "box_km_across": round((2 * hw + 1) * dx_km, 3),
             "fss30_fcst": _fss(fcst, obs_comp, threshold=threshold,

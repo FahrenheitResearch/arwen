@@ -108,7 +108,7 @@ def test_smag2d_hd_matches_reference():
 @pytest.mark.parametrize("open_x,open_y",
                          [(True, False), (False, True), (True, True)])
 def test_smag2d_hd_open_matches_mirror(open_x, open_y):
-    """Open-BC smag application (kernel honest boundary read + width-1
+    """Open-BC smag application (kernel accurate boundary read + width-1
     strip zeroing) vs the float64 mirror with the same flags, all four
     staggers.
 
@@ -119,7 +119,7 @@ def test_smag2d_hd_open_matches_mirror(open_x, open_y):
     at 2834-2837/2861) -- NOT the wrapped opposite-boundary value (the
     Task-12 final-review fix).  The staggered fields here carry a
     boundary column/row DISTINCT from column/row 0, so the wrap and the
-    honest read provably differ.
+    accurate read provably differ.
     """
     import cupy as cp
 
@@ -172,7 +172,7 @@ def test_smag2d_hd_open_matches_mirror(open_x, open_y):
             assert (got[:, -1:, :] == 0.0).all(), stag
             assert np.abs(got[:, 1, :]).max() > 0.0, stag
             assert np.abs(got[:, -2, :]).max() > 0.0, stag
-        # Honest-read pin, mirror-independently meaningful: at the
+        # Accurate-read pin, mirror-independently meaningful: at the
         # boundary-normal live face the open answer must differ from the
         # periodic wrap's (the boundary datum differs from column/row 0
         # by construction) and the device kernel must match the OPEN form.

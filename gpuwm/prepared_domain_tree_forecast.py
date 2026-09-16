@@ -711,7 +711,7 @@ def resolve_execution_plan(exp) -> Mapping[str, object]:
     runs the same clock table whose feedback positions were always
     present (gpuwm/core/clock.py, WRF mediation_integrate.F:443/:523).
     With the coupler's transaction implemented end to end (restriction,
-    the interp_fcn.F smoothers, windowed re-diagnosis), the honest answer
+    the interp_fcn.F smoothers, windowed re-diagnosis), the accurate answer
     is the run.  The coupler still refuses the configurations feedback
     cannot serve (mixed microphysics, unequal nz, mismatched inventories)
     by name at construction.
@@ -1411,7 +1411,7 @@ def preflight_prepared_tree(
     validate_boundary_timing(exp, int(interval_hours * 3600),
                              source="prepared tree forcing")
     if exp.run_seconds > forcing_hours[-1] * 3600.0:
-        # The gate that keeps a longer run_seconds honest.  A restart may
+        # The gate that keeps a longer run_seconds accurate.  A restart may
         # extend the forecast, but only into boundaries this tree was
         # actually prepared with; naming both numbers is what tells the
         # user whether to shorten the run or re-prepare from more forcing.
@@ -1771,7 +1771,7 @@ def _corridor_echo(corridors):
 
 
 def _completed_execution_report(model):
-    """The honest zero-work report for a restore that landed on the stop.
+    """The accurate zero-work report for a restore that landed on the stop.
 
     Counters stay at zero because nothing was integrated, and the clocks
     are the restored clocks, which is what every downstream consumer of
@@ -1930,6 +1930,8 @@ def run_prepared_tree(
     from gpuwm.core.gpu_mem_watch import (
         GpuPeakMemoryWatcher,
         default_cupy_probes,
+        nvidia_smi_process_probes,
+        process_memory_receipt,
     )
     from gpuwm.core.health import StateHealthValidator, health_validator_for_domain
     from gpuwm.core.model import (
@@ -2476,7 +2478,7 @@ def run_prepared_tree(
     # route wires the SAME RelocationRunner the case-data route does --
     # corridor crops standing in for per-footprint GEOG rebuilds --
     # which is exactly what makes the preflight's corridor-less refusal
-    # honest rather than permanent.  Bounds-only [relocation] builds no
+    # accurate rather than permanent.  Bounds-only [relocation] builds no
     # runner, exactly as everywhere else.
     relocation_runner = (
         runtime.build_prepared_tree_relocation_runners(
@@ -2643,7 +2645,11 @@ def run_prepared_tree(
     # 22.34 GiB true on the four-domain tree shape).  The watcher polls
     # from a daemon thread as well, and the boundary/end-of-run
     # sample() calls below fold into the same maxima.
-    memory_watch = GpuPeakMemoryWatcher(default_cupy_probes())
+    # The per-process NVML views ride beside the runtime and pool views
+    # so the receipt can say WHOSE bytes the card carried: a foreign
+    # process sharing the card was otherwise read as this run's growth.
+    memory_watch = GpuPeakMemoryWatcher(
+        default_cupy_probes() + nvidia_smi_process_probes())
 
     writers = (
         PerDomainWrfoutWriters(
@@ -2921,6 +2927,12 @@ def run_prepared_tree(
     outputs = file_records(
         wrfout_paths, completed=getattr(writers, "completed_records", ()))
     timing["total"] = time.perf_counter() - started_total
+    # The MYNN column width this process derived, or None when the scheme
+    # never ran.  Read here rather than at build time so the register count
+    # beside it is the compiled kernel's, not an assumption.
+    from gpuwm.core.mynn_pbl_scratch import mynn_column_chunk_receipt
+
+    mynn_column_chunk = mynn_column_chunk_receipt()
     report = {
         **({} if inputs.physics_profile_assertion is None else
            {"physics_profile_assertion": dict(inputs.physics_profile_assertion)}),
@@ -3022,7 +3034,20 @@ def run_prepared_tree(
                 "cupy_pool_total"),
             "cupy_pool_peak_used_bytes_observed": memory_watch.peak_bytes(
                 "cupy_pool_used"),
+            # WHOSE bytes: this process, every other process on the card,
+            # the card itself, and how long the card was shared.  None
+            # where NVML cannot attribute memory per process.
+            **process_memory_receipt(memory_watch),
             "preflight_alloc_estimate_bytes": int(estimate.alloc_estimate_bytes),
+            # HOW WIDE the MYNN column workspace was made, and from which
+            # card terms.  It is the largest single scratch family a
+            # bl_pbl_physics=5 run holds and it is derived from the device
+            # rather than fixed, so the number that explains this run's
+            # floor belongs beside the floor.  Absent -- and the receipt
+            # therefore byte-identical to the one written before the width
+            # was derived -- whenever MYNN never ran.
+            **({"mynn_column_chunk": mynn_column_chunk}
+               if mynn_column_chunk else {}),
             # What each number above actually measured, how often it was
             # sampled, and whether observation stayed complete.
             "gpu_peak_sampling": memory_watch.summary(),
@@ -3123,7 +3148,7 @@ def run_prepared_tree(
             # Both DETERMINISM.md byte pins bind here, git or no git:
             # this route refuses to start unless the experiment TOML
             # matches --experiment-config-sha256, so the pin's value
-            # exists on every run (the 4090 stress run's honesty
+            # exists on every run (the 4090 stress run's accuracy
             # finding was this route's sibling reporting it
             # "unavailable" on the published wheel).
             "config_bytes": {

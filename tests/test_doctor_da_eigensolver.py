@@ -52,7 +52,7 @@ def test_no_cusolver_is_still_verified_and_says_the_default_does_not_need_it(
     """THE branch this check was written for.
 
     A box with no cuSOLVER runs data assimilation perfectly well now, so the
-    honest verdict is "verified", with the absence reported as news and the
+    accurate verdict is "verified", with the absence reported as news and the
     install printed for the cases that still want it.  Calling it a failure
     would train the reader to ignore the line.
     """

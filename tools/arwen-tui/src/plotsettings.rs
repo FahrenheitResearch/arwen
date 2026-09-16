@@ -1,6 +1,7 @@
 //! Per-configuration plot requests. The engine still owns product availability.
 use super::{
-    button_bar, clickable_list, display_path, key_hit, safe, Hit, HitRegion, INK, MUTED, TEAL,
+    button_bar, clickable_list, display_path, key_hit, safe, Hit, HitRegion, AMBER, INK, MUTED,
+    TEAL,
 };
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
@@ -11,6 +12,7 @@ use ratatui::{
     Frame,
 };
 use std::{
+    collections::BTreeMap,
     fs,
     io::Write,
     path::{Path, PathBuf},
@@ -30,6 +32,10 @@ const REVIEW_NOTICE: &str =
     "Review the request, then Save plots. This does not start rendering or a forecast.";
 const TEXT_NOTICE: &str =
     "Edit comma-separated selectors. Use Ctrl+U to clear, then Review before saving.";
+/// How many unserved products a preset row names before it counts the rest.
+const NAMED_UNSERVED: usize = 4;
+/// How many wrapped lines one recorded reason gets in Review.
+const REASON_LINES: usize = 3;
 
 #[derive(Clone, Debug)]
 pub struct Preset {
@@ -216,11 +222,31 @@ pub fn inherit(source: &Path, destination: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// One reply from the catalog query.
+///
+/// The product menu can fail -- it takes a resolvable renderer -- while
+/// the packaged lane record cannot: it is a file in the install. They
+/// travel together and are kept separately for that reason, so a reader
+/// whose renderer is missing still gets the statement about what this
+/// install will not draw instead of an empty dialog.
+struct Answer {
+    products: Result<Vec<String>, String>,
+    unavailable: BTreeMap<String, String>,
+    basis: Option<String>,
+}
+
 #[derive(Default)]
 pub struct Catalog {
     python: Option<PathBuf>,
-    receiver: Option<mpsc::Receiver<Result<Vec<String>, String>>>,
+    receiver: Option<mpsc::Receiver<Answer>>,
     pub products: Vec<String>,
+    /// Per product, the recorded reason this install will not draw it,
+    /// as `gpuwm.tui_products.preset_availability` states it. Merged
+    /// across presets because the record answers per product, not per
+    /// preset, and a custom request is not a preset at all.
+    pub unavailable: BTreeMap<String, String>,
+    /// What that statement was decided from, in the catalog's own words.
+    pub availability_basis: Option<String>,
     pub error: Option<String>,
     pub loading: bool,
 }
@@ -234,6 +260,36 @@ impl Catalog {
             ..Self::default()
         }
     }
+    #[cfg(test)]
+    pub fn with_availability(
+        python: &Path,
+        products: Vec<String>,
+        unavailable: &[(&str, &str)],
+        basis: &str,
+    ) -> Self {
+        Self {
+            unavailable: unavailable
+                .iter()
+                .map(|(name, reason)| ((*name).to_owned(), (*reason).to_owned()))
+                .collect(),
+            availability_basis: Some(basis.to_owned()),
+            ..Self::fixture(python, products)
+        }
+    }
+    /// Which of `products` this install is recorded as unable to draw.
+    pub fn unserved(&self, products: &[String]) -> Vec<String> {
+        products
+            .iter()
+            .filter(|name| self.unavailable.contains_key(*name))
+            .cloned()
+            .collect()
+    }
+    /// The recorded reason for one product, or nothing said about it.
+    /// Absence is not a verdict: the record states reasons, never a
+    /// roster, so a product it does not carry simply runs.
+    pub fn reason(&self, product: &str) -> Option<&str> {
+        self.unavailable.get(product).map(String::as_str)
+    }
     pub fn request(&mut self, python: &Path, cwd: &Path) {
         if self.python.as_deref() == Some(python) && (self.loading || !self.products.is_empty()) {
             return;
@@ -242,6 +298,8 @@ impl Catalog {
         let cwd = cwd.to_owned();
         self.python = Some(python.clone());
         self.products.clear();
+        self.unavailable.clear();
+        self.availability_basis = None;
         self.error = None;
         self.loading = true;
         let (sender, receiver) = mpsc::channel();
@@ -255,10 +313,15 @@ impl Catalog {
             return;
         };
         match receiver.try_recv() {
-            Ok(result) => {
+            Ok(answer) => {
                 self.loading = false;
                 self.receiver = None;
-                match result {
+                // The record is kept whichever way the menu went: what
+                // this install cannot draw does not become unknown
+                // because the renderer could not be asked.
+                self.unavailable = answer.unavailable;
+                self.availability_basis = answer.basis;
+                match answer.products {
                     Ok(products) => {
                         self.products = products;
                         self.error = None;
@@ -300,7 +363,11 @@ mod tests {
     fn explicit_plot_choices_persist_without_mutating_science_and_exports_inherit() {
         let config = config();
         let original = fs::read(&config).unwrap();
-        assert_eq!(load(&config).unwrap().spec.split(',').count(), 25);
+        // 24, not the 25 this pinned before: simulated_ir_satellite
+        // left the general preset and carries its reason instead, so
+        // the default request is one product shorter
+        // (gpuwm/data/tui/plot-presets.json).
+        assert_eq!(load(&config).unwrap().spec.split(',').count(), 24);
         assert!(!sidecar(&config).exists());
         let selection = Selection {
             label: "Custom".into(),
@@ -347,6 +414,64 @@ mod tests {
     }
 
     #[test]
+    fn the_picker_states_which_chosen_products_this_install_will_not_draw() {
+        // The catalog document has carried preset_availability since
+        // the availability authority landed, and nothing a reader sees
+        // carried it: the picker read the product names out of the same
+        // document and dropped the statement beside them.
+        let gust = "The wind maximum uses stored 10 m wind snapshots. It is not a gust \
+                    diagnostic; gust magnitude or a gust swath requires separate analysis.";
+        let cloud = "Cloud fraction is not written by this history lane.";
+        let catalog = Catalog::with_availability(
+            Path::new("python"),
+            vec!["total_qpf".into()],
+            &[("10m_wind_gusts", gust), ("cloud_cover", cloud)],
+            "the packaged lane record, plus the renderer's own requirement rows",
+        );
+        let rows = preset_rows(&catalog);
+        assert_eq!(rows[0].len(), 2, "the preset row states what is unserved");
+        assert!(
+            rows[0][1].contains("10m_wind_gusts") && rows[0][1].contains("cloud_cover"),
+            "{}",
+            rows[0][1]
+        );
+        assert!(
+            preset_rows(&Catalog::fixture(Path::new("python"), vec![]))
+                .iter()
+                .all(|lines| lines.len() == 1),
+            "nothing recorded, nothing stated"
+        );
+
+        let form = Form::from_selection(Selection::preset(0));
+        let review = review_rows(&form, &catalog, 200);
+        let gusts = review
+            .iter()
+            .find(|lines| lines[1].trim() == "10m_wind_gusts")
+            .expect("the general preset requests it");
+        assert!(gusts[2].contains("not drawn by this install"), "{gusts:?}");
+        assert!(
+            gusts.iter().skip(2).any(|line| line.contains("gust diagnostic")),
+            "{gusts:?}"
+        );
+        let qpf = review
+            .iter()
+            .find(|lines| lines[1].trim() == "total_qpf")
+            .expect("the general preset requests it");
+        assert_eq!(qpf.len(), 2, "a product with no recorded reason is not judged");
+
+        // A renderer that cannot be asked costs the menu, not the
+        // record: the statement is a packaged file either way.
+        let answer = parse_answer(&serde_json::json!({
+            "error": "rw_wrfbatch is not built",
+            "preset_availability": {"general": {"cloud_cover": cloud}},
+            "preset_availability_basis": "the packaged lane record only",
+        }));
+        assert!(answer.products.is_err());
+        assert_eq!(answer.unavailable["cloud_cover"], cloud);
+        assert_eq!(answer.basis.as_deref(), Some("the packaged lane record only"));
+    }
+
+    #[test]
     fn custom_picker_preserves_explicit_selectors_and_searches_human_labels() {
         let path = config();
         let mut form = Form::new(&path);
@@ -388,7 +513,7 @@ mod tests {
     }
 }
 
-fn query_catalog(python: &Path, cwd: &Path) -> Result<Vec<String>, String> {
+fn query_catalog(python: &Path, cwd: &Path) -> Answer {
     let mut command = Command::new(python);
     command
         .args(["-P", "-B", "-m", "gpuwm.tui_products", "--catalog"])
@@ -399,18 +524,53 @@ fn query_catalog(python: &Path, cwd: &Path) -> Result<Vec<String>, String> {
         use std::os::windows::process::CommandExt;
         command.creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW);
     }
-    let output = command
-        .output()
-        .map_err(|error| format!("Cannot load the installed plot catalog: {error}"))?;
+    let output = match command.output() {
+        Ok(output) => output,
+        Err(error) => {
+            return Answer::failed(format!("Cannot load the installed plot catalog: {error}"))
+        }
+    };
     if !output.status.success() {
-        return Err(format!(
+        return Answer::failed(format!(
             "Plot catalog failed: {}",
             String::from_utf8_lossy(&output.stderr).trim()
         ));
     }
-    let value: serde_json::Value = serde_json::from_slice(&output.stdout)
-        .map_err(|error| format!("Invalid catalog response: {error}"))?;
-    parse_catalog(&value)
+    match serde_json::from_slice(&output.stdout) {
+        Ok(value) => parse_answer(&value),
+        Err(error) => Answer::failed(format!("Invalid catalog response: {error}")),
+    }
+}
+
+impl Answer {
+    fn failed(error: String) -> Self {
+        Self {
+            products: Err(error),
+            unavailable: BTreeMap::new(),
+            basis: None,
+        }
+    }
+}
+
+/// The catalog document as the picker reads it: the menu, and what the
+/// install says it will not draw. One document, so the dialog and the
+/// research recipe door cannot disagree about one product.
+fn parse_answer(value: &serde_json::Value) -> Answer {
+    let mut unavailable = BTreeMap::new();
+    if let Some(presets) = value["preset_availability"].as_object() {
+        for rows in presets.values() {
+            for (product, reason) in rows.as_object().into_iter().flatten() {
+                if let Some(reason) = reason.as_str() {
+                    unavailable.insert(product.clone(), safe(reason));
+                }
+            }
+        }
+    }
+    Answer {
+        products: parse_catalog(value),
+        unavailable,
+        basis: value["preset_availability_basis"].as_str().map(safe),
+    }
 }
 
 fn parse_catalog(value: &serde_json::Value) -> Result<Vec<String>, String> {
@@ -739,6 +899,84 @@ pub fn product_label(name: &str) -> String {
     }
 }
 
+/// The preset list as the picker draws it, as text.
+///
+/// Line one is the preset; where this install is recorded as unable to
+/// draw some of its products, line two names them. The rows are built
+/// here rather than inside the drawing so the statement can be read in
+/// a test without a terminal.
+pub fn preset_rows(catalog: &Catalog) -> Vec<Vec<String>> {
+    presets()
+        .iter()
+        .map(|preset| {
+            let mut lines = vec![format!("{} ({} plots)", preset.label, preset.products.len())];
+            let unserved = catalog.unserved(&preset.products);
+            if !unserved.is_empty() {
+                let named = unserved
+                    .iter()
+                    .take(NAMED_UNSERVED)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let rest = unserved.len().saturating_sub(NAMED_UNSERVED);
+                lines.push(format!(
+                    "   {} not drawn by this install: {named}{}. Review names each reason.",
+                    unserved.len(),
+                    if rest > 0 {
+                        format!(", and {rest} more")
+                    } else {
+                        String::new()
+                    }
+                ));
+            }
+            lines
+        })
+        .collect()
+}
+
+/// The review list as the picker draws it, as text: the product, the
+/// selector, and the recorded reason this install will not draw it.
+/// A request is never narrowed to what this box happens to serve; the
+/// reader chooses with the reason in front of them.
+pub fn review_rows(form: &Form, catalog: &Catalog, width: usize) -> Vec<Vec<String>> {
+    form.tokens()
+        .into_iter()
+        .enumerate()
+        .map(|(index, token)| {
+            let mut lines = vec![
+                format!("{}. {}", index + 1, product_label(&token)),
+                format!("   {token}"),
+            ];
+            if let Some(reason) = catalog.reason(&token) {
+                let text = format!("not drawn by this install: {reason}");
+                let wrapped = super::log_display_rows(&text, width.saturating_sub(3).max(24));
+                for (row, line) in wrapped.into_iter().enumerate() {
+                    if row == REASON_LINES {
+                        lines.push("   ... (reason continues)".into());
+                        break;
+                    }
+                    lines.push(format!("   {line}"));
+                }
+            }
+            lines
+        })
+        .collect()
+}
+
+/// One line of styling law for both lists: the product, then its
+/// selector, then the recorded reason, in that order.
+fn styled(lines: Vec<String>) -> Vec<Line<'static>> {
+    lines
+        .into_iter()
+        .enumerate()
+        .map(|(index, line)| match index {
+            0 => Line::raw(line),
+            1 => Line::styled(line, Style::default().fg(MUTED)),
+            _ => Line::styled(line, Style::default().fg(AMBER)),
+        })
+        .collect()
+}
+
 pub fn draw(
     frame: &mut Frame,
     hits: &mut Vec<HitRegion>,
@@ -782,21 +1020,48 @@ pub fn draw(
     );
     match form.mode {
         Mode::Presets => {
-            let mut rows = presets()
-                .iter()
-                .map(|preset| format!("{} ({} plots)", preset.label, preset.products.len()))
-                .collect::<Vec<_>>();
-            rows.extend(["All available plots".into(), "None - skip plots".into()]);
+            let mut rows = preset_rows(catalog);
+            let stated = rows.iter().any(|lines| lines.len() > 1);
+            rows.push(vec!["All available plots".into()]);
+            rows.push(vec!["None - skip plots".into()]);
+            // The statement earns its basis line only where it says
+            // something, and only where the terminal has room for both;
+            // an install that draws every listed product gets the plain
+            // list it always had.
+            let basis = if stated {
+                catalog.availability_basis.as_deref()
+            } else {
+                None
+            };
+            let (list, footer) = match basis {
+                Some(_) if parts[1].height >= 5 => {
+                    let split = Layout::vertical([
+                        Constraint::Min(3),
+                        Constraint::Length(2),
+                    ])
+                    .split(parts[1]);
+                    (split[0], Some(split[1]))
+                }
+                _ => (parts[1], None),
+            };
             clickable_list(
                 frame,
                 hits,
-                parts[1],
+                list,
                 rows.into_iter()
                     .enumerate()
-                    .map(|(index, label)| (vec![Line::raw(label)], Hit::PlotItem(index)))
+                    .map(|(index, lines)| (styled(lines), Hit::PlotItem(index)))
                     .collect(),
                 Some(form.selected),
             );
+            if let (Some(area), Some(basis)) = (footer, basis) {
+                frame.render_widget(
+                    Paragraph::new(format!("Availability basis: {basis}"))
+                        .style(Style::default().fg(MUTED))
+                        .wrap(Wrap { trim: false }),
+                    area,
+                );
+            }
             button_bar(
                 frame,
                 hits,
@@ -883,19 +1148,10 @@ pub fn draw(
             );
         }
         Mode::Review => {
-            let rows = form
-                .tokens()
+            let rows = review_rows(form, catalog, parts[1].width as usize)
                 .into_iter()
                 .enumerate()
-                .map(|(index, token)| {
-                    (
-                        vec![
-                            Line::raw(format!("{}. {}", index + 1, product_label(&token))),
-                            Line::styled(format!("   {token}"), Style::default().fg(MUTED)),
-                        ],
-                        Hit::PlotItem(index),
-                    )
-                })
+                .map(|(index, lines)| (styled(lines), Hit::PlotItem(index)))
                 .collect();
             clickable_list(frame, hits, parts[1], rows, Some(form.selected));
             button_bar(

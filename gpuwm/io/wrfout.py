@@ -267,7 +267,7 @@ def _producer_version() -> str:
 
     :func:`gpuwm.provenance_gate.executing_version` prefers the running
     code's own declaration and falls back through the metadata to the
-    honest ``0+unknown``, so the attribute describes the bytes that
+    accurate ``0+unknown``, so the attribute describes the bytes that
     wrote the file.  On a plain wheel install the two are identical by
     construction -- pip wrote the code and the metadata together -- so
     nothing about an ordinary install's output moves.
@@ -831,7 +831,7 @@ def _live_state_history_fields(state) -> dict[str, object]:
     # terms: they exist only under sf_surface_physics=3, wrfout does not
     # auto-walk ``fields``, and the gate is the resolved routing.  RUC's
     # external names happen to be its symbols upper-cased, but they are taken
-    # from the schema anyway so that the coincidence is not load-bearing; the
+    # from the schema anyway so that the coincidence is not essential; the
     # four ruc_* driver locals have no Registry counterpart and keep their
     # prefix so nothing mistakes them for WRF output.
     if dispatch is not None:
@@ -944,7 +944,11 @@ def state_frame(
         pb = state.pb
         pb3 = pb if pb.ndim == 3 else pb[:, None, None]
         fields["P"] = cp.asnumpy(state.p - pb3)
-        fields["PB"] = cp.asnumpy(cp.broadcast_to(pb3, state.p.shape))
+        # Broadcast on the host: a state prepared on the CPU carries numpy
+        # arrays, and cp.broadcast_to refuses those where cp.asnumpy does
+        # not.  Same bytes for a device state.
+        fields["PB"] = np.ascontiguousarray(
+            np.broadcast_to(cp.asnumpy(pb3), tuple(state.p.shape)))
         if _driver_refreshes_psfc(state):
             fields["PSFC"] = cp.asnumpy(state.physics.fields["psfc"])
         elif getattr(state, "p_top", None) is not None:
@@ -1964,7 +1968,7 @@ class AsyncDomainWrfoutWriter:
         side-stream staging this class exists for becomes a no-op and the
         writer thread is fed directly.  ``tilestream.output.StoreFrame``
         builds exactly such a frame off the pinned store, in the device
-        frame's own field order (which is load-bearing: HDF5 lays its name
+        frame's own field order (which is essential: HDF5 lays its name
         heap out in variable-creation order, and the same numbers in a
         different order give a file that hashes differently while every
         variable in it compares equal).

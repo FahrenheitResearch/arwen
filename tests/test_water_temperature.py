@@ -358,7 +358,7 @@ def test_a_mapping_without_an_sst_is_the_identity_and_passes():
     which is exactly what the assembly returns for a body with no donors.
     The two are the same array, so refusing those routes would buy nothing
     and cost a connected-components pass per domain.  This test is the
-    proof of that equality, so the narrower bar stays honest.
+    proof of that equality, so the narrower bar stays accurate.
     """
     shape = (6, 7)
     land = np.zeros(shape, dtype=bool)

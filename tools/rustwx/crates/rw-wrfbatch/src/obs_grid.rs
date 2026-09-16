@@ -3,7 +3,7 @@
 //!
 //! **Why this is a reader and not a writer.**  Every other input gap this
 //! workspace had was closed by writing a wrfout, because the producer held
-//! a full model state and a wrfout is the honest container for one.  This
+//! a full model state and a wrfout is the accurate container for one.  This
 //! file is the exception in both directions: it is ALREADY classic NetCDF
 //! carrying `XLAT`/`XLONG` on the model mass grid, so there is nothing to
 //! convert; and wrapping observations in a wrfout would make the renderer's
@@ -22,7 +22,7 @@
 //! | `radar_id` | `(radar, nchar)` | site identifiers |
 //!
 //! A mask is `int8`, nonzero where the cell carries an observation.  The
-//! masks are load-bearing: `z_obs` is dense and its unobserved cells hold a
+//! masks are essential: `z_obs` is dense and its unobserved cells hold a
 //! fill value, so a reduction that ignores `z_mask` maps the fill onto the
 //! colour table and paints observations where the radars saw nothing.
 //!
@@ -637,7 +637,7 @@ fn read_radars(nc: &NcFile, path: &Path) -> Result<Vec<RadarSite>, String> {
 ///
 /// 0.02 deg is about 2 km.  The table's own coordinates are published to
 /// four decimals and the volumes' Message-31 VOL blocks agree with them to
-/// ~0.001 deg, so the honest fixes all land far inside this; the nearest
+/// ~0.001 deg, so the accurate fixes all land far inside this; the nearest
 /// pair of WSR-88D sites in the network is two orders of magnitude further
 /// apart than this, so a match inside it is unique or it is not a match.
 pub const SITE_MATCH_TOLERANCE_DEG: f64 = 0.02;

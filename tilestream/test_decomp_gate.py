@@ -37,7 +37,7 @@ The transfer path is named rather than assumed.  Every rank's arrays come back
 through ``cupy.ndarray.get`` -- device-to-host into this process's memory, then
 compared on the host -- so the crossing is STAGED THROUGH HOST by construction
 and no peer link is involved even where the hardware has one.  That is the
-honest description of what this gate exercises; the peer-vs-staged question on
+accurate description of what this gate exercises; the peer-vs-staged question on
 the SEAM transport belongs to :mod:`tilestream.multigpu`, which chooses between
 them.
 

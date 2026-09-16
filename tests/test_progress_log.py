@@ -1546,9 +1546,20 @@ def test_the_worker_doors_carry_the_progress_flags(tmp_path, monkeypatch):
     monkeypatch.setattr(
         metem_door, "resolve_metem_run",
         lambda directory, **kwargs: SimpleNamespace(
+            toml_text="", experiment=None,
             substitution_report=SimpleNamespace(substitutions=())))
+    # Plan review reads the resolved experiment; these tests are about the
+    # progress flags, so the review is answered without one.
+    monkeypatch.setattr(metem_forecast, "resolve_metem_vertical",
+                        lambda run, text, **kwargs: None)
+    monkeypatch.setattr(metem_door, "check_analyzed_scalar_capabilities",
+                        lambda run: None)
     inputs = SimpleNamespace(experiment=SimpleNamespace(
-        start_time=datetime(2026, 5, 17, 18)))
+        start_time=datetime(2026, 5, 17, 18)), prepared_root=tmp_path / "prepared")
+    # The substitution announcement reads the preparation's import record,
+    # which the stubbed preparation never writes.
+    monkeypatch.setattr(wrfinput_forecast, "announce_wrf_substitutions",
+                        lambda run, path: None)
     monkeypatch.setattr(metem_forecast, "prepare_metem_run",
                         lambda run, directory, **kwargs: inputs)
     monkeypatch.setattr(metem_forecast, "MetemInitialization", lambda inputs: object())
@@ -1613,9 +1624,20 @@ def test_the_worker_doors_publish_markers_with_no_flags_at_all(tmp_path, monkeyp
     monkeypatch.setattr(
         metem_door, "resolve_metem_run",
         lambda directory, **kwargs: SimpleNamespace(
+            toml_text="", experiment=None,
             substitution_report=SimpleNamespace(substitutions=())))
+    # Plan review reads the resolved experiment; these tests are about the
+    # progress flags, so the review is answered without one.
+    monkeypatch.setattr(metem_forecast, "resolve_metem_vertical",
+                        lambda run, text, **kwargs: None)
+    monkeypatch.setattr(metem_door, "check_analyzed_scalar_capabilities",
+                        lambda run: None)
     inputs = SimpleNamespace(experiment=SimpleNamespace(
-        start_time=datetime(2026, 5, 17, 18)))
+        start_time=datetime(2026, 5, 17, 18)), prepared_root=tmp_path / "prepared")
+    # The substitution announcement reads the preparation's import record,
+    # which the stubbed preparation never writes.
+    monkeypatch.setattr(wrfinput_forecast, "announce_wrf_substitutions",
+                        lambda run, path: None)
     monkeypatch.setattr(metem_forecast, "prepare_metem_run",
                         lambda run, directory, **kwargs: inputs)
     monkeypatch.setattr(metem_forecast, "MetemInitialization", lambda inputs: object())

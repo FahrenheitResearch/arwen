@@ -6,6 +6,7 @@ import weakref
 
 import numpy as np
 import pytest
+from conftest import requires_wrf_eta_bridge
 
 
 def experiment(tmp_path):
@@ -110,6 +111,7 @@ def test_analyzed_aerosol_is_an_input_in_the_run_report():
     assert entry['synthetic_fallback_in_use'] is False
 
 
+@requires_wrf_eta_bridge
 def test_external_wrf_default_preserves_radiation_and_omitted_levels(tmp_path, monkeypatch, capsys):
     from gpuwm.metem_door import resolve_metem_run
     from gpuwm.wrfinput_door import resolve_wrfinput_run

@@ -62,7 +62,7 @@ ABSENT_EXTRA = "sweepfixture_extra_no_distribution_provides"
 def test_a_declared_extra_is_tolerated_and_nothing_else_is() -> None:
     """The classifier, in both directions, one shape per line.
 
-    ``netCDF4`` is the load-bearing negative: it is a BASE dependency
+    ``netCDF4`` is the essential negative: it is a BASE dependency
     (``pyproject.toml``'s ``dependencies``), so a runner that cannot import it
     has an environment that does not match what the distribution declares,
     and that is a red rather than a shrug.
@@ -163,7 +163,7 @@ def test_a_module_that_exits_at_import_is_a_failure_not_the_end_of_the_sweep(
     saw an exit status with no verdict attached -- the audit's own defect
     class, one level up: a gate that stopped measuring and said nothing.
 
-    ``z_after`` is the load-bearing half.  A sweep that merely recorded the
+    ``z_after`` is the essential half.  A sweep that merely recorded the
     exit and then stopped would still name ``a_exits``.
     """
 

@@ -221,7 +221,7 @@ def test_the_tree_route_streams_instead_of_refusing():
     read ``refuse_unrouted_streaming(exp`` out of
     ``prepared_domain_tree_forecast.py`` and pinned its source position
     ahead of the allocations -- true on the lane's own base, where the tree
-    route had no streamed-domain builder and the honest thing was to refuse
+    route had no streamed-domain builder and the accurate thing was to refuse
     before spending VRAM.  On the release line the route WIRES the builders
     (``steppers_for_tree`` with ``builders_for_tree``), the file carries a
     deliberate no-refusal comment at the old call site, and its sibling test

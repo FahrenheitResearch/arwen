@@ -296,7 +296,7 @@ COVERAGE_RULE = (
 )
 
 #: What an ACCEPTED row here does and does not entitle a reader to claim.
-#: Stated because the honest boundary of a measurement is part of it.
+#: Stated because the accurate boundary of a measurement is part of it.
 SCOPE = {
     "what_is_measured": (
         "CONFIG ADMISSION: gpuwm.experiment.build_experiment resolving an "

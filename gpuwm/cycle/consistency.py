@@ -60,7 +60,7 @@ not 2e-16.
 
 The threshold below is unchanged, and deliberately so.  It sits above
 the float32 floor and three orders below the smallest departure anybody
-would call an analysis; the honest statement of its margin is in the
+would call an analysis; the accurate statement of its margin is in the
 constant's own note.
 """
 
@@ -73,7 +73,7 @@ import numpy as np
 from gpuwm.cycle.contracts import CONSISTENCY_SCHEMA, CycleRefusal
 
 #: The default gate.  Justified against the measured floor rather than a
-#: guess, and stated honestly for BOTH precisions the spine sees:
+#: guess, and stated accurately for BOTH precisions the spine sees:
 #:
 #: * a float64 self-consistent state (the synthetic replay path) floors
 #:   at ~1e-16, so 1e-6 clears it by ten orders of magnitude;

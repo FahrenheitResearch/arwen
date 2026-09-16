@@ -38,7 +38,7 @@
     "tests/test_doctor_da_eigensolver.py": 4.75,
     "tests/test_doctor_extras.py": 7.23,
     "tests/test_doctor_nexrad.py": 0.11,
-    "tests/test_doctor_route_honesty.py": 4.42,
+    "tests/test_doctor_route_accuracy.py": 4.42,
     "tests/test_domain_wizard.py": 379.85,
     "tests/test_downward_longwave_source.py": 0.01,
     "tests/test_dual_run_screen.py": 0.05,

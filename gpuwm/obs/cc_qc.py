@@ -178,7 +178,7 @@ unconditionally below its own threshold; it defaults **off** because
 the debris and hail reflectivity it would delete is exactly what the
 shield exists to keep.
 
-Two smaller honesties, since a docstring that overstates is worse than
+Two smaller qualifications, since a docstring that overstates is worse than
 one that omits.  Companion pairing is guarded by an elevation
 tolerance, but adjacency alone does not make a different tilt
 impossible: a Doppler cut whose preceding neighbour lacks RhoHV can
@@ -527,7 +527,7 @@ def _nearest_azimuth_rows(target_az: np.ndarray, source_az: np.ndarray,
     """For each target radial, the nearest source radial by azimuth.
 
     Circular in azimuth (359.8 and 0.1 are 0.3 degrees apart), vectorized,
-    and honest about failure: a target radial with no source radial
+    and accurate about failure: a target radial with no source radial
     within ``tolerance_deg`` maps to ``-1``, which the masker treats as
     "no RhoHV here" -- pass open, counted.
     """

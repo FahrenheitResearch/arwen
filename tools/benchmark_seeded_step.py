@@ -198,7 +198,7 @@ def _source_identity() -> dict[str, object]:
     tree, installed wheel), and the real HRRR benchmark binds its
     identity through exactly that call.  Same call here rather than a
     third convention.  ``commit`` is retained beside it so a v1 consumer
-    reading that key still finds it; on a wheel it is honestly ``None``
+    reading that key still finds it; on a wheel it is accurately ``None``
     and ``installed_wheel`` carries the identity pip actually installed.
     """
 

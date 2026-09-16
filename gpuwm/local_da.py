@@ -100,7 +100,7 @@ REVIEW_REFUSAL_CODES = ("FORCING_HORIZON", "INVALID_PLAN",
 LAUNCH_REFUSAL_CODES = ("CONFIGURATION_CHANGED",
                         "MISSING_GEOGRAPHY", "OBSERVATION_CHANGED",
                         "PLAN_SCHEMA", "REVIEW_CHANGED", "ROSTER_CHANGED")
-RUN_REFUSAL_CODES = ("ANALYSIS_ROSTER", "CWP_OPERATOR_UNAVAILABLE", "MISSING_MANIFEST", "MISSING_SURFACE",
+RUN_REFUSAL_CODES = ("ANALYSIS_ROSTER", "CONTINUOUS_WINDOW_FAILED", "CWP_OPERATOR_UNAVAILABLE", "MISSING_MANIFEST", "MISSING_SURFACE",
                      "OBSERVATION_WINDOW_CHANGED", "OUTPUT_CHANGED",
                      "PREPARATION_CHANGED", "REFERENCE_CHANGED",
                      "SURFACE_CHANGED")
@@ -233,8 +233,11 @@ class Request:
     radar_grids: tuple[str, ...] = ()
     satellite_grids: tuple[str, ...] = ()
     base_seed: int = 0
+    continuous_windows: int = 0
 
     def validate(self):
+        if type(self.continuous_windows) is not int or self.continuous_windows < 0:
+            raise PlanError('continuous_windows must be a whole number of analysis windows: 0 runs the reviewed finite cycle, N runs N continuous windows.')
         utc(self.epoch)
         from gpuwm.regional_preparation import validate_request
         validate_request(self)
@@ -641,8 +644,11 @@ def _build_plan(request: Request, *, availability: Callable | None = None,
         configuration=dict(experiment=text, wps=wps, ensemble=render_tables(ensemble)),
         inputs={path: hashlib.sha256(Path(path).read_bytes()).hexdigest()
                 for paths in (request.obs_tables, request.radar_grids, request.satellite_grids) for path in paths})
+    if request.continuous_windows:
+        from gpuwm.local_da_controller import review_contract
+        result['continuous'] = review_contract(request.continuous_windows)
     result['review_sha256'] = digest(result)
-    if sorted(result) != sorted(REVIEW_FIELDS):
+    if sorted(result) != sorted(set(REVIEW_FIELDS) | ({'continuous'} if request.continuous_windows else set())):
         raise PlanError(
             "the review document carries fields the companion protocol does "
             f"not describe: {sorted(set(result) ^ set(REVIEW_FIELDS))}; add "
@@ -673,7 +679,11 @@ def publish(plan: dict, directory: str | Path) -> dict:
         except OSError:
             pass
         raise
-    return dict(plan_path=str(root / 'local-da.json'), review_sha256=plan['review_sha256'], forecast_started=False)
+    result = dict(plan_path=str(root / 'local-da.json'), review_sha256=plan['review_sha256'], forecast_started=False)
+    if plan.get('continuous', {}).get('enabled'):
+        result.update(status_path=str(root / plan['continuous']['status_relative_path']),
+                      control_path=str(root / plan['continuous']['control_relative_path']))
+    return result
 
 
 def request_from_json(raw: dict) -> Request:
@@ -696,7 +706,14 @@ def protocol_document() -> dict:
     from gpuwm.ensemble.config import MAX_MEMBERS
     from gpuwm.da.cadence import TUNED_BASELINE_INTERVAL_S
     from gpuwm.background_contract import catalog
+    from gpuwm.local_da_controller import capability_contract
+    from gpuwm.local_da_score import SUMMARY_SCHEMA as NOWCAST_SUMMARY_SCHEMA
+    from gpuwm.verify.obs.nowcast import (
+        DEFAULT_LEAD_MINUTES as NOWCAST_LEAD_MINUTES,
+        LEAD_STATUSES as NOWCAST_LEAD_STATUSES,
+        NOWCAST_SCORE_SCHEMA)
     return dict(schema='arwen.companion-local-da.v1', request_schema=REQUEST_SCHEMA,
+        continuous=capability_contract(), optional_review_fields=['continuous'],
         background_catalog=catalog(), review_schema=SCHEMA, request_fields=list(Request.__dataclass_fields__),
         card_fields=list(Card.__dataclass_fields__),
         review_fields=sorted(REVIEW_FIELDS), document=COMPANION_DOCUMENT,
@@ -715,9 +732,22 @@ def protocol_document() -> dict:
         maximum_forecast_members=MAX_MEMBERS, baseline_cadence_seconds=TUNED_BASELINE_INTERVAL_S,
         defaults=dict(scale=1, forecast_seconds=DEFAULT_FORECAST_SECONDS,
             budget_seconds=DEFAULT_BUDGET_SECONDS, host_gib=32., speed_factor=1.),
+        nowcast_score=dict(schema=NOWCAST_SCORE_SCHEMA, summary_schema=NOWCAST_SUMMARY_SCHEMA,
+            default=True, receipt_relative_path='nowcast-score.json',
+            window_receipt_relative_path='continuous/window_{index:06d}/nowcast-score.json',
+            lead_minutes=list(NOWCAST_LEAD_MINUTES), lead_statuses=list(NOWCAST_LEAD_STATUSES),
+            baseline='radar persistence at the same lead, with the difference',
+            summary_lead_fields=['lead_minutes', 'valid_time', 'status', 'primary_fss',
+                'persistence_primary_fss', 'difference_primary',
+                'primary_observed_base_rate', 'primary_model_base_rate', 'reason'],
+            empty_box_note=('an FSS of 1 with primary_observed_base_rate 0.0 means the radar '
+                'found no echo at the primary threshold in the scored interior, not a perfect '
+                'forecast: persistence scores 1 there too and the difference is 0.0'),
+            score_command=['local-da', '--score', '{plan_path}']),
         commands=dict(review=['local-da', '--request-json', '-', '--dry-run'],
             publish=['local-da', '--request-json', '-', '--out', '{directory}'],
             launch=['local-da', '--launch', '{plan_path}'],
+            score=['local-da', '--score', '{plan_path}'],
             read_review=['local-da', '--launch', '{plan_path}', '--dry-run']),
         transport='one JSON document on stdout; diagnostics on stderr; argv without a shell',
         confirmation='Display the published review and require explicit launch approval.')
@@ -736,11 +766,30 @@ def _source_role_arguments(values):
 def main(args) -> int:
     from gpuwm.go_cli import GoStageFailed
     try:
+        status_plan, stop_plan = getattr(args, 'status', None), getattr(args, 'stop', None)
+        score_plan = getattr(args, 'score', None)
+        if status_plan or stop_plan or score_plan:
+            if (len([v for v in (status_plan, stop_plan, score_plan) if v]) > 1
+                    or args.capabilities or args.run or args.launch
+                    or args.request_json or args.out or args.point or args.region or args.dry_run):
+                raise PlanError('--status, --stop and --score each name one saved plan; remove other review or execution arguments.')
+            if score_plan:
+                from gpuwm.local_da_score import score_case
+                result = score_case(score_plan)
+            else:
+                from gpuwm.local_da_controller import status_for_plan, stop_plan as stop_continuous
+                result = stop_continuous(stop_plan) if stop_plan else status_for_plan(status_plan)
+            print(json.dumps(result, allow_nan=False))
+            return 0
         if args.capabilities:
             if args.run or args.launch or args.request_json or args.out or args.point or args.region:
                 raise PlanError('--capabilities is inspection only; remove execution or location arguments.')
             print(json.dumps(protocol_document(), allow_nan=False))
             return 0
+        if args.continuous is not None and args.continuous < 1:
+            raise PlanError('--continuous takes a positive number of windows; omit it for the reviewed finite cycle.')
+        if args.continuous and args.launch:
+            raise PlanError('--continuous is decided at review and saved in the plan; --launch runs the saved plan as it was published.')
         if args.run and (args.dry_run or args.launch):
             raise PlanError('--run contradicts --dry-run or --launch; select review, publish-and-run, or launch-existing.')
         if args.launch and (args.request_json or args.point is not None or args.region is not None or args.out is not None):
@@ -772,7 +821,8 @@ def main(args) -> int:
                         source_inputs=_source_role_arguments(args.source_input),
                         supplements=tuple(args.supplement),
                         obs_tables=tuple(args.obs_table), radar_grids=tuple(args.radar_grid),
-                        satellite_grids=tuple(args.satellite_grid), base_seed=args.seed)
+                        satellite_grids=tuple(args.satellite_grid), base_seed=args.seed,
+                        continuous_windows=args.continuous or 0)
                 from functools import lru_cache
                 from gpuwm.fetch import _head_ok
                 # One review samples each URL once; launch keeps its exact
@@ -846,5 +896,9 @@ def register_cli(subparsers):
     p.add_argument('--json', action='store_true', help='emit the review as one JSON document on stdout, which this door always does; accepted so a companion can state it')
     p.add_argument('--run', action='store_true', help='launch after publishing the reviewed configuration')
     p.add_argument('--launch', type=Path, help='launch or resume an existing local-da.json')
+    p.add_argument('--continuous', type=int, metavar='WINDOWS', help='cycle continuously for WINDOWS analysis windows at the reviewed cadence: each window restarts from the previous analysis, assimilates, forecasts and renders, and the boundary forcing is renewed from the same source cycle when a window reaches past it; --status and --stop address the saved plan')
+    p.add_argument('--status', type=Path, metavar='PLAN', help='print the continuous status document of a saved plan with its controller liveness, and exit')
+    p.add_argument('--stop', type=Path, metavar='PLAN', help='ask the running continuous controller of a saved plan to stop after its current operation; the request is durable, and a launch made while no controller runs clears it and resumes, so ask again after that launch to stop it')
+    p.add_argument('--score', type=Path, metavar='PLAN', help='score every still-unscored nowcast lead of a saved plan now and exit: each completed window is graded against the MRMS composite nearest 15, 30, 45 and 60 minutes after its analysis, beside the radar-persistence baseline and the difference, and each window receipt is rewritten; a run scores its own leads by default, so this is for the leads whose valid time had not arrived when the run finished')
     p.set_defaults(func=main)
     return p

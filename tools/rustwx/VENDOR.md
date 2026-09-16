@@ -113,7 +113,7 @@ both orientations, with and without titles and timestamps, at three sizes.
    APCP) behind `apcp_run_total`, `relative_humidity_2m` behind
    `rh_2m`, and `updraft_helicity_2to5km` (Registry units spelling
    `m2/s2`) as a third UH fallback.  Plane fidelity is tracked per
-   source: the GRIB lane's `uh_2to5km` snapshot keeps its honest
+   source: the GRIB lane's `uh_2to5km` snapshot keeps its accurate
    "lower bound" note, while `updraft_helicity_2to5km` (WRF
    UP_HELI_MAX, reset each history frame) is labeled what it is --
    the exact per-history-interval max, i.e. the exact trailing 1 h
@@ -136,9 +136,23 @@ both orientations, with and without titles and timestamps, at three sizes.
    and `lcl`/`lfc`/`el` (parcel identity unverified) -- they stay
    under `wrf_*` browse names.
 10. `rw_wrfbatch --list-products` (new) enumerates the complete
-    product catalog with per-store availability, and
-    `direct/planning.rs::direct_recipe_requires_explicit_opt_in` is
-    `pub` so the lister applies the exact planner filter.
+    product catalog with per-store availability.  Each `PRODUCT` row
+    carries SIX tab-separated fields: `slug`, `kind`, `status`,
+    `detail` and a stable machine `code`.  The detail is the prose a
+    reader sees and may be reworded; the code is what a consumer
+    decides on, so a reworded reason cannot turn an excluded slug back
+    into a forwarded one.  The row set is COMPLETE: the
+    ensemble/probabilistic families stay out of the `all` expansion
+    (`direct/planning.rs::direct_recipe_requires_explicit_opt_in`, whose
+    two callers are the planner's own expansions) but they are listed,
+    with the status their stored fields justify and the code
+    `opt-in-ensemble-family`, because a slug a user is told to name
+    explicitly and cannot discover is unreachable.  With NO input files
+    the same mode additionally prints the fileless requirement pair --
+    `NEEDS<TAB>slug<TAB>selector...` from
+    `plot_recipe_store_requirements` and `PLANNED<TAB>store_field` from
+    `WrfProcessOptions::planned_store_fields` -- which is how a plan
+    review answers availability before any wrfout exists.
 11. Store-backed availability is model-identity-free end to end.
     `rustwx_models::plot_recipe_store_requirements` (new) enumerates a
     recipe's required fields/selectors without a `ModelId`;
@@ -298,7 +312,7 @@ both orientations, with and without titles and timestamps, at three sizes.
     `GRID_ID`/`DX` reading that already names the output files -- so the
     headline reads `MSLP / 10m Winds (d02 750 m)`.  When the file
     declares no usable grid, the headline carries no parenthetical at
-    all: no parenthetical is honest where a borrowed one is not.
+    all: no parenthetical is accurate where a borrowed one is not.
 
 19. A terrain product (`terrain_height`, `RenderStyle::WeatherTerrain`).
     The catalog had no orography frame, so nothing in it showed a
@@ -599,14 +613,20 @@ both orientations, with and without titles and timestamps, at three sizes.
       mean of reflectivity wears the same NWS dBZ table the deterministic
       panel wears.  Paintball is N `ContourLayer`s at one level with one
       stable colour per member NUMBER -- expressible today, no new render
-      primitive.
+      primitive.  A member directory holding two nests is two forecasts,
+      so the roster loader refuses it rather than pick; `--domain dNN` is
+      how the operator picks, applied to every member by the same token
+      in both the `--manifest` and the `--member DIR` routes, and named
+      in the ambiguity refusal itself.  The python half
+      (`gpuwm/da/enprod.py`) forwards its own `--domain` here, so the
+      flag is a contract between the two halves and not a convenience.
     * `rw_obsgrid` -- the `gpuwm-obs.radar-grid.v1` observation grid, read
       NATIVELY.  This is the one input gap closed by a reader rather than
       a writer, and deliberately: the file is already classic NetCDF on
       the model mass grid, and wrapping observations in a wrfout would
       make `TitleProvenance::LocalImport` state that a model produced
       them.  Products: observed composite reflectivity (masked column max
-      over OBSERVED levels only -- the mask is load-bearing, since the
+      over OBSERVED levels only -- the mask is essential, since the
       dense array's unobserved cells hold a fill value), coverage depth,
       radar-overlap count, and radial velocity at each column's lowest
       observed level on a symmetric diverging scale.
@@ -714,8 +734,8 @@ both orientations, with and without titles and timestamps, at three sizes.
       and three more save sites, all of the same shape.
     * There is no FOOTER BAND.  `MapRenderRequest` has a title and three
       subtitle slots and no fourth text region, so
-      `bigdomain_render.py`'s multi-paragraph `IC_FOOTER` honesty block
-      has nowhere honest to go and is not silently squeezed into a
+      `bigdomain_render.py`'s multi-paragraph `IC_FOOTER` accuracy block
+      has nowhere accurate to go and is not silently squeezed into a
       subtitle.  Note also that the renderer centres `subtitle_center` on
       the PANEL rather than in the gap between the other two slots, so a
       long centre string overlaps them; the schema's doc comment says so.

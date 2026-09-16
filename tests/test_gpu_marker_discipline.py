@@ -86,7 +86,7 @@ def _collect(path: pathlib.Path, selection: str | None) -> set[str]:
     )
     # 0 = something was collected, 5 = nothing matched the selection.  Any
     # other code is a crashed or erroring collection, and the empty set it
-    # yields is indistinguishable from an honest "no such tests" -- which
+    # yields is indistinguishable from an accurate "no such tests" -- which
     # makes the leak gate below pass VACUOUSLY, the one failure mode this
     # file exists to prevent.  Say so instead of answering nothing.
     if proc.returncode not in (0, 5):

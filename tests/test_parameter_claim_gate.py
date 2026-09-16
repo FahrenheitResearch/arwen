@@ -61,7 +61,7 @@ def _shared_citation() -> str:
     return shared[0]
 
 
-def _honest_root(tmp_path: Path) -> Path:
+def _accurate_root(tmp_path: Path) -> Path:
     """A scratch root where every citation resolves to a genuine code read."""
     root = tmp_path / "root"
     for name, citation in sorted(_citations().items()):
@@ -81,50 +81,50 @@ def _failures_for(root: Path, knobs: list[str]) -> list[str]:
 
 
 @pytest.fixture()
-def honest_root(tmp_path: Path) -> Path:
-    root = _honest_root(tmp_path)
+def accurate_root(tmp_path: Path) -> Path:
+    root = _accurate_root(tmp_path)
     assert check(root) == [], (
         "the scratch control root must pass before a pin hollows it out")
     return root
 
 
-def test_a_module_docstring_naming_the_knob_is_not_a_read(honest_root: Path):
+def test_a_module_docstring_naming_the_knob_is_not_a_read(accurate_root: Path):
     """The audit's exact proof: a file that is nothing but prose must fail."""
     citation = _shared_citation()
     knobs = _knobs_citing(citation)
-    _write(honest_root, citation, '"""Prose naming ' + " ".join(knobs) + '."""\n')
+    _write(accurate_root, citation, '"""Prose naming ' + " ".join(knobs) + '."""\n')
 
-    failures = _failures_for(honest_root, knobs)
+    failures = _failures_for(accurate_root, knobs)
     assert len(failures) == len(knobs), failures
     for failure in failures:
         assert "only in a comment or docstring" in failure, failure
 
 
-def test_a_function_docstring_naming_the_knob_is_not_a_read(honest_root: Path):
+def test_a_function_docstring_naming_the_knob_is_not_a_read(accurate_root: Path):
     citation = _citations()["moist"]
     knobs = _knobs_citing(citation)
     _write(
-        honest_root,
+        accurate_root,
         citation,
         "def f():\n    '''Prose naming " + " ".join(knobs) + ".'''\n    return 0\n",
     )
 
-    failures = _failures_for(honest_root, knobs)
+    failures = _failures_for(accurate_root, knobs)
     assert len(failures) == len(knobs), failures
     for failure in failures:
         assert "only in a comment or docstring" in failure, failure
 
 
-def test_a_class_docstring_naming_the_knob_is_not_a_read(honest_root: Path):
+def test_a_class_docstring_naming_the_knob_is_not_a_read(accurate_root: Path):
     citation = _citations()["usemonalb"]
     knobs = _knobs_citing(citation)
     _write(
-        honest_root,
+        accurate_root,
         citation,
         "class C:\n    \"\"\"Prose naming " + " ".join(knobs) + ".\"\"\"\n",
     )
 
-    failures = _failures_for(honest_root, knobs)
+    failures = _failures_for(accurate_root, knobs)
     assert len(failures) == len(knobs), failures
     for failure in failures:
         assert "only in a comment or docstring" in failure, failure
@@ -135,7 +135,7 @@ def test_every_prose_only_citation_is_rejected_one_file_at_a_time(
     """Sweep: hollowing out any one cited file must fail exactly its knobs."""
     citations = _citations()
     for citation in sorted(set(citations.values())):
-        root = _honest_root(tmp_path / citation.replace("/", "_"))
+        root = _accurate_root(tmp_path / citation.replace("/", "_"))
         assert check(root) == []
         knobs = _knobs_citing(citation)
         _write(root, citation, '"""Prose naming ' + " ".join(knobs) + '."""\n')
@@ -143,19 +143,19 @@ def test_every_prose_only_citation_is_rejected_one_file_at_a_time(
         assert len(failures) == len(knobs), (citation, failures)
 
 
-def test_a_comment_naming_the_knob_is_not_a_read(honest_root: Path):
+def test_a_comment_naming_the_knob_is_not_a_read(accurate_root: Path):
     citation = _citations()["ra_physics"]
     knobs = _knobs_citing(citation)
-    _write(honest_root, citation, "# comment naming " + " ".join(knobs) + "\n")
+    _write(accurate_root, citation, "# comment naming " + " ".join(knobs) + "\n")
 
-    failures = _failures_for(honest_root, knobs)
+    failures = _failures_for(accurate_root, knobs)
     assert len(failures) == len(knobs), failures
     for failure in failures:
         assert "only in a comment or docstring" in failure, failure
 
 
 def test_a_read_through_a_string_literal_still_counts_as_code(
-        honest_root: Path):
+        accurate_root: Path):
     """Do not regress real code that happens to contain a string.
 
     ``gpuwm/core/acoustic.py`` proves ``moist_cq`` with
@@ -165,27 +165,27 @@ def test_a_read_through_a_string_literal_still_counts_as_code(
     citation = _citations()["moist_cq"]
     knobs = _knobs_citing(citation)
     body = "".join(f'v = getattr(cfg, "{knob}", None)\n' for knob in knobs)
-    _write(honest_root, citation, '"""Docstring naming nothing."""\n' + body)
+    _write(accurate_root, citation, '"""Docstring naming nothing."""\n' + body)
 
-    assert _failures_for(honest_root, knobs) == []
+    assert _failures_for(accurate_root, knobs) == []
 
 
-def test_a_hash_inside_a_string_does_not_truncate_the_read(honest_root: Path):
+def test_a_hash_inside_a_string_does_not_truncate_the_read(accurate_root: Path):
     """Splitting on ``#`` would cut the line before the read; tokenizing does not."""
     citation = _shared_citation()
     knobs = _knobs_citing(citation)
     body = "".join(f'label = "#{knob}"; v = cfg.{knob}\n' for knob in knobs)
-    _write(honest_root, citation, body)
+    _write(accurate_root, citation, body)
 
-    assert _failures_for(honest_root, knobs) == []
+    assert _failures_for(accurate_root, knobs) == []
 
 
-def test_an_unparseable_citation_fails_closed(honest_root: Path):
+def test_an_unparseable_citation_fails_closed(accurate_root: Path):
     citation = _shared_citation()
     knobs = _knobs_citing(citation)
-    _write(honest_root, citation, "def broken(:\n    " + knobs[0] + " = cfg\n")
+    _write(accurate_root, citation, "def broken(:\n    " + knobs[0] + " = cfg\n")
 
-    failures = _failures_for(honest_root, knobs)
+    failures = _failures_for(accurate_root, knobs)
     assert len(failures) == len(knobs), failures
     for failure in failures:
         assert "does not parse" in failure, failure

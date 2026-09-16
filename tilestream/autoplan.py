@@ -474,7 +474,7 @@ class Footprint:
         """The rung's per-process radiation transient, RESERVED not claimed.
 
         Zero for a rung this project has not measured one on, which is the
-        honest answer and also the one that leaves every dry and moist plan
+        accurate answer and also the one that leaves every dry and moist plan
         exactly where it was; see :data:`RADIATION_TRANSIENT_BYTES`.
         """
         if self.prepared_memory is not None:
@@ -1216,7 +1216,7 @@ def plan(cfg, machine: Machine, *, footprint: Footprint | None = None,
     divides the domain: by default a ragged tiling is allowed and an exact
     one is preferred inside :data:`ARENA_TIE_BAND`.  ``allow_ragged=False``
     turns "no exact tile fits" into a ``geometry`` refusal, which is the
-    honest answer for an extent like a prime -- a bigger card will not help.
+    accurate answer for an extent like a prime -- a bigger card will not help.
 
     ``max_redundancy`` refuses a tiling that does more than that multiple of
     the necessary work -- the failure mode where a card is so small that the
@@ -1803,7 +1803,7 @@ def largest_runnable_domain(machine: Machine, *, rung: str = "dry",
 #: Config overrides per rung, so the dry-run CLI and the tests can build a
 #: config for a named rung without importing the benchmark.  ``test_gate`` is
 #: the authority on which of these are bit-exact; this is only their shape.
-#: ``ztop=20000`` is load-bearing: the harness default is an 8 km top and
+#: ``ztop=20000`` is essential: the harness default is an 8 km top and
 #: RRTMGP then pads past its own 128-layer limit and raises.
 _MOIST = dict(moist=True, mp_physics=10, ztop=20000.0)
 _FULL = dict(_MOIST, km_opt=4, sf_sfclay_physics=91, bl_pbl_physics=1,

@@ -56,7 +56,7 @@ from pathlib import Path
 GIB = 1 << 30
 
 #: The rung that matters.  Copied from tilestream.test_gate at run time,
-#: never re-typed: ztop=20000.0 is load-bearing (RRTMGP refuses nz>=41
+#: never re-typed: ztop=20000.0 is essential (RRTMGP refuses nz>=41
 #: under the 8 km harness default) and a locally-written rung dict is how
 #: a run silently becomes a different numerical setup.
 RUNG = "full+MYNN+Noah-MP"
@@ -446,7 +446,7 @@ def _build_and_fire(nx: int, ny: int, nsteps: int = 3) -> dict:
                fire_ratio=fire_s / max(plain_s / nsteps, 1e-9),
                dt=float(cfg.dt), radt=float(cfg.radt_minutes),
                cudt=float(cfg.cudt_minutes), halo=harness.halo_radius(cfg))
-    # gc.collect() BEFORE free_all_blocks(), and it is load-bearing.
+    # gc.collect() BEFORE free_all_blocks(), and it is essential.
     # DomainState and its PhysicsDriver reference each other, so dropping
     # the last name does NOT run __del__: the arrays survive until the
     # CYCLIC collector runs, and free_all_blocks() called before that
@@ -738,7 +738,7 @@ def main(argv=None) -> int:
         mark = {True: "PASS", False: "FAIL", None: "SKIP"}[stage.ok]
         print(f"  {mark}  ({stage.seconds:.1f}s)  {stage.detail}", flush=True)
         # A node with no working cuBLAS or no tables cannot answer anything
-        # downstream; stopping is honest, continuing produces noise.
+        # downstream; stopping is accurate, continuing produces noise.
         if stage.ok is False and key in ("cublas", "tables"):
             break
 

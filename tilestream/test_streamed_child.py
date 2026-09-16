@@ -42,7 +42,7 @@ The legs:
                         after the first FORCE: buffers keep serving
                         FORCE-1 tables while the generation claims
                         currency.  d02 MUST differ from A, d01 MUST equal
-                        C's -- the reload is load-bearing, in both
+                        C's -- the reload is essential, in both
                         directions, before any PASS above is believed.
 ``W  starved frame``    the frame pull narrowed below the boundary zone
                         (``child_frame_windows`` at width 2 < bdy width
@@ -329,7 +329,7 @@ def main(argv=None) -> int:
           "and the gate can see it)",
           n1b["d01_sha256"] != b["d01_sha256"])
     check("N2's d02 differs from A's (frozen tile tables are visible: the "
-          "launch-time reload is load-bearing)",
+          "launch-time reload is essential)",
           n2["d02_sha256"] != a["d02_sha256"])
     check("N2's d01 == C's d01 (frozen tables cannot reach the parent)",
           n2["d01_sha256"] == c["d01_sha256"],

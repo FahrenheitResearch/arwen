@@ -76,7 +76,9 @@ fn catalog_rows(heavy: bool) -> Vec<(String, String, String, String)> {
         .filter_map(|line| line.strip_prefix("PRODUCT\t"))
         .filter_map(|line| {
             let parts: Vec<&str> = line.split('\t').collect();
-            (parts.len() == 4).then(|| {
+            // (slug, kind, status, detail, code): the fifth column is the
+            // machine code beside the prose; these tests read the prose.
+            (parts.len() == 5).then(|| {
                 (
                     parts[0].to_string(),
                     parts[1].to_string(),

@@ -46,7 +46,7 @@ Timing for main: time (\S+) on domain\s+(\d+):\s+([0-9.]+) elapsed seconds
 still matches, because the one field WRF does not print -- the step
 index -- is appended **after** WRF's sentence rather than inside it.
 
-Two honest differences from `wrf.exe`, both deliberate:
+Two accurate differences from `wrf.exe`, both deliberate:
 
 - **History filenames carry no colons.** ArWen writes
   `wrfout_d01_2026-05-20_18_00_00`, not `...18:00:00`, so the same run

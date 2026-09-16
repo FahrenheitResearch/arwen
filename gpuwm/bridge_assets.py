@@ -16,7 +16,7 @@ the mapped decode engine, the Zarr reader, the observation remap and the
 terminal workspace onto a wheel install was to clone the repository and run
 ``cargo build`` -- a
 Rust toolchain, a 2.5 GB checkout and a few minutes of compiling, for
-twenty-eight files.
+twenty-nine files.
 ``gpuwm fetch-bridges`` is the same trade :mod:`gpuwm.table_assets`
 already makes for the externalized physics tables: the artifacts are
 published as versioned GitHub release assets, their exact size and
@@ -25,7 +25,7 @@ byte is verified against those pins *before* anything is installed.
 
 What is staged, and where
 -------------------------
-One bundle per platform, holding the twenty-eight artifacts of
+One bundle per platform, holding the twenty-nine artifacts of
 :data:`BUNDLED_ARTIFACTS`, staged into :func:`gpuwm.bridges
 .default_bridge_dir` (``~/.gpuwm/bridges``) -- the last rung of the
 resolution ladder every consumer already searches, so nothing else in
@@ -83,7 +83,7 @@ new bytes passing all three checks first.
 Offline and mirrors
 -------------------
 ``--from DIR`` stages from a local directory under identical
-verification: either the bundle archive itself, or the twenty-six
+verification: either the bundle archive itself, or the declared
 artifacts loose in that directory (what an air-gapped operator has
 after building them on a machine that does have a toolchain).
 ``GPUWM_BRIDGE_ASSET_URL_BASE`` overrides the download base URL; the
@@ -225,7 +225,7 @@ class BundledArtifact:
     vendored: bool = False
 
 
-#: The twenty-six artifacts a bundle carries, in build order: the five
+#: The artifacts a bundle carries (every BundledArtifact below), in build order: the five
 #: GRIB decoders and the CPU preprocessing library from the decoder
 #: workspace, then the fetch backbone, the batch renderer, the two radar
 #: front doors, the five observation front doors, the NetCDF decoder,
@@ -284,6 +284,10 @@ BUNDLED_ARTIFACTS: tuple[BundledArtifact, ...] = (
         "grib1_bridge", "executable", bridges.CRATE_RELATIVE,
         bridges.BRIDGE_ENV["grib1_bridge"],
         "ERA5 route (gpuwm check/run, rw-wps --source era5)"),
+    BundledArtifact(
+        "gdt101_remap", "executable", bridges.CRATE_RELATIVE,
+        bridges.BRIDGE_ENV["gdt101_remap"],
+        "unstructured GDT-101 source normalization (gpuwm go --source icon-global)"),
     BundledArtifact(
         "gfs_grib2_bridge", "executable", bridges.CRATE_RELATIVE,
         bridges.BRIDGE_ENV["gfs_grib2_bridge"],
@@ -348,7 +352,7 @@ BUNDLED_ARTIFACTS: tuple[BundledArtifact, ...] = (
         "rw_netcdf", "executable", bridges.RUSTWX_CRATE_RELATIVE,
         "GPUWM_RW_NETCDF", "NetCDF sources (rw-wps --source netcdf, "
         "gpuwm adapt, the mapped routes)"),
-    # The dealiasing engine `--dealias` gets by default since 2026-08-12.
+    # The dealiasing engine every radar ingest gets by default.
     # It joined this list the day it became the default and for the same
     # reason `rw_nexrad` did: a prerequisite of the shipped configuration
     # that a wheel install cannot satisfy is a wheel install that cannot
@@ -366,7 +370,7 @@ BUNDLED_ARTIFACTS: tuple[BundledArtifact, ...] = (
     BundledArtifact(
         "region_global_dealias", "library", "tools/region_global_dealias",
         "GPUWM_DEALIAS_REGION_BRIDGE",
-        "velocity dealiasing (--dealias, the default engine)",
+        "velocity dealiasing (on by default; --no-dealias opts out)",
         vendored=True),
     # The NetCDF WRITER.  It joined this list the moment the product tape
     # flipped onto it BY DEFAULT: from that commit `gpuwm sim` and every
@@ -602,7 +606,7 @@ def host_platform() -> str | None:
 
 
 def host_platform_description() -> str:
-    """What :func:`host_platform` looked at, for an honest refusal."""
+    """What :func:`host_platform` looked at, for an accurate refusal."""
 
     return f"{sys.platform}/{platform_module.machine() or 'unknown'}"
 
@@ -1420,7 +1424,7 @@ def stage_from_loose_files(source_dir: Path, bundle: BundlePin, dest: Path,
     """Install the pinned artifacts sitting loose in ``source_dir``.
 
     What an air-gapped operator has after building on a machine that
-    does have a toolchain: twenty-six files, no archive.  Same three
+    does have a toolchain: the declared artifact files, no archive.  Same three
     checks, same atomic install.
     """
 
@@ -1433,7 +1437,7 @@ def stage_from_loose_files(source_dir: Path, bundle: BundlePin, dest: Path,
             f"{source_dir} carries neither {bundle.filename} nor the loose "
             f"artifacts; missing {', '.join(absent)}")
     if absent:
-        # The twenty-six artifacts are independent; an air-gapped operator
+        # The declared artifacts are independent; an air-gapped operator
         # with the decoders but not the renderer gets the decoders,
         # verified, and doctor names what is still missing.
         warn(f"{source_dir} is missing {len(absent)} of "

@@ -14,7 +14,7 @@
 
     THE BREAKAGE THIS PREVENTS
 
-      Every suite that drives a real binary is written to SKIP honestly when
+      Every suite that drives a real binary is written to SKIP with a stated reason when
       the binary is absent (`tests/test_render_rust.py` reads the product's own
       `renderer_refusal()` gate).  So an unprovisioned worktree does not go
       red.  It goes GREEN with the rust engine, the mapped engine, the GRIB

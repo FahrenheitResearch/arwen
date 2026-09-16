@@ -21,7 +21,7 @@ Each leg is two calls to ``integrate_prepared_case``: the first integrates
 checkpoint, the second is handed that checkpoint as ``restart_path`` and
 integrates on to 3600 s.  PASS is that all four final domains are bit-identical
 over all 229 carriers, to each other AND to an uninterrupted 3600 s run of each
-mode.  The uninterrupted runs are what keep the legs honest: four resumed runs
+mode.  The uninterrupted runs are what keep the legs accurate: four resumed runs
 that agreed with each other and with nothing else would prove only that the
 bug is deterministic.
 
@@ -805,7 +805,7 @@ def main(argv=None) -> int:
         if not bad:
             failures.append("a restore that did not reseed the sweep's "
                             "cached clock still reproduced the reference; "
-                            "the reseed is not load-bearing and the claim "
+                            "the reseed is not essential and the claim "
                             "that it is must be withdrawn")
         print(_line("restore without the clock reseed DIFFERS", bad,
                     f"{leg['digest'][:16]}"))

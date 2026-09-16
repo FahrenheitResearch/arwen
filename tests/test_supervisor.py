@@ -297,7 +297,44 @@ def test_captured_wddm_pmon_fixture_parses_exact_twelve_columns():
     assert modes[39444] == ("C", 0)
 
 
-def test_wddm_preflight_rejects_pure_cuda_with_dash_or_zero_fb(monkeypatch):
+def _priced_device(monkeypatch, *, total_gib=32.0, used_gib=4.0):
+    """Report one device's NVML total/used to the admission function."""
+
+    import gpuwm.core.preflight as preflight
+
+    monkeypatch.setattr(
+        preflight, "device_physical_total_bytes",
+        lambda **kwargs: int(total_gib * 1024 ** 3))
+    monkeypatch.setattr(
+        preflight, "device_wide_used_bytes",
+        lambda **kwargs: int(used_gib * 1024 ** 3))
+
+
+@pytest.fixture
+def warnings_seen():
+    """Every gpuwm.explain warning raised inside one test, as records."""
+
+    from gpuwm import explain
+
+    seen = []
+    explain.add_warning_observer(seen.append)
+    try:
+        yield seen
+    finally:
+        explain.remove_warning_observer(seen.append)
+
+
+def test_wddm_preflight_prices_an_unmeasured_pure_cuda_cotenant(
+        monkeypatch, warnings_seen):
+    """Rewritten from test_wddm_preflight_rejects_pure_cuda_with_dash_or_zero_fb.
+
+    That test pinned the rule this change retires: refuse because the
+    per-process framebuffer is unmeasured.  Only the PER-PROCESS figure is
+    unmeasured; the DEVICE-wide figure is measurable from the same tool and
+    counts the co-tenant's memory either way, so the unmeasured branch is
+    now the priced branch.
+    """
+
     import gpuwm.supervisor as supervisor
 
     gpu = GPUIdentity("GPU-test", "610.74", "RTX 5090", 0)
@@ -311,11 +348,63 @@ def test_wddm_preflight_rejects_pure_cuda_with_dash_or_zero_fb(monkeypatch):
     monkeypatch.setattr(supervisor, "select_gpu", lambda uuid: gpu)
     monkeypatch.setattr(
         supervisor, "query_compute_processes", lambda uuid: processes)
+    _priced_device(monkeypatch)
+    seen = warnings_seen
+
+    receipt = preflight_exclusive_gpu(
+        gpu.uuid, reservation_bytes=8 * 2 ** 30)
+    assert receipt["verdict"] == "admitted"
+    assert receipt["device_free_bytes"] == 28 * 2 ** 30
+    assert len(seen) == 1
+    message = seen[0]["action"]
+    assert "8.00 GiB" in message
+    assert "28.00 GiB" in message
+    assert "pid=41001" in message
+    assert "unsupported" not in message
+
+
+def test_a_reservation_that_does_not_fit_is_refused_with_both_numbers(
+        monkeypatch):
+    import gpuwm.supervisor as supervisor
+
+    gpu = GPUIdentity("GPU-test", "610.74", "RTX 5090", 0)
+    processes = (GPUProcess(gpu.uuid, 41001, "python.exe", None, "C"),)
+    monkeypatch.setattr(supervisor, "select_gpu", lambda uuid: gpu)
+    monkeypatch.setattr(
+        supervisor, "query_compute_processes", lambda uuid: processes)
+    _priced_device(monkeypatch)
+
     with pytest.raises(GPUPreflightError) as caught:
-        preflight_exclusive_gpu(gpu.uuid)
-    assert "pid=41001" in str(caught.value)
-    assert "pid=41005" in str(caught.value)
-    assert "memory=unmeasured" in str(caught.value)
+        preflight_exclusive_gpu(gpu.uuid, reservation_bytes=30 * 2 ** 30)
+    message = str(caught.value)
+    assert "30.00 GiB" in message
+    assert "28.00 GiB" in message
+    assert "unsupported" not in message
+    assert "pid=41001" in message
+
+    # A run that has already started is re-measured and named, never
+    # re-refused: the admission decision belongs before the first worker.
+    receipt = preflight_exclusive_gpu(
+        gpu.uuid, reservation_bytes=30 * 2 ** 30, decide=False)
+    assert receipt["verdict"] == "admitted-already-started"
+
+
+def test_nvidia_smi_failure_still_fails_closed_on_a_shared_card(monkeypatch):
+    import gpuwm.core.preflight as preflight
+    import gpuwm.supervisor as supervisor
+
+    gpu = GPUIdentity("GPU-test", "610.74", "RTX 5090", 0)
+    processes = (GPUProcess(gpu.uuid, 41001, "python.exe", None, "C"),)
+    monkeypatch.setattr(supervisor, "select_gpu", lambda uuid: gpu)
+    monkeypatch.setattr(
+        supervisor, "query_compute_processes", lambda uuid: processes)
+
+    def _fails(**kwargs):
+        raise GPUPreflightError("GPU preflight failed closed: nvidia-smi")
+
+    monkeypatch.setattr(preflight, "device_wide_used_bytes", _fails)
+    with pytest.raises(GPUPreflightError, match="failed closed"):
+        preflight_exclusive_gpu(gpu.uuid, reservation_bytes=1 * 2 ** 30)
 
 
 def test_wddm_preflight_permits_c_plus_g_pmon_rows(monkeypatch):
@@ -350,8 +439,16 @@ def test_linux_pmon_idle_row_is_an_explicit_empty_sample():
         _parse_pmon_output("0 - C - - - - - - - - python\n")
 
 
-def test_wddm_preflight_permits_graphics_and_rejects_large_pure_cuda(
+def test_wddm_preflight_permits_graphics_and_prices_large_pure_cuda(
         monkeypatch):
+    """Rewritten from test_wddm_preflight_permits_graphics_and_rejects_large_pure_cuda.
+
+    Graphics rows are still permitted outright.  A substantial pure-C row is
+    still the thing that makes the card shared, but the verdict is now the
+    priced one, and --allow-shared-gpu is redundant rather than the only way
+    in.
+    """
+
     import gpuwm.supervisor as supervisor
 
     gpu = GPUIdentity("GPU-test", "610.74", "RTX 5090", 0)
@@ -363,10 +460,22 @@ def test_wddm_preflight_permits_graphics_and_rejects_large_pure_cuda(
     monkeypatch.setattr(supervisor, "select_gpu", lambda uuid: gpu)
     monkeypatch.setattr(
         supervisor, "query_compute_processes", lambda uuid: processes)
+    _priced_device(monkeypatch)
+
+    # A run that does not fit is refused, and pid=103 is named in it.
     with pytest.raises(GPUPreflightError, match="pid=103"):
-        preflight_exclusive_gpu(gpu.uuid)
-    preflight_exclusive_gpu(gpu.uuid, approved_pids={103})
-    preflight_exclusive_gpu(gpu.uuid, allow_shared_gpu=True)
+        preflight_exclusive_gpu(gpu.uuid, reservation_bytes=30 * 2 ** 30)
+    # The same card admits a run that fits, with no flag at all.
+    assert preflight_exclusive_gpu(
+        gpu.uuid, reservation_bytes=8 * 2 ** 30)["verdict"] == "admitted"
+    # Approving the pid makes the card exclusive again, and an exclusive
+    # card asks the device nothing.
+    assert preflight_exclusive_gpu(
+        gpu.uuid, approved_pids={103})["verdict"] == "exclusive"
+    # The flag is now redundant: same verdict with and without it.
+    assert preflight_exclusive_gpu(
+        gpu.uuid, reservation_bytes=8 * 2 ** 30,
+        allow_shared_gpu=True)["verdict"] == "admitted"
 
 
 def test_stale_threshold_is_three_p99_with_120_second_floor():
@@ -2103,3 +2212,64 @@ def test_git_commit_reads_the_enclosing_checkout_of_the_package(monkeypatch):
     # the running distribution is guaranteed to have anything to do with.
     assert seen["cwd"] == Path(supervisor.__file__).resolve().parents[1]
     assert seen["cwd"] != Path(supervisor.__file__).resolve().parent
+
+
+def test_one_shared_card_is_named_once_per_process_not_once_per_call(
+        monkeypatch, warnings_seen):
+    """`gpuwm.explain.warn` repeats; the run doors ask more than once.
+
+    The stream controller asks this door before EVERY stage command, so
+    the same sentence was printed per command on a shared card.  The
+    sentence is said once; a device reading that CHANGED is news and is
+    said again.
+    """
+
+    import gpuwm.core.preflight as preflight
+    import gpuwm.supervisor as supervisor
+
+    gpu = GPUIdentity("GPU-test", "610.74", "RTX 5090", 0)
+    processes = (GPUProcess(gpu.uuid, 41001, "python.exe", 4096, "C"),)
+    device = {"used": 4 * 2 ** 30}
+    monkeypatch.setattr(supervisor, "select_gpu", lambda uuid: gpu)
+    monkeypatch.setattr(
+        supervisor, "query_compute_processes", lambda uuid: processes)
+    monkeypatch.setattr(supervisor, "_ADMISSION_WARNED", set())
+    monkeypatch.setattr(
+        preflight, "device_physical_total_bytes",
+        lambda **kwargs: 32 * 2 ** 30)
+    monkeypatch.setattr(
+        preflight, "device_wide_used_bytes", lambda **kwargs: device["used"])
+
+    for _ in range(4):
+        assert preflight_exclusive_gpu(
+            gpu.uuid, reservation_bytes=8 * 2 ** 30)["verdict"] == "admitted"
+    assert len(warnings_seen) == 1
+
+    device["used"] = 8 * 2 ** 30
+    preflight_exclusive_gpu(gpu.uuid, reservation_bytes=8 * 2 ** 30)
+    assert len(warnings_seen) == 2
+    assert "24.00 GiB" in warnings_seen[-1]["action"]
+
+
+def test_one_pricing_function_answers_from_a_path_or_a_loaded_experiment(
+        tmp_path, monkeypatch):
+    """Both run doors price the same configuration to the same number."""
+
+    import gpuwm.core.preflight as preflight
+    import gpuwm.supervisor as supervisor
+
+    class _Estimate:
+        peak_envelope_bytes = 7 * 2 ** 30
+
+    loaded = object()
+    monkeypatch.setattr(
+        preflight, "admission_estimate",
+        lambda experiment, **kwargs: _Estimate())
+    config = tmp_path / "experiment.toml"
+    config.write_text("", encoding="utf-8")
+    monkeypatch.setattr(
+        "gpuwm.experiment.load_experiment", lambda path: loaded)
+
+    assert supervisor.priced_reservation_bytes(config) == 7 * 2 ** 30
+    assert supervisor.priced_reservation_bytes(str(config)) == 7 * 2 ** 30
+    assert supervisor.priced_reservation_bytes(loaded) == 7 * 2 ** 30

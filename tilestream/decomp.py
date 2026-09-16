@@ -426,7 +426,7 @@ def reassemble(specs: Sequence[_spec.TileSpec], blocks: Sequence[Mapping[str, An
                ) -> dict[str, np.ndarray]:
     """Scatter every rank's INTERIOR back into domain-extent host arrays.
 
-    The inverse of the slice, and the only honest way to ask whether the slice
+    The inverse of the slice, and the only accurate way to ask whether the slice
     was right: ``TileSpec.scatter``'s shared-face ownership rule means every
     point of the domain is written exactly once across the plan
     (:func:`tilestream.spec.coverage_counts` is what proves that), so the

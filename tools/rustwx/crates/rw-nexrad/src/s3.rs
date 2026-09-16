@@ -371,7 +371,7 @@ impl<'a> ListRequest<'a> {
 /// clock.
 ///
 /// `server_date` is the `Date` response header, and it is here because the
-/// only honest way to state how old an object is, is against the clock of
+/// only accurate way to state how old an object is, is against the clock of
 /// the machine that stamped it.  This host's clock is not that clock, and a
 /// lag receipt computed against a skewed local clock reports the skew as
 /// freshness.
@@ -1232,7 +1232,7 @@ fn require_declaration_value(name: &str, value: &str) -> Result<(), String> {
         // because the body is decoded UTF-8 unconditionally (ureq's charset
         // feature is off) and nothing downstream reads the label.  That is
         // not a carrier, but it is a statement this client was accepting and
-        // then ignoring, and the honest close is to accept only the one it
+        // then ignoring, and the accurate close is to accept only the one it
         // can honour.  No transcoding is added: the divergence is removed by
         // refusing the input, which is what the rest of this reader does.
         if name == "encoding" && !is_utf8_encoding_label(value) {
@@ -4026,7 +4026,7 @@ mod tests {
         let err = day_page(&xml).unwrap_err().to_string();
         assert!(err.contains("only at the very start of the document"), "{err}");
         // The shape it used to be written as still refuses -- for the
-        // comment, which is the honest reason.
+        // comment, which is the accurate reason.
         let xml = format!("<!--lead-->{}", REAL_TRUNCATED_PAGE);
         let err = day_page(&xml).unwrap_err().to_string();
         assert!(err.contains("comment outside its root element"), "{err}");

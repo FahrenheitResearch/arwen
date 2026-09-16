@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
+from conftest import requires_netcdf_bridge
 
 
 @pytest.mark.parametrize('arguments', [[], ['case.toml','--met-em','met'],
@@ -136,6 +137,7 @@ def test_metgrid_metadata_missing_directory_is_actionable(tmp_path):
         resolve_metem_run(tmp_path)
 
 
+@requires_netcdf_bridge
 def test_scalar_soil_coordinate_is_named_refusal(tmp_path):
     from test_metem_ingest import case
     from gpuwm.ingest.metem import read_met_em, MetgridRefusal

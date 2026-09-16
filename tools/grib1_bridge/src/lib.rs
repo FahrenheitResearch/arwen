@@ -823,7 +823,7 @@ pub unsafe extern "C" fn gpuwm_wrf_vert_interp_f32(
 /// to advertise a NEW symbol would refuse every correctly-built older
 /// library over a call those libraries were never asked to make.  A
 /// caller that wants the new entry looks the symbol up instead and keeps
-/// its own fallback -- which is also the only honest answer, since a
+/// its own fallback -- which is also the only accurate answer, since a
 /// staged bundle can be older than the checkout driving it.
 ///
 /// Changing an existing signature is the thing that bumps this.

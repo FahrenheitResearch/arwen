@@ -13,7 +13,7 @@ crosses?
   treatment TKE gets, and each is checked with a mutation control that
   FIRES;
 * the BUDGET: the term-by-term device accumulation must close against the
-  storage it claims to explain, and each term must be load-bearing --
+  storage it claims to explain, and each term must be essential --
   removing any one of them from the sum has to move the residual by orders
   of magnitude, which is what makes the committed residual a measurement
   rather than an artifact of its own definition (AC-L5.1's bound-free arm).
@@ -390,7 +390,7 @@ def test_the_budget_closes_and_every_term_is_load_bearing():
             f"({dropped:.3e} vs {closed:.3e}) -- the budget is not "
             "actually accounting for it")
 
-    # Terms this configuration cannot produce must read as honest zeros.
+    # Terms this configuration cannot produce must read as accurate zeros.
     assert volume["diffusion_6th"] == 0.0        # diff_6th_opt = 0
 
 

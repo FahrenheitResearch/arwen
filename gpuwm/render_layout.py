@@ -93,7 +93,9 @@ from __future__ import annotations
 import datetime
 import os
 import re
+import shutil
 from pathlib import Path
+from typing import NamedTuple
 
 #: Windows' classic path ceiling.  A path of this length or longer is
 #: rejected by the ordinary Win32 entry points -- ``mkdir``, ``replace``,
@@ -164,6 +166,17 @@ _DAY = re.compile(r"^(\d{4})-(\d{2})-(\d{2})(?:[T_ ]|$)")
 #: parser that demanded two digits returned None for all of them, and
 #: every frame of those runs was left flat under a front door printing
 #: ``layout nested``.
+#:
+#: The LEAD is THREE OR MORE digits, for the same reason the episode
+#: segment above is: three is the ZERO-PADDING WIDTH the engine formats
+#: with, not a ceiling.  A run past 999 h writes ``f1000``, and a parser
+#: that demanded exactly three stopped matching at that hour -- the
+#: frame does not parse at all (``_ENGINE_NAME`` needs the underscore
+#: right after the lead), so it is left flat at the render root and
+#: :func:`gpuwm.render_receipts` records it as :data:`UNCLASSIFIED`,
+#: while :func:`delivered_name` hands the same name back unshortened.
+#: ``gpuwm.render``'s sibling parser already reads three-or-more, so
+#: this is the two grammars agreeing on one number.
 _HEAD = (r"(?:arwen|rustwx)_(?P<model>.+?)_(?P<date>\d{8})"
          r"_(?P<cycle>\d{1,2})z_f(?P<lead>\d{3,})")
 
@@ -266,7 +279,7 @@ def valid_day(stamp: str | None) -> str | None:
     ``None`` is not an error: it means the caller must use
     :data:`UNDATED`, which :func:`place` does for it.  Guessing a day
     from a stamp that does not carry one would file a frame under a date
-    it has no evidence for, and a wrong date is worse than an honest
+    it has no evidence for, and a wrong date is worse than an accurate
     ``undated`` because a reader believes it.
     """
 
@@ -332,6 +345,78 @@ def episode_number(name) -> int | None:
     return number if number > 0 else None
 
 
+class HistoryFrame(NamedTuple):
+    """One wrfout frame on disk: where it is, which nest, which life.
+
+    ``grid`` is the ``dNN`` token off the filename (``None`` for a name
+    that carries none), and ``episode`` is the lifecycle episode read
+    back out of the folder the history writer filed it in -- the exact
+    inverse of :func:`episode_segment`, so the writer's spelling and the
+    reader's cannot drift into two.  ``None`` means the frame sits at
+    the top level, which is where a nest with one life writes.
+    """
+
+    path: Path
+    grid: str | None
+    episode: int | None
+
+
+#: The head of a wrfout history filename: ``wrfout_d02_1974-04-03_18_00_00``.
+#: Only the grid token is read here; the valid time is carried by the
+#: name's own sort order, which is why :func:`history_frames` orders on
+#: the name rather than parsing it.
+_HISTORY_NAME = re.compile(r"^wrfout_(?P<grid>d\d{2})_")
+
+
+def history_frames(root) -> list["HistoryFrame"]:
+    """Every wrfout history frame under ``root``, in time order.
+
+    THE reader for a history directory, and the counterpart of
+    :func:`iter_rendered` on the input side.  A domain that ATTACHES
+    mid-run, and one that retires and re-arms, files its frames one
+    segment deeper -- ``d05/episode-002/wrfout_d05_...`` -- exactly as
+    :func:`episode_segment` spells it, because ``gpuwm.io.wrfout``
+    writes them there.  An enumerator that globbed the top level only
+    saw none of those frames, and a run whose only frame producer was
+    that nest reported that it published no history after writing a
+    full one.
+
+    Two things this does that a bare ``rglob`` does not.
+
+    It SKIPS the writer's in-flight temporaries (``wrfout*.tmp*``,
+    ``gpuwm.io.wrfout``'s own spelling) and anything that is not a
+    regular file, so a half-written frame is never handed to a reader
+    as though it were finished.
+
+    It orders on ``(name, episode)`` rather than on the path string.
+    ``p.name`` already carries domain-then-valid-time, so it is the time
+    order the caller's docstring promises, while a path-string sort puts
+    every nested episode ahead of a top-level frame of an earlier hour.
+    The episode is the tie-break because two episodes of one slot can
+    publish the SAME valid time -- the retiring episode's last frame and
+    the re-armed episode's activation frame -- and the writer's
+    duplicate guard is keyed on the full path, so it does not catch that
+    collision.
+    """
+
+    root = Path(root)
+    walk_root = Path(fs_path(root, descend=True))
+    if not walk_root.is_dir():
+        return []
+    found: list[HistoryFrame] = []
+    for path in walk_root.rglob("wrfout_d*"):
+        if ".tmp" in path.name or not path.is_file():
+            continue
+        relative = path.relative_to(walk_root)
+        grid = _HISTORY_NAME.match(path.name)
+        found.append(HistoryFrame(
+            root / relative,
+            grid.group("grid") if grid is not None else None,
+            episode_number(path.parent.name)))
+    return sorted(found, key=lambda frame: (frame.path.name,
+                                            frame.episode or 0))
+
+
 def product_dir(*, domain: str | None, product: str | None,
                 day: str | None, episode: int | None = None) -> Path:
     """The relative directory one product frame belongs in.
@@ -386,7 +471,7 @@ def _folder_tokens(name: str, *, domain: str | None,
     ``repeated`` is the exact ``<domain>_<product>`` string the two
     folders above the frame spell.  ``None`` means this name and these
     folders do not line up -- an engine name the grammar cannot read, or
-    the honest fallback where neither the caller's token nor the slug
+    the accurate fallback where neither the caller's token nor the slug
     grammar could split the tail -- and every caller then leaves the
     name exactly as it found it rather than cutting a guess out of it.
     """
@@ -426,7 +511,7 @@ def delivered_name(name: str, *, domain: str | None,
     So the repeated pair comes off HERE, at the Python organisation step,
     and not in the engine: the vendored crate stays byte-identical to its
     campaign builds, and ``--layout flat`` -- where the folders spell
-    nothing and every token is load-bearing -- keeps the v2.4.1 name
+    nothing and every token is essential -- keeps the v2.4.1 name
     byte for byte.
 
     What survives is the frame's own identity (model, cycle date, cycle
@@ -511,7 +596,7 @@ def parse_engine_output(name: str, *, domain: str | None = None
             product = split.group("product")
     if not product:
         # A tail neither the caller's token nor the slug grammar can
-        # split.  The domain is still known (or honestly anonymous), and
+        # split.  The domain is still known (or accurately anonymous), and
         # the whole tail is a truthful, if ugly, product name -- better
         # than dropping the file at the root where it is invisible.
         product = tail
@@ -543,6 +628,146 @@ def parse_engine_output(name: str, *, domain: str | None = None
     except ValueError:
         return (domain or NATIVE_GRID), product, UNDATED
     return (domain or NATIVE_GRID), product, valid.date().isoformat()
+
+
+def engine_output_time(name: str) -> datetime.datetime | None:
+    """The instant one engine output filename names, or ``None``.
+
+    A TOTAL function: every name the grammar cannot read answers
+    ``None``, and nothing here raises.  That is the whole point of it
+    living in this module.  ``gpuwm.render``'s series-with-context path
+    re-reads the clock off every PNG the engine wrote, and a local
+    helper that raised on an unreadable name killed the render AFTER the
+    engine had already drawn the frames -- work paid for and then
+    discarded.  A caller that gets ``None`` has one fact it can act on
+    ("this is not one of the frames I asked for"), and it can say so by
+    name instead of ending the run.
+
+    The order of evidence is :func:`parse_engine_output`'s, spelled from
+    the same two fragments so the two cannot drift: the engine's
+    exact-time suffix first, because it carries the frame's own stamp,
+    and cycle date plus cycle hour plus lead otherwise.  A lead past
+    999 h is read in full (``f1000`` is 1000 hours, not 100), which is
+    the same three-or-more-digit grammar ``_HEAD`` pins.
+
+    The instant is naive UTC, as the engine writes it.
+    """
+
+    stem = Path(name).stem
+    head = _DELIVERED_NAME.match(stem)
+    if head is None:
+        return None
+    exact = _EXACT_TIME.match(stem)
+    if exact is not None:
+        try:
+            return datetime.datetime.strptime(
+                exact.group("stamp"), "%Y%m%d_%H%M%S")
+        except ValueError:
+            return None
+    try:
+        # The cycle hour is zero-padded HERE, never required of the
+        # name: the engine writes ``6z``.
+        cycle = datetime.datetime.strptime(
+            f"{head.group('date')}{int(head.group('cycle')):02d}",
+            "%Y%m%d%H")
+    except ValueError:
+        return None
+    return cycle + datetime.timedelta(hours=int(head.group("lead")))
+
+
+def probe_delivery_root(root) -> str | None:
+    """``None`` when a delivery root can take a file, else one sentence.
+
+    Asked ONCE at plan review, before anything is drawn, and answering
+    only the question that is actually knowable then: can this root take
+    a file and give it back.  A root that cannot is a run whose every
+    picture is lost, which is worth refusing on before the forecast
+    rather than after it.
+
+    The root is CREATED if it is not there, because that is what a
+    render does with it a moment later and a probe that refused an
+    absent directory would refuse every first run.
+
+    It deliberately does NOT probe the deepest path the plan will
+    reach.  A probe at t=0 does not predict an ACL, a full disk or a
+    held handle at t plus forty minutes, and refusing a run on a
+    prediction is refusing something that has not happened.  The depth
+    is answered where it is real instead: :func:`fs_path` wears the
+    extended-length spelling and :func:`deliver` reports what actually
+    went wrong, once, with the OS's own words.
+    """
+
+    root = Path(root)
+    probe = root / ".gpuwm-delivery-probe"
+    try:
+        Path(fs_path(root)).mkdir(parents=True, exist_ok=True)
+        spelled = fs_path(probe)
+        with open(spelled, "wb") as stream:
+            stream.write(b"")
+        os.unlink(spelled)
+    except OSError as error:
+        return (f"delivery root {root} cannot take a file ({error}); "
+                "every picture this run draws would be lost -- name a "
+                "writable directory with --out.")
+    return None
+
+
+def deliver(root, source, *, domain: str | None, product: str | None,
+            day: str | None, filename: str | None = None,
+            episode: int | None = None,
+            layout: str = DEFAULT_LAYOUT) -> tuple[Path, str | None]:
+    """File one drawn picture into the layout; ``(where it is, note)``.
+
+    THE placement seam, and the reason this module has one: the
+    contract above says a picture is always somewhere nameable, never
+    dropped and never left loose at the root, and every caller that
+    hand-rolled the move implemented a different half of it.
+
+    ``domain``, ``product`` and ``day`` may each be ``None``: that is
+    not an error, it is :func:`product_dir`'s defined degradation, so a
+    frame whose product could not be read files under
+    ``<domain>/unclassified/undated/`` and stays inside the tree a
+    reader walks.
+
+    The move is tried twice before anything degrades.  ``os.replace``
+    first; on ``OSError`` a copy followed by an unlink, which is what a
+    cross-device scratch and a briefly held handle both need.  Only
+    when both fail does the picture stay where it was, and the returned
+    path is then the source, so the caller's list never names a file
+    that is not there.
+
+    ``note`` is ``None`` when the ordinary route worked, and one
+    sentence otherwise -- RETURNED rather than printed, so a caller can
+    both show it and record it in the render receipt.  A degradation
+    that only ever reached stderr is one the run's own summary cannot
+    report.
+    """
+
+    source = Path(source)
+    target = place(root, domain=domain, product=product, day=day,
+                   filename=filename or source.name, episode=episode,
+                   layout=layout)
+    if target == source:
+        return source, None
+    spelled = fs_path(target)
+    try:
+        Path(spelled).parent.mkdir(parents=True, exist_ok=True)
+        os.replace(fs_path(source), spelled)
+        return target, None
+    except OSError as error:
+        first = error
+    try:
+        Path(spelled).parent.mkdir(parents=True, exist_ok=True)
+        with open(fs_path(source), "rb") as reading, \
+                open(spelled, "wb") as writing:
+            shutil.copyfileobj(reading, writing)
+        os.unlink(fs_path(source))
+    except OSError as error:
+        return source, (f"left flat, could not move into layout "
+                        f"({first}) and the copy fell back to the same "
+                        f"({error}): {source.name}")
+    return target, (f"filed by copy, the move could not be done in "
+                    f"place ({first}): {target.name}")
 
 
 def iter_rendered(root) -> list[Path]:
@@ -616,8 +841,9 @@ def describe(root: str = "<--out>", *, sep: str | None = None,
 
 __all__ = [
     "DEFAULT_LAYOUT", "EPISODE_PREFIX", "FLAT", "LAYOUTS", "NATIVE_GRID",
-    "NESTED", "UNCLASSIFIED", "UNDATED", "delivered_name", "describe",
-    "engine_name", "episode_number", "episode_segment", "fs_path",
-    "iter_rendered", "parse_engine_output", "place", "product_dir",
-    "valid_day",
+    "NESTED", "UNCLASSIFIED", "UNDATED", "HistoryFrame", "deliver",
+    "delivered_name", "describe", "engine_name", "engine_output_time",
+    "episode_number", "episode_segment", "fs_path", "history_frames",
+    "iter_rendered", "parse_engine_output", "place", "probe_delivery_root",
+    "product_dir", "valid_day",
 ]

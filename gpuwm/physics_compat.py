@@ -812,7 +812,7 @@ def identify_single_domain_profile(run_config) -> str | None:
     The inverse of :func:`single_domain_runtime_switches`, and the reason
     it lives beside it: a printed next-command has to name the
     ``--physics-profile`` the prepared-forecast runner will accept, and
-    the only honest way to know is to ask the same table the runner's
+    the only accurate way to know is to ask the same table the runner's
     guard asks.  A second copy of this comparison somewhere else is how
     a printed command drifts into being wrong.
 
@@ -837,7 +837,7 @@ def identify_single_domain_profile(run_config) -> str | None:
 _MISSING = object()
 
 
-#: Runtime switches a WRF namelist cannot state honestly, so somebody has
+#: Runtime switches a WRF namelist cannot state accurately, so somebody has
 #: to decide them for it.  ``moist_cq`` has no WRF namelist key at all
 #: (WRF derives calc_cq internally from the moist species that exist),
 #: and gpuwm's ``top_lid`` default is deliberately NOT WRF's Registry
@@ -1511,7 +1511,7 @@ def radiation_off_land_surface_refusal(
     else:
         # The RESOLVED pair, which is what the physics reads.  A file may
         # have spelled it as the legacy aggregate (ra_physics = 0); the
-        # pair is still the honest statement of what was selected, and
+        # pair is still the accurate statement of what was selected, and
         # `written` names the key the reader should go looking for.
         written = (
             "" if not declared_selectors
@@ -2160,7 +2160,7 @@ _NO_WRF_COUNTERPART = "wrf_counterpart"
 VERIFICATION_STATUS_SCHEMA = "gpuwm-physics-verification-status-v1"
 
 #: The registry maturity that constitutes WRF-verification evidence.
-#: Everything else the engine implements is honestly "supported".
+#: Everything else the engine implements is accurately "supported".
 _WRF_VERIFIED_MATURITY = "wrf-matched-run"
 
 
@@ -2925,7 +2925,7 @@ def pending_wrf_physics_components(
     # a first-class selection when the canonical classic tables became
     # package data (see the EXPERIMENTAL_THOMPSON_ENV comment block above).
     # Byte validation of the resolved table root still fails closed at
-    # setup, which is the guard that was ever load-bearing at run time.
+    # setup, which is the guard that was ever essential at run time.
     # Namelist preview invokes this readiness layer before its documented
     # WRF-to-ArWen selector mappings (for example ISHMAEL 55 -> Morrison
     # 10).  Shin-Hong 11 is no longer such a mapping: it imports natively
@@ -2984,9 +2984,9 @@ def pending_wrf_physics_components(
     #     closure seeds nc=0, nr=0 and nn at the domain's own ccn_conc,
     #     which is what this tree's cold start writes and what WRF's
     #     flow_dep_bdy_qnn pushes through an inflow face.  An OFFLINE
-    #     downscale from a WDM6 parent is still refused, by
-    #     gpuwm.offline_child for the QNCCN naming reason and by its own
-    #     named unbuilt-leg gate;
+    #     downscale from or into a WDM6 domain runs that same edge on the
+    #     parent archive (gpuwm.offline_child reads QNCCN through its own
+    #     scheme-qualified WDM6 map);
     #   * a run with no XLAND is refused by the adapter rather than given a
     #     fabricated land mask, because the mask picks the autoconversion
     #     threshold (module_mp_wdm6.F:607-614);

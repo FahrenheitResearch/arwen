@@ -2,7 +2,7 @@
 
 Everything here is EXTRAPOLATION.  The only measured inputs are the ones
 named in ``MEASURED``; everything else is an assumption with its ground
-stated next to it.  Two of the assumptions are load-bearing and neither was
+stated next to it.  Two of the assumptions are essential and neither was
 measurable on the hardware this probe had:
 
 * the per-GPU speed of an RTX PRO 6000 relative to the RTX 5090 the numbers

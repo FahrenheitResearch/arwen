@@ -201,7 +201,7 @@ def trial(*, rung: str, nx: int, ny: int, nz: int, mode: str,
             _sync()
             radiation_ms.append((time.perf_counter() - t) * 1e3)
             radiation_samples.append(device_used_bytes())
-    # The in-call probe is the honest radiation peak for a lazy workspace;
+    # The in-call probe is the accurate radiation peak for a lazy workspace;
     # for a persistent one the post-step sample already contains it.
     peak_radiation = max(radiation_samples + rad_peak_samples, default=0)
     pool_radiation = max(rad_pool_samples + [int(mempool.total_bytes())])

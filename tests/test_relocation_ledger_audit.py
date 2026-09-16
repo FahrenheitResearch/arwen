@@ -25,9 +25,18 @@ import copy
 
 import pytest
 
+from gpuwm.core.nest_relocation import overlap_fraction_for_shift
 from tools.relocation_ledger_audit import Audit, audit_ledger
 
 RATIO = 3
+#: The two nests these rows move, in the shape the runner's own fixture
+#: tree has them: d02 is 120 cells at ratio 3 inside d01, d03 is 30 cells
+#: at ratio 3 inside d02.  Each row's ``overlap_fraction`` is computed
+#: from its OWN shift against its own nest, the way the runner computes
+#: the one it writes -- a fixture that sets the field the producer is
+#: supposed to emit tests the reader against itself.
+D02 = dict(parent_grid_ratio=RATIO, child_nx=120, child_ny=120)
+D03 = dict(parent_grid_ratio=RATIO, child_nx=30, child_ny=30)
 
 
 def _slide(t, shift, d02_from, d03_from):
@@ -37,6 +46,8 @@ def _slide(t, shift, d02_from, d03_from):
     return {
         "event": "contained", "elapsed_seconds": float(t), "grid_id": 2,
         "executed_shift_parent_cells": list(shift),
+        "clamped": False, "clamped_by": [],
+        "overlap_fraction": overlap_fraction_for_shift(*shift, **D02),
         "placement_from": {"i_parent_start": d02_from[0],
                            "j_parent_start": d02_from[1]},
         "placement_to": {"i_parent_start": d02_to[0],
@@ -56,6 +67,8 @@ def _move(t, shift, d03_from, centroid):
     return {
         "event": "relocated", "elapsed_seconds": float(t), "grid_id": 3,
         "executed_shift_parent_cells": list(shift),
+        "clamped_by": [],
+        "overlap_fraction": overlap_fraction_for_shift(*shift, **D03),
         "placement_from": {"i_parent_start": d03_from[0],
                            "j_parent_start": d03_from[1]},
         "placement_to": {"i_parent_start": d03_to[0],
@@ -139,6 +152,56 @@ def test_shift_past_the_cap_is_caught():
     assert any("max_move_parent_cells" in f for f in audit.failures)
 
 
+def test_a_move_under_the_overlap_floor_is_caught():
+    """The check the run-ending refusal used to make for free.
+
+    While the floor reached a run only through check_admissible, which
+    raises, no ledger could hold a row under it -- the run had ended
+    instead. The runner clamps to the floor now, so a clamp that got the
+    arithmetic wrong would write exactly such a row, and this is what
+    says so.
+    """
+    payload = _clean_ledger()
+    payload["config"]["min_overlap_fraction"] = 0.7
+    # Every row already carries the overlap its own shift produced, and
+    # all of them clear 0.7; break exactly one.
+    audit, _ = _run(payload)
+    assert audit.passed, audit.failures
+    payload["receipts"][2]["overlap_fraction"] = 0.64
+    audit, _ = _run(payload)
+    assert not audit.passed
+    assert any("min_overlap_fraction" in f and "0.6400" in f
+               for f in audit.failures)
+
+
+def test_a_containment_slide_under_the_overlap_floor_is_caught_too():
+    """The half the check could not reach.
+
+    The floor clamps the sliding ancestor as well as the mover, and the
+    slide's row is the only record of it.  While that row carried no
+    ``overlap_fraction`` the check skipped every slide in the ledger and
+    said nothing, which is indistinguishable from every slide passing.
+    """
+    payload = _clean_ledger()
+    payload["config"]["min_overlap_fraction"] = 0.7
+    slide = payload["receipts"][1]
+    assert slide["event"] == "contained"
+    assert slide["overlap_fraction"] > 0.7
+    slide["overlap_fraction"] = 0.64
+    audit, _ = _run(payload)
+    assert not audit.passed
+    assert any("contained" in f and "min_overlap_fraction" in f
+               and "0.6400" in f for f in audit.failures)
+
+
+def test_a_ledger_with_no_floor_declared_is_not_judged_against_one():
+    payload = _clean_ledger()
+    for row in payload["receipts"]:
+        row["overlap_fraction"] = 0.1
+    audit, _ = _run(payload)
+    assert audit.passed, audit.failures
+
+
 def test_wrong_earth_fixed_compensation_is_caught():
     """-shift x ratio is the whole claim; break it by one cell."""
     payload = _clean_ledger()
@@ -185,6 +248,23 @@ def test_an_unrecognised_tracker_decision_is_caught():
     audit, _ = _run(payload)
     assert not audit.passed
     assert any("unrecognised decision" in f for f in audit.failures)
+
+
+def test_a_row_without_an_overlap_figure_fails_the_floor_check():
+    """A row the floor cannot judge is reported, never skipped.
+
+    The floor check once passed over any row lacking ``overlap_fraction``
+    and said nothing, which is how a producer that never wrote the field
+    kept every containment slide out of a check that claimed to cover
+    them. Both producers write the field now, and a ledger that arrives
+    without it names the row rather than passing.
+    """
+    payload = _clean_ledger()
+    payload["config"]["min_overlap_fraction"] = 0.7
+    del payload["receipts"][2]["overlap_fraction"]
+    audit, _ = _run(payload)
+    assert not audit.passed
+    assert any("carries no overlap_fraction" in f for f in audit.failures)
 
 
 def test_noteworthy_decisions_are_surfaced_not_failed():

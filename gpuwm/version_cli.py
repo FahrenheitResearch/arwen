@@ -244,7 +244,7 @@ def _is_behind(installed: str | None, latest: str | None) -> bool | None:
             return None
     except ImportError:
         # packaging is not a declared dependency.  Without it the only
-        # honest comparison is equality: "different" is not "behind".
+        # accurate comparison is equality: "different" is not "behind".
         return None if installed == latest else True
 
 

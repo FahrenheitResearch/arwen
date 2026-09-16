@@ -9,20 +9,25 @@ import pytest
 from gpuwm import remote_native_plots as plots, remote_processed_v2 as viewer, remote_preparation_v2 as preparation
 from gpuwm import remote_artifacts as ra, remote_cli
 from test_remote_artifacts import case, encoded
-from test_remote_processed_v2 import native, query
+from test_remote_processed_v2 import NODE_DEFAULT_PRODUCTS, native, query
 
 
 @pytest.fixture
 def prepared(native, monkeypatch):
     c = native.case
-    viewer.catalog(query(c, products=viewer.DEFAULT_PRODUCTS), c.tmp_path)
+    viewer.catalog(query(c, products=[]), c.tmp_path)
     viewer._work_job(c.tmp_path, c.record["id"])
     monkeypatch.setattr(plots, "ensure", lambda *_: None)
     monkeypatch.setattr(preparation, "ensure", lambda *_: None)
     monkeypatch.setattr(plots, "_spacing", lambda *_: 3000.)
     renders = []
+    # The compact processor stub the `native` fixture installed stays reachable:
+    # a plot pass must never run a process request itself, and the count of the
+    # conversions it did not run is what proves it.
+    process = plots.subprocess.run
     def render(command, **kwargs):
-        assert "--process-request" not in command
+        if "--process-request" in command:
+            return process(command, **kwargs)
         request = json.loads(Path(command[command.index("--render-store-request") + 1]).read_text())
         renders.append(request)
         native_result = json.loads(Path(request["process_result"]).read_text())
@@ -46,7 +51,7 @@ def test_incremental_plots_reuse_compact_store_and_do_not_retry_published_frames
     c = prepared.case
     assert plots.work_once(c.tmp_path, c.record["id"])["pending"] == 1
     assert len(prepared.renders) == 1 and len(prepared.native.calls) == 1
-    assert prepared.renders[0]["products"] == sorted(viewer.DEFAULT_PRODUCTS)
+    assert prepared.renders[0]["products"] == list(NODE_DEFAULT_PRODUCTS)
     assert prepared.renders[0]["width"] == 1200 and prepared.renders[0]["height"] == 900
     c.status["state"] = "completed"
     state = plots.work_once(c.tmp_path, c.record["id"])
@@ -81,6 +86,45 @@ def test_selected_gallery_roundtrip_reuses_bytes_and_rejects_tampered_commit(pre
         plots.stream(changed, c.tmp_path, io.BytesIO())
 
 
+def _gallery_of(reply, count):
+    """The node's own published reply with its panel inventory replaced by
+    `count` synthetic panels whose checksums and sizes reconcile."""
+    import hashlib
+    panels = []
+    for index in range(count):
+        content = f"panel {index} transfer fixture; no meteorology".encode()
+        panels.append({"slug": f"var:field_{index:03d}", "sha256": hashlib.sha256(content).hexdigest(),
+                       "bytes": len(content), "content": content})
+    return {**reply, "panels": [{k: v for k, v in row.items() if k != "content"} for row in panels],
+            "bytes": sum(row["bytes"] for row in panels)}, {row["slug"]: row["content"] for row in panels}
+
+
+@pytest.mark.parametrize("count", [viewer.NODE_PRODUCT_LIMIT, viewer.NODE_PRODUCT_LIMIT + 1])
+def test_gallery_inventory_is_bounded_by_the_node_product_limit(prepared, monkeypatch, count):
+    # The node accepts a selection of up to NODE_PRODUCT_LIMIT named products
+    # and renders that many panels; the desktop must accept the whole gallery
+    # back, and refuse one past the bound naming both counts and the door.
+    c = prepared.case
+    plots.work_once(c.tmp_path, c.record["id"])
+    contents = {}
+    def transport(_, request, **kw):
+        reply, rows = _gallery_of(plots.catalog(request, c.tmp_path), count)
+        contents.update(rows)
+        return {"ok": True, "native_plots": reply}
+    monkeypatch.setattr(remote_cli, "_transport", transport)
+    monkeypatch.setattr(ra, "_download", lambda _, request, path, frame: path.write_bytes(contents[request["product"]]))
+    args = SimpleNamespace(workspace=str(c.tmp_path), job=c.record["id"], domain=1, sequence=1, cache_root=c.tmp_path / "local-plots")
+    if count > viewer.NODE_PRODUCT_LIMIT:
+        with pytest.raises(ValueError) as refusal:
+            plots.sync(args, [], [])
+        assert f"names {count} panels" in str(refusal.value) and f"at most {viewer.NODE_PRODUCT_LIMIT}" in str(refusal.value)
+        assert "gpuwm remote list-products" in str(refusal.value)
+        return
+    result = plots.sync(args, [], [])
+    assert len(result["native_plots"]["panels"]) == count and result["transferred_bytes"] > 0
+    assert Path(result["native_plots"]["gallery_path"]).read_text(encoding="utf-8").count("<figure>") == count
+
+
 def test_source_mutation_is_refused_and_reported_once(prepared):
     c = prepared.case
     c.frame.write_bytes(c.raw + b"changed")
@@ -95,3 +139,54 @@ def test_native_plot_cli_requires_exact_sequence_and_cache():
     args = build_parser().parse_args(["remote", "sync-native-plots", "--host", "node-1", "--python", "/python",
         "--workspace", "/work", "--job", "job-1", "--domain", "2", "--sequence", "3", "--cache-root", "cache"])
     assert args.remote_action == "sync-native-plots" and args.sequence == 3 and args.domain == 2
+
+
+def test_the_gallery_draws_the_product_set_this_run_selected(prepared):
+    """C-296: a job's gallery is the run's own render selection, not a fixed list."""
+    c = prepared.case
+    c.record["products"] = "2m_temperature,sbcape"
+    viewer.catalog(query(c, products=["2m_temperature", "sbcape"]), c.tmp_path)
+    viewer._work_job(c.tmp_path, c.record["id"])
+    plots.work_once(c.tmp_path, c.record["id"])
+    assert prepared.renders[-1]["products"] == ["2m_temperature", "sbcape"]
+    assert plots.render_selection(c.record)["products"] == ["2m_temperature", "sbcape"]
+
+
+def test_a_requested_size_and_product_set_get_their_own_gallery(prepared):
+    """C-225: the render options travel with the request and key the gallery."""
+    c = prepared.case
+    own = plots.render_selection(c.record)
+    request = {**c.request, "action": "native-plots", "sequence": 1, "domain": 1,
+               "width": 800, "height": 600, "products": ["2m_temperature"]}
+    value = plots.catalog(request, c.tmp_path)
+    assert value["width"] == 800 and value["height"] == 600
+    assert value["render_id"] != own["render_id"]
+    assert value["selection_products"] == ["2m_temperature"]
+    # The watcher now renders both galleries, each into its own receipt.
+    plots._work_selections(c.tmp_path, c.record["id"])
+    viewer._work_job(c.tmp_path, c.record["id"])
+    plots._work_selections(c.tmp_path, c.record["id"])
+    sized = [row for row in prepared.renders if row["width"] == 800]
+    assert sized and sized[-1]["products"] == ["2m_temperature"] and sized[-1]["height"] == 600
+    ready = plots.catalog(request, c.tmp_path)
+    assert not ready["waiting"] and [row["slug"] for row in ready["panels"]] == ["2m_temperature"]
+    # The run's own gallery is untouched by the reader's selection.
+    assert plots.catalog({**c.request, "action": "native-plots", "sequence": 1, "domain": 1},
+                         c.tmp_path)["render_id"] == own["render_id"]
+
+
+def test_a_panel_size_outside_the_renderers_range_names_that_range(prepared):
+    c = prepared.case
+    with pytest.raises(ValueError) as failure:
+        plots.render_selection(c.record, {"width": 12})
+    message = str(failure.value)
+    assert "256" in message and "4096" in message and "refuse the whole frame" in message
+
+
+def test_the_gallery_door_registers_its_render_options():
+    from gpuwm.cli import build_parser
+    args = build_parser().parse_args(["remote", "sync-native-plots", "--host", "node-1", "--python", "/python",
+        "--workspace", "/work", "--job", "job-1", "--sequence", "3", "--cache-root", "cache",
+        "--products", "2m_temperature,var:T2", "--width", "800", "--height", "600"])
+    assert plots.request_options(args) == {"products": ["2m_temperature", "var:T2"],
+                                           "width": 800, "height": 600}

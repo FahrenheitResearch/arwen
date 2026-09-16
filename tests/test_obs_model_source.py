@@ -20,6 +20,7 @@ netCDF4 = pytest.importorskip("netCDF4")
 
 from gpuwm.verify.obs import model_source
 from gpuwm.verify.obs.contracts import SEAM_BOUNDS
+from conftest import requires_wrf_rust
 
 
 def _write_frame(path, *, valid_time, reflectivity, rain, landmask=None):
@@ -87,11 +88,13 @@ class _StandInCore:
 # --------------------------------------------------------------------------
 
 
+@requires_wrf_rust
 def test_the_science_core_pin_matches_what_is_installed():
     core = model_source.require_science_core()
     assert hasattr(core, "getvar") and hasattr(core, "WrfFile")
 
 
+@requires_wrf_rust
 def test_the_pin_here_is_the_same_pin_the_tree_already_carries():
     from tools.flagship.products import PINNED_WRF_RUST_VERSION
 
@@ -227,6 +230,7 @@ def test_an_unparseable_frame_name_is_a_refusal_not_a_skip(tmp_path):
 # --------------------------------------------------------------------------
 
 
+@requires_wrf_rust
 def test_composite_reflectivity_is_the_column_max_of_the_stored_field(tmp_path):
     directory = _run_directory(tmp_path)
     source = model_source.WrfHistorySource(directory, domain="d01")
@@ -240,6 +244,7 @@ def test_composite_reflectivity_is_the_column_max_of_the_stored_field(tmp_path):
     assert np.allclose(composite, expected)
 
 
+@requires_wrf_rust
 def test_precipitation_is_a_run_total_and_differences_are_positive(tmp_path):
     directory = _run_directory(tmp_path)
     source = model_source.WrfHistorySource(directory, domain="d01")
@@ -249,6 +254,7 @@ def test_precipitation_is_a_run_total_and_differences_are_positive(tmp_path):
     assert np.allclose(late - early, 2.5)
 
 
+@requires_wrf_rust
 def test_valid_times_are_ascending_and_the_reader_records_its_choices(tmp_path):
     source = model_source.WrfHistorySource(_run_directory(tmp_path),
                                            domain="d01")
@@ -263,6 +269,7 @@ def test_valid_times_are_ascending_and_the_reader_records_its_choices(tmp_path):
                                                    "use_liqskin": False}
 
 
+@requires_wrf_rust
 def test_asking_for_a_frame_that_does_not_exist_is_a_refusal(tmp_path):
     source = model_source.WrfHistorySource(_run_directory(tmp_path),
                                            domain="d01")
@@ -283,6 +290,7 @@ def _with_stand_in_core(tmp_path, values):
     return source
 
 
+@requires_wrf_rust
 def test_a_declared_conversion_is_applied_once(tmp_path):
     source = _with_stand_in_core(tmp_path, {
         "t2": np.full((6, 7), 291.0),
@@ -301,6 +309,7 @@ def test_a_declared_conversion_is_applied_once(tmp_path):
         source.surface_field("2026-08-03T12:00:00", "wind_speed_10m"), 6.0)
 
 
+@requires_wrf_rust
 def test_a_wrong_conversion_fails_loudly_on_the_first_frame(tmp_path):
     # The core returns dewpoint in Kelvin while the table declares Celsius:
     # the result lands 273 K too high and the seam bound catches it.
@@ -311,6 +320,7 @@ def test_a_wrong_conversion_fails_loudly_on_the_first_frame(tmp_path):
         source.surface_field("2026-08-03T12:00:00", "dewpoint_2m")
 
 
+@requires_wrf_rust
 def test_the_seam_bound_named_in_the_refusal_is_the_registered_one(tmp_path):
     source = _with_stand_in_core(tmp_path, {"t2": np.full((6, 7), 12.0)})
     low, high = SEAM_BOUNDS["temperature_2m"]
@@ -319,6 +329,7 @@ def test_the_seam_bound_named_in_the_refusal_is_the_registered_one(tmp_path):
     assert f"[{low:g}, {high:g}]" in str(excinfo.value)
 
 
+@requires_wrf_rust
 def test_a_non_finite_diagnostic_is_refused(tmp_path):
     source = _with_stand_in_core(
         tmp_path, {"t2": np.full((6, 7), np.nan)})
@@ -326,18 +337,21 @@ def test_a_non_finite_diagnostic_is_refused(tmp_path):
         source.surface_field("2026-08-03T12:00:00", "temperature_2m")
 
 
+@requires_wrf_rust
 def test_a_variable_with_no_declared_conversion_is_refused(tmp_path):
     source = _with_stand_in_core(tmp_path, {})
     with pytest.raises(ValueError, match="no declared conversion"):
         source.surface_field("2026-08-03T12:00:00", "visibility")
 
 
+@requires_wrf_rust
 def test_the_cross_check_operator_comes_from_the_core_not_from_here(tmp_path):
     source = _with_stand_in_core(
         tmp_path, {"maxdbz": np.full((6, 7), 44.0)})
     assert np.allclose(source.core_maxdbz("2026-08-03T12:00:00"), 44.0)
 
 
+@requires_wrf_rust
 def test_the_station_locator_goes_through_the_cores_projection(tmp_path):
     source = _with_stand_in_core(tmp_path, {})
     locate = source.station_locator()
@@ -345,6 +359,7 @@ def test_the_station_locator_goes_through_the_cores_projection(tmp_path):
     assert (position.station_id, position.x, position.y) == ("KXYZ", 2.5, 3.5)
 
 
+@requires_wrf_rust
 def test_the_grid_carries_terrain_and_this_domains_spacing(tmp_path):
     source = _with_stand_in_core(
         tmp_path, {"terrain": np.full((6, 7), 320.0)})
@@ -354,6 +369,7 @@ def test_the_grid_carries_terrain_and_this_domains_spacing(tmp_path):
     assert np.allclose(grid.terrain_m, 320.0)
 
 
+@requires_wrf_rust
 def test_the_land_mask_is_read_off_the_run_and_is_a_flag(tmp_path):
     # The registered station admission keeps land points only, so the mask
     # has to come off the arm being scored rather than off a static file
@@ -368,6 +384,7 @@ def test_the_land_mask_is_read_off_the_run_and_is_a_flag(tmp_path):
     assert np.array_equal(land, mask >= 0.5)
 
 
+@requires_wrf_rust
 def test_a_land_mask_that_is_not_a_flag_is_refused(tmp_path):
     # A fractional land fraction read as a 0/1 flag would silently admit
     # every coastal station, which is the opposite of what the rule says.
@@ -378,6 +395,7 @@ def test_a_land_mask_that_is_not_a_flag_is_refused(tmp_path):
         source.land_mask()
 
 
+@requires_wrf_rust
 def test_a_run_with_no_land_mask_says_so_rather_than_inventing_one(tmp_path):
     source = model_source.WrfHistorySource(_run_directory(tmp_path),
                                            domain="d01")

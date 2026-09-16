@@ -25,7 +25,7 @@ rule is a receipt: recorded, and nothing checks it.
 THE RULE THIS GATE ENFORCES: **capture at the boundary, or measure the gap
 inert. Never reason.**
 
-Instance 8 is the one that shows why the *measurement* is the load-bearing
+Instance 8 is the one that shows why the *measurement* is the essential
 half. Its captured values were RIGHT -- taken at cududvn's own call site --
 and only the explanation was wrong. Reasoning produced a false statement
 that a future reader would have used, while the capture quietly protected

@@ -3,7 +3,7 @@
 Two delimited blocks are generated -- one in ``PROVENANCE.md``, one in
 ``docs/public/HARDWARE.md`` -- and both are written by substitution into
 ``statement_template.md``.  The template holds the framing; the receipt
-holds every fact.  Three properties are load-bearing and each has a test:
+holds every fact.  Three properties are essential and each has a test:
 
 *Nothing is authored.*  The template contains no member of the receipt's
 verdict vocabulary, so the outcome words in the published text can only
@@ -271,7 +271,7 @@ def control_note(receipt: dict) -> str:
     if not sensitivity.get("arms_differ"):
         return ("The arms did not separate, so nothing above distinguishes "
                 "a compile-side effect from a device-side one.")
-    return (f"The control arm is load-bearing: the "
+    return (f"The control arm is essential: the "
             f"{sensitivity['distinct_arm_bit_tables']} distinct bit tables "
             f"among the {len(sensitivity['arm_bit_table_sha256'])} arms are "
             f"what shows the pipeline responds to the flag at all.")

@@ -1,4 +1,4 @@
-"""The streamed-run lane's gate list, kept honest in the repository.
+"""The streamed-run lane's gate list, kept accurate in the repository.
 
 ``tools/battery/tiles_gates.txt`` is how the battery finds the ``[tiles]``
 gates.  They are not pytest -- each is a module whose ``main()`` prints a

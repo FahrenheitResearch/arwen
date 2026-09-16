@@ -270,7 +270,7 @@ def _inventory_dropping_windows(obj, names=None):
     window slots -- the only answer it had for "cross-step state that is
     deliberately not checkpointed" -- and ``carrier_manifest`` reads
     ``rebuild`` as "not cross-step".  Reproducing it here, rather than by
-    monkeypatching the classification, keeps the control honest: the store
+    monkeypatching the classification, keeps the control accurate: the store
     genuinely never holds the windows, exactly as before.
     """
     inv = physinv.carrier_inventory(obj, names)

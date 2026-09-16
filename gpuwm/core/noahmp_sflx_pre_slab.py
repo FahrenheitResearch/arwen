@@ -191,7 +191,7 @@ def evaluate_sflx_pre_slab(fields: dict, n: int) -> dict:
     n = int(n)
 
     # ---- every input, once, over the whole column axis --------------------
-    # The shape checks are load-bearing: k_sflx_marshal hard-codes NSNOW and
+    # The shape checks are essential: k_sflx_marshal hard-codes NSNOW and
     # NSOIL, so a slab of another layer count would be read with the wrong
     # stride and answer silently.
     x = {name: _column(cp, fields, name, n, cp.float32)

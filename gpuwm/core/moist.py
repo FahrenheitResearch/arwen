@@ -203,7 +203,7 @@ def absent_mass_plane(state) -> cp.ndarray:
 #: qndrop (:521), qni (:523), qns (:531), qnr (:533), qng (:535), qnc (:541)
 #: and the aerosol pair -- is declared with package ``scalar``.
 #:
-#: The distinction is load-bearing for exactly one thing today and it is
+#: The distinction is essential for exactly one thing today and it is
 #: worth naming rather than rediscovering: WRF's ``&dynamics`` mixing
 #: switches are PER ARRAY.  ``moist_mix2_off``/``moist_mix6_off`` gate the
 #: moist array (dyn_em/solve_em.F:2229-2230), ``scalar_mix2_off``/

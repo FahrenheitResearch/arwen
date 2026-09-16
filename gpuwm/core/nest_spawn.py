@@ -12,7 +12,7 @@ static nest from then on ([relocation.follow] takes over if configured).
 RESERVATION, STATED PLAINLY.  A declared-but-never-triggered nest costs
 its full reserved VRAM for the whole run and zero compute.  That is the
 design, not an accident: the reservation is what makes VRAM
-deterministic, lets preflight refuse honestly at planning time, and
+deterministic, lets preflight refuse accurately at planning time, and
 makes spawning an ACTIVATION rather than a mid-run allocation that can
 OOM after hours of integration.  ``gpuwm check`` says this per dormant
 domain (:func:`gpuwm.core.preflight.check_advisories`).
@@ -46,7 +46,7 @@ on two different storms.  Two rules provide that:
 - per-nest search boxes (``search_box``, or the declared footprint plus
   the ``[relocation.follow]`` margin, or the whole parent); and
 - exclusion: a trigger IGNORES signal inside another ACTIVE nest's
-  footprint -- the simplest honest rule for "that storm is taken".
+  footprint -- the simplest accurate rule for "that storm is taken".
   :meth:`SpawnController.evaluate_all` additionally feeds each event
   fired at a boundary into the exclusion set of the nests evaluated
   after it (grid_id order), so two triggers at one boundary cannot

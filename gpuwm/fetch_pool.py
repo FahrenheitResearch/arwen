@@ -39,7 +39,7 @@ and bookkeeping:
   unclaimed by any receipt, and the next run re-verifies them under
   the ordinary bars), and the original refusal -- whose message names
   the file -- is re-raised unchanged.
-* **An honest receipt.**  Files, bytes, workers requested and
+* **An accurate receipt.**  Files, bytes, workers requested and
   effective, the per-host caps that actually bound this run, wall
   seconds, the serial model (the sum of per-file seconds), and the
   effective speedup against it.

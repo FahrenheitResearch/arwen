@@ -23,7 +23,7 @@ pickup (``interp_fcn.F:975-985``) for child index ``n`` under placement
 For the new placement ``p1`` and child index ``n'``, the cell covering the
 same ground under the old placement ``p0`` is ``n = n' + (p1-p0)*ratio``,
 and substituting gives ``ci`` and ``ip`` **identical** in both.  Two
-consequences follow, and both are load-bearing:
+consequences follow, and both are essential:
 
 1. the overlap transplant is a pure index-space copy -- no interpolation,
    no resampling, no loss; and
@@ -86,6 +86,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import math
 import os
 from dataclasses import dataclass, replace
 
@@ -602,6 +603,108 @@ def plan_relocation(*, placement_from: Placement, placement_to: Placement,
                  - placement_from.j_parent_start) * ratio)
 
 
+#: Slack on the implied-bound floor division, so a floor whose exact
+#: answer is a whole number of cells is not pushed one cell down by the
+#: last bit of a square root.  Far below one cell, so it can never admit
+#: a move the floor refuses.
+_CELL_TOL = 1e-9
+
+
+def overlap_fraction_for_shift(shift_i: int, shift_j: int, *,
+                               parent_grid_ratio: int, child_nx: int,
+                               child_ny: int) -> float:
+    """The fraction of the child a whole-parent-cell shift would keep.
+
+    Goes through :func:`plan_relocation` rather than repeating the
+    arithmetic, so the number a caller checks a move against and the
+    number :func:`check_admissible` judges it on are produced by one
+    implementation.  The base position is chosen so both placements are
+    1-based valid for any sign of the shift; overlap depends on the
+    DIFFERENCE, so the base cancels.
+    """
+    base = 1 + max(abs(int(shift_i)), abs(int(shift_j)))
+    grid_id = 2
+    plan = plan_relocation(
+        placement_from=Placement(grid_id=grid_id, i_parent_start=base,
+                                 j_parent_start=base),
+        placement_to=Placement(grid_id=grid_id,
+                               i_parent_start=base + int(shift_i),
+                               j_parent_start=base + int(shift_j),
+                               generation=1),
+        parent_grid_ratio=int(parent_grid_ratio),
+        child_nx=int(child_nx), child_ny=int(child_ny))
+    return float(plan.overlap_fraction)
+
+
+def max_parent_cells_for_overlap(min_overlap_fraction, *,
+                                 parent_grid_ratio: int, child_nx: int,
+                                 child_ny: int) -> int | None:
+    """The per-axis parent-cell move an overlap floor implies.
+
+    The two bounds in :func:`check_admissible` are not independent, and a
+    config that sets them independently can declare a maximum move its
+    own floor refuses.  Overlap is separable: a shift of ``(m, n)``
+    parent cells keeps ``(1 - m*r/nx) * (1 - n*r/ny)`` of the child, so
+    the binding case is the DIAGONAL move, where both factors shrink at
+    once.  With the nest ``N = n/r`` parent cells wide on its narrow
+    axis, a floor ``f`` admits a per-axis magnitude ``m`` only while
+    ``(1 - m/N)**2 >= f``, that is::
+
+        m <= N * (1 - sqrt(f))
+
+    so the per-axis bound is ``1 - sqrt(f)`` of the nest's own width in
+    parent cells.  ``None`` in means unbounded and comes back as
+    ``None``.  The result is never negative and a floor of 1.0 gives 0:
+    a floor that keeps the whole child admits only the null move.
+    """
+    if min_overlap_fraction is None:
+        return None
+    floor = float(min_overlap_fraction)
+    ratio = int(parent_grid_ratio)
+    narrow = min(int(child_nx), int(child_ny)) / ratio
+    return max(0, int(math.floor(narrow * (1.0 - math.sqrt(floor)) + _CELL_TOL)))
+
+
+def clamp_shift_to_overlap(shift_i: int, shift_j: int, *,
+                           min_overlap_fraction, parent_grid_ratio: int,
+                           child_nx: int, child_ny: int
+                           ) -> tuple[int, int, bool]:
+    """Shrink a move along its own direction until it clears the floor.
+
+    The largest move in the SAME direction that satisfies the floor, and
+    the null move if nothing else does -- the null move always satisfies
+    it, because it keeps the whole child.  So a follow source whose
+    proposal breaches the floor gets the biggest admissible step toward
+    the storm and catches up at later cadences, instead of the run ending
+    on a bound it could have obeyed.
+
+    Direction is preserved by scaling BOTH axes by the same factor and
+    truncating toward zero, so a diagonal proposal stays diagonal and a
+    single-axis one stays on its axis.  The walk is over the dominant
+    axis's magnitude, which is finite and decreasing, so it terminates.
+    """
+    di, dj = int(shift_i), int(shift_j)
+    if min_overlap_fraction is None:
+        return di, dj, False
+    floor = float(min_overlap_fraction)
+
+    def keeps(candidate_i: int, candidate_j: int) -> bool:
+        return overlap_fraction_for_shift(
+            candidate_i, candidate_j, parent_grid_ratio=parent_grid_ratio,
+            child_nx=child_nx, child_ny=child_ny) >= floor
+
+    if keeps(di, dj):
+        return di, dj, False
+    peak = max(abs(di), abs(dj))
+    for magnitude in range(peak - 1, -1, -1):
+        scale = magnitude / peak
+        candidate_i = int(di * scale)
+        candidate_j = int(dj * scale)
+        if keeps(candidate_i, candidate_j):
+            return candidate_i, candidate_j, True
+    return 0, 0, True
+
+
 def check_admissible(plan: RelocationPlan, bounds) -> dict[str, object]:
     """Judge a planned move against a config's relocation bounds.
 
@@ -641,9 +744,22 @@ def check_admissible(plan: RelocationPlan, bounds) -> dict[str, object]:
     checks["min_overlap_fraction"] = (None if floor is None
                                       else float(floor))
     if floor is not None and plan.overlap_fraction < float(floor):
+        implied = max_parent_cells_for_overlap(
+            floor, parent_grid_ratio=ratio, child_nx=plan.child_nx,
+            child_ny=plan.child_ny)
+        checks["implied_max_parent_cells"] = implied
         raise RelocationRefusal(
             f"the move keeps only {plan.overlap_fraction:.4f} of the "
-            f"child's cells, under the configured floor of {float(floor):.4f}")
+            f"child's cells, under the configured floor of "
+            f"{float(floor):.4f}; the strip it would expose is larger "
+            "than the one the child can spin up before it matters. On "
+            "this nest the floor admits at most "
+            f"{implied} parent cells per axis on a diagonal move, so ask "
+            "for a placement inside that, or lower min_overlap_fraction "
+            "deliberately. A scheduled follow source does not reach this "
+            "refusal: the runner clamps its proposal to the largest move "
+            "in the same direction that clears the floor "
+            "(clamp_shift_to_overlap) and records both shifts.")
     return {"admissible": True, "null_move": False, "checks": checks}
 
 
@@ -1163,7 +1279,7 @@ def relocate_child(child_node, *, i_parent_start: int, j_parent_start: int,
     ``staging`` block carries live-pool samples around each phase so the
     peak claim is measured, never architectural.
 
-    ATOMICITY UNDER HOST STAGING, STATED HONESTLY.  The in-device path
+    ATOMICITY UNDER HOST STAGING, STATED ACCURATELY.  The in-device path
     leaves the tree untouched on any refusal.  The host path releases the
     outgoing child before the rebuild, so a failure AFTER the release
     (an allocation failure, or the donor-alignment self-check tripping on
@@ -1630,7 +1746,7 @@ def plan_descendant_reground(child_dc, delta_i: int, delta_j: int,
     the difference, and therefore the plan, untouched.
 
     So the placements inside the returned plan are an artefact of reusing
-    the planner and are NOT a record of where anything sits; the honest
+    the planner and are NOT a record of where anything sits; the accurate
     record is ``delta_parent_cells`` on the relocation receipt.
 
     Reusing the same planner rather than writing a second one is
@@ -1743,6 +1859,8 @@ __all__ = [
     "RESTART_ACROSS_MOVE_POSTURE", "Placement",
     "RelocationPlan", "RelocationRecord", "RelocationRefusal",
     "RelocationSegment", "base_segment", "check_admissible",
+    "clamp_shift_to_overlap", "max_parent_cells_for_overlap",
+    "overlap_fraction_for_shift",
     "donor_alignment_check", "mark_fingerprint_across_move",
     "placement_independent_identity", "placement_of", "plan_relocation",
     "release_state_arrays",

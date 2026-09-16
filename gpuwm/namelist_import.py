@@ -333,8 +333,10 @@ class FixedKey:
 
     The key never reaches the emitted TOML because ArWen has exactly one
     implemented behavior for it; the importer checked the supplied value
-    against that pin (any other value is a hard error, never a silent
-    reinterpretation) and records the pin and its evidence here.
+    against that pin and records the pin and its evidence here.  Any
+    other value is a hard error, never a silent reinterpretation --
+    except where the key reaches no gpuwm code at any value, which the
+    reason says in those words, because there is no breakage to refuse.
     """
 
     section: str
@@ -697,7 +699,7 @@ _MP28_AEROSOL_NAMELIST_KEYS: dict[str, dict[str, str]] = {
             "no biomass-burning aerosol injection profile "
             "(Registry.EM_COMMON:2659), for the same reason.  Refused even "
             "at its WRF Registry default of 1, because with no emission "
-            "source there is no honest value: 1 describes a vertical "
+            "source there is no accurate value: 1 describes a vertical "
             "distribution ArWen never performs",
         "dust_emis":
             "no dust emission source (Registry.EM_COMMON:2591); ArWen's "
@@ -1149,18 +1151,30 @@ def import_namelists(wps_path: str | Path, input_path: str | Path,
     # exactly one value of each).  A key at the identity value is recorded
     # as fixed; any other value refuses with the identity's evidence.
     from gpuwm.config import (MYNN_PBL_OPTION_IDENTITY,
-                              NOAHMP_OPTION_IDENTITY_EVIDENCE)
+                              NOAHMP_OPTION_IDENTITY_EVIDENCE,
+                              NOAHMP_OPTIONS_WITHOUT_CONSUMER)
     for option, (admitted, evidence) in \
             NOAHMP_OPTION_IDENTITY_EVIDENCE.items():
         values = noahmp.take(option)
         if values is None:
             continue
         if any(not _identity_matches(value, admitted) for value in values):
-            raise _err(
-                "noah_mp", option, values,
-                f"gpuwm's Noah-MP port implements {option} = {admitted!r} "
-                f"only ({evidence}); no nearby branch is substituted for "
-                "an unported one.")
+            # A knob with no consumer at any value has no breakage to
+            # name, so a namelist that sets one is imported rather than
+            # refused, and the record says the knob reaches nothing.
+            # The run door reaches the same verdict from the same table
+            # (gpuwm.config.NOAHMP_OPTIONS_WITHOUT_CONSUMER), so the two
+            # doors cannot disagree about one namelist.
+            if option not in NOAHMP_OPTIONS_WITHOUT_CONSUMER:
+                raise _err(
+                    "noah_mp", option, values,
+                    f"gpuwm's Noah-MP port implements {option} = "
+                    f"{admitted!r} only ({evidence}); no nearby branch "
+                    "is substituted for an unported one.")
+            fix("noah_mp", option, values, admitted,
+                f"{option} reaches no gpuwm code ({evidence}), so the "
+                "imported value changes nothing and the pin is written")
+            continue
         fix("noah_mp", option, values, admitted,
             f"Noah-MP option identity ({evidence})")
     noahmp.finish()
@@ -2831,7 +2845,7 @@ def import_namelists(wps_path: str | Path, input_path: str | Path,
     # (gpuwm/native_wrf_contract.py:47, gpuwm/io/wrfout.py:197).  So it is
     # validated against that identity and recorded -- a namelist declaring
     # USGS's 24 describes static data gpuwm does not build, and refusing is
-    # the only honest answer.
+    # the only accurate answer.
     if landuse_identity is None:
         _MODIS_LAND_CATEGORIES = 21
         num_land_cat = ph.take("num_land_cat")
@@ -2874,7 +2888,7 @@ def import_namelists(wps_path: str | Path, input_path: str | Path,
     # calls initialize_landuse with the FRACTIONAL branch, while the
     # case-data runtime path (gpuwm/runtime.py:702, :930) takes the default
     # XICE >= 0.5 branch.  Recording that divergence beside the value is
-    # the honest report; inventing a knob that only one of the two routes
+    # the accurate report; inventing a knob that only one of the two routes
     # would honor is not.
     fractional_seaice = ph.take("fractional_seaice")
     if fractional_seaice is not None and any(

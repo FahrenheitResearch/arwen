@@ -95,7 +95,7 @@ class TestKeepout:
         # The refusal names WHAT WAS OBSERVED and where it came from: the
         # geographic request, the parent index it mapped to, the rows kept,
         # the rows required, and the two widths that add up to the
-        # requirement.  Every one of those numbers is load-bearing for the
+        # requirement.  Every one of those numbers is essential for the
         # person reading it at 3am.
         assert "35.20N" not in text          # it must quote the REQUEST
         assert f"{self.NORTH_EDGE_LAT:.2f}N" in text
@@ -112,7 +112,7 @@ class TestKeepout:
         assert got.state == "PLANNED"
         assert got.clamped is True
         assert got.refusal is None
-        # Clamped INTO the keepout, which is the honest cost: the nest
+        # Clamped INTO the keepout, which is the accurate cost: the nest
         # integrates but has stopped following its storm.
         assert got.j_parent_start == 60 - (30 // 3) + 1 - 10
 

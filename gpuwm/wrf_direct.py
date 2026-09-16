@@ -1018,7 +1018,7 @@ def _global_updates(*, valid_time: datetime, nx: int, ny: int, nz: int,
     stamp = _date_text(valid_time)
     updates = {
         # WRF's input gate recognizes versioned initial data from the TITLE
-        # token itself.  Preserve an honest producer label while retaining
+        # token itself.  Preserve an accurate producer label while retaining
         # the required V4.x-compatible marker.
         "TITLE": " OUTPUT FROM GPUWM NATIVE WRF V4.6.1-COMPAT DIRECT EXPORTER",
         "START_DATE": stamp,

@@ -181,7 +181,7 @@ def test_an_unknown_capability_falls_back_to_the_cold_test(tmp_path):
     cache = tmp_path / "kernel_cache"
     cache.mkdir()
     (cache / ("e" * 40 + ".cubin")).write_bytes(_cubin(120))
-    # No card to ask: the honest answer is the one this module could
+    # No card to ask: the accurate answer is the one this module could
     # always give, and it must not become a guess.
     assert kernel_cache_state(cache, compute_capability=None).reason is None
     assert kernel_compile_notice(cache) is None

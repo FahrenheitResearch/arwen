@@ -77,7 +77,7 @@ ROUTE_TABLE_SCHEMA = "gpuwm-fetch-routes-v1"
 #: resolving a key shape nothing was measured against.  Kept in sync by
 #: ``tests/test_fetch_routes.py``.
 ROUTE_TABLE_SHA256 = (
-    "5adb0486a1973d92f420111c7ce7e59cbcde7a34cd4f4851c6bedbee3a2532d1"
+    "b087a367a7a132ab0e11962da1ed8a303d9edab1821aab932047a847b9a66e2b"
 )
 
 #: Sources whose acquisition predates the route table and keeps its own
@@ -966,7 +966,7 @@ def _magic_for(plan: FetchPlan, role: str) -> str:
 
 
 def _verify_payload(path: Path, *, magic: str, label: str) -> None:
-    """The cheapest honest completeness bar for a downloaded object.
+    """The cheapest accurate completeness bar for a downloaded object.
 
     Leading magic separates a payload from an HTML error page a proxy
     served with HTTP 200; the GRIB2 end marker separates a complete
@@ -1533,7 +1533,7 @@ def run_plan(plan: FetchPlan, *, out: Path, force: bool = False,
             # the growing file.  The transport reports its own chunks
             # here, but a route whose copy is owned by something else --
             # the Rust fetch bridge shells out and reports nothing until
-            # it exits -- has no other honest source, and this one costs
+            # it exits -- has no other accurate source, and this one costs
             # a stat().
             path=dest))
 

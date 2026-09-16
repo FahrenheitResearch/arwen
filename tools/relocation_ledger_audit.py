@@ -14,7 +14,8 @@ What it checks, and why each one exists:
   placement changed outside the runner, which is the failure mode the
   segment/generation bookkeeping exists to make impossible.
 * **The caps were respected.**  Every executed shift within
-  ``max_move_parent_cells``, every containment slide within its own cap.
+  ``max_move_parent_cells``, every containment slide within its own cap,
+  and every move of either kind at or above ``min_overlap_fraction``.
   A shift past the cap is the clamp not firing.
 * **The earth-fixed compensation is arithmetic, not aspiration.**  On
   every containment row, each descendant's placement change must equal
@@ -185,6 +186,34 @@ def audit_ledger(payload: dict, audit: Audit) -> dict:
                 f"containment slide {tuple(shift)} at "
                 f"t={row.get('elapsed_seconds')} exceeds its cap "
                 f"{contain_cap}")
+    # THE OVERLAP FLOOR, which used to need no auditor.  It reached a run
+    # only through check_admissible, which raises, so a ledger could not
+    # contain a row under the floor -- the run had ended instead.  The
+    # runner now clamps to it, and a clamp that got the arithmetic wrong
+    # would write exactly such a row and nothing would say so, which is
+    # why the check moves here as the refusal stops firing.
+    floor = config.get("min_overlap_fraction")
+    if floor is not None:
+        for row in moves + slides:
+            kept = row.get("overlap_fraction")
+            if kept is None:
+                # A row the floor cannot judge is a failure, not a skip:
+                # both producers write the field, and a silent skip here
+                # once let every containment slide past a check whose
+                # docstring said it covered them.
+                audit.require(
+                    False,
+                    f"d{int(row.get('grid_id', -1)):02d} {row.get('event')} at "
+                    f"t={row.get('elapsed_seconds')} carries no "
+                    f"overlap_fraction, so the floor "
+                    f"min_overlap_fraction = {float(floor)} cannot be "
+                    f"checked against it")
+                continue
+            audit.require(
+                float(kept) >= float(floor),
+                f"d{int(row.get('grid_id', -1)):02d} {row.get('event')} at "
+                f"t={row.get('elapsed_seconds')} kept {float(kept):.4f} of "
+                f"the child, under min_overlap_fraction = {float(floor)}")
 
     # -- earth-fixed compensation, checked as arithmetic -------------------
     compensated = 0

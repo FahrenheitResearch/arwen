@@ -335,7 +335,7 @@ prognostic categories rather than one rimed-ice slot chosen by a switch.
 Twelve fields are transported (`qc qr qi qs qg qh` and
 `nc nr ni ns ng nh`).
 
-**No oracle has been run.** This is the honest scope line and it is the
+**No oracle has been run.** This is the accurate scope line and it is the
 whole reason the row says implemented-unverified. The port is a
 line-by-line transcription of the byte-frozen WRF v4.6.1
 `phys/module_mp_milbrandt2mom.F`, and what has been *measured* is a
@@ -651,7 +651,7 @@ at all because the registry counted 19 fixtures while the gate drove 22.
 
 The gate is `tests/test_thompson_aerosol_adapter.py::test_g3_end_to_end_against_all_nineteen_oracle_fixtures`
 (the name still says "nineteen"; it globs the fixture directory and drives
-all twenty-two) and it is **honestly red**. The same numbers are published on the
+all twenty-two) and it is **red, and reported as red**. The same numbers are published on the
 registry option (`extensions.column_oracle_evidence`), and
 `tests/test_physics_registry.py::test_mp28_published_residuals_still_equal_a_live_adapter_measurement`
 re-measures them against a live adapter run, so nothing has to trust
@@ -975,7 +975,7 @@ Notes with teeth:
   glibc transcendentals, FTZ at subnormal branches, FMA contraction)
   and what closing it would take. It was the default template scheme
   until 2026-07-29 and stays fully selectable at its maturity label,
-  which states the verification gap honestly.
+  which states the verification gap accurately.
 - Reflectivity (`REFL_10CM`) is computed on output-due microphysics
   steps with WRF's own 50-bin quadrature; the cold-start frame carries
   no reflectivity (no microphysics call precedes it), matching the

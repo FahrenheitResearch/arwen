@@ -90,7 +90,7 @@ def test_diff6_open_strips_match_mirror(stagger, open_x, open_y):
     WRF sixth_order_diffusion excludes 3 entries per open side on every
     axis and stagger; the outermost computed boundary-normal STAGGERED
     face (u's nx-3 under open_x, v's ny-3 under open_y) is computed with
-    WRF's honest read of the stored true boundary datum field(ide)
+    WRF's accurate read of the stored true boundary datum field(ide)
     (kernel ``bndx``/``bndy``; the pre-fix tree zeroed that face instead,
     see tests/test_diff6_boundary_face.py).  The exact zero/live strip
     per axis is pinned mirror-independently below.
@@ -104,7 +104,7 @@ def test_diff6_open_strips_match_mirror(stagger, open_x, open_y):
     nz, ny, nx = 8, 10, 12          # both live regions nonempty at width 3
     f, mut, c1, c2 = _random_case(stagger, nz=nz, ny=ny, nx=nx, seed=13)
     if stagger == "x":              # independent boundary-face datum: the
-        f[..., -1] = 0.7 * f[..., 0] + 0.3   # honest read must be
+        f[..., -1] = 0.7 * f[..., 0] + 0.3   # accurate read must be
     if stagger == "y":                       # distinguishable from the wrap
         f[:, -1, :] = 0.7 * f[:, 0, :] + 0.3
     dt = 2.0

@@ -1,7 +1,7 @@
 """``gpuwm render --engine rust`` and ``--pair`` -- CPU-only tests.
 
 The rust-engine tests run against the real vendored renderer binary
-(``tools/rustwx``) and honestly skip when it is not built; nothing here
+(``tools/rustwx``) and skip with a stated reason when it is not built; nothing here
 mocks the engine.  The fixture wrfout is written by the project's own
 ``WrfoutWriter`` with the production global-attribute profile
 (``wrf_global_attrs``: Lambert projection, START_DATE, domain
@@ -580,7 +580,7 @@ def test_the_engines_skip_line_is_read_and_is_not_a_failure(monkeypatch,
 def test_source_label_reaches_the_renderer_invocation(monkeypatch,
                                                       tmp_path):
     """A locally imported run is not a GDEX fetch, and a stock-WRF file
-    is not ours: both are one flag away from being labelled honestly."""
+    is not ours: both are one flag away from being labelled accurately."""
 
     import subprocess
 
@@ -1133,15 +1133,19 @@ def test_list_products_reports_the_full_catalog(wrfout, tmp_path, capsys):
     assert rc == 0
     out = capsys.readouterr().out
     # The complete catalog is enumerated, not just what renders.
-    # 176 = 152 + the standalone 10 m wind chart + this fixture's 23
+    # 348 = 152 + the standalone 10 m wind chart + this fixture's 23
     # generic ``var:`` rows (stored 2-D planes no named product claims;
     # the generic family is store-dependent, so the count is the
-    # FIXTURE's, not the build's).  It was 168 with 15 generic rows
-    # until the science import started carrying EVERY stored
-    # ``(Time, south_north, west_east)`` plane -- the eight new rows are
-    # this fixture's own surface planes, which the two fixed catalogs
-    # did not name and which therefore used to be unrenderable.
-    assert "total=176" in out
+    # FIXTURE's, not the build's) + the 172 ensemble/probabilistic
+    # rows, which stay outside ``all`` but are LISTED with their field
+    # truth and the opt-in code instead of being skipped, so a reader
+    # can see what naming one of them would need.  It was 168 with 15
+    # generic rows until the science import started carrying EVERY
+    # stored ``(Time, south_north, west_east)`` plane -- the eight rows
+    # that added are this fixture's own surface planes, which the two
+    # fixed catalogs did not name and which therefore used to be
+    # unrenderable.
+    assert "total=348" in out
     assert "renderable" in out and "excluded" in out
     # The generic rows are part of the catalog, not a side channel: every
     # stored plane without a named product renders as ``var:<name>``.
@@ -1199,7 +1203,10 @@ def test_general_products_skip_unavailable_subhour_windows(
                           "data/tui/plot-presets.json").read_text())
     general = next(row["products"] for row in presets["presets"]
                    if row["id"] == presets["default"])
-    assert len(general) == 25 and "qpf_1h" in general
+    # 24, not 25: simulated_ir_satellite left the general and hurricane
+    # presets when the lane record gained its reason (no forward
+    # radiative-transfer operator exists on the history-import lane).
+    assert len(general) == 24 and "qpf_1h" in general
     if single_frame:
         wrfout = _write_wrfout(tmp_path / "first-wrfout.nc", _STAMPS[:1])
     frame_idx = 0 if single_frame else 1
@@ -1318,7 +1325,7 @@ def test_list_products_rejects_identity_gated_rows(
             assert "for model" not in low, line
         assert "gated=" not in out
         # The families the old model-identity gate hid (smoke, simulated
-        # IR, categorical precip) now carry honest field reasons.
+        # IR, categorical precip) now carry accurate field reasons.
         for slug in ("smoke_column", "simulated_ir_satellite",
                      "precipitation_type"):
             assert any(slug in line and "missing-fields" in line

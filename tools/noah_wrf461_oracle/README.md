@@ -52,7 +52,7 @@ Smaller than the RUC and Noah-MP harnesses, and smaller in a way that matters:
   not build.  Nothing in it computes a physical quantity.  `lsm` is called
   with `sf_urban_physics = 0`, so no fixture row can reach an aborting stub.
 
-## -Dwrfmodel is load-bearing
+## -Dwrfmodel is essential
 
 WRF's `arch/postamble:26` passes `-Dwrfmodel`.  Without it,
 `module_sf_noahdrv.F:1787`'s guard preprocesses `LSMINIT` and

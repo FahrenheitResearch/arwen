@@ -16,20 +16,82 @@ from gpuwm.remote_artifact_cache import Lease, _owned_directory
 
 SCHEMA = "arwen.native-plots.v1"
 STATUS_SCHEMA = "arwen.native-plot-progress.v1"
+SELECTIONS_SCHEMA = "arwen.native-plot-selections.v1"
 MAX_PANEL_BYTES = 32 * 1024**2
 MAX_GALLERY_BYTES = 256 * 1024**2
+#: The node renderer's own size bounds for one panel.
+MIN_RENDER_PIXELS, MAX_RENDER_PIXELS = 256, 4096
+RENDER_WIDTH, RENDER_HEIGHT = 1200, 900
+#: How many distinct galleries one job keeps. A reader may hold a few sizes or
+#: product sets at once; an unbounded set would render a job's whole history
+#: once per spelling.
+MAX_RENDER_SELECTIONS = 8
+#: Render options this door carries. Every one of them keys the publication
+#: identity, so two readers asking for two of them never overwrite each other.
+RENDER_OPTIONS = ("profile", "products", "width", "height")
 
 
 def _root(workspace, job):
     return _owned_directory(viewer._directory(viewer._root(workspace), job) / "native-plots")
 
 
+def render_selection(record, request=None):
+    """One gallery selection, composed the same way at every door.
+
+    A gallery is the product set this run selected, drawn at the size the
+    request asked for. Both halves key the publication identity, so a reader
+    at another size or another product set gets its own gallery instead of
+    silently taking the one a different request published.
+    """
+    request = request or {}
+    products = (request["products"] if "products" in request
+                else viewer.selectors(record.get("products")))
+    selection = viewer._selection(request.get("profile", viewer.PROFILE), products)
+    size = {}
+    for name, fallback in (("width", RENDER_WIDTH), ("height", RENDER_HEIGHT)):
+        value = fallback if request.get(name) is None else request[name]
+        if type(value) is not int or not MIN_RENDER_PIXELS <= value <= MAX_RENDER_PIXELS:
+            raise ValueError(f"Native plot {name} is {value!r} and the node's renderer draws panels "
+                             f"from {MIN_RENDER_PIXELS} to {MAX_RENDER_PIXELS} pixels, so it would "
+                             f"refuse the whole frame. Ask for a {name} inside that range.")
+        size[name] = value
+    return {**selection, **size,
+            "render_id": ra._sha(ra._encoded({"selection_id": selection["selection_id"], **size}))}
+
+
+def _selection_root(root, selection):
+    return _owned_directory(root / selection["render_id"])
+
+
 def _receipt(root, sequence):
     return root / f"{ra._sequence(sequence):012d}.json"
 
 
-def status(workspace, job):
-    path = _root(workspace, job) / "status.json"
+def _registered(root, selection=None):
+    """Every gallery selection this job serves, with its own first."""
+    path = root / "selections.json"
+    rows = []
+    if path.exists():
+        value, _ = ra._raw(path, viewer.MAX_METADATA_BYTES)
+        if value.get("schema") == SELECTIONS_SCHEMA and isinstance(value.get("selections"), list):
+            rows = [row for row in value["selections"] if isinstance(row, dict) and row.get("render_id")]
+    if selection is not None and not any(row["render_id"] == selection["render_id"] for row in rows):
+        rows = ([selection] + rows)[:MAX_RENDER_SELECTIONS]
+        legacy._write(path, {"schema": SELECTIONS_SCHEMA, "selections": rows})
+    return rows
+
+
+def register(workspace, job, selection):
+    """Record a gallery a reader asked for, so the watcher renders it too."""
+    with Lease(_root(workspace, job) / "selections.lock", timeout=5) as lease:
+        if lease.file is None:
+            return _registered(_root(workspace, job))
+        return _registered(_root(workspace, job), selection)
+
+
+def status(workspace, job, selection=None):
+    root = _root(workspace, job)
+    path = (root if selection is None else _selection_root(root, selection)) / "status.json"
     return ra._raw(path, 64 * 1024)[0] if path.exists() else {
         "schema": STATUS_SCHEMA, "job_id": job, "state": "waiting_for_output", "ready": 0, "failed": 0}
 
@@ -46,7 +108,7 @@ def _published(root, job, event, authority):
     return value
 
 
-def _render(root, record, bound, event, authority, entry, spacing):
+def _render(root, record, bound, event, authority, entry, spacing, selection):
     from gpuwm.render import require_renderer
     source = ra._inside(entry["source_path"], bound[0])
     if list(ra._stamp(source)) != entry["source_stamp"]:
@@ -58,7 +120,8 @@ def _render(root, record, bound, event, authority, entry, spacing):
     request = {"schema": "arwen.native-store-render-request.v1",
         "process_result": str(Path(entry["object_root"]) / "result.json"),
         "expected_frame_id": entry["frame"]["id"], "expected_source_sha256": entry["source_sha256"],
-        "out_dir": str(output), "products": products, "spacing_m": spacing, "width": 1200, "height": 900}
+        "out_dir": str(output), "products": products, "spacing_m": spacing,
+        "width": selection["width"], "height": selection["height"]}
     legacy._write(request_path, request)
     with (root / f"render-{event['sequence']:012d}.log").open("ab", buffering=0) as log:
         process = subprocess.run([str(require_renderer()), "--render-store-request", str(request_path),
@@ -88,13 +151,46 @@ def _render(root, record, bound, event, authority, entry, spacing):
         raise ValueError("Native frame gallery exceeds its transfer bound")
     if list(ra._stamp(source)) != entry["source_stamp"]:
         raise ValueError("WRF output changed during native rendering")
+    _publish_receipt(output, panels, products)
     return {"schema": SCHEMA, "state": "ready", "job_id": record["id"], "run_id": bound[2]["run_id"],
         "domain": event["domain"], "sequence": event["sequence"], "valid_time": event["valid_time"],
         "commit_sha256": authority["sha256"], "frame_id": entry["frame"]["id"],
         "source_sha256": entry["source_sha256"], "source_stamp": entry["source_stamp"],
         "source_path": str(source), "panels": panels, "bytes": total,
+        "render_id": selection["render_id"], "selection_id": selection["selection_id"],
+        "selection_products": selection["products"], "width": selection["width"],
+        "height": selection["height"],
         "unavailable": [row for row in entry["products"] if not row["available"]],
         "processing": "existing_compact_store", "published_unix_ms": int(time.time() * 1000)}
+
+
+def _publish_receipt(output, panels, products) -> None:
+    """A render receipt beside the gallery, like every other delivery.
+
+    The node-side gallery published pictures with no
+    ``render-summary.json`` at all, so the desktop and remote surfaces
+    that read that file saw nothing for a frame that rendered
+    completely.  The panels are named by their own slug rather than by
+    the layout's grammar, because this lane's filenames are the engine's
+    store-request names and not ``gpuwm render``'s.
+
+    It is a RECORD.  A receipt that cannot be written is reported and
+    never turns a finished render into a failure.
+    """
+
+    from gpuwm import render_layout, render_receipts
+
+    try:
+        render_receipts.deliver(
+            root=Path(output), engine="rust",
+            requested_spec=",".join(products),
+            written=[Path(panel["path"]) for panel in panels],
+            failures=(), skipped=(), layout=render_layout.FLAT,
+            families={str(Path(panel["path"]).resolve()): panel["slug"]
+                      for panel in panels})
+    except Exception as error:
+        print(f"native plots: warning: no render receipt was published "
+              f"({error})", file=sys.stderr)
 
 
 def _spacing(record, domain):
@@ -103,7 +199,7 @@ def _spacing(record, domain):
     return load_experiment(record["snapshot_config"]).domain(domain).run.dx
 
 
-def work_once(workspace, job, *, render=True, _completion=None):
+def work_once(workspace, job, *, render=True, _completion=None, selection=None):
     from gpuwm.remote_worker import TERMINAL
     record, state, bound, commits = legacy._job(
         workspace, job, **({"completion": True} if _completion is not None else {}))
@@ -111,11 +207,13 @@ def work_once(workspace, job, *, render=True, _completion=None):
         # Revalidate before any receipt, render or store request, including the
         # first pass that observes the wrapper's terminal result.
         _completion.validate(record, state, bound, commits)
-    root = _root(workspace, job)
+    plots_root = _root(workspace, job)
     compact_root = viewer._root(workspace)
-    selection = viewer._selection()
+    own = render_selection(record)
+    selection = own if selection is None else selection
+    root = _selection_root(plots_root, selection)
     counts = {"committed": len(commits), "ready": 0, "failed": 0, "pending": 0, "panels": 0}
-    candidate = None
+    candidate, wanted = None, None
     for event, authority in reversed(commits):
         published = _published(root, job, event, authority)
         if published is not None:
@@ -133,21 +231,32 @@ def work_once(workspace, job, *, render=True, _completion=None):
                 legacy._write(_receipt(root, event["sequence"]), {"schema": SCHEMA, "state": "failed", "job_id": job,
                     "domain": event["domain"], "sequence": event["sequence"], "commit_sha256": authority["sha256"],
                     "error": "Compact store preparation failed: " + entry.get("error", "unknown cause")})
-            elif entry is not None and viewer._entry_state(entry) == "evicted" and render:
-                # A long run may rotate the compact cache before plots catch up.
-                # Request only this missing compact frame, never a full store.
-                viewer.ensure(workspace, job, [{**selection, "domain": event["domain"], "sequence": event["sequence"],
-                    "run_id": bound[2]["run_id"], "commit_sha256": authority["sha256"]}])
+            elif wanted is None and render and (entry is None or viewer._entry_state(entry) == "evicted"):
+                # A long run may rotate the compact cache before plots catch up,
+                # and a gallery for a product set the background preparer does
+                # not hold has no store at all. Request only this one missing
+                # compact frame, never a full store.
+                wanted = {"domain": event["domain"], "sequence": event["sequence"],
+                          "run_id": bound[2]["run_id"], "commit_sha256": authority["sha256"]}
+    if wanted is not None and candidate is None:
+        viewer.ensure(workspace, job, [{"profile": selection["profile"], "products": selection["products"],
+                                        "selection_id": selection["selection_id"], **wanted}])
     done = state["state"] in TERMINAL and counts["pending"] == 0
     summary = {"schema": STATUS_SCHEMA, "job_id": job, "simulation_state": state["state"], **counts,
         "done": done, "state": "complete_with_errors" if done and counts["failed"] else "complete" if done
-            else "rendering" if candidate else "waiting_for_compact_stores", "updated_unix_ms": int(time.time() * 1000)}
+            else "rendering" if candidate else "waiting_for_compact_stores",
+        "render_id": selection["render_id"], "selection_products": selection["products"],
+        "width": selection["width"], "height": selection["height"],
+        "updated_unix_ms": int(time.time() * 1000)}
     if bound:
         summary["run_id"] = bound[2]["run_id"]
     if candidate:
         event, authority, entry = candidate
         summary["active"] = {"domain": event["domain"], "sequence": event["sequence"], "valid_time": event["valid_time"]}
     legacy._write(root / "status.json", summary)
+    if selection["render_id"] == own["render_id"]:
+        # The job's own gallery is the one `gpuwm remote status` reports.
+        legacy._write(plots_root / "status.json", summary)
     if candidate and render:
         path = viewer._entry_path(compact_root, job, event["sequence"], selection)
         with Lease(viewer._directory(compact_root, job) / (path.stem + ".lock")) as lease:
@@ -156,7 +265,7 @@ def work_once(workspace, job, *, render=True, _completion=None):
                     return summary
                 try:
                     spacing = _spacing(record, event["domain"])
-                    value = _render(root, record, bound, event, authority, entry, spacing)
+                    value = _render(root, record, bound, event, authority, entry, spacing, selection)
                 except Exception as error:
                     value = {"schema": SCHEMA, "state": "failed", "job_id": job, "domain": event["domain"],
                         "sequence": event["sequence"], "commit_sha256": authority["sha256"], "error": str(error)[:2000]}
@@ -167,7 +276,7 @@ def work_once(workspace, job, *, render=True, _completion=None):
 def ensure(workspace, job):
     from gpuwm import remote_worker as rw
     record = rw._record(rw._directory(workspace, job))
-    if record.get("action") != "start-plan" or not record.get("snapshot_plan"):
+    if ra.plan_binding(record) is None:
         return
     root = _root(workspace, job)
     previous = root / "status.json"
@@ -205,7 +314,7 @@ def worker(workspace, job, *, cancel=None):
                 completion.begin()
                 value = None
                 try:
-                    value = work_once(workspace, job, _completion=completion)
+                    value = _work_selections(workspace, job, completion)
                 except ra.ProducerCompletionPending as pending:
                     # The runner exited and its wrapper has not settled. No
                     # receipt is written and no renderer runs in that window.
@@ -232,18 +341,38 @@ def worker(workspace, job, *, cancel=None):
                 return 2
 
 
+def _work_selections(workspace, job, completion=None):
+    """One pass over every gallery this job serves; its own is always one."""
+    from gpuwm import remote_worker as rw
+    record = rw._record(rw._directory(workspace, job))
+    rows = _registered(_root(workspace, job), render_selection(record))
+    summary = None
+    for row in rows[:MAX_RENDER_SELECTIONS]:
+        value = work_once(workspace, job, _completion=completion, selection=row)
+        summary = value if summary is None or not value["done"] else summary
+        summary["done"] = summary["done"] and value["done"]
+    return summary
+
+
 def catalog(request, workspace):
-    allowed = {"schema", "action", "workspace", "job", "domain", "sequence"}
+    allowed = {"schema", "action", "workspace", "job", "domain", "sequence", *RENDER_OPTIONS}
     if set(request) - allowed or request.get("action") != "native-plots":
         raise ValueError("Invalid native plot catalog request")
     domain = ra._domain(request.get("domain", 1))
     sequence = ra._sequence(request["sequence"]) if request.get("sequence") is not None else None
     job = request["job"]
+    from gpuwm import remote_worker as rw
     from gpuwm.remote_preparation_v2 import ensure as prepare_stores
+    selection = render_selection(rw._record(rw._directory(workspace, job)), request)
+    root = _selection_root(_root(workspace, job), selection)
+    register(workspace, job, selection)
     prepare_stores(workspace, job)
     ensure(workspace, job)
     value = {"schema": SCHEMA, "job_id": job, "domain": domain, "sequence": sequence,
-        "waiting": True, "progress": status(workspace, job)}
+        "waiting": True, "render_id": selection["render_id"], "selection_products": selection["products"],
+        "selection_basis": viewer.selection_basis(selection["profile"], selection["products"]),
+        "width": selection["width"], "height": selection["height"],
+        "progress": status(workspace, job, selection)}
     try:
         record, _state, bound, commits = legacy._job_completing(workspace, job)
     except ra.ProducerCompletionPending:
@@ -254,7 +383,7 @@ def catalog(request, workspace):
         return value
     _, manifest_path, manifest, manifest_bytes, _started, binding = bound
     value.update(run_id=manifest["run_id"], run_manifest=ra._authority(manifest_path, manifest_bytes),
-        remote_output_root=record["outdir"], remote_pid=manifest["pid"])
+        remote_output_root=record["outdir"], run_root=str(ra.run_root(record)), remote_pid=manifest["pid"])
     if binding is not None:
         value["producer_binding"] = binding
     selected = [(event, authority) for event, authority in commits
@@ -263,7 +392,7 @@ def catalog(request, workspace):
         return value
     event, authority = selected[-1]
     value.update(sequence=event["sequence"], valid_time=event["valid_time"], commit=authority)
-    published = _published(_root(workspace, job), job, event, authority)
+    published = _published(root, job, event, authority)
     if published is None:
         return value
     if published["state"] == "failed":
@@ -279,11 +408,12 @@ def catalog(request, workspace):
 def stream(request, workspace, output):
     fields = {"schema", "action", "workspace", "job", "domain", "sequence", "product",
         "expected_panel_sha256", "expected_commit_sha256", "expected_manifest_sha256"}
-    if set(request) != fields or request.get("action") != "stream-native-plot":
+    if set(request) - (fields | set(RENDER_OPTIONS)) or fields - set(request) or request.get("action") != "stream-native-plot":
         raise ValueError("Invalid native plot stream request")
     if any(not ra.HEX.fullmatch(str(request[k])) for k in fields if k.startswith("expected_")):
         raise ValueError("Invalid native plot stream digest")
     query = {k: request[k] for k in ("schema", "workspace", "job", "domain", "sequence")}
+    query.update({k: request[k] for k in RENDER_OPTIONS if k in request})
     value = catalog({**query, "action": "native-plots"}, workspace)
     if (value["waiting"] or value["commit"]["sha256"] != request["expected_commit_sha256"]
             or value["run_manifest"]["sha256"] != request["expected_manifest_sha256"]):
@@ -292,6 +422,7 @@ def stream(request, workspace, output):
     if panel is None or panel["sha256"] != request["expected_panel_sha256"] or not 0 < panel["bytes"] <= MAX_PANEL_BYTES:
         raise ValueError("Native plot product or checksum does not match the selected frame")
     path = ra._inside(panel["path"], _root(workspace, request["job"]))
+
     before = ra._stamp(path)
     digest, copied = hashlib.sha256(), 0
     with path.open("rb") as source:
@@ -306,10 +437,35 @@ def stream(request, workspace, output):
         raise ValueError("Native plot changed during transfer")
 
 
+def _panel_name(slug):
+    """A portable local file name for one panel of any selector family.
+
+    A `var:`/`xsec:` selector is a legal product name and an illegal file name
+    on one of the desktops this cache runs on, so the local name is derived
+    once, here, rather than at each of the three places that touch the file.
+    """
+    return "".join(character if character.isalnum() or character in "._-" else "-"
+                   for character in str(slug))[:160] + ".png"
+
+
+def request_options(args):
+    """The render options one desktop request carries, from the parsed door."""
+    options = {}
+    products = getattr(args, "products", None)
+    if products is not None:
+        options["products"] = viewer.selectors(products)
+    for name in ("profile", "width", "height"):
+        value = getattr(args, name, None)
+        if value is not None:
+            options[name] = value
+    return options
+
+
 def sync(args, command, stream_command):
     from gpuwm.remote_cli import _transport
     query = {"schema": "gpuwm.remote.request.v1", "action": "native-plots", "workspace": args.workspace,
-        "job": args.job, "domain": ra._domain(args.domain), "sequence": ra._sequence(args.sequence)}
+        "job": args.job, "domain": ra._domain(args.domain), "sequence": ra._sequence(args.sequence),
+        **request_options(args)}
     reply = _transport(command, query, timeout=120)
     if not reply["ok"]:
         raise ValueError(reply["error"]["message"])
@@ -319,11 +475,19 @@ def sync(args, command, stream_command):
     if value["waiting"]:
         return {"native_plots": value, "transferred_bytes": 0}
     panels = value.get("panels")
-    if not isinstance(panels, list) or not 1 <= len(panels) <= 96:
-        raise ValueError("Invalid native plot gallery inventory")
+    if not isinstance(panels, list) or not panels:
+        raise ValueError("Invalid native plot gallery inventory: the node published a gallery with no panel list")
+    if len(panels) > viewer.NODE_PRODUCT_LIMIT:
+        # The bound is the node's own viewer profile, the same one that bounds
+        # the selection this gallery was rendered from, so a selection the node
+        # accepted is never refused on the way back.
+        raise ValueError(f"The node's gallery inventory names {len(panels)} panels and its viewer profile "
+                         f"renders at most {viewer.NODE_PRODUCT_LIMIT} named products, so this reply describes "
+                         "no selection this door could have asked for; `gpuwm remote list-products` prints "
+                         "what the selected node's renderer serves.")
     names, total = set(), 0
     for panel in panels:
-        if (not viewer.SLUG.fullmatch(str(panel.get("slug"))) or panel["slug"] in names
+        if (not viewer.SELECTOR.fullmatch(str(panel.get("slug"))) or panel["slug"] in names
                 or not ra.HEX.fullmatch(str(panel.get("sha256"))) or type(panel.get("bytes")) is not int
                 or not 0 < panel["bytes"] <= MAX_PANEL_BYTES):
             raise ValueError("Invalid native plot gallery product, checksum or size")
@@ -331,11 +495,13 @@ def sync(args, command, stream_command):
         total += panel["bytes"]
     if total > MAX_GALLERY_BYTES or total != value.get("bytes"):
         raise ValueError("Native plot gallery exceeds its transfer bound")
-    key = ra._sha(ra._encoded([value["run_id"], value["commit"]["sha256"], panels]))
+    # The gallery identity covers the render options too, so one cache root
+    # holds one folder per selection rather than one per frame overwritten.
+    key = ra._sha(ra._encoded([value["run_id"], value["commit"]["sha256"], value["render_id"], panels]))
     directory = _owned_directory(_owned_directory(Path(args.cache_root)) / key)
     transferred = 0
     for panel in panels:
-        path = directory / (panel["slug"] + ".png")
+        path = directory / _panel_name(panel["slug"])
         if path.exists():
             if path.is_symlink() or path.stat().st_size != panel["bytes"] or ra._file_sha(path) != panel["sha256"]:
                 raise ValueError("A retained native plot changed; choose a fresh gallery cache")
@@ -346,7 +512,7 @@ def sync(args, command, stream_command):
             ra._download(stream_command, request, path, {"size_bytes": panel["bytes"], "sha256": panel["sha256"]})
             transferred += panel["bytes"]
     title = f"ArWen native plots · d{args.domain:02d} · {value['valid_time']}"
-    body = ''.join(f'<figure><a href="{row["slug"]}.png"><img loading="lazy" src="{row["slug"]}.png" alt="{html.escape(row["slug"])}"></a><figcaption>{html.escape(row["slug"].replace("_", " "))}</figcaption></figure>' for row in panels)
+    body = ''.join(f'<figure><a href="{html.escape(_panel_name(row["slug"]))}"><img loading="lazy" src="{html.escape(_panel_name(row["slug"]))}" alt="{html.escape(row["slug"])}"></a><figcaption>{html.escape(row["slug"].replace("_", " "))}</figcaption></figure>' for row in panels)
     gallery = directory / "index.html"
     gallery.write_text('<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>' + html.escape(title)
         + '</title><style>body{font:16px system-ui;margin:24px;background:#eef2f6;color:#17252f}main{display:grid;grid-template-columns:repeat(auto-fit,minmax(420px,1fr));gap:20px}figure{margin:0;padding:12px;background:white}img{width:100%;height:auto}figcaption{padding:8px 0}h1{font-size:24px}</style><h1>'

@@ -5,7 +5,7 @@ Two questions come before a radar-assimilating case can be configured:
     sites_for_bbox(...)      which radars are inside this domain
     require_assimilable(...) and can their volumes actually be assimilated
 
-The first is a lookup. The second is the one that matters, because the honest
+The first is a lookup. The second is the one that matters, because the accurate
 answer today for the European inventory is *no*, and the reason is a missing
 number rather than a missing feed.
 
@@ -195,7 +195,7 @@ def sites_for_bbox(west: float, south: float, east: float, north: float, *,
 
 
 def require_assimilable(sites, *, need_velocity: bool = True) -> tuple[RadarSite, ...]:
-    """The sites in ``sites`` whose volumes can honestly be assimilated.
+    """The sites in ``sites`` whose volumes can accurately be assimilated.
 
     Raises :class:`SiteNotAssimilableError` naming every site that cannot,
     and why. It never returns a shortened list quietly: a caller that asked

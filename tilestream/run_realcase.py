@@ -696,7 +696,7 @@ def main() -> None:
                          "REQUIRED past the resident ceiling: that step is a "
                          "full-domain dycore.step and is exactly what does "
                          "not fit. run_tiled's carrier-inventory match is "
-                         "the guard that keeps this honest")
+                         "the guard that keeps this accurate")
     ap.set_defaults(settle=True)
     ap.add_argument("--out", default="out")
     ap.add_argument("--wrfout", default=None,

@@ -236,7 +236,7 @@ def sounding_text(*, capped: bool = True, moist: bool = True) -> str:
     """The WRF ``input_sounding`` asset, byte for byte.
 
     Built as a CHAIN, not as one expression, because the oracle's chain is
-    lossy and the loss is load-bearing: ``add_capping_inversion.py`` and
+    lossy and the loss is essential: ``add_capping_inversion.py`` and
     ``make_moist_sounding.py`` each write ``%10.2f`` columns and each
     re-parse the previous stage's rounded text.  Rounding once at the end
     instead of at every stage lands a different file -- theta at 1025 m is

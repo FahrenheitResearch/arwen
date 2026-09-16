@@ -14,6 +14,7 @@ import numpy as np
 import pytest
 from numpy.testing import assert_array_equal
 
+from gpuwm import render_layout
 from gpuwm.da import enprod
 from gpuwm.ensemble import wrfout_inventory
 
@@ -727,7 +728,7 @@ def test_a_failed_member_with_stale_bytes_renders_nothing(tmp_path):
                          thresholds=(40.0,), radii=(0.0,), domain=None,
                          timeidx=0, outdir=outdir, dpi=60,
                          accept_status=("DONE", "FAILED"))
-    assert not list(outdir.glob("*.png")) if outdir.exists() else True
+    assert not render_layout.iter_rendered(outdir) if outdir.exists() else True
 
 
 def test_a_failed_member_with_no_inventory_renders_nothing(tmp_path):
@@ -742,7 +743,7 @@ def test_a_failed_member_with_no_inventory_renders_nothing(tmp_path):
                          thresholds=(40.0,), radii=(0.0,), domain=None,
                          timeidx=0, outdir=outdir, dpi=60,
                          accept_status=("DONE", "FAILED"))
-    assert not list(outdir.glob("*.png")) if outdir.exists() else True
+    assert not render_layout.iter_rendered(outdir) if outdir.exists() else True
 
 
 def test_a_failed_member_that_is_admitted_is_stamped_on_the_panel(tmp_path):

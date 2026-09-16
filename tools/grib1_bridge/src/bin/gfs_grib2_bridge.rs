@@ -1422,7 +1422,7 @@ fn emit_values_with_surface_support<W: Write>(
             return Err(format!("{} has no finite support", spec.name).into());
         }
         // Soil and snow have no support on an ocean-only crop. Retain the
-        // complete missing array and an honest missing range in its receipt.
+        // complete missing array and an accurate missing range in its receipt.
         minimum = f64::NAN;
         maximum = f64::NAN;
     }

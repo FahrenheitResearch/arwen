@@ -293,7 +293,7 @@ def tile_filter_control(shape, *, seed: int, name: str, dx_km: float,
     THIS CONTROL MUST FIRE.  It is the negative control the streamed
     perturbation rests on: if a per-tile FFT reproduced the domain FFT the
     whole "the draw must stay whole-domain" claim would be empty, and the
-    honest conclusion would be that the filter's length scale is too short
+    accurate conclusion would be that the filter's length scale is too short
     for the test rather than that tiling works.
 
     The tile gather is periodic (``np.roll``-style wraparound), which is the

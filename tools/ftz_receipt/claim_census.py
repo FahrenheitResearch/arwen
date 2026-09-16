@@ -103,7 +103,7 @@ def is_excluded(relpath: str, globs: list[str]) -> bool:
 
 
 def public_files(root: Path) -> list[str]:
-    # `set`, and it is load-bearing rather than tidiness.  During an
+    # `set`, and it is essential rather than tidiness.  During an
     # unresolved merge `git ls-files` prints a conflicted path ONCE PER
     # STAGE -- three rows for one file -- and without the dedupe every
     # claim in that file is registered three times, with identical line

@@ -1,4 +1,5 @@
 # tests/test_wrfout.py
+import importlib.util
 import os
 import gc
 from pathlib import Path
@@ -649,6 +650,100 @@ def test_state_frame_from_domain_state():
                     dt=0.5, run_seconds=1.0)
     fd = state_frame(init_at_rest(dry, vc, b))
     assert not ({"QVAPOR", "QCLOUD", "QRAIN"} & set(fd))
+
+
+#: ``state_frame`` imports cupy to normalise whatever the state carries.
+#: It is not a device import here -- see the test below -- but it is still
+#: an import, and the CPU tier of an install with no GPU extra has no cupy
+#: to give it.
+_CUPY_INSTALLED = importlib.util.find_spec("cupy") is not None
+
+
+def _host_prepared_state(nz=4, ny=5, nx=6):
+    """A state whose every array is numpy, as CPU preparation leaves it.
+
+    The shape a host-prepared state actually has, not a convenient one:
+    ``phb`` and ``pb`` are the 1-D base-state columns a flat base state
+    carries, which is what puts the broadcasts on the branch under test.
+    """
+    heights = np.array([0.0, 500.0, 1200.0, 2100.0, 3200.0][:nz + 1],
+                       dtype=np.float32)
+    pb = np.array([100000.0, 94000.0, 87000.0, 79000.0][:nz],
+                  dtype=np.float32)
+    perturbation = np.linspace(-40.0, 40.0, nz * ny * nx,
+                               dtype=np.float32).reshape(nz, ny, nx)
+    return SimpleNamespace(
+        mup=np.full((ny, nx), -25.0, np.float32),
+        mub2d=np.full((ny, nx), 90000.0, np.float32),
+        ht=np.zeros((ny, nx), np.float32),
+        phb=heights * np.float32(9.81),
+        php=np.zeros((nz + 1, ny, nx), np.float32),
+        u=np.full((nz, ny, nx + 1), 7.0, np.float32),
+        v=np.full((nz, ny + 1, nx), -3.0, np.float32),
+        w=np.zeros((nz + 1, ny, nx), np.float32),
+        total_theta=lambda: np.full((nz, ny, nx), 301.5, np.float32),
+        pb=pb,
+        p=pb[:, None, None] + perturbation,
+        p_top=np.float32(5000.0),
+        qv=None,
+        physics=None)
+
+
+@pytest.mark.skipif(not _CUPY_INSTALLED,
+                    reason="state_frame imports cupy to normalise arrays")
+def test_state_frame_broadcasts_the_base_pressure_on_a_host_state():
+    """A state prepared on the CPU writes PB like every other field.
+
+    ``state_frame``'s diagnostic-pressure branch built PB with
+    ``cp.broadcast_to(pb3, state.p.shape)``.  That is a device call, and a
+    state whose arrays were prepared on the host carries numpy arrays,
+    which ``cp.broadcast_to`` refuses with ``TypeError`` -- while
+    ``cp.asnumpy``, on every other line of the same branch, takes either
+    kind.  So a host-prepared state could write every field of a history
+    frame except that one, and the failure was a type error out of the
+    writer rather than a wrong number.
+
+    This test opens no device and is deliberately not a ``gpu`` test: every
+    array it hands in is numpy, ``cp.asnumpy`` passes numpy straight
+    through, and the branch does no device arithmetic.  That is the whole
+    point -- the defect lives on the host route, so the guard has to run
+    where that route runs.
+
+    Both halves of the fix are pinned.  ``np.broadcast_to`` on the host
+    result is what accepts the host state; ``np.ascontiguousarray`` around
+    it is what hands the writer a dense, writeable array instead of a
+    read-only stride-zero view, which is what the device call used to
+    return and what the netCDF writer is given.
+    """
+    from gpuwm.io.wrfout import state_frame
+
+    state = _host_prepared_state()
+    nz, ny, nx = state.p.shape
+
+    frame = state_frame(state, include_diagnostic_pressure=True)
+
+    assert isinstance(frame["PB"], np.ndarray)
+    assert frame["PB"].shape == (nz, ny, nx)
+    assert frame["PB"].dtype == np.float32
+    # Every column carries the base-state column, which is what the
+    # broadcast is for.
+    for j in range(ny):
+        for i in range(nx):
+            np.testing.assert_array_equal(frame["PB"][:, j, i], state.pb)
+    # Dense and writeable: a bare broadcast view is neither, and the frame
+    # is handed to a writer that expects a real array.
+    assert frame["PB"].flags["C_CONTIGUOUS"] and frame["PB"].flags["WRITEABLE"]
+    assert frame["PB"].strides[-1] == frame["PB"].dtype.itemsize
+    # P is the perturbation the same branch computes, so the two halves of
+    # the diagnosed pressure still add back up to the state's own field.
+    np.testing.assert_array_equal(frame["P"] + frame["PB"], state.p)
+    # And the rest of the frame is there, on the same host arrays: the
+    # branch used to abort before any of it was reached.
+    assert {"T", "U", "V", "W", "PH", "MU", "PHB", "MUB", "HGT", "P_TOP",
+            "PSFC"} <= set(frame)
+    assert frame["PHB"].shape == (nz + 1, ny, nx)
+    assert np.isfinite(frame["PSFC"]).all()
+    assert (frame["PSFC"] > state.p[0]).all()
 
 
 @pytest.mark.gpu

@@ -320,7 +320,8 @@ def test_the_source_menu_is_a_kind_and_carries_the_client_contract(capsys):
     for source, row in rows.items():
         assert set(row) == {"source", "label", "members", "default_member",
                             "forcing_interval_seconds", "cycle_hours",
-                            "coverage_envelope", "follow_statics"}
+                            "coverage_envelope", "follow_statics",
+                            "max_forecast_hour"}
         assert row["default_member"] in (None, *row["members"])
         assert row["coverage_envelope"] is None or len(row["coverage_envelope"]) == 4
 

@@ -4,7 +4,7 @@ Each gate names the state it closes, reproduces the fault that reached
 it (an injected transport failure, an injected wait timeout, a real
 second process holding the output), and then asserts the property the
 directory must have afterwards: either it resumes truthfully, or it
-refuses honestly, or the suspect bytes were set aside -- never a
+refuses accurately, or the suspect bytes were set aside -- never a
 readable receipt describing bytes that are not there.
 
 Nothing here touches the network.
@@ -123,7 +123,7 @@ def test_interrupted_force_leaves_no_receipt_claiming_replaced_bytes(
         assert len(aside) == 1, name
         assert hashlib.sha256(aside[0].read_bytes()).hexdigest() == digest
 
-    # And an ordinary re-run is refused honestly rather than resumed.
+    # And an ordinary re-run is refused with its reason rather than resumed.
     if surviving.is_file():
         fetch.check_prior_request(out, source="gfs", cycle=_CYCLE,
                                   area=fetch.parse_area(_AREA))

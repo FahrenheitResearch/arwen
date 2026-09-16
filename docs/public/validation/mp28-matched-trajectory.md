@@ -10,7 +10,7 @@ The registry entry for `thompson-aerosol-mp28` publishes
 `forecast_trajectory_comparison: null` and warns, correctly, that the scheme
 is **UNVERIFIED against a WRF forecast**: its evidence is 22 single-call
 column fixtures plus a self-consistency smoke test. This document is the
-attempt to close that one gap, and an honest statement of how far it gets.
+attempt to close that one gap, and an accurate statement of how far it gets.
 
 ---
 
@@ -90,7 +90,7 @@ have entered the trajectory as if it were a microphysics difference.
 ## 3. Where the two models correspond, and where they do not
 
 A comparison that overstates its own applicability is worth less than none.
-Enumerated honestly:
+Enumerated accurately:
 
 **They correspond in:** the initial state (bit-for-bit as float32, §2.1);
 the grid and the eta coordinate; the lateral boundary condition (periodic,
@@ -353,7 +353,7 @@ initial file, one optimization flag different. It fails V3 too. A gate that
 unmodified WRF v4.6.1 cannot pass against its own recompilation is not
 measuring the port; on this case it is measuring chaos, and V3 as written was
 mis-specified. That is stated here rather than fixed, because the rule was
-committed in advance and the honest thing to do with a rule that fails is to
+committed in advance and the accurate thing to do with a rule that fails is to
 report the failure and name the reason, not to rewrite it.
 
 The distribution behind V3 says the opposite of "mp=28 amplifies". V3 as

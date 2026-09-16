@@ -8,6 +8,11 @@ writes the geometry once, and leaves a manifest naming every SHA-256 it took.
 Case identity lives in the arguments, never here: this script knows about
 windows and boxes, and would run the same way for any of them.
 
+The archive work itself is `gpuwm.obs.mrms_fetch`, which is also what a local
+DA run's nowcast score calls. This file is the campaign's entry point onto
+that library and not a second driver of the same front door: two drivers of
+one archive are two answers to "which object was taken".
+
     python tools/obs_fetch_mrms.py --start 2024-05-21T02:00:00Z \\
         --end 2024-05-21T18:00:00Z --bbox=-100,37,-88,45 --out CACHE/mrms
 """
@@ -27,7 +32,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from gpuwm.obs import frontdoor
+from gpuwm.obs import mrms_fetch
 
 TIME_IN = "%Y-%m-%dT%H:%M:%SZ"
 
@@ -49,68 +54,38 @@ def main() -> int:
     parser.add_argument("--cache", default=None, type=Path)
     arguments = parser.parse_args()
 
-    door = frontdoor.MRMS
     out = arguments.out
     out.mkdir(parents=True, exist_ok=True)
-    packs = out / "packs"
-    packs.mkdir(exist_ok=True)
+    cache = mrms_fetch.MrmsCompositeCache(
+        arguments.cache or out, bbox=arguments.bbox,
+        window_seconds=arguments.window_seconds, product=arguments.product)
 
     start = datetime.strptime(arguments.start, TIME_IN).replace(tzinfo=timezone.utc)
     end = datetime.strptime(arguments.end, TIME_IN).replace(tzinfo=timezone.utc)
-    common = []
-    if arguments.product:
-        common += ["--product", arguments.product]
-    if arguments.cache:
-        common += ["--cache", str(arguments.cache)]
+    requested = []
+    when = start
+    while when <= end:
+        requested.append(when.strftime("%Y-%m-%dT%H:%M:%S"))
+        when += timedelta(hours=arguments.step_hours)
 
     manifest = {"instrument": "mrms", "frames": [], "geometry": None}
-    when = start
-    geometry_written = False
-    while when <= end:
-        stamp = when.strftime(TIME_IN)
-        # The archive stamps frames with off-cadence seconds, so the object
-        # for a valid time is found by listing, never by constructing a URL.
-        nearest = door.run("nearest",
-                           ["--valid-time", stamp,
-                            "--window-seconds", str(arguments.window_seconds),
-                            *common],
-                           schema="gpuwm-obs.mrms-nearest.v1")
-        frame = nearest["frame"]
-        fetched = door.run("fetch",
-                           ["--start", frame["valid_time"] + "Z",
-                            "--end", frame["valid_time"] + "Z",
-                            "--out", str(out), *common],
-                           schema="gpuwm-obs.mrms-fetch.v1")
-        source = Path(fetched["files"][0]["path"])
-        pack = packs / (source.stem + ".obspack")
-        decode = ["--file", str(source), "--out", str(pack), *common]
-        if arguments.bbox:
-            decode += ["--bbox", arguments.bbox]
-        record = door.run("decode", decode, schema="gpuwm-obs.mrms-decode.v1")
+    for stamp in requested:
+        frame = cache.ensure(stamp)
         manifest["frames"].append({
             "requested_valid_time": stamp,
-            "frame_valid_time": frame["valid_time"],
-            "offset_seconds": nearest["offset_seconds"],
-            "source": str(source),
-            "source_sha256": fetched["files"][0]["sha256"],
-            "pack": str(pack),
-            "pack_sha256": record["content_sha256"],
-            "observed_fraction": record["sentinels"]["observed_fraction"],
+            "frame_valid_time": frame.valid_time,
+            "offset_seconds": frame.offset_seconds,
+            "archive_key": frame.key,
+            "archive_object_uri": frame.object_uri,
+            "source_sha256": frame.object_sha256,
+            "pack": frame.pack_path,
+            "pack_sha256": frame.pack_sha256,
+            "observed_fraction": frame.observed_fraction,
         })
-        if not geometry_written:
-            geometry = packs / "geometry.obspack"
-            grid = ["--file", str(source), "--out", str(geometry), *common]
-            if arguments.bbox:
-                grid += ["--bbox", arguments.bbox]
-            written = door.run("grid", grid, schema="gpuwm-obs.mrms-grid.v1")
-            manifest["geometry"] = {"pack": str(geometry),
-                                    "pack_sha256": written["content_sha256"],
-                                    "grid": written["grid"]}
-            geometry_written = True
-        print(f"{stamp} -> {frame['valid_time']} "
-              f"({nearest['offset_seconds']:+d} s), observed "
-              f"{record['sentinels']['observed_fraction']:.4f}")
-        when += timedelta(hours=arguments.step_hours)
+        print(f"{stamp} -> {frame.valid_time} "
+              f"({frame.offset_seconds:+.0f} s), observed "
+              f"{frame.observed_fraction:.4f}")
+    manifest["geometry"] = cache.record().get("geometry")
 
     path = out / "manifest_mrms.json"
     path.write_text(json.dumps(manifest, indent=2) + "\n")

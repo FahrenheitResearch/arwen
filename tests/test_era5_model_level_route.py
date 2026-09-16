@@ -241,6 +241,8 @@ def test_the_forecast_stage_accepts_the_new_source_by_name():
 
     assert ROUTE in SUPPORTED_SOURCES
     assert set(_MAPPED_PACKAGED_PROFILE) <= SUPPORTED_SOURCES
-    # The generic caller-supplied-mapping id stays OUT: it has no
-    # packaged certificate for this stage to check.
-    assert "mapped" not in SUPPORTED_SOURCES
+    # The generic caller-supplied-mapping id is IN since 2026-09-04: a
+    # caller-authored mapped bundle runs through the same forecast
+    # validation as a packaged one, checked against the bundle's own
+    # certificate rather than a packaged profile.
+    assert "mapped" in SUPPORTED_SOURCES

@@ -121,7 +121,7 @@ def test_a_hard_limit_that_cannot_cover_it_refuses_with_the_number(
     # Names what it started with, what it got, and what it needed.
     assert "512" in message and "256" in message
     assert "linear in the number of forcing times" in message
-    # It still took everything it could get, so the refusal is honest
+    # It still took everything it could get, so the refusal is accurate
     # about being a genuine shortfall rather than an unasked question.
     assert fake.soft == 512
 

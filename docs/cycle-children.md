@@ -40,7 +40,7 @@ a refusal. The transcription cannot drift silently.
 
 ---
 
-## 2. The slot pool, and its honest cost
+## 2. The slot pool, and its accurate cost
 
 A child **cannot be allocated mid-run** on this codebase, and that is a
 design decision rather than a gap:
@@ -115,7 +115,7 @@ north edge keeps 3 parent rows of the required 10 (spec_bdy_width 5 +
 blend_width 5); placement REFUSED
 ```
 
-Every number there is load-bearing: the geographic ask, the index it
+Every number there is essential: the geographic ask, the index it
 mapped to, the rows kept, the rows required, and the two widths that add
 up to the requirement.
 

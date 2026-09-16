@@ -2,7 +2,7 @@
 //!
 //! Everything from the vertically interpolated `t`, `pressure` and `relhum`
 //! to the model state the dycore starts from, in the order
-//! `init_atm_case_gfs` does it — the order is load-bearing, because `relhum`
+//! `init_atm_case_gfs` does it -- the order is essential, because `relhum`
 //! is used for `qv` and *then* rewritten with respect to ice, and because the
 //! hydrostatic fixed point runs on a `pp` that the base-state step has
 //! already coupled to the vertical metric.
@@ -74,7 +74,7 @@ impl VirtualFactor {
 
 /// Liquid saturation mixing ratio, the Thompson polynomial MPAS carries.
 ///
-/// The comment at the call site is load-bearing: ungrib's RH is always with
+/// The comment at the call site is essential: ungrib's RH is always with
 /// respect to liquid water (see `fix_gfs_rh` in `WPS/ungrib/src/rrpr.F`), so
 /// this is the right saturation to divide by and an ice saturation is not.
 #[allow(clippy::excessive_precision)]

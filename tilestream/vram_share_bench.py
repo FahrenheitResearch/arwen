@@ -212,7 +212,7 @@ def main(argv=None) -> int:
         except cp.cuda.memory.OutOfMemoryError as exc:
             # Not a failure of the bench.  An arm that cannot hold this tile
             # size at all is the capacity result, and printing it as one is
-            # more honest than shrinking the tile until both arms fit.
+            # more accurate than shrinking the tile until both arms fit.
             print(f"  DOES NOT FIT -- {exc}")
             print(f"        {label}")
             vram.trim_pool()

@@ -9,6 +9,7 @@ import numpy as np
 import pytest
 
 from gpuwm.ingest.cpu_backend import CpuPreprocessBackend
+from conftest import requires_netcdf_bridge, requires_wrf_sfcprs_bridge
 
 ORACLE = json.loads((Path(__file__).parent / "data/wrf-sfcprs3-fortran.json").read_text())
 
@@ -29,6 +30,7 @@ def inputs():
     return p, z, terrain, slp
 
 
+@requires_wrf_sfcprs_bridge
 @pytest.mark.parametrize("workers", [1, 3, 17])
 @pytest.mark.parametrize("reverse", [False, True])
 def test_sfcprs3_matches_independent_fortran_in_every_column(workers, reverse):
@@ -46,6 +48,7 @@ def test_sfcprs3_matches_independent_fortran_in_every_column(workers, reverse):
     (2, (0, 4), float("inf"), "non-finite"),
     (3, (0, 4), 0., "non-finite"),
 ])
+@requires_wrf_sfcprs_bridge
 def test_invalid_column_has_position_and_does_not_reach_forecast(field, index, value, message):
     arrays = list(inputs())
     arrays[field][index] = value
@@ -53,6 +56,7 @@ def test_invalid_column_has_position_and_does_not_reach_forecast(field, index, v
         native().surface_pressure_from_sea_level(*arrays, workers=3)
 
 
+@requires_wrf_sfcprs_bridge
 def test_unbracketed_slp_is_a_named_column_error():
     p, z, terrain, slp = inputs()
     terrain[0, 6], slp[0, 6] = 50., 10000.
@@ -60,6 +64,7 @@ def test_unbracketed_slp_is_a_named_column_error():
         native().surface_pressure_from_sea_level(p, z, terrain, slp)
 
 
+@requires_wrf_sfcprs_bridge
 def test_native_failure_leaves_whole_output_untouched():
     backend = native()
     p, z, terrain, slp = inputs()
@@ -87,6 +92,7 @@ def test_old_library_only_refuses_when_the_new_operation_is_requested():
         backend.surface_pressure_from_sea_level(*inputs())
 
 
+@requires_wrf_sfcprs_bridge
 def test_false_branch_initializes_real_state(monkeypatch):
     from test_initial_perturbation import _application_fixture
     from gpuwm.ingest import real
@@ -123,6 +129,7 @@ def test_false_policy_reports_missing_pressure_field_before_preprocessing():
                         source_orography=orography, sfcp_to_sfcp=False)
 
 
+@requires_netcdf_bridge
 @pytest.mark.parametrize("units,value", [("Pa", 101100.), ("hPa", 1011.)])
 def test_met_em_slp_uses_rust_unit_conversion_and_shared_pressure_operation(tmp_path, units, value):
     from test_metem_ingest import case
@@ -143,6 +150,7 @@ def test_met_em_slp_uses_rust_unit_conversion_and_shared_pressure_operation(tmp_
     np.testing.assert_array_equal(result, met.snapshot.fields["PMSL"])
 
 
+@requires_netcdf_bridge
 def test_flagged_met_em_missing_slp_names_the_missing_input(tmp_path):
     from test_metem_ingest import case
     from gpuwm.ingest.metem import read_met_em, MetgridRefusal

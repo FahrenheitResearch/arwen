@@ -783,7 +783,7 @@ const CORNER_NAMES: [&str; 4] = ["LL", "UL", "UR", "LR"];
 /// the spherical form is the one available upstream, and the difference
 /// between them is nine cells at the top of this particular grid — see the
 /// module docstring, and [`CORNER_TOLERANCE_DEG`] for the screen that keeps
-/// the distinction honest instead of merely asserted.
+/// the distinction accurate instead of merely asserted.
 struct Laea {
     lat0: f64,
     lon0: f64,
@@ -1592,7 +1592,7 @@ mod tests {
         );
     }
 
-    /// The screen this front door exists to keep honest. A sphere is what a
+    /// The screen this front door exists to keep accurate. A sphere is what a
     /// reader reaches for when a projdef is skimmed rather than read, and on
     /// this grid it displaces the northern corners by about nine cells.
     #[test]

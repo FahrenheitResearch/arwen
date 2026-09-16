@@ -257,7 +257,7 @@ def window_centre(window: CoverageWindow | None
                   ) -> tuple[float, float] | None:
     """``(lat, lon)`` at the middle of WINDOW's grid, or ``None`` if global.
 
-    The one place a refusal can honestly point at: "this source's grid is
+    The one place a refusal can accurately point at: "this source's grid is
     centred here".  Taken from the GRID rather than from the bounding box,
     because a wide Lambert grid's bounding-box centre can lie off the grid
     entirely (AWIPS 221's box spans nearly every meridian).

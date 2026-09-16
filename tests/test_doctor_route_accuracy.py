@@ -445,7 +445,7 @@ def test_the_obs_front_doors_are_in_the_bundle_doctor_audits():
     carried by no bundle, so the command the refusal named could not
     supply it.  Both halves landed in 2.4.1 -- the artifacts joined the
     table, and the crates gained the source-revision stamp a release cut
-    needs in order to pin them -- so the honest premise is now this one.
+    needs in order to pin them -- so the accurate premise is now this one.
     If a door ever leaves the bundle, this fails and the remedy gets
     revisited deliberately rather than going quietly wrong.
     """

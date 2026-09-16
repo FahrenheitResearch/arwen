@@ -1,4 +1,4 @@
-"""The mutation gate's two lists stay readable, honest and narrow.
+"""The mutation gate's two lists stay readable, accurate and narrow.
 
 WHAT BREAKS WITHOUT THIS
     tools/battery/run_mutation_gate.py is expensive enough that nobody

@@ -20,7 +20,7 @@ Proves, on a synthetic-but-realistic mixed day/night grid, that
    identities, stable across constructions, recognized as the stock
    class by gpuwm.io.restart; plus the ra_rrtmg_variant restart
    migration rule and the legacy ozone asset roles;
-6. VRAM pricing honesty of ``legacy_radiation_vram_bytes`` at two chunk
+6. VRAM pricing accuracy of ``legacy_radiation_vram_bytes`` at two chunk
    sizes;
 7. ozone nest routing: a child adapter consumes the parent's retained
    o33d through the certified SINT operator, bitwise, and never touches
@@ -831,12 +831,12 @@ def test_legacy_asset_roles_carry_the_ozone_files():
 
 
 # ---------------------------------------------------------------------------
-# Gate 6: VRAM pricing honesty (mirrors the engines' gates).
+# Gate 6: VRAM pricing accuracy (mirrors the engines' gates).
 # ---------------------------------------------------------------------------
 
 @gpu_gate
 @pytest.mark.parametrize("column_chunk", [None, 8])
-def test_vram_pricing_honesty(env, column_chunk):
+def test_vram_pricing_accuracy(env, column_chunk):
     from gpuwm.core import rrtmg_legacy as leg
 
     adapter = leg.RRTMGLegacyRadiation(
@@ -851,6 +851,12 @@ def test_vram_pricing_honesty(env, column_chunk):
         lw_coefficients=adapter._C)
     pool = cp.get_default_memory_pool()
     for _ in range(DUAL_RUNS):
+        # The adapter releases the SW engine's workspace after every
+        # event, but the engine is process-shared and an earlier test
+        # that raised mid-call may have left slots held: start clean, so
+        # the estimate (which prices the workspace) is measured whole.
+        if adapter._cuda_sw is not None:
+            adapter._cuda_sw.release_scratch()
         pool.free_all_blocks()
         base = pool.used_bytes()
         peak = [0]

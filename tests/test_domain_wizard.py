@@ -1001,7 +1001,7 @@ def test_children_are_centered_on_the_point(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# GFS/HRRR honesty: no [case_data], actionable front-door messages
+# GFS/HRRR accuracy: no [case_data], actionable front-door messages
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("source", ["gfs", "hrrr"])
@@ -1518,7 +1518,7 @@ def test_the_gray_zone_advisory_warns_and_never_refuses(tmp_path, capsys):
         [3.0, 0.75], {**_SHARED_CERTIFIED, "bl_pbl_physics": 0}) == []
 
     lines = gray_zone_advisory([3.0, 0.75, 0.25], _SHARED_CERTIFIED)
-    assert len(lines) == 1, "one honest sentence, not a lecture"
+    assert len(lines) == 1, "one accurate sentence, not a lecture"
     assert "GRAY ZONE" in lines[0]
     assert "2 domain(s)" in lines[0]
     assert "finest 250 m" in lines[0]
@@ -1573,7 +1573,7 @@ def test_the_cumulus_advisory_warns_at_convection_permitting_dx(
     assert cumulus_gray_zone_advisory([3.0, 0.75], [0, 0]) == []
 
     lines = cumulus_gray_zone_advisory([3.0, 0.75], [1, 0])
-    assert len(lines) == 1, "one honest sentence, not a lecture"
+    assert len(lines) == 1, "one accurate sentence, not a lecture"
     assert "CUMULUS" in lines[0]
     assert "1 domain(s)" in lines[0]
     assert "finest 3 km" in lines[0]
@@ -1739,7 +1739,7 @@ def test_custom_root_dx_in_the_tropics_keeps_an_exact_half_second(
 
 
 # ---------------------------------------------------------------------------
-# The documented GFS -> GPU route: physics representation and honesty.
+# The documented GFS -> GPU route: physics representation and accuracy.
 # ---------------------------------------------------------------------------
 
 def test_emitted_radiation_uses_the_representation_the_guard_compares(
@@ -2937,7 +2937,7 @@ def test_a_suite_with_a_large_backing_store_still_sizes(
     Since the 2026-08-03 stress finding, an ABSENT card is priced at the
     conservative measured reference intercept (170 SMs), not a per-class
     SM discount -- so NSSL2's 15,504 B frame reserves 3.78 GiB before a
-    grid cell exists, and the smallest tier honestly refuses rather than
+    grid cell exists, and the smallest tier accurately refuses rather than
     certifying a margin the class discount invented.  The refusal must
     name the arithmetic; every larger tier must still size and pass its
     own verifier.
@@ -2958,7 +2958,7 @@ def test_a_suite_with_a_large_backing_store_still_sizes(
         "--cycle", "2026-07-28T00", "--physics-profile", physics_profile,
         "--out", str(out)])
     if rc == 2:
-        # The honest refusal: grid-independent constants dominate, and
+        # The accurate refusal: grid-independent constants dominate, and
         # the message says which ones and why shrinking cannot help.
         assert vram == 12.0, (
             f"{physics_profile} at {vram} GiB refused; only the smallest "

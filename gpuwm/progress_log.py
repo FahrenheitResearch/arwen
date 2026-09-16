@@ -572,7 +572,7 @@ class StepLog:
         self._domains: dict[int, list] = {}
         #: grid_id -> the perf_counter reading of its last completed
         #: step.  Read by :meth:`output_committed` to turn a landing into
-        #: a durable-publish LATENCY, which is the only honest timing an
+        #: a durable-publish LATENCY, which is the only accurate timing an
         #: asynchronous writer can report.
         self._domain_wall: dict[int, float] = {}
         #: grid_id -> the wall of its first few steps, in order.  Kept
@@ -964,7 +964,8 @@ class StepLog:
     def containment_moved(self, *, domain, model_seconds, mover,
                           placement_from, placement_to,
                           requested_shift=None, executed_shift=None,
-                          clamped=False, mover_deviation_cells=None,
+                          clamped=False, clamped_by=(),
+                          mover_deviation_cells=None,
                           grid=None, lat_from=None, lon_from=None,
                           **fields: Any) -> None:
         """The mover's PARENT slid to keep the mover contained.
@@ -989,6 +990,7 @@ class StepLog:
             requested_shift_parent_cells=_shift_json(requested_shift),
             executed_shift_parent_cells=_shift_json(executed_shift),
             clamped=bool(clamped),
+            clamped_by=[str(name) for name in (clamped_by or ())],
             mover_deviation_cells=_shift_json(mover_deviation_cells),
             lat_from=lat_from, lon_from=lon_from, **fields)
 

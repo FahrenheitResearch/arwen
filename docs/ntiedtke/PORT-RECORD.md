@@ -86,7 +86,7 @@ The projection and GF are
 mutually exclusive — `gf_column_workspace_bytes` is zero unless
 `cu_physics = 3` — so a run that swaps GF for New Tiedtke frees GF's term.
 The **net −65 MiB** figure previously stated here rested on both errors
-above and is **withdrawn**; the honest statement is that the sign of the
+above and is **withdrawn**; the accurate statement is that the sign of the
 net depends entirely on the capping decision in §13, and is not yet known.
 
 **What IS a measurement rather than a promise is the local-memory half.** The workspace shape is the entry ticket, not an optimisation:
@@ -296,7 +296,7 @@ and writes an oracle a correct float32 port would fail against. `build.sh`
 passes the define and the program refuses to run without it.
 
 `kind_phys` is single, five ways — the port's one flagged unknown, closed.
-The load-bearing one: `module_cumulus_driver.F:1384-1407` passes plain WRF
+The essential one: `module_cumulus_driver.F:1384-1407` passes plain WRF
 `REAL` arrays into all-`kind_phys` dummies, so **the interface only conforms
 because `kind_phys == 4`.**
 
@@ -417,7 +417,7 @@ clean while every shallow one differed.
 `cutypen` declares `cutu`/`cuqu`/`culu`/`culab` `intent(out)` and then
 **reads them before assigning** (`:1334-1337`).  `cumastrn` passes cuinin's
 own `ptu`/`pqu`/`plu`/`ilab`, so that read picks up cuinin's answer and the
-aliasing is load-bearing.  The harness had passed fresh arrays, so the
+aliasing is essential.  The harness had passed fresh arrays, so the
 capture was a fiction on exactly the columns where the shallow writeback
 leaves the incoming values in place.
 
@@ -434,7 +434,7 @@ every routine's declarations and classifies the first use of every
 `intent(out)` / `intent(inout)` dummy.  The receipt is
 `gpuwm/data/ntiedtke/oracle/nt-aliasing-audit.txt`.
 
-**Two classes, both load-bearing, and the second is the dangerous one.**
+**Two classes, both essential, and the second is the dangerous one.**
 
 *Class 1 -- read before written.* 29 dummies.  `cuascn` alone has eight
 (`ldcum`, `kctop0`, `klab`, `ptenh`, `pqenh`, `ptu`, `plu`, and `puu`/`pvu`
@@ -575,7 +575,7 @@ columns, so the untouched rows are graded rather than assumed.
 > It may never be built.  `cuascn`, the largest routine in the scheme, was
 > expected to force the first allocation and did not: see §12.  If nothing
 > needs a workspace, guarantees 1-5 describe a shape the port does not have,
-> and the honest end state is to delete them rather than to implement them.
+> and the accurate end state is to delete them rather than to implement them.
 
 Column arrays would live in one global workspace, allocated once per cumulus
 step and threaded through every stage launch.  Continuity across launches is
@@ -950,7 +950,7 @@ omitting them fails its own gate.  Weakening the end-to-end gate is the one
 thing this port has refused at every turn, and the last phase is the worst
 place to start.
 
-**Two constraints on building it, both load-bearing.**
+**Two constraints on building it, both essential.**
 
 **1. This is new driver surface, so it gets the port's standard.**  It
 touches working code that no scheme exercises.  The Phase 3 determinism gate
@@ -1379,7 +1379,7 @@ safe, because the columns are independent given that gate.
 *launch argument* in the current kernel signature, sound only because the
 gate proves it is true for the whole run. Capping does not merely re-check
 that gate at a new tile size — it forces `llo3` to be **computed per tile**,
-which is a block-wide OR reduction that does not exist today. So the honest
+which is a block-wide OR reduction that does not exist today. So the accurate
 price of capping is "≈150 MiB saved, plus a reduction to write and grade",
 not "≈150 MiB saved".
 
@@ -1427,7 +1427,7 @@ on purpose, and a cap would come through this descriptor. But 32 is now a
 free tuning knob, and one worth having — one warp per block caps occupancy
 through the blocks-per-SM limit regardless of register count, with `cuascn`
 at 94 registers and `cutypen` at 91. A Phase 4 question, raised here only
-because "delete guarantees 1-5" and "`NT_TPB` is load-bearing" cannot both
+because "delete guarantees 1-5" and "`NT_TPB` is essential" cannot both
 be true and the file previously said both.
 
 ### A note on what "0 bytes of workspace" means
@@ -1465,7 +1465,7 @@ this port was warned about — a class-2 dummy constrains the fixture as hard
 as it constrains the kernel — applied to only one of the two.
 
 **Now it is a gate on both** (`tests/test_ntiedtke_aliasing_audit.py`): every
-load-bearing dummy of a ported routine must be a **parameter of its mirror**,
+essential dummy of a ported routine must be a **parameter of its mirror**,
 because a value the mirror does not accept has nowhere to come from. Verified
 to discriminate rather than pass vacuously — against the pre-fix signature it
 names all six missing slots. Three supporting gates come with it: the audit
@@ -1512,7 +1512,7 @@ into another's entry is the reconstruction this port keeps being burned by.
 `paph[klev+1]` is **read three times** here (:2618, :2648, :2649) — the
 surface interface that `cuascn` never touches and whose slot the cuascn
 fixture deliberately poisons with NaN. The two fixtures treat the same index
-oppositely, on purpose, and a test perturbs it to prove it is load-bearing
+oppositely, on purpose, and a test perturbs it to prove it is essential
 rather than assuming so. `pgeoh[klev+1]` is *not* read, and gets the NaN.
 
 `pud`/`pvd` are untouched again — the same `intent(inout)`-and-never-written
@@ -1698,7 +1698,7 @@ them "the array is zero".**
 
 **Two consequences.**
 
-First, the non-zero seed is **load-bearing inside** `cumastrn`: `:509` reads
+First, the non-zero seed is **essential inside** `cumastrn`: `:509` reads
 `ptte`/`pqte` into `zdhpbl`, which drives the shallow closure. The port
 already supplies the real forcing there — `NT_ITIMESTEP = 2` was chosen for
 exactly that reason, so `qvften`/`thften` are read and not zeroed — and the
@@ -2085,7 +2085,7 @@ than zero, so "zeroed" is distinguishable from "untouched" — a zero-filled
 buffer would pass whether or not the kernel wrote anything, which is the
 same non-discrimination the cuentrn degeneracy turned on.
 
-### The manifest, split honestly
+### The manifest, split accurately
 
 Claiming `:559-590` took the unowned set from 372 to 340; splitting the
 remaining ranges at the actual call sites — so the kernels get credit for
@@ -2188,7 +2188,7 @@ mechanism rather than a search. **Reported before the last ranges close**,
 per the standing rule, so the schedule reflects it: it is not a
 transcription task and it will not fall out of one.
 
-### An honest note on capture-first
+### An accurate note on capture-first
 
 The `:996-1016` slice applied the inverted default: `pmfu`/`pmfd` were
 captured at the block's entry rather than assumed to survive `:927-995`.
@@ -2335,7 +2335,7 @@ At `:996` the reasoning would have held (0 of 5,292 differ); at `:743-819`
 the same reasoning cost a round. One was measured. Hence: **capture at the
 boundary, or measure the gap inert. Never reason.**
 
-**Instance 8 is the one that shows which half is load-bearing.** Its
+**Instance 8 is the one that shows which half is essential.** Its
 captured *values* were right — taken at cududvn's own call site — and only
 the *explanation* was wrong. So the capture quietly protected the
 arithmetic while the reasoning produced a false statement that a future
@@ -2380,7 +2380,7 @@ transcribe; the assembler is not Fortran, so it was not in the count. That
 is the same shape as "thirteen of thirteen kernels graded": a true number
 measuring a smaller thing than it appears to.
 
-**Remaining Phase 1 work, restated honestly:**
+**Remaining Phase 1 work, restated accurately:**
 
 | | |
 | --- | --- |
@@ -2827,7 +2827,7 @@ argument that has been wrong eight times.
   `if` and no `+`. Every level of every column is written, which is why
   post_run has **no class-2 rows** in the aliasing audit despite six
   `intent(inout)` arrays — read off the body, not inferred from the intent.
-* **The association is load-bearing.** `(tf - t)/exner*rdelt` is subtract,
+* **The association is essential.** `(tf - t)/exner*rdelt` is subtract,
   *divide*, then multiply. `(tf - t) * (rdelt/exner)` is algebraically
   identical and bitwise different, so the divide is spelled `__fdiv_rn` and
   kept in place.
@@ -2994,7 +2994,7 @@ declared and gated in `test_ntiedtke_call_order_vs_source.py`:
 * **2 zeroed** by the assembler at `:258-259` and copied at `:1019-1024`:
   `ztenu`, `ztenv`.
 
-### Two level-indexing conventions, and the honest way to tell them apart
+### Two level-indexing conventions, and the accurate way to tell them apart
 
 `prep` and `convert` walk `k = 0 … nz-1`; everything under `cumastrn` walks
 `jk = 1 … klev`. One `(nz+2, ncol)` allocation serves both — pass `w[name]`
@@ -3383,7 +3383,7 @@ both schemes, states the wrong repair, and **found** the person about to
 make the mistake rather than the other way round.
 
 It also says the driver folds "RTHRATEN + RTHBLTEN into RTHFTEN" and
-**omits the `* pi`**. The multiplication is the load-bearing term — it
+**omits the `* pi`**. The multiplication is the essential term -- it
 changes the lane's units, so the scheme receives a temperature forcing
 rather than a theta one. A port written from the note would have been
 wrong by a factor of Exner, 0.3 to 1.0 through the column, and would have
@@ -3504,7 +3504,7 @@ and a table agreeing proves they agree; the witness has to come from
 outside the pair.  It did: all 21 `ntiedtke` kernels compile to a **0 B**
 frame under the model's own `load_module`, and loading either cumulus
 module leaves `cudaLimitStackSize` at its 1,024 B default.  Nothing
-reserves anything.  The +0.63 GiB remains unexplained, which is the honest
+reserves anything.  The +0.63 GiB remains unexplained, which is the accurate
 state, and it needs a timeline probe rather than more arithmetic on
 maxima.
 
@@ -3632,7 +3632,7 @@ close, and it is the first instance of it.
 
 ## 39. VRAM: four claims retired, and the risk was pointing the other way
 
-### "0 B frames, so it reserves nothing" — the honest form is *nothing additional*
+### "0 B frames, so it reserves nothing" -- the accurate form is *nothing additional*
 
 This has been the port's VRAM headline all week and it conflates two
 scopes.  Both of these are true:
@@ -3933,7 +3933,7 @@ entirely. Paging changes speed, not arithmetic.
 
 One PASS and one AMBIGUOUS is an ambiguous phase. **PHASE 5: AMBIGUOUS.**
 
-### What it means, and the comparison that is actually load-bearing
+### What it means, and the comparison that is actually essential
 
 **Arm 2 is not a marginal pass and it is the substantive result.** New
 Tiedtke's annulus mean of 1.315 is **above** stock WRF Tiedtke's 1.163
@@ -3948,7 +3948,7 @@ AMBIGUOUS with no idea whether the bands survived.
 first framing of this was wrong. Quoting the shortfall as 8 mb against
 stock WRF's 968.1 mixes *model* with *scheme*. §4 defines PASS as
 "≤ 971.6 mb, i.e. **at least matching ArWen's** Kain-Fritsch", so the
-load-bearing comparison is within ArWen, same model, same tree, cumulus
+essential comparison is within ArWen, same model, same tree, cumulus
 alone:
 
 ```
@@ -4175,7 +4175,7 @@ this campaign runs. That is one number, it is more actionable than
 "+3.434 GiB", and the paired pool timeline on `gf_14h` against
 `nt_phase5_hafs` would produce it directly.
 
-### And Grell-Freitas' headroom, stated honestly
+### And Grell-Freitas' headroom, stated accurately
 
 GF peaks at **14.858 of 15.920** — it fits, with about a gigabyte to
 spare, on a **two-domain** tree. That is not "Grell-Freitas is fine and
@@ -4919,7 +4919,7 @@ TREND   0.415 +/- 0.675 mb/hr 0.750 +/- 0.113 mb/hr  0.49 combined SE
 Both inside one standard error, and they miss in **opposite** directions —
 the signature of noise rather than of a systematic defect.
 
-**The honest form, and it is review's own qualification rather than a
+**The accurate form, and it is review's own qualification rather than a
 concession extracted from them**: these are two quantities whose error
 bars are each of order their own size. The reconciliation would equally
 have accepted a true value of zero, or of five millibars. It is
@@ -5027,7 +5027,7 @@ peak cannot be a paging fix. **That reasoning assumed the pool-to-wall
 relationship is linear, and this pair falsifies it.** It is a cliff, and
 these runs sit on it.
 
-Stated honestly: the comparison is confounded, because the two halves
+Stated accurately: the comparison is confounded, because the two halves
 differ in physics as well as in pool. But the step counts are identical,
 and a forcing-lane change producing 55% more wall at 3,360 identical steps
 is not attributable to physics without evidence either.
@@ -6388,7 +6388,7 @@ mean   -0.132   -0.446   -1.247
 Both statistics are monotone in share with **no step**. modC6 is not
 "stall" against "no stall" — it is a **weaker stall**, flattening in the
 same place, just less. That is the third shape the review pre-registered
-before the run, and the honest report is that it landed there rather than
+before the run, and the accurate report is that it landed there rather than
 that it cleared or failed a bar.
 
 And the response is **convex**: per share point, the max costs −0.0139
@@ -6617,7 +6617,7 @@ Pre-port is **0.95 GiB higher**, and `pool_used` agrees at 8.77 against
 8.00. The New Tiedtke port did not raise VRAM.
 
 Four gates had to be passed to run the old code, and all were passed
-honestly rather than defeated: pick a commit that genuinely declares the
+accurately rather than defeated: pick a commit that genuinely declares the
 installed version (`eada530d` declares 2.5.8 and predates `ntiedtke.cu` at
 `25a13a90`), copy the data companion, re-prepare because the cache is
 version-locked, and copy the three `rustwx` DLLs.
@@ -6819,7 +6819,7 @@ arms), and **horizontal diffusion** (wrong radial shape). What remains is
 the **mid-level heat budget across 400–500 hPa**, and vertical advection is
 untested.
 
-**The honest limit is circularity.** Updraft, warm core and eye subsidence
+**The accurate limit is circularity.** Updraft, warm core and eye subsidence
 form a closed feedback: a weaker updraft gives weaker compensating
 subsidence, a cooler core, less buoyancy, and a weaker updraft again. A
 profile comparison at one time cannot say which link moved first — it can
@@ -6950,7 +6950,7 @@ compare the initial frame, reduce storm-relative, and now —
 
 Both sessions arrived at the same withdrawal from opposite directions on
 the same afternoon. **The updraft finding does not survive multi-frame
-testing, and neither, on the honest statistic, does the warm core.**
+testing, and neither, on the accurate statistic, does the warm core.**
 
 ### The updraft deficit is withdrawn
 
@@ -7007,7 +7007,7 @@ inner core barely registers** — which is why it disagreed with a direct
 inner-core measurement about the sign. It is withdrawn in favour of the
 inner-50 km anomaly against the 300–400 km ring.
 
-### The warm core: significant naively, not significant honestly
+### The warm core: significant naively, not significant accurately
 
 On the better metric, paired hourly f01–f12:
 
@@ -7076,7 +7076,7 @@ SE                    0.370          t = -2.01
 
 At `df = 2.3` the 95% critical value is **3.78, not 1.96** — the normal
 approximation that turns `t = 2.01` into "2 sigma, significant" is invalid
-at this effective sample size. The honest interval is
+at this effective sample size. The accurate interval is
 
 ```
 95% CI  [-2.141, +0.657] K      p = 0.165      INCLUDES ZERO
@@ -7255,7 +7255,7 @@ measurement rather than by the power wall.**
 **Three independent instruments have now failed for the same reason:**
 `H_DIABATIC` between runs (§58's power check), the eye θ budget, and the
 individual advection terms. Each time **a large noisy term hides a small
-difference.** Vertical advection is the honest example: the sign is
+difference.** Vertical advection is the accurate example: the sign is
 negative in all six averaging volumes tried (−0.27 to −0.71 K/h) and
 **none reaches 2σ** (0.47 to 1.09) — direction robust, magnitude
 unresolved, the same shape as the trend result.
@@ -7389,7 +7389,7 @@ width   this session (f02-f12.2)          reviewer (f00-f12)
 > than over the first 3–4. Negative at every width in both sessions;
 > five of the six intervals exclude zero.
 
-The one that does not is the reviewer's 2 h width, which is **honest and
+The one that does not is the reviewer's 2 h width, which is **accurate and
 expected** — two hours is well under the ~3.5 h oscillation, so it cannot
 average it out, and that is precisely the width that should fail.
 
@@ -7546,7 +7546,7 @@ p05 w 500     -0.5467  -0.4430  -0.1036  [-0.3081, +0.0185]   null
 
 **Every interval spans zero**, matching the reviewer's 0.31–1.23σ on the
 same four measures. This one was checked in both sessions precisely
-because it is load-bearing.
+because it is essential.
 
 Together with the withdrawn updraft, this is the structurally important
 result of the whole exchange:
@@ -7982,7 +7982,7 @@ dF W/m^2                        whole column        in a 200 hPa layer
 
 against the 0.107 K/h deficit. **The variant swing is 2–11% of it.**
 
-**The honest caveat:** `OLR` is a TOA flux, so this bounds what the
+**The accurate caveat:** `OLR` is a TOA flux, so this bounds what the
 difference can do to *column-mean* heating and says nothing about where in
 the column it lands. Actual heating is flux **divergence**, which these
 three fields cannot give — the instrumentation gap remains real.

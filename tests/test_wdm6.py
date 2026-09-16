@@ -195,7 +195,7 @@ def test_the_kernel_s_baked_fp32_literals_match_the_float64_wdm6init(
 
 
 def test_the_kernel_source_states_it_has_no_oracle():
-    """HONESTY PIN.  If someone runs the oracle campaign and the header
+    """ACCURACY PIN.  If someone runs the oracle campaign and the header
     keeps saying there is none, or removes the sentence without running
     it, this test is the thing that notices."""
     source = _KERNEL.read_text(encoding="utf-8")
@@ -419,7 +419,7 @@ def test_a_namelist_naming_wdm6_imports_natively(tmp_path):
                    for sub in report.substitutions)
 
 
-def test_the_registry_row_is_honest_about_having_no_oracle():
+def test_the_registry_row_is_accurate_about_having_no_oracle():
     root = Path(__file__).resolve().parents[1]
     registry = json.loads(
         (root / "gpuwm/physics_registry_v2.json").read_text(
@@ -555,26 +555,23 @@ def test_a_refused_selector_cannot_join_without_its_own_sentence():
         exec(compile(patched, mt.__file__, "exec"), namespace)
 
 
-def test_the_offline_cross_scheme_mirror_is_empty_with_the_online_tuple():
-    """The mirror is DERIVED, so ratifying mp=16's edge emptied it.
-
-    mp=16 is still absent from ``OFFLINE_CHILD_MP_PHYSICS`` and from
-    ``PARENT_SCHEME_CONTRACT``, but for their OWN reasons -- the offline
-    lane cannot read the QNCCN field and has no conversion leg -- not
-    because a closure is unmeasured.
-    """
+def test_the_offline_lane_admits_wdm6_at_both_ends_of_an_edge():
+    """mp=16 was held out of the offline lane for want of a QNCCN row and
+    a conversion leg.  The row exists and the leg is the online edge
+    itself, so a WDM6 parent is read and a WDM6 child is seeded by the
+    same closure a WDM6 nest is."""
     from gpuwm import offline_child as oc
     from gpuwm.core import microphysics_transition as mt
 
-    assert (set(oc._CROSS_SCHEME_REFUSED_MP_PHYSICS)
-            == set(mt.UNVALIDATED_MIXED_EDGE_SELECTORS) == set())
-    assert 16 not in oc.OFFLINE_CHILD_MP_PHYSICS
-    assert 16 not in oc.PARENT_SCHEME_CONTRACT
-    with pytest.raises(oc.OfflineChildContractError) as caught:
-        oc.map_microphysics_to_nssl18({}, source_mp_physics=16)
-    message = str(caught.value)
-    assert "no measured mapping" not in message
-    assert "16" in message
+    assert 16 in mt.PORTED_MP_PHYSICS
+    assert 16 in oc.OFFLINE_CHILD_MP_PHYSICS
+    assert 16 in oc.PARENT_SCHEME_CONTRACT
+    assert oc.offline_cross_scheme_refusal(16, 18) is None
+    assert oc.offline_cross_scheme_refusal(10, 16) is None
+    contract = oc._offline_transition_contract(
+        10, 16, morr_rimed_ice=0, hail_opt=None, child_cfg=None)
+    assert mt.transition_target_fields(contract) == (
+        "qv", "qc", "qr", "qi", "qs", "qg", "nn", "nc", "nr")
 
 
 # --------------------------------------------------------------------------
@@ -677,7 +674,7 @@ def test_the_wrfinput_restore_refloods_the_ccn_reservoir_wrf_discards(restore_mo
     case, and a zero reservoir shuts off ``pcact``/``ncact`` activation --
     the source term the whole double-moment warm rain is built on.
 
-    The nonzero half of the fixture is the load-bearing one: it fails on a
+    The nonzero half of the fixture is the essential one: it fails on a
     "fill only if the file is empty" repair as well as on no repair at all,
     which is the mutation this test exists to catch, because WRF's flood is
     unconditional in the file's value.

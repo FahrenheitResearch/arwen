@@ -158,7 +158,7 @@ with a matching `--member-workers` on its own parser defaulting to 1.
 Nothing else changes: the report's `execution` block records the width
 and the trim setting, so the receipt says which arm produced it.
 
-## Honest limits
+## Accurate limits
 
 - The end-to-end A/B at the full twelve-leg nowcast scale has not been
   measured on an idle card; the card was taken by another job partway

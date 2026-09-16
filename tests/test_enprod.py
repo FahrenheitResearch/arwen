@@ -23,13 +23,16 @@ mandated ``wrf`` package exactly as a production ensemble would be.
 
 from __future__ import annotations
 
+import inspect
 import json
+from pathlib import Path
 
 import numpy as np
 import pytest
 from numpy.testing import assert_array_equal
 
 import gpuwm.cli as cli
+from gpuwm import render_layout
 from gpuwm.da import enprod
 from gpuwm.render import plot_context
 
@@ -669,12 +672,12 @@ def test_the_suite_writes_exactly_the_expected_filenames(ensemble_root,
                    "--timeidx", "0", "--out", str(out), "--dpi", "72",
                    "--engine", "matplotlib"])
     assert rc == 0
-    produced = sorted(p.name for p in out.glob("*.png"))
+    produced = sorted(p.name for p in render_layout.iter_rendered(out))
     assert produced == sorted(
         f"refl-{token}_d02-3km_{_STAMPS[0]}.png"
         for token in ("ens-mean", "ens-spread", "ens-p40dbz",
                       "ens-p40dbz-r5km", "ens-paintball40dbz", "ens-pmm"))
-    for png in out.glob("*.png"):
+    for png in render_layout.iter_rendered(out):
         assert png.stat().st_size > 5_000, png.name
 
 
@@ -686,7 +689,7 @@ def test_the_default_field_pair_carries_its_own_thresholds(ensemble_root,
                    "--out", str(out), "--dpi", "72",
                    "--engine", "matplotlib"])
     assert rc == 0
-    produced = sorted(p.name for p in out.glob("*.png"))
+    produced = sorted(p.name for p in render_layout.iter_rendered(out))
     assert produced == [
         f"refl-ens-p40dbz_d02-3km_{_STAMPS[1]}.png",
         f"uh-ens-p75m2s2_d02-3km_{_STAMPS[1]}.png",
@@ -699,7 +702,7 @@ def test_every_shared_valid_time_is_rendered(ensemble_root, tmp_path):
                    "--products", "mean", "--out", str(out), "--dpi", "72",
                    "--engine", "matplotlib"])
     assert rc == 0
-    assert sorted(p.name for p in out.glob("*.png")) == [
+    assert sorted(p.name for p in render_layout.iter_rendered(out)) == [
         f"refl-ens-mean_d02-3km_{stamp}.png" for stamp in _STAMPS]
 
 
@@ -714,7 +717,7 @@ def test_two_requests_that_collide_on_one_filename_are_refused(ensemble_root,
                    "--timeidx", "0", "--out", str(out), "--dpi", "72",
                    "--engine", "matplotlib"])
     assert rc == 1
-    assert sorted(p.name for p in out.glob("*.png")) == [
+    assert sorted(p.name for p in render_layout.iter_rendered(out)) == [
         f"refl-ens-p40dbz_d02-3km_{_STAMPS[0]}.png"]
 
 
@@ -733,7 +736,7 @@ def test_a_member_missing_from_disk_refuses_the_whole_suite(ensemble_root,
                    "mean", "--out", str(out), "--dpi", "72",
                    "--engine", "matplotlib"])
     assert rc == 2
-    assert not out.exists() or not list(out.glob("*.png"))
+    assert not out.exists() or not render_layout.iter_rendered(out)
 
 
 def test_members_with_surplus_frames_render_the_intersection(
@@ -757,7 +760,7 @@ def test_members_with_surplus_frames_render_the_intersection(
                    "--engine", "matplotlib"])
     captured = capsys.readouterr()
     assert rc == 0
-    assert list(out.glob("*.png"))
+    assert render_layout.iter_rendered(out)
     assert "warning:" in captured.err
     assert "surplus frames" in captured.err
     # The surplus valid time itself must not have been rendered.
@@ -805,3 +808,354 @@ def test_the_experimental_stamp_reaches_stdout(ensemble_root, tmp_path,
               "mean", "--timeidx", "0", "--out", str(tmp_path / "png"),
               "--dpi", "72", "--engine", "matplotlib"])
     assert enprod.EXPERIMENTAL_STAMP in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
+# The rust route's own door: one --dpi meaning, one nest choice, one delivery
+# ---------------------------------------------------------------------------
+
+_PNG_MAGIC = bytes.fromhex("89504e470d0a1a0a")
+
+
+def _staged_engine(monkeypatch, seen, *, products=("mean",)):
+    """A fake rw_ensbatch that records its request and writes one panel."""
+    from gpuwm import rustwx_lanes
+
+    def fake_ensemble(engine, manifest, *, store_root, out_dir, **kwargs):
+        seen.update(kwargs)
+        seen["out_dir"] = Path(out_dir)
+        Path(out_dir).mkdir(parents=True, exist_ok=True)
+        written, rendered = [], []
+        for product in products:
+            panel = Path(out_dir) / f"ens{len(written):02d}" / \
+                f"ens_{product}_{kwargs['field']}" / "ensemble" / \
+                f"arwen_ens_{product}.png"
+            panel.parent.mkdir(parents=True, exist_ok=True)
+            panel.write_bytes(_PNG_MAGIC + b"fake ensemble panel")
+            written.append(panel)
+            rendered.append((product, panel))
+        return written, [], [], {"rendered": rendered}
+
+    monkeypatch.setattr(rustwx_lanes, "find_ensemble_bin",
+                        lambda: Path("rw_ensbatch"))
+    monkeypatch.setattr(rustwx_lanes, "probe_ensemble_bin",
+                        lambda path: (True, "--abi matches the contract"))
+    monkeypatch.setattr(rustwx_lanes, "run_ensemble_renderer", fake_ensemble)
+
+
+def _bare_ensemble(tmp_path):
+    root = tmp_path / "ens"
+    root.mkdir(exist_ok=True)
+    (root / enprod.MANIFEST_FILENAME).write_text("{}", encoding="utf-8")
+    return root
+
+
+def test_dpi_has_one_meaning_on_both_engines(tmp_path, monkeypatch, capsys):
+    """``--dpi`` was accepted and dropped with a warn on the rust route."""
+    seen: dict = {}
+    _staged_engine(monkeypatch, seen)
+    out = tmp_path / "png"
+    rc = cli.main(["enprod", str(_bare_ensemble(tmp_path)), "--field", "refl",
+                   "--products", "mean", "--out", str(out),
+                   "--engine", "rust", "--dpi", "300"])
+    assert rc == 0
+    assert (seen["width"], seen["height"]) == (2400, 1800)
+    err = capsys.readouterr().err
+    assert "has no effect" not in err
+
+
+def test_the_default_dpi_is_the_engines_own_size(tmp_path, monkeypatch):
+    seen: dict = {}
+    _staged_engine(monkeypatch, seen)
+    rc = cli.main(["enprod", str(_bare_ensemble(tmp_path)), "--field", "refl",
+                   "--products", "mean", "--out", str(tmp_path / "png"),
+                   "--engine", "rust"])
+    assert rc == 0
+    assert (seen["width"], seen["height"]) == (1200, 900)
+
+
+def test_panel_pixels_names_its_floor_instead_of_clamping_quietly(capsys):
+    assert enprod.panel_pixels(150) == (1200, 900)
+    assert enprod.panel_pixels(300) == (2400, 1800)
+    assert enprod.panel_pixels(1) == (320, 240)
+    assert "320x240" in capsys.readouterr().err
+
+
+def test_the_nest_choice_reaches_the_rust_engine(tmp_path, monkeypatch):
+    """``--domain`` was refused as unimplemented; it is the disambiguation."""
+    seen: dict = {}
+    _staged_engine(monkeypatch, seen)
+    rc = cli.main(["enprod", str(_bare_ensemble(tmp_path)), "--field", "refl",
+                   "--products", "mean", "--out", str(tmp_path / "png"),
+                   "--engine", "rust", "--domain", "d02"])
+    assert rc == 0
+    assert seen["domain"] == "d02"
+
+
+def _mixed_nest_roster(tmp_path):
+    from types import SimpleNamespace
+
+    members = []
+    for number in (1, 2):
+        directory = tmp_path / f"member_{number:03d}"
+        for token in ("d01", "d02"):
+            path = directory / f"wrfout_{token}_1974-04-03_18_00_00"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"")
+        members.append(SimpleNamespace(number=number, directory=directory))
+    return SimpleNamespace(members=tuple(members))
+
+
+def test_a_mixed_nest_ensemble_is_refused_identically_at_both_doors(
+        tmp_path, monkeypatch, capsys):
+    """One request fact, one sentence, whichever engine was asked for."""
+    roster = _mixed_nest_roster(tmp_path)
+    monkeypatch.setattr(enprod, "load_manifest", lambda *a, **k: roster)
+    seen: dict = {}
+    _staged_engine(monkeypatch, seen)
+    messages = []
+    for engine in ("rust", "matplotlib"):
+        rc = cli.main(["enprod", str(_bare_ensemble(tmp_path)),
+                       "--field", "refl", "--products", "mean",
+                       "--out", str(tmp_path / f"png-{engine}"),
+                       "--engine", engine])
+        assert rc == 2, engine
+        messages.append([line for line in capsys.readouterr().err.splitlines()
+                         if "more than one domain" in line])
+    assert messages[0] == messages[1] != []
+    assert "--domain dNN" in messages[0][0]
+    assert "d01, d02" in messages[0][0]
+
+
+def test_naming_the_nest_admits_the_same_ensemble(tmp_path, monkeypatch):
+    roster = _mixed_nest_roster(tmp_path)
+    assert enprod.domain_choice_problem(roster, "d02") is None
+    assert enprod.domain_choice_problem(roster, None) is not None
+
+
+def test_the_rust_route_delivers_into_the_layout_and_leaves_nothing_behind(
+        tmp_path, monkeypatch):
+    """One --out, two nests, and the engine's own token carried neither."""
+    seen: dict = {}
+    _staged_engine(monkeypatch, seen, products=("mean", "spread"))
+    out = tmp_path / "png"
+    rc = cli.main(["enprod", str(_bare_ensemble(tmp_path)), "--field", "refl",
+                   "--products", "mean,spread", "--out", str(out),
+                   "--engine", "rust"])
+    assert rc == 0
+    delivered = render_layout.iter_rendered(out)
+    assert len(delivered) == 2
+    for path in delivered:
+        parts = path.relative_to(out).parts
+        assert len(parts) == 4, parts
+        assert parts[1] in {"refl-ens-mean", "refl-ens-spread"}
+    # The engine drew into scratch, and scratch is gone.
+    assert not seen["out_dir"].exists() or not list(seen["out_dir"].rglob("*.png"))
+    assert "ensemble" not in {part for path in delivered
+                              for part in path.relative_to(out).parts}
+
+
+def test_the_rust_route_publishes_a_render_receipt(tmp_path, monkeypatch):
+    from gpuwm import render_receipts
+
+    seen: dict = {}
+    _staged_engine(monkeypatch, seen)
+    out = tmp_path / "png"
+    assert cli.main(["enprod", str(_bare_ensemble(tmp_path)), "--field", "refl",
+                     "--products", "mean", "--out", str(out),
+                     "--engine", "rust"]) == 0
+    summary = render_receipts.read_summary(out)
+    assert summary is not None
+    assert summary["schema"] == "gpuwm.render-summary.v1"
+    assert summary["rendered_png_count"] == 1
+    assert [row["name"] for row in summary["rendered_families"]] == ["refl-ens-mean"]
+    assert len(list((out / ".render-receipts").glob("*.json"))) == 1
+
+
+def test_the_matplotlib_route_publishes_a_render_receipt(tmp_path, monkeypatch):
+    from gpuwm import render_receipts
+
+    out = tmp_path / "png"
+    panel = enprod.delivered_path(out, "refl", "ens-mean", "d02-3km",
+                                 "1974-04-03_18:00:00")
+    panel.parent.mkdir(parents=True, exist_ok=True)
+    panel.write_bytes(_PNG_MAGIC + b"fake matplotlib panel")
+    monkeypatch.setattr(enprod, "run_suite", lambda *a, **k: ([panel], []))
+    assert cli.main(["enprod", str(_bare_ensemble(tmp_path)), "--field", "refl",
+                     "--products", "mean", "--out", str(out),
+                     "--engine", "matplotlib"]) == 0
+    summary = render_receipts.read_summary(out)
+    assert summary is not None
+    assert summary["rendered_png_count"] == 1
+    assert [row["name"] for row in summary["rendered_families"]] == ["refl-ens-mean"]
+
+
+def test_the_matplotlib_route_reports_itself_as_a_workaround(tmp_path, monkeypatch, capsys):
+    out = tmp_path / "png"
+    monkeypatch.setattr(enprod, "run_suite", lambda *a, **k: ([], []))
+    cli.main(["enprod", str(_bare_ensemble(tmp_path)), "--field", "refl",
+              "--products", "mean", "--out", str(out),
+              "--engine", "matplotlib"])
+    err = capsys.readouterr().err
+    assert "WORKAROUND:" in err
+    assert "rw_ensbatch" in err
+
+
+def test_auto_with_no_engine_refuses_before_a_member_is_read(tmp_path, monkeypatch, capsys):
+    from gpuwm import rustwx_lanes
+
+    monkeypatch.setattr(rustwx_lanes, "find_ensemble_bin", lambda: None)
+    monkeypatch.setattr(enprod, "run_suite",
+                        lambda *a, **k: pytest.fail("a member was read"))
+    rc = cli.main(["enprod", str(_bare_ensemble(tmp_path)), "--field", "refl",
+                   "--products", "mean", "--out", str(tmp_path / "png"),
+                   "--engine", "auto"])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "enprod: refused:" in err
+    assert "rw_ensbatch" in err and "--engine matplotlib" in err
+
+
+def test_the_module_docstring_states_the_engine_contract_the_code_has(
+        monkeypatch):
+    """The module docstring is a door: it is read before the code is.
+
+    It described three behaviours this release removed -- that ``auto``
+    degrades to the matplotlib suite and reports the degradation by
+    name, and that ``--domain`` and ``--dpi`` bring a caller here on
+    purpose because the rust route refuses or warns about them.  All
+    three are gone from the code, so each sentence is pinned to the
+    function that answers it and the retired ones are pinned absent.
+    """
+
+    from gpuwm import rustwx_lanes
+
+    doc = inspect.getdoc(enprod) or ""
+    # auto answers rust or a refusal; nothing degrades to this suite.
+    monkeypatch.setattr(rustwx_lanes, "find_ensemble_bin", lambda: None)
+    with pytest.raises(RuntimeError) as refusal:
+        rustwx_lanes.resolve_ensemble_engine("auto")
+    assert "--engine matplotlib" in str(refusal.value)
+    assert "resolve_lane_engine" in doc
+    # the one way in says it is a workaround, every run.
+    assert "ensemble_workaround_notice" in doc
+    assert "WORKAROUND:" in rustwx_lanes.ensemble_workaround_notice()
+    # --dpi is the same picture on both routes, from the stated anchor.
+    assert enprod.panel_pixels(300.0) == (2400, 1800)
+    assert "1200x900" in doc and "--dpi 150" in doc
+    # --domain is the nest choice the engine is given.
+    assert "--domain dNN" in doc
+    assert enprod.domain_choice_problem is not None
+    for retired in ("degrade", "bring a caller here",
+                    "refused or warned about"):
+        assert retired not in doc, retired
+
+
+def test_the_field_vocabulary_is_the_engines(tmp_path, monkeypatch):
+    """A threshold kept in two places meant 30 degC here and 303 K there."""
+    from gpuwm import rustwx_lanes
+
+    monkeypatch.setattr(
+        rustwx_lanes, "list_ensemble_fields",
+        lambda engine: {"t2": {"title": "2 m temperature", "units": "K",
+                               "default_threshold": 303.0, "unit_slug": "k"}})
+    seen: dict = {}
+    _staged_engine(monkeypatch, seen, products=("prob",))
+    rc = cli.main(["enprod", str(_bare_ensemble(tmp_path)), "--field", "t2",
+                   "--products", "prob", "--out", str(tmp_path / "png"),
+                   "--engine", "rust"])
+    assert rc == 0
+    assert seen["threshold"] == 303.0
+    delivered = render_layout.iter_rendered(tmp_path / "png")
+    assert any("p303k" in path.name for path in delivered), \
+        [path.name for path in delivered]
+
+
+def test_a_field_the_engine_knows_is_not_refused_at_argument_check(
+        tmp_path, monkeypatch):
+    """The vocabulary is the engine's, so it may be wider than this module's."""
+    from gpuwm import rustwx_lanes
+
+    monkeypatch.setattr(
+        rustwx_lanes, "list_ensemble_fields",
+        lambda engine: {"refl": {"title": "composite reflectivity",
+                                 "units": "dBZ", "default_threshold": 40.0,
+                                 "unit_slug": "dbz"},
+                        "hail": {"title": "maximum hail diameter",
+                                 "units": "mm", "default_threshold": 25.0,
+                                 "unit_slug": "mm"}})
+    seen: dict = {}
+    _staged_engine(monkeypatch, seen)
+    rc = cli.main(["enprod", str(_bare_ensemble(tmp_path)), "--field", "hail",
+                   "--products", "mean", "--out", str(tmp_path / "png"),
+                   "--engine", "rust"])
+    assert rc == 0
+    assert seen["field"] == "hail"
+
+
+def test_an_unknown_field_names_the_breakage_and_the_way_out(tmp_path, capsys):
+    rc = cli.main(["enprod", str(_bare_ensemble(tmp_path)),
+                   "--field", "not_a_field", "--products", "mean",
+                   "--out", str(tmp_path / "png"), "--engine", "matplotlib"])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "--list-fields" in err
+
+
+def test_the_fallback_refuses_a_field_only_the_engine_can_draw(
+        tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(enprod, "FIELDS", dict(enprod.FIELDS))
+    enprod.FIELDS["hail"] = enprod.FieldSpec(
+        name="hail", title="maximum hail diameter", units="mm",
+        unit_slug="mm", default_threshold=25.0, extract=None)
+    rc = cli.main(["enprod", str(_bare_ensemble(tmp_path)), "--field", "hail",
+                   "--products", "mean", "--out", str(tmp_path / "png"),
+                   "--engine", "matplotlib"])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "cannot draw hail" in err and "--engine rust" in err
+
+
+def test_the_engine_vocabulary_reader_parses_its_own_row_grammar(monkeypatch):
+    from gpuwm import rustwx_lanes
+
+    class Result:
+        returncode = 0
+        stdout = ("FIELD\tt2\t2 m temperature\tK\tdefault_threshold=303\t"
+                  "unit_slug=k\nPRODUCTS\tmean\tspread\n")
+        stderr = ""
+
+    monkeypatch.setattr(rustwx_lanes.subprocess, "run", lambda *a, **k: Result())
+    rows = rustwx_lanes.list_ensemble_fields(Path("rw_ensbatch"))
+    assert rows == {"t2": {"title": "2 m temperature", "units": "K",
+                           "default_threshold": 303.0, "unit_slug": "k"}}
+
+
+def test_two_panels_of_one_product_do_not_collide_on_one_delivered_name(
+        tmp_path, monkeypatch):
+    """Two forecasts and one file is the overwrite the claims map prevents."""
+    from gpuwm import rustwx_lanes
+
+    out = tmp_path / "png"
+
+    def fake_ensemble(engine, manifest, *, store_root, out_dir, **kwargs):
+        paths, rendered = [], []
+        for index in (0, 1):
+            panel = Path(out_dir) / f"frame{index}" / "arwen_ens_mean.png"
+            panel.parent.mkdir(parents=True, exist_ok=True)
+            panel.write_bytes(_PNG_MAGIC + str(index).encode())
+            paths.append(panel)
+            rendered.append(("mean", panel))
+        return paths, [], [], {"rendered": rendered}
+
+    monkeypatch.setattr(rustwx_lanes, "find_ensemble_bin",
+                        lambda: Path("rw_ensbatch"))
+    monkeypatch.setattr(rustwx_lanes, "probe_ensemble_bin",
+                        lambda path: (True, "ok"))
+    monkeypatch.setattr(rustwx_lanes, "run_ensemble_renderer", fake_ensemble)
+    assert cli.main(["enprod", str(_bare_ensemble(tmp_path)), "--field", "refl",
+                     "--products", "mean", "--out", str(out),
+                     "--engine", "rust"]) == 0
+    delivered = render_layout.iter_rendered(out)
+    assert len(delivered) == 2
+    assert len({path.name for path in delivered}) == 2

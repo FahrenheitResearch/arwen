@@ -353,7 +353,7 @@ def main() -> None:
 
     # THE WINDOW CLOCK.  Under the deferred seam a sweep returns with its
     # tail still in flight, so a per-step perf_counter is ISSUE time, not
-    # wall time -- that is the lever, not an accounting error.  The honest
+    # wall time -- that is the lever, not an accounting error.  The accurate
     # end-to-end number is the drained window: drain, clock, run every
     # timed step, drain, clock.  Reported beside the per-step rows in both
     # modes so on/off pairs compare like for like.

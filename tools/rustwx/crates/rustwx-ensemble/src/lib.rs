@@ -226,7 +226,7 @@ impl MemberStack {
 ///
 /// A masked reduction that does not publish its denominator is exactly the
 /// thing the propagate-NaN policy was right to refuse; publishing it is
-/// what makes masking honest.
+/// what makes masking accurate.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MissingnessReport {
     pub policy: &'static str,

@@ -170,3 +170,70 @@ def test_legacy_receipt_cannot_claim_an_image_outside_the_render_tree(tmp_path):
     path.write_text(json.dumps(first))
     with pytest.raises(ValueError, match="inside its output directory"):
         receipts.merge_recorded_summary(root, summary)
+
+
+def test_a_delivery_outside_the_nested_layout_is_reported_as_broken(tmp_path):
+    """A picture flat at the root did not reach the layout it claims."""
+    flat = tmp_path / "arwen_wrf_19740403_18z_f000_d01-1km_composite_reflectivity.png"
+    flat.write_bytes(b"owned renderer-result metadata fixture flat")
+    summary = receipts.deliver(root=tmp_path, engine="rust",
+                               requested_spec="composite_reflectivity",
+                               written=[flat], failures=[], skipped=[],
+                               layout="nested")
+    assert summary["rendered_png_count"] == 0
+    assert summary["failure_count"] == 1
+    assert flat.name in summary["failures"][0]
+
+
+def test_the_same_delivery_is_one_clean_row_under_the_flat_layout(tmp_path):
+    flat = tmp_path / "arwen_wrf_19740403_18z_f000_d01-1km_composite_reflectivity.png"
+    flat.write_bytes(b"owned renderer-result metadata fixture flat")
+    summary = receipts.deliver(root=tmp_path, engine="rust",
+                               requested_spec="composite_reflectivity",
+                               written=[flat], failures=[], skipped=[],
+                               layout="flat")
+    assert summary["rendered_png_count"] == 1 and summary["failure_count"] == 0
+    assert summary["rendered_families"] == [{"name": "composite_reflectivity", "count": 1}]
+
+
+def test_a_lane_names_its_own_product_instead_of_unclassified(tmp_path):
+    """An ensemble panel's filename is not the wrfout engine's grammar."""
+    panel = tmp_path / "d02-3km" / "refl-ens-mean" / "1974-04-03" / "refl-ens-mean_d02-3km_1974-04-03_18-00-00.png"
+    panel.parent.mkdir(parents=True, exist_ok=True)
+    panel.write_bytes(b"owned renderer-result metadata fixture ensemble")
+    summary = receipts.deliver(root=tmp_path, engine="rust", requested_spec="refl:mean",
+                               written=[panel], failures=[], skipped=[], layout="nested",
+                               families={str(panel): "refl-ens-mean"})
+    assert summary["rendered_png_count"] == 1
+    assert summary["rendered_families"] == [{"name": "refl-ens-mean", "count": 1}]
+
+
+def test_a_frame_that_reached_the_reader_by_a_lesser_route_is_recorded(tmp_path):
+    """The layout degradation used to exist only on stderr."""
+    image = _png(tmp_path, "temperature", "one")
+    summary = receipts.publish_invocation(
+        root=tmp_path, engine="rust", requested_spec="2m_temperature",
+        written=[image], failures=[], skipped=[], layout="nested",
+        degraded=[(tmp_path / "left.png", "left flat, could not move into layout")])
+    assert summary["degraded_count"] == 1
+    assert summary["degraded"][0]["reason"].startswith("left flat")
+    assert receipts.read_summary(tmp_path)["degraded_count"] == 1
+
+
+def test_the_node_side_gallery_publishes_a_receipt(tmp_path):
+    """Every PNG-writing lane leaves a record, not only gpuwm render."""
+    from gpuwm import remote_native_plots
+
+    panels = []
+    for slug in ("composite_reflectivity", "2m_temperature"):
+        path = tmp_path / f"{slug}.png"
+        path.write_bytes(b"owned renderer-result metadata fixture " + slug.encode())
+        panels.append({"slug": slug, "path": str(path),
+                       "bytes": path.stat().st_size})
+    remote_native_plots._publish_receipt(
+        tmp_path, panels, [row["slug"] for row in panels])
+    summary = receipts.read_summary(tmp_path)
+    assert summary is not None
+    assert summary["rendered_png_count"] == 2
+    assert sorted(row["name"] for row in summary["rendered_families"]) == [
+        "2m_temperature", "composite_reflectivity"]

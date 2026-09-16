@@ -88,10 +88,27 @@ const DEFAULT_SOURCE_LABEL: &str = "ArWen";
 ///   `mesh:`/`meshdiff:` families, the polygon-mesh lane cut from an MPAS
 ///   history frame and its grid file with no regrid in between.
 ///
+/// The PRODUCT row carries a sixth field, `code`: a stable machine
+/// spelling of WHY the row has the status it has.  The detail column
+/// stays prose and stays byte-identical, because it is what a reader
+/// sees; a consumer that has to decide something matches the code.  A
+/// reader that matched on the prose was a table that stopped matching
+/// the moment the sentence was reworded, at which point the excluded
+/// slug was forwarded and the whole render failed.
+///
+/// `--list-products` with NO inputs additionally prints the fileless
+/// requirement pair: one `NEEDS` row per catalog slug naming the store
+/// selectors its recipe resolves, and the `PLANNED` set of store fields
+/// this build's wrfout import would write.  Together they answer "can
+/// this install draw that product?" before a single frame exists, which
+/// is the question a plan review asks and a store-aware listing cannot
+/// be asked until after the import.
+///
 /// Changing any of those is changing this contract, so the literal
 /// changes with it and every binary predating the change fails the
 /// handshake instead of quietly answering the old grammar.
-const ABI_MARKER: &str = "gpuwm-rw-wrfbatch-catalog-v1\tPRODUCT\tslug\tkind\tstatus\tdetail\tCATALOG\t\
+const ABI_MARKER: &str = "gpuwm-rw-wrfbatch-catalog-v1\tPRODUCT\tslug\tkind\tstatus\tdetail\tcode\tCATALOG\t\
+gpuwm-rw-wrfbatch-requirements-v1\tNEEDS\tslug\tselector\tPLANNED\tstore_field\t\
 gpuwm-rw-wrfbatch-events-v1\tRENDERED\tSKIPPED\tFAILED\t\
 gpuwm-rw-wrfbatch-vocabulary-v1\tgeneric\tvar:\txsec:\tmesh:\tmeshdiff:\tselectable_slugs";
 
@@ -238,9 +255,44 @@ meshdiff:<...> (need --mesh-grid FILE.nc; meshdiff also --mesh-reference)"
     );
     for slug in &slugs {
         // Deliberately NOT the `PRODUCT\t...` record the store-aware listing
-        // emits: that one is parsed by gpuwm/rustwx.py as five tab-separated
+        // emits: that one is parsed by gpuwm/rustwx.py as tab-separated
         // fields, and a same-prefixed two-field line is a trap.
         println!("  {slug}");
+    }
+    // The fileless half of availability: what each slug NEEDS, in the
+    // store's own selector vocabulary, and what this build's wrfout
+    // import is PLANNED to write.  Neither opens a file, so both can be
+    // asked at plan review -- before a wrfout exists, which is exactly
+    // when a preset is chosen and when the answer is still useful.
+    //
+    // The selector vocabulary is deliberate.  A row spelled in WRFOUT
+    // variable names would be an invented mapping: a wrf-core VarDef
+    // declares no input list at all, and its compute function opens the
+    // file and reads whatever it needs at run time.  Emitting guesses
+    // for a few hundred slugs is the correct-looking-wrong-mapping
+    // defect this tree has already paid for once.
+    for slug in &slugs {
+        let requirements = match rustwx_models::plot_recipe_store_requirements(slug) {
+            Ok(requirements) => requirements,
+            Err(_) => continue,
+        };
+        let keys: Vec<String> = requirements
+            .iter()
+            .map(|requirement| match requirement.selector {
+                Some(selector) => selector.key(),
+                // A requirement with no canonical selector cannot be
+                // resolved from ANY store, which is a fact worth
+                // printing rather than a row worth hiding.
+                None => format!("{}!no-canonical-selector", requirement.field_key),
+            })
+            .collect();
+        if keys.is_empty() {
+            continue;
+        }
+        println!("NEEDS\t{slug}\t{}", keys.join("\t"));
+    }
+    for field in crate::wrf_process::WrfProcessOptions::default().planned_store_fields() {
+        println!("PLANNED\t{field}");
     }
     // Not "total=": the store-aware listing already owns that word for its
     // own count of catalog ROWS (which includes rows no --products spelling
@@ -651,7 +703,7 @@ struct GridIdentity {
 /// Several inputs import into ONE store and render as one run, so a
 /// per-file token would be a lie on the shared output. Inputs that
 /// disagree therefore yield no token at all: the generic `native_grid`
-/// slug is honest about a mixed run in a way that `d02` would not be.
+/// slug is accurate about a mixed run in a way that `d02` would not be.
 fn grid_identity(inputs: &[PathBuf]) -> GridIdentity {
     let mut identity: Option<GridIdentity> = None;
     for path in inputs {
@@ -1363,7 +1415,7 @@ fn write_georef_manifest(
 /// `PRODUCT\t<slug>\t<kind>\t<status>\t<detail>`, then one CATALOG
 /// summary line.  Statuses: `renderable` (proven against the imported
 /// store), `missing-fields` (direct recipe whose required fields are
-/// not all stored), `blocked` (windowed compute reported an honest
+/// not all stored), `blocked` (windowed compute reported an accurate
 /// per-product blocker), and `excluded` (recipe cannot be realized by
 /// this lane, reason given).  Every decision routes through stored
 /// FIELD availability; there is no model-identity gate and no `gated`
@@ -1450,6 +1502,19 @@ fn heavy_recipe_exclusion_reason(slug: &str, heavy_imported: bool) -> String {
     }
 }
 
+/// The machine code for a family that renders only when it is named.
+///
+/// It is a CODE, not a status: the status vocabulary stays exactly
+/// {renderable, missing-fields, blocked, excluded}, because an
+/// availability row must justify itself with FIELDS and never with a
+/// policy word.  The opt-in state rides beside the field truth instead
+/// of replacing it.
+const OPT_IN_CODE: &str = "opt-in-ensemble-family";
+
+/// The one line of prose that goes with it.
+const OPT_IN_REASON: &str =
+    "ensemble/probabilistic family: never included by 'all', name the slug explicitly";
+
 fn list_products(
     store_root: &std::path::Path,
     model_slug: &str,
@@ -1476,18 +1541,28 @@ fn list_products(
     let store = StoreFieldSource::open(store_root, model_slug, run_slug, first_slot)
         .map_err(|err| err.to_string())?;
 
-    let mut rows: Vec<(String, &str, &str, String)> = Vec::new();
+    // (slug, kind, status, detail, code).  `detail` is the prose a
+    // reader sees and is never matched on; `code` is the stable machine
+    // spelling a consumer decides with, so a reworded reason cannot
+    // silently turn an excluded slug back into a forwarded one.
+    let mut rows: Vec<(String, &str, &str, String, &str)> = Vec::new();
 
     for spec in rustwx_products::spec::direct_product_specs() {
-        if rustwx_products::direct::direct_recipe_requires_explicit_opt_in(&spec.slug) {
-            continue;
-        }
+        // The ensemble/probabilistic families stay out of `all` -- that
+        // part of the filter is right and is untouched at
+        // planning.rs:44 and :59 -- but they are LISTED, with the status
+        // their stored fields justify and the opt-in state carried in
+        // the code column.  A slug a user is told to name explicitly and
+        // cannot discover is an unreachable capability.
+        let opt_in =
+            rustwx_products::direct::direct_recipe_requires_explicit_opt_in(&spec.slug);
         match rustwx_models::plot_recipe_store_requirements(&spec.slug) {
             Err(err) => rows.push((
                 spec.slug,
                 "direct",
                 "excluded",
                 format!("catalog spec has no plot recipe: {err}"),
+                if opt_in { OPT_IN_CODE } else { "no-plot-recipe" },
             )),
             Ok(requirements) => {
                 let missing: Vec<String> = requirements
@@ -1519,20 +1594,44 @@ fn list_products(
                         Some(selector) => format!("{} [fill: {}]", spec.title, selector.key()),
                         None => spec.title.clone(),
                     };
-                    rows.push((spec.slug, "direct", "renderable", detail));
+                    let detail = if opt_in {
+                        format!("{detail}; {OPT_IN_REASON}")
+                    } else {
+                        detail
+                    };
+                    rows.push((
+                        spec.slug,
+                        "direct",
+                        "renderable",
+                        detail,
+                        if opt_in { OPT_IN_CODE } else { "renderable" },
+                    ));
                 } else if !missing.is_empty() {
+                    let detail = format!("not stored: {}", missing.join(", "));
                     rows.push((
                         spec.slug,
                         "direct",
                         "missing-fields",
-                        format!("not stored: {}", missing.join(", ")),
+                        if opt_in {
+                            format!("{detail}; {OPT_IN_REASON}")
+                        } else {
+                            detail
+                        },
+                        if opt_in { OPT_IN_CODE } else { "missing-fields" },
                     ));
                 } else {
+                    let detail =
+                        "not offered by the shared render catalog for this store".to_string();
                     rows.push((
                         spec.slug,
                         "direct",
                         "excluded",
-                        "not offered by the shared render catalog for this store".to_string(),
+                        if opt_in {
+                            format!("{detail}; {OPT_IN_REASON}")
+                        } else {
+                            detail
+                        },
+                        if opt_in { OPT_IN_CODE } else { "not-offered-by-catalog" },
                     ));
                 }
             }
@@ -1542,13 +1641,28 @@ fn list_products(
     for entry in rustwx_products::derived::supported_derived_recipe_inventory() {
         let kind = if entry.heavy { "heavy" } else { "derived" };
         if renderable_slugs.contains(entry.slug) {
-            rows.push((entry.slug.to_string(), kind, "renderable", entry.title.to_string()));
+            rows.push((
+                entry.slug.to_string(),
+                kind,
+                "renderable",
+                entry.title.to_string(),
+                "renderable",
+            ));
         } else if entry.heavy {
+            // The candidate's per-row reason text rides in the branch's code column:
+            // the code says which class of gap this is, the reason names the grid
+            // the catalog looked for, what computes it and the route that does.
+            let code = if heavy_imported {
+                "heavy-grid-not-produced"
+            } else {
+                "heavy-not-imported"
+            };
             rows.push((
                 entry.slug.to_string(),
                 kind,
                 "excluded",
                 heavy_recipe_exclusion_reason(entry.slug, heavy_imported),
+                code,
             ));
         } else {
             rows.push((
@@ -1558,6 +1672,7 @@ fn list_products(
                 "not realized by the wrfout import lane (no matching \
                  wrf-core diagnostic is stored under this recipe slug)"
                     .to_string(),
+                "not-realized-by-import",
             ));
         }
     }
@@ -1567,6 +1682,7 @@ fn list_products(
             "derived",
             "excluded",
             entry.reason.to_string(),
+            "recipe-blocked",
         ));
     }
 
@@ -1590,6 +1706,7 @@ fn list_products(
                 "stored 2-D variable '{field}' [{}]",
                 product.units.as_deref().unwrap_or("unknown units")
             ),
+            "renderable",
         ));
     }
 
@@ -1603,13 +1720,24 @@ fn list_products(
             .map(|product| product.slug().to_string())
             .collect();
     if !windowed_ready {
-        let reason = if stored_slots.len() <= 1 {
-            "windowed accumulations need more than one stored whole-hour frame"
+        // The two window-axis exclusions are the rows a consumer HAS to
+        // act on -- it must skip those slugs rather than forward them --
+        // so they are the two codes with the longest reach.  The prose
+        // beside each is unchanged, byte for byte, because it is what
+        // the render door prints and what its tests read.
+        let (reason, code) = if stored_slots.len() <= 1 {
+            (
+                "windowed accumulations need more than one stored whole-hour frame",
+                "windowed-needs-whole-hour-frames",
+            )
         } else {
-            "exact-time ordinal axis; fixed-hour windows are undefined on it"
+            (
+                "exact-time ordinal axis; fixed-hour windows are undefined on it",
+                "windowed-ordinal-axis",
+            )
         };
         for slug in &windowed_slugs {
-            rows.push((slug.clone(), "windowed", "excluded", reason.to_string()));
+            rows.push((slug.clone(), "windowed", "excluded", reason.to_string(), code));
         }
     } else {
         match windowed_store::compute_windowed_products(
@@ -1628,27 +1756,40 @@ fn list_products(
                         "windowed",
                         "renderable",
                         grid.strategy.clone(),
+                        "renderable",
                     ));
                 }
                 for slug in &windowed_slugs {
                     if let Some(reason) = blocked.get(slug) {
-                        rows.push((slug.clone(), "windowed", "blocked", reason.clone()));
+                        rows.push((
+                            slug.clone(),
+                            "windowed",
+                            "blocked",
+                            reason.clone(),
+                            "windowed-blocked",
+                        ));
                     }
                 }
             }
             Err(err) => {
                 let reason = format!("windowed compute unavailable: {err}");
                 for slug in &windowed_slugs {
-                    rows.push((slug.clone(), "windowed", "excluded", reason.clone()));
+                    rows.push((
+                        slug.clone(),
+                        "windowed",
+                        "excluded",
+                        reason.clone(),
+                        "windowed-compute-unavailable",
+                    ));
                 }
             }
         }
     }
 
     let mut counts = std::collections::BTreeMap::<&str, usize>::new();
-    for (slug, kind, status, detail) in &rows {
+    for (slug, kind, status, detail, code) in &rows {
         *counts.entry(status).or_default() += 1;
-        println!("PRODUCT\t{slug}\t{kind}\t{status}\t{detail}");
+        println!("PRODUCT\t{slug}\t{kind}\t{status}\t{detail}\t{code}");
     }
     let summary = counts
         .iter()
@@ -2030,6 +2171,66 @@ mod tests {
     }
 
     #[test]
+    fn an_opt_in_family_is_selectable_by_name_and_still_outside_all() {
+        // The families a user is TOLD to name explicitly must be
+        // discoverable, or the instruction has no vocabulary behind it.
+        // They still stay out of the `all` expansion, which is the part
+        // of the old behaviour that was right.
+        let opt_in: Vec<String> = rustwx_products::spec::direct_product_specs()
+            .into_iter()
+            .map(|spec| spec.slug)
+            .filter(|slug| {
+                rustwx_products::direct::direct_recipe_requires_explicit_opt_in(slug)
+            })
+            .collect();
+        assert!(
+            !opt_in.is_empty(),
+            "no opt-in family exists to test the listing against"
+        );
+        let selectable = rusty_weather::render_all::known_product_slugs();
+        let expanded_by_all = rustwx_products::direct::store_direct_recipe_slugs();
+        for slug in &opt_in {
+            assert!(
+                selectable.contains(slug),
+                "{slug} cannot be discovered from the product vocabulary"
+            );
+            assert!(
+                !expanded_by_all.contains(slug),
+                "{slug} joined the 'all' expansion, which it must never do"
+            );
+        }
+    }
+
+    #[test]
+    fn the_abi_marker_pins_the_code_column_and_the_requirement_rows() {
+        // A build that answers the old grammar must fail the handshake
+        // rather than silently emit five fields where six are read.
+        assert!(ABI_MARKER.contains("\tdetail\tcode\t"), "{ABI_MARKER}");
+        assert!(ABI_MARKER.contains("requirements-v1\tNEEDS\t"), "{ABI_MARKER}");
+        assert!(ABI_MARKER.contains("\tPLANNED\tstore_field\t"), "{ABI_MARKER}");
+    }
+
+    #[test]
+    fn the_fileless_requirement_rows_need_no_store_and_no_file() {
+        // The pair that answers "can this install draw that?" before a
+        // wrfout exists: what a slug needs, and what the import writes.
+        let planned = crate::wrf_process::WrfProcessOptions::default().planned_store_fields();
+        assert!(!planned.is_empty(), "the import plans no store field at all");
+        let mut described = 0usize;
+        for slug in rusty_weather::render_all::known_product_slugs() {
+            if let Ok(requirements) = rustwx_models::plot_recipe_store_requirements(&slug) {
+                if requirements.iter().any(|row| row.selector.is_some()) {
+                    described += 1;
+                }
+            }
+        }
+        assert!(
+            described > 0,
+            "no catalog slug resolves a store selector without a file"
+        );
+    }
+
+    #[test]
     fn the_product_vocabulary_is_non_empty_and_deduplicated() {
         let slugs = rusty_weather::render_all::known_product_slugs();
         assert!(!slugs.is_empty(), "no product is selectable at all");
@@ -2086,7 +2287,7 @@ mod tests {
     }
 
     #[test]
-    fn the_slug_pairs_domain_with_resolution_and_degrades_honestly() {
+    fn the_slug_pairs_domain_with_resolution_and_degrades_accurately() {
         let full = GridIdentity {
             domain: Some("d02".to_string()),
             spacing_m: Some(3_000.0),
@@ -2101,7 +2302,7 @@ mod tests {
         };
         assert_eq!(native_domain_slug(&no_spacing).as_deref(), Some("d02"));
 
-        // Domain absent: no token at all -- `native_grid` is honest about
+        // Domain absent: no token at all -- `native_grid` is accurate about
         // an unidentified grid in a way that `d01` would not be.
         let no_domain = GridIdentity {
             domain: None,

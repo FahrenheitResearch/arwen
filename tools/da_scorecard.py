@@ -1,4 +1,4 @@
-"""Delayed-window multi-storm scorecard: many cases, one honest table.
+"""Delayed-window multi-storm scorecard: many cases, one accurate table.
 
 Every skill number WaH has published so far comes from one storm.  The
 caveat "N=1" sits on every claim, and wall clock is why: a live case
@@ -62,7 +62,7 @@ The site roster comes from ``rw_nexrad sites`` (the vendored table) or
 from ``--sites``.  No radar-site name belongs in this file, its
 defaults, or its identifiers (standing owner rule).
 
-HONESTY: the campaign receipt and the summary figure both carry the
+ACCURACY: the campaign receipt and the summary figure both carry the
 configuration hash, the case count, and the full selection criteria, so
 nobody can be accused of cherry-picking after the fact -- and both are
 labeled demo-grade, because every tool this drives is.
@@ -135,7 +135,7 @@ PREFILTER_MIN_DURATION_MINUTES = 90.0
 MIN_ECHO_GATES = 1500
 
 #: How many candidates (prefilter-ranked) pass 2 will census before
-#: stopping.  A cap on downloads, not on honesty: the receipt records
+#: stopping.  A cap on downloads, not on accuracy: the receipt records
 #: how many candidates existed and how many were censused, so a reader
 #: can see exactly where the survey stopped looking.
 CENSUS_LIMIT = 48

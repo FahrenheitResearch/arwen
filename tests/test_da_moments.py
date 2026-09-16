@@ -329,7 +329,7 @@ def test_mass_below_the_schemes_own_threshold_is_not_an_offender():
 
 
 def test_nssl_detects_offenders_and_refuses_rather_than_inventing_a_number():
-    """The second scheme, and the honest limit of what this tree can repair.
+    """The second scheme, and the accurate limit of what this tree can repair.
 
     NSSL sets number from mass through its own fixed intercepts in
     ``module_mp_nssl_2mom.F``.  That routine is not ported here, and a
@@ -449,7 +449,7 @@ def test_the_repair_refuses_a_nonfinite_moment_instead_of_bounding_it():
     ``repair_moments`` relies on the same report, so enabling the repair
     did not close the hole -- and the limiter's own bound,
     ``N = q * lam_min**3 / six_c``, is NaN for a NaN ``q`` and has
-    nothing to bound for a NaN ``N``.  A refusal is the only honest
+    nothing to bound for a NaN ``N``.  A refusal is the only accurate
     outcome, from the one scheme whose authority IS ported.
     """
 

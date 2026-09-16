@@ -323,7 +323,7 @@ detail opens with "not tested", never `ok`, never silence; the test pinning this
 names the two 2026-08-14 findings that produced the rule (tools printed `ok` on
 a box where the route using them died, and three render bridges were in no
 bundle at all while doctor printed a green estate)
-[tests/test_doctor_route_honesty.py].
+[tests/test_doctor_route_accuracy.py].
 
 `doctor --source` accepts every registered source id, the 31 rows of section
 5.1: the choice list is the source registry itself, and a registry route

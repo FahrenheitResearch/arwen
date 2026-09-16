@@ -13,6 +13,12 @@ import pytest
 import gpuwm.mapped_direct as mapped_direct
 from gpuwm.ingest.lateral_bc import start_last_forcing_order
 from gpuwm.ingest.source_coverage import PREPARATION_REFUSAL_EXIT_CODE
+from gpuwm.moisture_floor_receipt import (
+    MOISTURE_FLOOR_BY_DOMAIN_KEY,
+    MOISTURE_FLOOR_KEY,
+    MOISTURE_FLOOR_SCHEMA,
+    moisture_floor_proof_entries,
+)
 
 
 _START = datetime(2026, 7, 20)
@@ -586,6 +592,13 @@ def _install_prepare_fakes(
 
     monkeypatch.setattr(mapped_direct, "export_prepared_wrf", single_export)
 
+    # One stand-in initialization result per domain, carrying the floor
+    # field the real RealInitResult carries.  A test names a fired floor
+    # by writing this dict's receipt before it drives the preparation.
+    floor_results = {
+        f"d{int(domain.grid_id):02d}": SimpleNamespace(
+            surface_moisture_floor={})
+        for domain in exp.domains}
     hierarchy_result = SimpleNamespace(
         static_catalog_receipt={"status": "PASS"},
         source_coverage_receipt={"status": "PASS"},
@@ -600,11 +613,27 @@ def _install_prepare_fakes(
             artifacts=SimpleNamespace(receipt={"status": "PASS"}),
             wrf_manifest={"schema": "gpuwm-native-direct-wrf-hierarchy-export-v1"},
             timings_seconds={"initialize_children": 0.1},
+            # The per-domain initialization moisture-floor receipt the real
+            # NativeHierarchyExportResult carries, on the same rule as the
+            # corridor above: a double that omits what the proof writer
+            # reads is not the contract the route consumes.  Built by the
+            # SHIPPED builder from per-domain stand-in results rather than
+            # written out here, so a test that asks for a fired child floor
+            # gets the block shape the route really writes.
+            moisture_floor_receipts={},
         ),
     )
 
     def hierarchy(**kwargs):
         calls["hierarchy"].append(kwargs)
+        # Rebuilt at CALL time: a test sets a floor on one domain's
+        # stand-in result before it drives the preparation, the way the
+        # real children only get their floors during the export.
+        hierarchy_result.hierarchy.moisture_floor_receipts = (
+            moisture_floor_proof_entries(
+                tuple(floor_results.items()),
+                when_unrecorded=(
+                    "the mapped prepare double holds no ingest receipt")))
         return hierarchy_result
 
     monkeypatch.setattr(
@@ -636,6 +665,7 @@ def _install_prepare_fakes(
         soil=soil,
         bundle=bundle,
         static=static,
+        hierarchy_floor_results=floor_results,
     )
     return args, calls, expected
 
@@ -2008,3 +2038,91 @@ def test_declared_preparation_policy_reaches_root_and_children(monkeypatch, tmp_
         policy = routed["source_identity"]["preparation_case_policy"]
         assert policy["sfcp_to_sfcp"] is pressure
         assert policy["water_temperature_policy"] == "wrf_compat"
+
+
+# ---------------------------------------------------------------------
+# the prepared DOCUMENT states whether the initialization floored vapour
+# ---------------------------------------------------------------------
+
+
+#: A fired surface floor, in the ingest's own receipt shape: the count
+#: and the magnitude, which are what a reader has to have before the
+#: word "floored" is something anyone can act on.
+_FIRED_SURFACE_FLOOR = {
+    "policy": "flag-sh-surface-qv-floored-to-wrf-qv-min-value",
+    "floored_cells": 4,
+    "min_value": -3.1e-07,
+    "floor_value": 1e-06,
+}
+
+
+def _written_proof(args):
+    """The proof as a READER of the bundle gets it: off disk, through
+    json, not the mapping the route happened to return.
+
+    The defect this item closes is a receipt that reached memory and
+    stderr and stopped there, so asserting on the returned dict would
+    reproduce the defect inside the test.
+    """
+
+    returned = mapped_direct.prepare_mapped_wrf(**args)
+    written = json.loads(
+        (args["output_root"] / "proof.json").read_text(encoding="utf-8"))
+    assert written["schema"] == returned["schema"]
+    return written
+
+
+@pytest.mark.parametrize("floor, fired", [({}, False),
+                                          (_FIRED_SURFACE_FLOOR, True)])
+def test_a_single_domain_proof_states_the_floor_that_did_and_did_not_fire(
+        monkeypatch, tmp_path, floor, fired):
+    """BOTH ANSWERS ARE IN THE DOCUMENT, which is the whole point.
+
+    A fired floor carries its magnitudes so the modification can be
+    judged.  An unfired one is STATED rather than left out: an absent key
+    reads as "prepared before the receipt existed", which is a claim
+    about the release and not about this forecast, and no reader of the
+    bundle could tell the two apart.
+    """
+
+    args, _calls, expected = _install_prepare_fakes(
+        monkeypatch, tmp_path, domain_count=1, backend="cpu")
+    expected.results[0].surface_moisture_floor = floor
+
+    proof = _written_proof(args)
+
+    block = proof[MOISTURE_FLOOR_KEY]
+    assert block["schema"] == MOISTURE_FLOOR_SCHEMA
+    assert block["recorded"] is True
+    assert block["fired"] is fired
+    entry = block["floors"]["surface_moisture_floor"]
+    assert entry["fired"] is fired
+    assert entry.get("receipt", {}) == floor
+
+
+def test_a_hierarchy_proof_answers_for_the_parent_and_for_each_child(
+        monkeypatch, tmp_path):
+    """A NEST IS NOT ONE ANSWER.  Each domain runs its own
+    ``initialize_real``, so a root whose analyzed surface needed no floor
+    and a child whose blended terrain produced one are two facts about
+    one forecast; a tree-wide verdict would lose both.
+    """
+
+    args, _calls, expected = _install_prepare_fakes(
+        monkeypatch, tmp_path, domain_count=2, backend="cpu")
+    expected.hierarchy_floor_results["d02"].surface_moisture_floor = (
+        _FIRED_SURFACE_FLOOR)
+
+    proof = _written_proof(args)
+
+    blocks = proof[MOISTURE_FLOOR_BY_DOMAIN_KEY]
+    assert set(blocks) == {"d01", "d02"}
+    assert blocks["d01"]["fired"] is False
+    assert blocks["d01"]["floors"]["surface_moisture_floor"] == {
+        "fired": False}
+    assert blocks["d02"]["fired"] is True
+    assert blocks["d02"]["floors"]["surface_moisture_floor"] == {
+        "fired": True, "receipt": _FIRED_SURFACE_FLOOR}
+    # The single-domain key is NOT on a tree document: same name, two
+    # shapes is how a consumer starts throwing on half a bundle library.
+    assert MOISTURE_FLOOR_KEY not in proof

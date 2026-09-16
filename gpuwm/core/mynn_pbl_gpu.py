@@ -411,6 +411,17 @@ def _tripped(kernel, arrays, flags) -> bool:
     return any(_flag_mask(kernel, arrays, flags))
 
 
+def dmp_registers_per_thread() -> int:
+    """Registers per thread nvcc gave the DMP kernel on this card.
+
+    The occupancy term the column-chunk derivation assumes, read back from
+    the thing that was actually compiled so the receipt can state both.
+    Compiles the module if it is not compiled yet, so it is called from the
+    receipt (after a run) and never from the derivation (before one).
+    """
+    return int(get_kernel("mynn_pbl", "mynn_dmp_mf_columns").num_regs)
+
+
 def _scratch_for(scratch, ncol=None, nz: int = 1) -> MynnPblScratch:
     """The caller's workspace, or a self-owned one for oracle callers.
 

@@ -6,7 +6,7 @@
     {
       "id": "general",
       "label": "General",
-      "description": "25 everyday surface, precipitation, upper-air and storm-environment plots.",
+      "description": "24 everyday surface, precipitation, upper-air and storm-environment plots.",
       "products": [
         "composite_reflectivity",
         "1km_reflectivity",
@@ -20,7 +20,6 @@
         "qpf_1h",
         "precipitation_type",
         "cloud_cover",
-        "simulated_ir_satellite",
         "precipitable_water",
         "850mb_temperature_height_winds",
         "850mb_height_winds",
@@ -93,7 +92,6 @@
         "200mb_height_winds",
         "bulk_shear_0_6km",
         "sbcape",
-        "simulated_ir_satellite",
         "cloud_cover"
       ]
     },

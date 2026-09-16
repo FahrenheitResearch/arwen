@@ -9,7 +9,8 @@ composition validation and the WRF-real initializer.
 from __future__ import annotations
 
 import math
-from typing import Mapping
+from dataclasses import dataclass
+from typing import Callable, Mapping
 
 import numpy as np
 
@@ -1105,21 +1106,13 @@ def validate_soil_layer_contract(
             raise ValueError(
                 "linear soil remap requires exactly top_anchor and bottom_anchor"
             )
-        if remap["source_value_location"] == "layer_bottom":
+        # Any sample location the one sampler has a rule for is admitted;
+        # the refusal is for a location nothing can sample, and it names
+        # the rows that exist.
+        linear_sample_rule(remap["source_value_location"])
+        if remap["target_value_location"] != "layer_midpoint":
             raise ValueError(
-                "source_value_location='layer_bottom' is not supported: "
-                "WRF places layer-form soil values at the INTEGER-"
-                "centimetre layer midpoints (module_optional_input.F:"
-                "char2int2, (top+bottom)/2 in whole cm), which is what "
-                "linear_point_samples executes; declare "
-                "'wrf_integer_cm_layer_midpoint', or add genuine "
-                "layer-bottom support before declaring it"
-            )
-        if remap["source_value_location"] != "wrf_integer_cm_layer_midpoint" \
-                or remap["target_value_location"] != "layer_midpoint":
-            raise ValueError(
-                "linear soil remap requires wrf-integer-cm-layer-midpoint "
-                "source values and layer-midpoint target values"
+                "linear soil remap requires layer-midpoint target values"
             )
         anchors = []
         expected_anchors = (
@@ -1143,9 +1136,32 @@ def validate_soil_layer_contract(
                     "surface/deep boundary contract"
                 )
             anchors.append(depth)
-        source_points = (anchors[0], *(bottom for _top, bottom in source), anchors[1])
-        if any(later <= earlier for earlier, later in zip(source_points, source_points[1:])):
-            raise ValueError("linear soil remap sample depths are not strictly ordered")
+        # The depths that are actually interpolated, from the one function
+        # the remap itself calls.  Validating the layer bottoms here while
+        # the remap sampled somewhere else is what let a colliding contract
+        # through.
+        plan = linear_sample_plan(contract)
+        source_points = plan.depths
+        labels = plan.labels
+        collisions = [
+            index
+            for index, (earlier, later) in enumerate(
+                zip(source_points, source_points[1:]))
+            if later <= earlier
+        ]
+        if collisions:
+            index = collisions[0]
+            raise ValueError(
+                f"linear soil remap sample depths {source_points!r} are not "
+                f"strictly ordered: {labels[index]} samples "
+                f"{source_points[index]} m and {labels[index + 1]} samples "
+                f"{source_points[index + 1]} m under "
+                f"source_value_location={remap['source_value_location']!r}. "
+                "Two samples at one depth give the interpolation a zero "
+                "denominator, so the remap would divide by zero or shift the "
+                "whole column; separate the layers, or declare the location "
+                "their values are really stated at"
+            )
         target_points = tuple((top + bottom) / 2.0 for top, bottom in target)
         if target_points[0] < source_points[0] or target_points[-1] > source_points[-1]:
             raise ValueError("linear soil remap does not cover every target midpoint")
@@ -1458,6 +1474,178 @@ def soil_source_sample_count(contract: Mapping[str, object]) -> int:
     return len(contract["source_layers"])
 
 
+#: Where a layer-form soil source's values actually sit, one row per
+#: ``source_value_location`` the ``linear_point_samples`` remap can sample.
+#: Adding a dataset whose values sit somewhere else is a row here plus a
+#: line in a composition document, never a new interpolation arm.
+#:
+#: Declaring the wrong row silently shifts the whole column, and most
+#: layer-form sources genuinely are WRF-convention midpoint sources: WRF
+#: places layer-form soil values at the INTEGER-centimetre layer midpoints
+#: (module_optional_input.F:char2int2, (top+bottom)/2 in whole cm).  Declare
+#: the location the dataset's own documentation states, not the one that
+#: looks tidiest.
+@dataclass(frozen=True)
+class _SampleLocation:
+    """One row of the sampler's table.
+
+    ``states_declared_face`` says whether the depth this row returns is a
+    boundary the source layer itself declares (a face), or a location
+    DERIVED from those bounds.  A face landing exactly on a bracketing
+    anchor is the source stating that boundary's value itself; a derived
+    location landing there is a coincidence of the derivation, and the two
+    want opposite answers (see :func:`linear_sample_plan`).
+    """
+
+    basis: str
+    sample: Callable[[float, float], float]
+    states_declared_face: bool
+
+
+_LINEAR_SAMPLE_LOCATIONS: Mapping[str, _SampleLocation] = {
+    "wrf_integer_cm_layer_midpoint": _SampleLocation(
+        basis="WRF's own layer-form convention: the integer-centimetre "
+              "layer midpoint, (top+bottom)/2 rounded in whole cm "
+              "(module_optional_input.F:char2int2)",
+        sample=lambda top, bottom: (
+            (int(round(top * 100.0)) + int(round(bottom * 100.0))) // 2
+        ) / 100.0,
+        states_declared_face=False,
+    ),
+    "layer_bottom": _SampleLocation(
+        basis="the layer's bottom face, for a source whose values are "
+              "stated at the deeper boundary of each layer",
+        sample=lambda _top, bottom: float(bottom),
+        states_declared_face=True,
+    ),
+    "layer_top": _SampleLocation(
+        basis="the layer's top face, for a source whose values are stated "
+              "at the shallower boundary of each layer",
+        sample=lambda top, _bottom: float(top),
+        states_declared_face=True,
+    ),
+}
+
+
+def linear_sample_rule(location: object) -> _SampleLocation:
+    """The sampling rule for one declared ``source_value_location``.
+
+    Refuses a location nothing here can sample, naming it and listing the
+    rows that exist.
+    """
+
+    key = location if isinstance(location, str) else None
+    rule = _LINEAR_SAMPLE_LOCATIONS.get(key) if key is not None else None
+    if rule is None:
+        known = ", ".join(
+            f"{name!r} ({row.basis})"
+            for name, row in _LINEAR_SAMPLE_LOCATIONS.items()
+        )
+        raise ValueError(
+            f"soil remap source_value_location={location!r} has no sampling "
+            f"rule, so this contract does not say where its values sit. "
+            f"linear_point_samples samples a layer source at: {known}. "
+            "Declare the one this dataset's values are stated at, or add its "
+            "row to _LINEAR_SAMPLE_LOCATIONS"
+        )
+    return rule
+
+
+@dataclass(frozen=True)
+class LinearSamplePlan:
+    """The nodes a ``linear_point_samples`` remap interpolates between.
+
+    ``depths`` are those nodes in order and ``labels`` names each one for a
+    refusal.  ``top_anchor``/``bottom_anchor`` say whether the surface and
+    deep anchor values are nodes at all, which is what the remap needs to
+    stack the same values the validator checked.
+    """
+
+    depths: tuple[float, ...]
+    labels: tuple[str, ...]
+    top_anchor: bool
+    bottom_anchor: bool
+
+
+def _same_depth(left: float, right: float) -> bool:
+    """One nanometre apart is one depth; declared bounds are never closer."""
+
+    return math.isclose(left, right, rel_tol=0.0, abs_tol=1e-9)
+
+
+def linear_sample_plan(
+    contract: Mapping[str, object],
+) -> LinearSamplePlan:
+    """The nodes a ``linear_point_samples`` source's values actually sit at.
+
+    ONE function, both doors: :func:`validate_soil_layer_contract` checks
+    ordering and coverage on these nodes, and
+    ``gpuwm.ingest.soil._remap_declared_soil`` interpolates on them and
+    stacks its values to match.  They were two separate expressions before,
+    so a contract whose sample depths collided (two layers inside one
+    centimetre, or a first layer whose integer midpoint rounds onto the 0 m
+    skin anchor) passed validation on its layer bottoms and then divided by
+    zero between two identical nodes.
+
+    The nodes are bracketed by the contract's own top and bottom anchor
+    depths, because those are the surface and deep boundary values the
+    interpolation runs between -- UNLESS the source states its own value at
+    that exact depth.  A source declaring ``layer_top`` whose shallowest
+    layer starts at 0.0 m states the surface value itself; so does a
+    ``layer_bottom`` source whose deepest layer ends at the deep anchor.
+    The anchor there would be a second value at one depth, which is why
+    that shape used to be refused as a collision with no way out.  The
+    source's own value wins and the redundant anchor is not a node.
+
+    This applies only to a row that samples a face the source DECLARES
+    (``_SampleLocation.states_declared_face``).  A derived location that
+    lands on an anchor -- an integer-centimetre midpoint rounding down onto
+    0 m -- is not the source stating a surface value, it is the derivation
+    collapsing, and that stays a refusal.
+    """
+
+    remap = contract.get("remap")
+    if not isinstance(remap, Mapping):
+        raise TypeError("composition.soil_layers.remap must be an object")
+    rule = linear_sample_rule(remap.get("source_value_location"))
+    anchors: list[float] = []
+    for name in ("top_anchor", "bottom_anchor"):
+        anchor = remap.get(name)
+        if not isinstance(anchor, Mapping) or "depth" not in anchor:
+            raise ValueError(
+                f"linear soil remap requires a {name} carrying a depth: it is "
+                "the boundary value the interpolation is bracketed by"
+            )
+        anchors.append(_number(anchor["depth"], f"soil remap {name}.depth"))
+    source = soil_layer_bounds(contract, "source_layers")
+    samples = tuple(rule.sample(top, bottom) for top, bottom in source)
+    stated = rule.states_declared_face and bool(samples)
+    top_anchor = not (stated and _same_depth(samples[0], anchors[0]))
+    bottom_anchor = not (stated and _same_depth(samples[-1], anchors[1]))
+    depths = (
+        *((anchors[0],) if top_anchor else ()),
+        *samples,
+        *((anchors[1],) if bottom_anchor else ()),
+    )
+    labels = (
+        *(("the top anchor",) if top_anchor else ()),
+        *(f"source layer {index + 1}" for index in range(len(samples))),
+        *(("the bottom anchor",) if bottom_anchor else ()),
+    )
+    return LinearSamplePlan(
+        depths=depths, labels=labels,
+        top_anchor=top_anchor, bottom_anchor=bottom_anchor,
+    )
+
+
+def linear_source_sample_depths(
+    contract: Mapping[str, object],
+) -> tuple[float, ...]:
+    """Just the node depths of :func:`linear_sample_plan`."""
+
+    return linear_sample_plan(contract).depths
+
+
 def conservative_overlap_weights(
     source: tuple[tuple[float, float], ...],
     target: tuple[tuple[float, float], ...],
@@ -1488,6 +1676,8 @@ __all__ = [
     "NOAH_LAYER_BOUNDS_M", "NOAH_TARGET_SOIL_LAYERS",
     "RUC_TARGET_LEVEL_DEPTHS_M",
     "conservative_overlap_weights",
+    "LinearSamplePlan", "linear_sample_plan",
+    "linear_sample_rule", "linear_source_sample_depths",
     "soil_layer_bounds", "soil_node_depths", "soil_source_sample_count",
     "RUC_REMAP_POLICIES", "ruc_soil_remap_policy",
     "validate_ruc_soil_node_source", "validate_soil_layer_contract",

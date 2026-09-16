@@ -159,7 +159,7 @@ def test_a_nan_gate_is_never_clear_air():
         contribution.counts.gates_considered
     assert contribution.counts.gates_below_floor == 0
 
-    # And the guard is load-bearing rather than incidental: ``NaN >= floor``
+    # And the guard is essential rather than incidental: ``NaN >= floor``
     # is False, so a NaN gate satisfies the below-floor predicate.  Only the
     # finite filter upstream keeps it out of the clear-air count.
     assert not (np.float32(np.nan) >= params.min_reflectivity_dbz)

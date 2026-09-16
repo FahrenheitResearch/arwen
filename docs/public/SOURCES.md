@@ -21,6 +21,7 @@ List the whole registry with `gpuwm prep --list-sources`, or one row with
 | `hrrr` | -- | 1 h | f048 | 1799x1059 Lambert at 3 km (CONUS) |
 | `hrrr-prs` | `hrrr-pressure`, `hrrr-wrfprs` | 1 h | f048 | 1799x1059 Lambert at 3 km (CONUS) |
 | `gem-gdps` | `gem`, `gdps`, `gem-global` | 3 h | f240 | global |
+| `icon-global` | `icon`, `icon-13km`, `dwd-icon`, `dwd-icon-global` | 3 h | f180 (00/12Z), f120 (06/18Z) | global, 2,949,120-cell icosahedral mesh at nominally 13 km |
 | `icon-eu` | `dwd-icon-eu`, `icon-eu-regular` | 1 h | f120 | lat 29.5..70.5, lon -23.5..62.5 |
 | `gfs` | `gfs-0p25`, `gfs-0.25` | 3 h | f384 | global |
 | `gdas` | `gdas-0p25`, `gdas-0.25` | 1 h | f009 | global |

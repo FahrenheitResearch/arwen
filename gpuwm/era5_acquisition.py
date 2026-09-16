@@ -36,11 +36,13 @@ def _client(progress):
         return cdsapi.Client(quiet=True, debug=False, progress=False,
             info_callback=information, warning_callback=_silent,
             error_callback=_silent, debug_callback=_silent)
-    except Exception:
-        raise ValueError(
-            "Cannot initialize the CDS client. Configure the standard ~/.cdsapirc "
-            "or CDSAPI_URL/CDSAPI_KEY (CDSAPI_RC can select a credential file), "
-            "using the current CDS personal access token. No credentials were logged.") from None
+    except Exception as error:
+        # The sentence carries the client's own error (key values masked),
+        # the file it looked for and whether that file exists, the source
+        # it would use and the way out for that case.  One fixed sentence
+        # here left a user who had entered a key being told to enter a key.
+        from gpuwm.cds_credentials import client_refusal
+        raise ValueError(client_refusal(error)) from None
 
 
 def _validate(path, *, times, area):
@@ -204,14 +206,11 @@ def retrieve_era5(*, cycle: datetime | str, hours: int, area,
                         monitor.start(part.name, path=part, expected_bytes=expected)
                         publish("downloading")
                         result.download(str(part))
-                    except Exception:
+                    except Exception as error:
                         monitor.finish(part.name, failed=True)
                         publish("failed")
-                        raise ValueError(
-                            "ERA5 retrieval failed at CDS. Check the configured token, "
-                            "accept both ERA5 dataset licences in the CDS website, and check "
-                            "network/CDS service availability. No input file was published; "
-                            "raw client errors and credentials were not logged.") from None
+                        from gpuwm.cds_credentials import retrieval_refusal
+                        raise ValueError(retrieval_refusal(error)) from None
                     if not part.is_file() or part.stat().st_size == 0:
                         raise ValueError("CDS returned no ERA5 data file; nothing was published")
                     parts.append(part)

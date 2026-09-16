@@ -16,11 +16,29 @@ patch, so the seam was re-derived from the live sources.
 CONTRACTS HELD HERE (the operator package holds the arithmetic ones):
 
 - absent/off pays one ``is None`` test in the loop and reads no state;
-- a streamed domain refuses an active mode at attach: its ``node.state``
-  is the t=0 attach snapshot, the forecast lives in the pinned host store,
-  so the complete target planes are NOT resident at the hook seam -- shadow
-  would receipt the initial condition under later timestamps and apply
-  would mutate planes the sweep never reads back;
+- a streamed domain refuses an active mode: its ``node.state`` is the t=0
+  attach snapshot, the forecast lives in the pinned host store, so the
+  complete target planes are NOT resident at the hook seam -- shadow would
+  receipt the initial condition under later timestamps and apply would
+  mutate planes the sweep never reads back.  The sentence lives in ONE
+  place, :func:`streamed_spectral_refusal`.  ONE door reads it today, and
+  it is a late one: :meth:`SpectralSeam.validate_domain` raises it at
+  attach.  :func:`refuse_streamed_spectral_numerics` answers the same
+  question from the configuration alone, out of that same sentence, but
+  NO caller invokes it -- not in this module, not anywhere in the tree --
+  so plan review carries no refusal for this combination and attach is
+  the only door standing.  The three call sites that would change that
+  are outside this lane's boundary and are handed back, with their exact
+  lines, on the strict xfail in ``tests/test_spectral_seam.py``
+  (``test_plan_review_carries_the_streamed_spectral_sentence``):
+  ``_streaming_refusal`` in ``gpuwm/runplan.py``, the shared config-load
+  door in ``gpuwm/experiment.py``, and ``gpuwm check`` in
+  ``gpuwm/core/preflight.py``.  One residue stays genuinely late even
+  after those land, and is not hoistable: a spawn-born nest joins after
+  the plan is reviewed, and under ``[tiles] mode = "auto"`` its
+  streamed-ness is the planner's run-time answer, so that domain is
+  validated at its first committed step (:meth:`after_step`) with the
+  same sentence;
 - a periodic declaration must be true of the domain: ``periodic_domain``
   (and the ``periodic`` boundary) refuse on any domain with open,
   specified or nested lateral boundaries;
@@ -57,6 +75,89 @@ def _domain_is_periodic(run_cfg) -> tuple[bool, str]:
     return (not reasons, ", ".join(reasons))
 
 
+def streamed_spectral_refusal(config, grid_id: int) -> str:
+    """The one sentence a streamed domain under an active mode gets.
+
+    Written once and read by both doors, so the configuration-only refusal
+    and the attach-time backstop can never say different things about one
+    configuration.  It names the concrete breakage (the planes the operator
+    would touch are not the planes the forecast is in) and the two ways
+    out (run the domain resident, or turn the operator off).
+    """
+    return (
+        f"[spectral_numerics] mode = {getattr(config, 'mode', 'off')!r} on "
+        f"streamed domain d{int(grid_id):02d} is refused: a "
+        "streamed domain's node.state is the t=0 attach snapshot "
+        "(the forecast lives in the pinned host store), so the "
+        "complete target planes are not resident at the hook "
+        "seam.  Shadow would write receipts about the initial "
+        "condition under forecast timestamps; apply would mutate "
+        "planes the tile sweep never reads back.  Run this "
+        "domain resident, or set mode = \"off\".")
+
+
+def _declared_streamed_grid_ids(exp) -> tuple[int, ...]:
+    """Grids the configuration ALONE says will stream, in tree order.
+
+    ``mode = "on"`` is a declaration: that domain streams, and the answer
+    is legible in the TOML.  ``mode = "auto"`` is a question the planner
+    answers against the machine at run time, so a domain on auto is NOT
+    listed here: refusing it from the configuration would refuse a tree
+    the planner would have run resident, and a road nobody has priced yet
+    is not the same thing as a road that cannot exist.
+
+    ORDER, because a refusal names one domain out of the set.  This is
+    the experiment's own domain order, which the loader has already put
+    parent before child (``gpuwm/experiment.py`` ``_parent_before_child``,
+    the reordering it warns about rather than refusing), so the id this
+    answers first is an ancestor of, or a peer declared ahead of, every
+    other id it lists -- the direction
+    :meth:`gpuwm.core.model.Model.walk_parent_first` takes at attach.
+    Sorting by grid id instead would name the lowest id, which on a tree
+    whose ids do not ascend in declaration order is a different domain
+    from the one the attach door names for that same configuration.
+    """
+    from gpuwm.core.streaming import options_for_domain
+
+    tree = getattr(exp, "tiles", None)
+    return tuple(
+        int(dc.grid_id) for dc in (getattr(exp, "domains", ()) or ())
+        if options_for_domain(dc, tree).mode == "on")
+
+
+def refuse_streamed_spectral_numerics(exp, streamed_grid_ids=None) -> None:
+    """Refuse [spectral_numerics] x a streamed domain from the config alone.
+
+    NO CALLER INVOKES THIS YET.  Both halves of the combination are
+    legible in the experiment TOML, so the question belongs at plan
+    review (config load, dry run, ``gpuwm check``) rather than at attach,
+    and answering it from the configuration alone is what lets it be
+    asked there.  The three doors that would ask it live in files outside
+    this lane's boundary; they are named, with their lines, on the strict
+    xfail ``test_plan_review_carries_the_streamed_spectral_sentence`` in
+    ``tests/test_spectral_seam.py``.  Until one of them calls this, the
+    attach-time raise in :meth:`SpectralSeam.validate_domain` is the only
+    door this combination meets, and plan review says nothing about it.
+
+    Pass ``streamed_grid_ids`` when the caller already knows which grids
+    stream, parent first; otherwise the declared ids are read off the
+    resolved ``[tiles]`` tables by :func:`_declared_streamed_grid_ids`,
+    which answers in that order.  The refusal names the first of them.
+
+    Raises the same ``RuntimeError`` text as
+    :meth:`SpectralSeam.validate_domain`, because they are one refusal seen
+    from two doors.  ``mode = "off"`` and an absent block pass untouched.
+    """
+    config = getattr(exp, "spectral_numerics", None)
+    if config is None or getattr(config, "mode", "off") == "off":
+        return
+    if streamed_grid_ids is None:
+        streamed_grid_ids = _declared_streamed_grid_ids(exp)
+    streamed = [int(grid_id) for grid_id in streamed_grid_ids]
+    if streamed:
+        raise RuntimeError(streamed_spectral_refusal(config, streamed[0]))
+
+
 class SpectralSeam:
     """Per-run hook cache, receipt ledger and capsule binding.
 
@@ -81,16 +182,14 @@ class SpectralSeam:
     def validate_domain(self, grid_id: int, run_cfg, *,
                         streamed: bool) -> None:
         if streamed:
+            # The one door this combination meets today, and a late one.
+            # :func:`refuse_streamed_spectral_numerics` would answer the
+            # same question from the configuration, before the run, and
+            # it holds no second copy of this sentence -- but nothing
+            # calls it yet, so a declared-streamed tree still finds out
+            # here, at attach.  Read from the one place that holds it.
             raise RuntimeError(
-                f"[spectral_numerics] mode = {self.config.mode!r} on "
-                f"streamed domain d{int(grid_id):02d} is refused: a "
-                "streamed domain's node.state is the t=0 attach snapshot "
-                "(the forecast lives in the pinned host store), so the "
-                "complete target planes are not resident at the hook "
-                "seam.  Shadow would write receipts about the initial "
-                "condition under forecast timestamps; apply would mutate "
-                "planes the tile sweep never reads back.  Run this "
-                "domain resident, or set mode = \"off\".")
+                streamed_spectral_refusal(self.config, grid_id))
         needs_wrap = (self.config.periodic_domain
                       or self.config.boundary == "periodic")
         if needs_wrap:
@@ -101,7 +200,7 @@ class SpectralSeam:
                     f"but domain d{int(grid_id):02d} does not wrap "
                     f"({reason}).  A periodic transform of a non-periodic "
                     "domain couples its opposite lateral boundaries "
-                    "through the FFT; declare the domain honestly "
+                    "through the FFT; declare the domain accurately "
                     "(boundary = \"tapered\") or drop the periodic "
                     "declaration.")
 
@@ -235,4 +334,5 @@ def seam_capsule_receipts(model) -> dict[str, object]:
 
 
 __all__ = ["CAPSULE_RECEIPT_KEY", "SpectralSeam", "attach_seam",
-           "seam_capsule_receipts"]
+           "refuse_streamed_spectral_numerics", "seam_capsule_receipts",
+           "streamed_spectral_refusal"]

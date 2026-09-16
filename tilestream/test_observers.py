@@ -1032,7 +1032,7 @@ def fold_gate(nx: int = 96, ny: int = 96, nz: int = 24, tile: int = 24,
     print(_line("window='buffer' (halo folded in) must DIFFER",
                 bool(bad_buf),
                 f"{len(bad_buf)} disagreements, e.g. {bad_buf[:2]}"
-                if bad_buf else "AGREED -- the windowing is not load-bearing"))
+                if bad_buf else "AGREED -- the windowing is not essential"))
     if not bad_buf:
         failures.append("folding each tile's whole gathered window gave the "
                         "same answer as folding its interior; either the "

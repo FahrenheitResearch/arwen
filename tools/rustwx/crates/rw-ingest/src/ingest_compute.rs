@@ -71,7 +71,7 @@ impl ProductsComputeInputs {
 /// Output of the heavy (ECAPE-class) compute stage: realized grids,
 /// recipes skipped with the products lane's documented reason, the ECAPE
 /// triplet's per-column failure count, and the products lane's per-kernel
-/// timing breakdown for honest stage reporting.
+/// timing breakdown for accurate stage reporting.
 pub struct HeavyGrids2D {
     pub grids: Vec<DerivedGrid2D>,
     pub skipped: Vec<(&'static str, String)>,

@@ -250,7 +250,7 @@ def test_every_flag_named_in_cycle_code_exists_on_the_parser():
     # them here would advertise options ``gpuwm cycle`` does not take.
     # ``--port-root`` and ``--port-config`` DID become real door flags
     # when the model parent adapter landed, so they are no longer
-    # excused -- this test is what keeps that honest.
+    # excused -- this test is what keeps that accurate.
     named -= {"--backend", "--history", "--cycle-index",
               "--consistency-threshold", "--plan", "--out",
               "--anchor", "--steps"}

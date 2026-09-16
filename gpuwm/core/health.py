@@ -173,7 +173,7 @@ def theta_ceiling_for_lid(p_top: float | None) -> float:
     the reference is clamped rather than allowed to close the gate on
     configurations that pass today).
 
-    ``p_top=None`` is the honest answer for a state whose base has not been
+    ``p_top=None`` is the accurate answer for a state whose base has not been
     loaded yet -- ``DomainState.p_top`` is None until :meth:`load_base` runs --
     and returns the calibrated ceiling rather than guessing a lid.
     """

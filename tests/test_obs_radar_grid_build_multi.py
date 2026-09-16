@@ -308,7 +308,7 @@ def test_per_radar_provenance_reaches_the_written_file(monkeypatch,
         assert entry["volume_sha256"]
         assert entry["antenna"]["source"] == "message31-vol-block"
         # Which decoder schema produced the pack is part of attribution:
-        # the clear-air regime a file can honestly claim depends on it.
+        # the clear-air regime a file can accurately claim depends on it.
         assert entry["pack_schema"] == "gpuwm-obs.sweep-pack.v2"
     assert "radar_time_spread_policy" in prov
 

@@ -3,7 +3,7 @@
 //!
 //! Two kinds, because the renderer treats them differently. A Lambert window
 //! emulates a WRF domain and gets the renderer's native regional map
-//! furniture; a regular latitude/longitude window is the honest shape for a
+//! furniture; a regular latitude/longitude window is the accurate shape for a
 //! global overview. The Lambert setup and the two transforms below are WRF
 //! `module_llxy.F` (`set_lc`, `ijll_lc` and `llij_lc`) transcribed, in f64,
 //! so the emitted `XLAT`/`XLONG` agree with the projection attributes a
@@ -92,7 +92,7 @@ pub const MESH_FOCUS_MAX_POINTS_PER_SIDE: usize = 2_000;
 /// its constant is 0.174 and its origin is 8,008 grid units off the grid,
 /// which at 4.5 km is 5.7 earth radii. Below it the map's shape is degrading
 /// toward a cylinder anyway, so emitting the cylinder is both better
-/// conditioned and the honest answer for a near-equatorial region.
+/// conditioned and the accurate answer for a near-equatorial region.
 pub const MESH_FOCUS_MIN_LAMBERT_LATITUDE_DEG: f64 = 10.0;
 
 /// Half the span between the two derived true latitudes.
@@ -333,7 +333,7 @@ impl Window {
     /// The same clamp applies: past 2000 points a side the spacing
     /// coarsens rather than the frame cropping. When N grids are scattered
     /// far apart, that clamp is what a caller will hit, and it is the
-    /// honest outcome -- one frame wide enough to hold two grids on
+    /// accurate outcome -- one frame wide enough to hold two grids on
     /// opposite sides of an ocean cannot also resolve 5 km. The
     /// description says so, in the numbers.
     pub fn composite_focus(
@@ -799,7 +799,7 @@ impl Window {
                 let centre_lat = 0.5 * (lat[0] + lat[lat.len() - 1]);
                 let centre_lon = 0.5 * (lon[0] + lon[lon.len() - 1]);
                 // WRF writes DX/DY in metres even for a lat-lon grid; the
-                // nominal spacing at the window centre is the honest number.
+                // nominal spacing at the window centre is the accurate number.
                 let metres = w.spacing_degrees * RAD * WRF_EARTH_RADIUS_M;
                 Ok(vec![
                     ("MAP_PROJ".into(), ProjAttr::Int(6)),

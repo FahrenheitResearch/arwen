@@ -179,7 +179,7 @@ def test_a_perturbation_that_touches_nothing_is_a_fabricated_ensemble():
     """The refusal the switch most needs, and it is source-independent.
 
     Every amplitude zero produces N bit-identical copies of the control.
-    The member count in the receipt would be honest and the ensemble
+    The member count in the receipt would be accurate and the ensemble
     would not be, so this refuses before a card is touched.
     """
 

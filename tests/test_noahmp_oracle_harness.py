@@ -133,7 +133,7 @@ def gate(tmp_path, monkeypatch):
     return run
 
 
-def test_the_honest_visibility_patch_is_accepted(gate):
+def test_the_accurate_visibility_patch_is_accepted(gate):
     """Control: the gate must not reject a genuine visibility-only rewrite."""
     assert gate(PATCHED) == LIFTED
 

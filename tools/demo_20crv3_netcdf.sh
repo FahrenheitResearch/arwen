@@ -3,7 +3,7 @@
 #
 # 20CRv3 is the reanalysis that reaches back to 1836, so it is the only
 # source in this product that can initialise a case from before the
-# satellite era.  This runs the whole path on the smallest honest window:
+# satellite era.  This runs the whole path on the smallest accurate window:
 # two three-hourly analyses over a 25x20 degree box, about 0.7 MB of real
 # NOAA data (MEASURED 2026-08-16: 737,620 bytes for the 1974-04-03 18Z
 # window below, fourteen files plus the recovered invariant supplement).

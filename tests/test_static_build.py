@@ -55,6 +55,41 @@ requires_bundle = pytest.mark.skipif(
 # Synthetic-dataset helpers (no bundle required)
 # ---------------------------------------------------------------------------
 
+def test_stencil_averages_do_not_depend_on_the_batch_they_arrive_in():
+    """One point's answer is its own; the other points in the call are not
+    part of it.
+
+    THE BREAKAGE THIS PREVENTS: average_4pt and average_16pt used to
+    reduce their stencil with np.nansum(stack, axis=0), whose summation
+    order depends on the number of POINTS in the batch -- pairwise per
+    element for a small call, plane-by-plane for a large one.  A batch is
+    whatever the caller had left to interpolate, so a footprint build and
+    a corridor build of the same ground asked the same stencil and got
+    answers differing in the last bits.  Measured on the Bering Sea
+    cyclone case: SNOALB at one 3 km cell came out 79.93333333333334 from
+    the corridor and 79.93333333333332 from the footprint, which the
+    relocation's overlap-statics equality refuses.
+    """
+    from gpuwm.static.build import average_16pt, average_4pt
+
+    rng = np.random.default_rng(20260915)
+    vals = rng.uniform(0.0, 100.0, size=(48, 48))
+    vals[rng.uniform(size=vals.shape) < 0.05] = np.nan
+    xs = rng.uniform(3.0, 44.0, size=4096)
+    ys = rng.uniform(3.0, 44.0, size=4096)
+
+    for operator in (average_4pt, average_16pt):
+        batched = operator(vals, xs, ys)
+        singles = np.array([float(operator(vals, xs[n:n + 1], ys[n:n + 1])[0])
+                            for n in range(0, xs.size, 97)])
+        taken = batched[::97]
+        unequal = int(np.count_nonzero(
+            (singles != taken) & ~(np.isnan(singles) & np.isnan(taken))))
+        assert unequal == 0, (
+            f"{operator.__name__} answered {unequal} of {singles.size} points "
+            "differently alone than in a batch")
+
+
 def test_geog_selection_resolves_wps_tokens_under_case_data_root(tmp_path):
     wps = tmp_path / "namelist.wps"
     wps.write_text(

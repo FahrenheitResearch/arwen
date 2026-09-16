@@ -161,7 +161,7 @@ def read_certify_input(path: str | Path, flag: str) -> bytes:
     file anywhere among them produced exactly ``gpuwm certify: Expecting
     value: line 1 column 1 (char 0)`` -- no file, no argument, no byte
     count, no way through.  Which of the four was unreadable is the
-    load-bearing part, and it was the one thing the message did not say.
+    essential part, and it was the one thing the message did not say.
 
     This is deliberately the same shape as
     :func:`gpuwm.certify.dualrun._read_capsule`, which fixed the

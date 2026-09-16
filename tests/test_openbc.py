@@ -786,7 +786,7 @@ def test_open_sheared_flow_uniform_with_dissipation(axis):
     computed it from a WRAPPED flux, which is neither).  The
     once-per-step Smagorinsky tendencies honor WRF's width-1 exclusion.
 
-    Honesty note (measured while calibrating): in phase-1 flow space the
+    Accuracy note (measured while calibrating): in phase-1 flow space the
     HISTORICAL single-face leak is masked by the monotonic limiter to
     ~1e-3 m/s (pre-fix 0.0043 vs post-fix 0.0029 final residual) -- which
     is exactly why it hid in WK82 -- so the amplitude gates alone cannot
@@ -879,7 +879,7 @@ def test_open_sheared_flow_uniform_with_dissipation(axis):
 
     stag, m1, m2 = ("u", "v", "thp") if axis == "x" else ("v", "u", "thp")
     # staggered-normal axis: WRF computes ids+3..ide-3; the outermost
-    # computed face (-4, WRF's ide-3) now takes the honest boundary-datum
+    # computed face (-4, WRF's ide-3) now takes the accurate boundary-datum
     # read (diff6.cu bndx/bndy), so exactly WRF's 3 excluded faces zero
     assert (cut(d[stag], slice(None, 3)) == 0.0).all()
     assert (cut(d[stag], slice(-3, None)) == 0.0).all(), \
@@ -896,7 +896,7 @@ def test_open_sheared_flow_uniform_with_dissipation(axis):
     assert (cut(d["w"], slice(-3, None)) == 0.0).all()
 
     # Smagorinsky once-per-step tendencies honor WRF's width-1 exclusion
-    # (the honest boundary-datum read at the live staggered face is pinned
+    # (the accurate boundary-datum read at the live staggered face is pinned
     # value-wise in tests/test_smag2d.py).
     for name in ("ru_t", "rv_t", "rw_t", "rth_t"):
         getattr(s, name)[...] = 0
@@ -905,7 +905,7 @@ def test_open_sheared_flow_uniform_with_dissipation(axis):
     rm = cp.asnumpy(s.rth_t)
     assert (cut(rs, 0) == 0.0).all() and (cut(rs, -1) == 0.0).all()
     assert np.abs(cut(rs, 1)).max() > 0.0
-    assert np.abs(cut(rs, -2)).max() > 0.0          # live via honest read
+    assert np.abs(cut(rs, -2)).max() > 0.0          # live via accurate read
     assert (cut(rm, 0) == 0.0).all() and (cut(rm, -1) == 0.0).all()
     assert np.abs(cut(rm, 1)).max() > 0.0
 

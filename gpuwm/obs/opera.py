@@ -147,7 +147,7 @@ def polar_volume_support() -> tuple[bool, str]:
     Stated as a function with a reason rather than left as an absence,
     because a caller planning a velocity-assimilating cycle needs to be told
     which of "Europe has no velocity" and "nothing here can read it" is
-    true. For most of this pipeline's life the honest answer was the second
+    true. For most of this pipeline's life the accurate answer was the second
     one and this function said so, naming the vendored composite decoder that
     required a rank-2 ``/dataset1/data1/data`` and a ``/where`` ``projdef``
     and therefore refused every polar scan at the projection check.

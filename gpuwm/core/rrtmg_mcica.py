@@ -86,7 +86,7 @@ the device section of ``tests/test_rrtmg_mcica.py``.  Kernels live in
 from __future__ import annotations
 
 import numpy as np
-# numpy >= 2 is load-bearing for the FP32 max_ulp-0 discipline in this
+# numpy >= 2 is essential for the FP32 max_ulp-0 discipline in this
 # module: NEP-50 weak promotion keeps float32 op python-scalar in
 # float32, while numpy 1.x would silently widen those chains to float64
 # and break bitwise parity with the WRF oracle.  Fail closed at import.

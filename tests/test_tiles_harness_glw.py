@@ -10,7 +10,7 @@ the integrated tree, which is the seam the integration map predicted and
 nothing in the 233/0 had ever seen.
 
 ``harness.declared_glw_kwargs`` is the fix and this suite is its contract.
-Two properties, and the second is the one that keeps the fix honest:
+Two properties, and the second is the one that keeps the fix accurate:
 
   * a rung whose GLW is consumed or published DECLARES the constant, so
     the refusal cannot fire and the receipt names an origin;

@@ -126,6 +126,25 @@ fn numbers(array: &SourceArray, ranges: &[Range<u64>]) -> Result<Vec<f64>> {
     }
     Ok(values)
 }
+/// The symbol inside a `Name(symbol)` unit spelling, already normalised.
+///
+/// One string carrying BOTH spellings of one unit is a real upstream
+/// convention, not a typo to be matched literally: Google's ARCO ERA5
+/// publishes its `level` coordinate as `Hectopascal(hPa)` -- the
+/// quantity's written-out name with its symbol in brackets after it.
+/// Reduced to `hpa`, it is the same alias every other source of that
+/// coordinate already matches, so the alias rows below stay one row per
+/// unit instead of gaining a parenthesised twin for every spelling an
+/// archive happens to publish.
+///
+/// A leading name is REQUIRED, so a unit that is itself bracketed --
+/// `(0-1)`, which ERA5 uses for fractional fields and which the `1` row
+/// carries verbatim -- keeps being read as the whole string it is rather
+/// than being silently reduced to its interior.
+fn parenthesised_symbol(normal: &str) -> Option<&str> {
+    let (name, symbol) = normal.strip_suffix(')')?.split_once('(')?;
+    (!name.is_empty() && !symbol.is_empty() && !symbol.contains('(')).then_some(symbol)
+}
 fn units_match(array: &SourceArray, expected: &str, name: &str) -> Result<()> {
     // Early archive arrays omit some units; the provider's versioned mapping
     // supplies those. When present, source units must agree before relabeling.
@@ -160,12 +179,105 @@ fn units_match(array: &SourceArray, expected: &str, name: &str) -> Result<()> {
         "degrees_east" => &["degrees_east", "degree_east", "degreeseast"],
         _ => return fail(format!("unsupported declared quantity unit {expected}")),
     };
-    if !aliases.contains(&normal.as_str()) {
+    let symbol = parenthesised_symbol(&normal);
+    if !aliases.contains(&normal.as_str()) && !symbol.is_some_and(|s| aliases.contains(&s)) {
         return fail(format!(
-            "{name}: source units {actual:?} disagree with declared units {expected:?}"
+            "{name}: source units {actual:?} disagree with declared units {expected:?}. This quantity reads {aliases:?}, after case folding, removing spaces, ^ and **, and reducing a Name(symbol) spelling to its symbol. Either the request declares the wrong quantity for this array, or the source publishes a spelling the {expected:?} row does not carry yet -- add it to that row rather than relabeling the values."
         ));
     }
     Ok(())
+}
+/// The one time window a store declares, and the ONE place its boundaries
+/// are named.
+///
+/// A store can publish two stops, and they mean different things.  Google's
+/// ARCO ERA5 root attributes carry `valid_time_stop` -- the end of the
+/// FINALIZED reanalysis -- and `valid_time_stop_era5t`, the end of the
+/// preliminary ERA5T stream, which runs months ahead of it.  Both are true,
+/// and a reader told only one of them cannot act on either.
+///
+/// THE DEFECT THIS TYPE EXISTS TO PREVENT.  The notice and the refusal used
+/// to resolve those attributes separately: the notice announced a boundary
+/// at the finalized stop while the refusal announced coverage running to the
+/// preliminary one, so one store answered "how far does this go" with two
+/// different dates and neither sentence said which kind of boundary it had
+/// named.  Both sentences are composed here, from one resolved record, so
+/// they cannot disagree again and each names the attribute it came from.
+struct Coverage {
+    start: NaiveDateTime,
+    finalized_stop: NaiveDateTime,
+    accepted_stop: NaiveDateTime,
+    start_text: String,
+    finalized_text: String,
+    accepted_text: String,
+    accepted_attribute: &'static str,
+}
+impl Coverage {
+    fn declared_by(group: &Group<dyn ReadableStorageTraits>) -> Result<Self> {
+        let text = |name: &str| {
+            group
+                .attributes()
+                .get(name)
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        };
+        let start_text = text("valid_time_start").ok_or("store lacks valid_time_start authority")?;
+        let finalized_text =
+            text("valid_time_stop").ok_or("store lacks valid_time_stop authority")?;
+        let start = moment(&start_text, false)?;
+        let finalized_stop = moment(&finalized_text, true)?;
+        let preliminary = text("valid_time_stop_era5t")
+            .map(|value| moment(&value, true).map(|stop| (value, stop)))
+            .transpose()?;
+        // The later of the two is what the store actually serves.  WHICH
+        // attribute that was is carried, not recomputed by each reader.
+        let (accepted_text, accepted_stop, accepted_attribute) = match preliminary {
+            Some((value, stop)) if stop > finalized_stop => (value, stop, "valid_time_stop_era5t"),
+            _ => (finalized_text.clone(), finalized_stop, "valid_time_stop"),
+        };
+        Ok(Self {
+            start,
+            finalized_stop,
+            accepted_stop,
+            start_text,
+            finalized_text,
+            accepted_text,
+            accepted_attribute,
+        })
+    }
+    fn admits(&self, moment: &NaiveDateTime) -> bool {
+        *moment >= self.start && *moment <= self.accepted_stop
+    }
+    fn is_preliminary(&self, moment: &NaiveDateTime) -> bool {
+        *moment > self.finalized_stop && self.admits(moment)
+    }
+    /// What the boundary that ADMITTED a time is, for the notice.
+    fn preliminary_note(&self) -> String {
+        format!(
+            "fall after the finalized reanalysis boundary {} (valid_time_stop) and are served as preliminary ERA5T, which this store declares through {} ({}); ERA5T values are replaced when the finalized reanalysis reaches them",
+            self.finalized_text, self.accepted_text, self.accepted_attribute
+        )
+    }
+    /// What the boundary that REFUSED a time is, and the way past it.
+    fn refusal(&self, moment: &NaiveDateTime) -> String {
+        let edge = if *moment < self.start {
+            format!("{} is the first hour of the record", self.start_text)
+        } else if self.accepted_attribute == "valid_time_stop" {
+            format!(
+                "{} is the last hour of the finalized reanalysis, and this store declares no preliminary ERA5T stream past it",
+                self.accepted_text
+            )
+        } else {
+            format!(
+                "{} is the last hour of the preliminary ERA5T stream, which runs ahead of the finalized reanalysis ending {} (valid_time_stop)",
+                self.accepted_text, self.finalized_text
+            )
+        };
+        format!(
+            "requested time {moment} is outside the coverage this store declares, {} (valid_time_start) through {} ({}). {edge}. Request a time inside that window, or wait for the archive to publish the hour and fetch again.",
+            self.start_text, self.accepted_text, self.accepted_attribute
+        )
+    }
 }
 fn coordinate(store: &ReadableStorage, name: &str) -> Result<(SourceArray, Vec<f64>)> {
     let array = open(store, name)?;
@@ -261,41 +373,21 @@ fn extract(request: Request, output: &Path) -> Result<Value> {
         Arc::new(zarrs::filesystem::FilesystemStore::new(&request.store)?)
     };
     let group = Group::open(store.clone(), "/")?;
-    let valid_start = group
-        .attributes()
-        .get("valid_time_start")
-        .and_then(Value::as_str)
-        .ok_or("store lacks valid_time_start authority")?;
-    let valid_stop = group
-        .attributes()
-        .get("valid_time_stop")
-        .and_then(Value::as_str)
-        .ok_or("store lacks valid_time_stop authority")?;
-    let start = moment(valid_start, false)?;
-    let finalized_stop = moment(valid_stop, true)?;
-    let preliminary_stop = group
-        .attributes()
-        .get("valid_time_stop_era5t")
-        .and_then(Value::as_str)
-        .map(|text| moment(text, true))
-        .transpose()?
-        .unwrap_or(finalized_stop);
-    let stop = finalized_stop.max(preliminary_stop);
+    let coverage = Coverage::declared_by(&group)?;
     let provisional_times: Vec<_> = times
         .iter()
-        .filter(|t| **t > finalized_stop)
+        .filter(|t| coverage.is_preliminary(t))
         .map(ToString::to_string)
         .collect();
     if !provisional_times.is_empty() {
         eprintln!(
-            "Zarr: {} requested time(s) use preliminary ERA5T data after {valid_stop}",
-            provisional_times.len()
+            "Zarr: {} requested time(s) {}",
+            provisional_times.len(),
+            coverage.preliminary_note()
         );
     }
-    if times.iter().any(|t| *t < start || *t > stop) {
-        return fail(format!(
-            "requested times exceed declared source coverage {start} through {stop}"
-        ));
+    if let Some(outside) = times.iter().find(|t| !coverage.admits(t)) {
+        return fail(coverage.refusal(outside));
     }
     let (time_array, source_time) = coordinate(&store, "time")?;
     let units = time_array
@@ -422,9 +514,23 @@ fn extract(request: Request, output: &Path) -> Result<Value> {
     schema.put_global_attr("source_store", AttrValue::Text(request.store.clone()))?;
     schema.put_global_attr(
         "source_valid_time_start",
-        AttrValue::Text(valid_start.into()),
+        AttrValue::Text(coverage.start_text.clone()),
     )?;
-    schema.put_global_attr("source_valid_time_stop", AttrValue::Text(valid_stop.into()))?;
+    // The FINALIZED boundary, as this attribute has always meant, beside the
+    // hour the store actually served this request through.  Two stops with
+    // two names, never one stop a reader has to guess the kind of.
+    schema.put_global_attr(
+        "source_valid_time_stop",
+        AttrValue::Text(coverage.finalized_text.clone()),
+    )?;
+    schema.put_global_attr(
+        "source_valid_time_accepted_through",
+        AttrValue::Text(coverage.accepted_text.clone()),
+    )?;
+    schema.put_global_attr(
+        "source_valid_time_accepted_attribute",
+        AttrValue::Text(coverage.accepted_attribute.into()),
+    )?;
     schema.put_global_attr(
         "source_provisional_times",
         AttrValue::Text(serde_json::to_string(&provisional_times)?),

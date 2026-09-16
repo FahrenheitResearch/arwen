@@ -2241,3 +2241,158 @@ def test_watcher_records_future_hour_during_long_prior_leg(tmp_path):
         "previous_leg_completed_before_this_lead_first_observed"] is False
     assert fourth[
         "previous_leg_completed_before_remote_ready_last_modified"] is False
+
+
+class _NoLock:
+    """The supervisor's UUID lock, without the file, for door tests."""
+
+    def __init__(self, uuid, *, path, run_id):
+        self.uuid = uuid
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+@pytest.fixture
+def stream_warnings():
+    """Every gpuwm.explain warning raised inside one test, as records."""
+
+    from gpuwm import explain
+
+    seen = []
+    explain.add_warning_observer(seen.append)
+    try:
+        yield seen
+    finally:
+        explain.remove_warning_observer(seen.append)
+
+
+def _shared_card(monkeypatch, tmp_path, *, cotenant_mib=30000):
+    """One measured card carrying one CUDA co-tenant.
+
+    Returns the mutable device reading, so a test can make the co-tenant
+    grow after the stream has started.
+    """
+
+    import gpuwm.core.preflight as preflight
+    import gpuwm.supervisor as supervisor
+
+    gpu = supervisor.GPUIdentity("GPU-fixture", "999.1", "fixture device", 1)
+    processes = (supervisor.GPUProcess(
+        gpu.uuid, 41001, "python.exe", cotenant_mib, "C"),)
+    device = {"total": 0, "used": 0}
+    monkeypatch.setattr(supervisor, "select_gpu", lambda requested: gpu)
+    monkeypatch.setattr(supervisor, "default_lock_path",
+                        lambda _uuid: tmp_path / "gpu.lock")
+    monkeypatch.setattr(supervisor, "GPUFileLock", _NoLock)
+    monkeypatch.setattr(supervisor, "query_compute_processes",
+                        lambda uuid: processes)
+    monkeypatch.setattr(supervisor, "_ADMISSION_WARNED", set())
+    monkeypatch.setattr(preflight, "device_physical_total_bytes",
+                        lambda **kwargs: device["total"])
+    monkeypatch.setattr(preflight, "device_wide_used_bytes",
+                        lambda **kwargs: device["used"])
+    monkeypatch.setattr(stream.subprocess, "run",
+                        lambda argv, **kwargs: None)
+    return device
+
+
+def test_stream_prices_its_card_from_the_function_gpuwm_run_prices_from(
+        tmp_path, monkeypatch):
+    """One configuration, one card, one answer at both run doors.
+
+    The stream door passed no reservation at all, so the shared-card
+    admission returned early as 'admitted-unpriced-run' and could never
+    refuse: `gpuwm run` refused a configuration beside a co-tenant that
+    `gpuwm stream` admitted.  Both doors price from
+    gpuwm.supervisor.priced_reservation_bytes now, and the per-command
+    call decides nothing.
+    """
+
+    import gpuwm.supervisor as supervisor
+
+    plan = dataclasses.replace(
+        _make_plan(tmp_path, cycle_count=1, target_lead=1),
+        gpu_uuid="GPU-fixture")
+    priced = supervisor.priced_reservation_bytes(plan.experiment)
+    assert priced is not None and priced > 0
+    # Priced from the plan's loaded experiment and from its configuration
+    # file: the same number, so the stream cannot price what it does not run.
+    assert supervisor.priced_reservation_bytes(plan.experiment_config) == priced
+
+    calls = []
+    monkeypatch.setattr(
+        supervisor, "select_gpu",
+        lambda requested: supervisor.GPUIdentity(
+            "GPU-fixture", "999.1", "fixture device", 1))
+    monkeypatch.setattr(supervisor, "default_lock_path",
+                        lambda _uuid: tmp_path / "gpu.lock")
+    monkeypatch.setattr(supervisor, "GPUFileLock", _NoLock)
+    monkeypatch.setattr(supervisor, "preflight_exclusive_gpu",
+                        lambda uuid, **kwargs: calls.append(kwargs))
+    monkeypatch.setattr(stream.subprocess, "run",
+                        lambda argv, **kwargs: None)
+
+    backend = stream.ProductionBackend(progress=lambda _: None)
+    with backend.gpu_allocation(plan):
+        backend.run_command(["fixture-worker"], stage="one")
+        backend.run_command(["fixture-worker"], stage="two")
+
+    assert [call["reservation_bytes"] for call in calls] == [priced] * 3
+    # The admission decides once, before the first stage command.
+    assert calls[0].get("decide", True) is True
+    assert [call["decide"] for call in calls[1:]] == [False, False]
+
+
+def test_a_stream_that_does_not_fit_beside_a_cotenant_is_refused_at_the_door(
+        tmp_path, monkeypatch):
+    import gpuwm.supervisor as supervisor
+
+    plan = dataclasses.replace(
+        _make_plan(tmp_path, cycle_count=1, target_lead=1),
+        gpu_uuid="GPU-fixture")
+    priced = supervisor.priced_reservation_bytes(plan.experiment)
+    device = _shared_card(monkeypatch, tmp_path)
+    device["total"] = priced + 4 * 1024 ** 3
+    device["used"] = 5 * 1024 ** 3  # free = priced - 1 GiB
+
+    backend = stream.ProductionBackend(progress=lambda _: None)
+    with pytest.raises(supervisor.GPUPreflightError) as caught:
+        with backend.gpu_allocation(plan):
+            backend.run_command(["fixture-worker"], stage="one")
+    message = str(caught.value)
+    assert "priced reservation" in message
+    assert "pid=41001" in message
+    assert "free" in message
+
+
+def test_a_started_stream_says_the_shared_card_once_and_is_never_re_refused(
+        tmp_path, monkeypatch, stream_warnings):
+    import gpuwm.supervisor as supervisor
+
+    plan = dataclasses.replace(
+        _make_plan(tmp_path, cycle_count=1, target_lead=1),
+        gpu_uuid="GPU-fixture")
+    priced = supervisor.priced_reservation_bytes(plan.experiment)
+    device = _shared_card(monkeypatch, tmp_path)
+    device["total"] = priced + 8 * 1024 ** 3
+    device["used"] = 2 * 1024 ** 3  # free = priced + 6 GiB
+
+    backend = stream.ProductionBackend(progress=lambda _: None)
+    with backend.gpu_allocation(plan):
+        backend.run_command(["fixture-worker"], stage="one")
+        backend.run_command(["fixture-worker"], stage="two")
+        # One shared card, one sentence, however many stage commands run.
+        assert len(stream_warnings) == 1
+        assert "priced reservation" in stream_warnings[0]["action"]
+        # The co-tenant grows past what this run reserved AFTER the stream
+        # has started.  That is news, so it is named again -- and it is
+        # not a refusal, because the run has already produced output.
+        device["used"] = device["total"] - 1024 ** 3
+        backend.run_command(["fixture-worker"], stage="three")
+
+    assert len(stream_warnings) == 2
+    assert "already started" in stream_warnings[-1]["action"]

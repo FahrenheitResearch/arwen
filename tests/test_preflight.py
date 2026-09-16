@@ -28,6 +28,7 @@ from gpuwm.core import preflight as pf
 from gpuwm.case_data import load_experiment_case
 from gpuwm.experiment import build_experiment, experiment_from_run_config
 from gpuwm.io import restart
+from conftest import requires_grib1_bridge
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG_4DOM = ROOT / "configs" / "real74_4dom.toml"
@@ -1674,7 +1675,7 @@ def test_p3_prices_its_two_rrtmgp_radius_columns_and_no_third():
     # The arm prices its two columns unconditionally, exactly as the
     # adapter's p3 branch copies them unconditionally (P3 seeds valid
     # radii at construction; there is no first-call phase to gate on).
-    # The membership assert at the top is what keeps the pair honest:
+    # The membership assert at the top is what keeps the pair accurate:
     # the row and this pricing landed together and retire together.
 
 
@@ -3118,6 +3119,7 @@ def _run_check(argv):
         return args.func(args)
 
 
+@requires_grib1_bridge
 def test_check_cli_estimator_json(capsys):
     rc = _run_check(["check", str(CONFIG_4DOM), "--budget-gib", "100",
                      "--json"])
@@ -3201,6 +3203,7 @@ def test_check_cli_estimator_json(capsys):
         math.ceil(0.03 * payload["alloc_estimate_bytes"]))
 
 
+@requires_grib1_bridge
 def test_check_cli_over_budget_fails_and_names_the_lever(capsys):
     rc = _run_check(["check", str(CONFIG_4DOM), "--budget-gib", "19.5"])
     out = capsys.readouterr().out
@@ -3213,6 +3216,7 @@ def test_check_cli_over_budget_fails_and_names_the_lever(capsys):
     assert "--column-chunk 1562" in out
 
 
+@requires_grib1_bridge
 def test_check_over_budget_envelope_exits_nonzero(capsys, monkeypatch):
     """B-1: the report said "exceeds the WDDM budget" and exited 0.
 
@@ -3251,6 +3255,7 @@ def test_check_over_budget_envelope_exits_nonzero(capsys, monkeypatch):
     assert rc == 2
 
 
+@requires_grib1_bridge
 def test_declared_free_is_capped_at_the_cards_physical_total(capsys):
     """B-2: `--card 16gb` declared 16.68 GiB free on a 16 GB card.
 
@@ -3312,8 +3317,9 @@ def test_declared_free_is_capped_at_the_cards_physical_total(capsys):
     assert rc == 0
 
 
+@requires_grib1_bridge
 def test_check_cli_reports_observed_peak_envelope(capsys, monkeypatch):
-    """The empirical envelope line: honest, informational, budget-aware.
+    """The empirical envelope line: accurate, informational, budget-aware.
 
     On Windows the envelope is the MEASURED affine model (the 2026-08-19
     RTX 3080 calibration): estimate + itemized non-pool + unmodelled +
@@ -3377,7 +3383,7 @@ def test_check_cli_reports_observed_peak_envelope(capsys, monkeypatch):
     assert "memory-binding phase" in out
 
     # A budget the ESTIMATE fits but the envelope exceeds: the estimate
-    # gate still passes, and the warning names the honest number.
+    # gate still passes, and the warning names the accurate number.
     envelope_gib = payload["peak_envelope_bytes"] / GIB
     estimate_gib = payload["alloc_estimate_bytes"] / GIB
     tight = str(math.ceil(estimate_gib) + 1)
@@ -3503,6 +3509,7 @@ def test_the_projection_constants_are_platform_conditional_too():
         assert measured_gib * GIB < envelope, (alloc_gib, measured_gib)
 
 
+@requires_grib1_bridge
 def test_check_cli_prints_the_linux_envelope_factor_when_on_linux(
         capsys, monkeypatch):
     """`gpuwm check` must say which platform factor it applied."""
@@ -5261,6 +5268,7 @@ def test_absent_card_sizing_is_never_more_optimistic_than_a_present_card(
                 f"present {device.name}")
 
 
+@requires_grib1_bridge
 def test_declared_budget_sizing_says_it_is_an_estimate_for_absent_hardware(
         capsys):
     """--budget-gib is the sizing-for-a-card-you-intend-to-buy path; its
@@ -5349,6 +5357,7 @@ def test_adding_a_nest_never_lowers_the_ingest_estimate():
     assert two.nest_state_bytes > one.per_time_bytes
 
 
+@requires_grib1_bridge
 def test_a_negative_budget_is_clamped_and_explained(capsys):
     """A reserve larger than free VRAM leaves NO budget.
 
@@ -5371,6 +5380,7 @@ def test_a_negative_budget_is_clamped_and_explained(capsys):
     assert " -" not in out.split("NO BUDGET AT ALL")[1].split("\n")[0]
 
 
+@requires_grib1_bridge
 def test_the_over_budget_remedy_is_an_action_not_a_design_pointer(capsys):
     """It used to end "staged residency (DESIGN REOPEN) per section E".
 
@@ -5392,6 +5402,7 @@ def test_the_over_budget_remedy_is_an_action_not_a_design_pointer(capsys):
     assert "--vram-gib" not in out.split("remedy:")[1].split("\n")[0]
 
 
+@requires_grib1_bridge
 def test_the_printed_exit_code_is_the_one_the_process_returns(capsys):
     """The WARNING used to assert "(exit code 4: gates passed)" even when
     a gate had just failed and the process therefore exited 1."""
@@ -5416,6 +5427,7 @@ def test_the_printed_exit_code_is_the_one_the_process_returns(capsys):
     assert "exit code 4: gates passed, envelope did not" in out
 
 
+@requires_grib1_bridge
 def test_the_budget_word_follows_the_platform(capsys, monkeypatch):
     """"WDDM budget" on a Linux box, in the same report that has just
     finished explaining there is no WDDM here."""

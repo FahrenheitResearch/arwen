@@ -151,7 +151,7 @@ def polygon_sample_points(ring: Sequence[Sequence[float]], *,
 def grid_sample_points(grid, *, stride: int = 1):
     """``(lat, lon)`` of the analysis grid's mass points.
 
-    The honest denominator for "what fraction of the domain can this radar
+    The accurate denominator for "what fraction of the domain can this radar
     see": the points the observations will actually be superobbed onto.
     """
     import numpy as np

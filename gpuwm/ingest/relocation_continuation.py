@@ -53,7 +53,7 @@ def stage_relocation_continuation(captured, new_dc, static, *, plan=None):
         raise RelocationRefusal(
             "the outgoing child's statics are not on record, so the "
             "overlap-statics equality cannot be asserted; a move "
-            "whose load-bearing claim cannot be checked is refused")
+            "whose essential claim cannot be checked is refused")
     verdict = overlap_statics_mismatches(captured["static_fields"], static, plan)
     if not verdict["pass"]:
         raise RelocationRefusal(

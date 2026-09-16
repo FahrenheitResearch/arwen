@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """E(k) of the w field, both models, one routine, Parseval checked on each.
 
-The normalisation is the load-bearing part. An unnormalised |fft2|^2 scales as
+The normalisation is the essential part. An unnormalised |fft2|^2 scales as
 N^4, so comparing two fields on different grid counts that way inflates one of
 them by (N1/N2)^4 -- the artifact that put a spurious 1.9 decades into an
 earlier ArWen figure. Here the transform carries 1/N^2, which makes the summed

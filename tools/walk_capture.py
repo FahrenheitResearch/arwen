@@ -540,7 +540,7 @@ class _Pump:
         return self.total > self.head_limit + self.tail_limit
 
     def excerpt(self) -> str:
-        """The head, the tail, and an honest count of what is missing.
+        """The head, the tail, and an accurate count of what is missing.
 
         Below the limit the two buffers overlap and are stitched back
         into the exact stream, so a short run's report shows every byte
@@ -906,7 +906,7 @@ def _run_one(step: Step, *, root: Path, env: dict[str, str],
         # The file's mtime is wall clock and everything else here is
         # monotonic, so pair the two and then hold the answer inside the
         # step that created the file: a copied-in file can carry an
-        # mtime from last year, and a plot cannot honestly be reported
+        # mtime from last year, and a plot cannot accurately be reported
         # as having appeared before the command that wrote it started.
         when = after[relative][0] / 1e9 - walk_start_wall
         plots.append({

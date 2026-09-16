@@ -1114,7 +1114,7 @@ def score_statistical_frame(
     ``fss_reference`` (F21) redirects ONLY the REFL_10CM FSS row to the
     matched-physics reference; every other row keeps ``reference``.  When
     omitted, the FSS row scores against ``reference`` unchanged — for
-    domains without a registered matched reference that is the honest
+    domains without a registered matched reference that is the accurate
     blocking state the F21 record describes.  F27 applies its calibrated
     envelope-minimum bar and standing-deficiency evidence only to the
     registered d03/d04 20-dBZ rows.

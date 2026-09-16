@@ -374,7 +374,7 @@ def contract_step_kwargs_reach_the_tiles(nsteps: int = 2) -> str:
 
 
 def contract_domain_scope_observers_are_refused() -> list[str]:
-    """A sweep must refuse the two receipts a tile cannot honestly serve."""
+    """A sweep must refuse the two receipts a tile cannot accurately serve."""
     import cupy as cp
 
     from gpuwm.core.dycore import MassFluxAccumulator

@@ -596,7 +596,7 @@ def make_base_state(coord: VerticalCoord, sounding: Sounding,
     thb = sounding(z_of_pb)
     alb = c.RD * thb * (pb / c.P0) ** c.RCP / pb
 
-    # 6. Discrete hydrostatic base geopotential (load-bearing recurrence).
+    # 6. Discrete hydrostatic base geopotential (essential recurrence).
     for k in range(coord.dnw.size):
         phb[k + 1] = phb[k] - coord.dnw[k] * (c1h[k] * mub + c2h[k]) * alb[k]
 

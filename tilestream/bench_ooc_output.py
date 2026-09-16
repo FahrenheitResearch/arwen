@@ -153,7 +153,7 @@ def ooc_frame(store, state, cache: dict, *, exact: bool):
     t0 = _now()
     if exact:
         # T: the GPU does (thb + thp) then -300, in that order.  Float
-        # addition is not associative, so the order is load-bearing.
+        # addition is not associative, so the order is essential.
         T = np.add(thb3, a["thp"], out=cache["T_dst"])
         np.subtract(T, np.float32(300.0), out=T)
     else:
@@ -183,7 +183,7 @@ def ooc_frame(store, state, cache: dict, *, exact: bool):
         if name in cache:
             built[name] = cache[name]
 
-    # PRESENTATION ORDER IS LOAD-BEARING.  The dict doubles as the writer's
+    # PRESENTATION ORDER IS ESSENTIAL.  The dict doubles as the writer's
     # field schema, so it decides the order netCDF creates the variables in,
     # and HDF5's name heap is laid out in creation order.  Same data in a
     # different order gives a file that is 189 bytes larger and hashes
@@ -372,20 +372,23 @@ def mode_verify(args) -> None:
     # ITSELF, or "identical" would mean nothing.  Same fields, written twice.
     c = write_frame_kept(host_fields, cfg, DISK_DIR, "verify_mono2.nc")
     hc = hashlib.sha256(c["_path"].read_bytes()).hexdigest()
-    print(f"    container determinism (same input twice): "
-          f"{'reproducible' if hc == ha else 'NOT REPRODUCIBLE - the whole '
-             'file comparison above is void'}")
+    verdict = ("reproducible" if hc == ha
+               else "NOT REPRODUCIBLE - the whole file comparison above is void")
+    print(f"    container determinism (same input twice): {verdict}")
 
     # And the negative control: shuffle the presentation order only.  If this
-    # did NOT change the file, ordering would not be load-bearing and the
+    # did NOT change the file, ordering would not be essential and the
     # claim above would be unfalsifiable.
     shuffled = {k: fields[k] for k in sorted(fields)}
     d = write_frame_kept(shuffled, cfg, DISK_DIR, "verify_shuf.nc")
     hd = hashlib.sha256(d["_path"].read_bytes()).hexdigest()
-    print(f"    NEGATIVE CONTROL, field order shuffled  : "
-          f"{'still identical (ordering NOT load-bearing)' if hd == ha else f'differs, +{int(d['_file_bytes'] - ra)} bytes'}"
-          f"  [per-variable digests still "
-          f"{'equal' if file_var_digests(d['_path']) == da else 'DIFFERENT'}]")
+    if hd == ha:
+        order_verdict = "still identical (ordering NOT essential)"
+    else:
+        order_verdict = f"differs, +{int(d['_file_bytes'] - ra)} bytes"
+    digest_verdict = "equal" if file_var_digests(d["_path"]) == da else "DIFFERENT"
+    print(f"    NEGATIVE CONTROL, field order shuffled  : {order_verdict}"
+          f"  [per-variable digests still {digest_verdict}]")
 
     for p in (a, b, c, d):
         p["_path"].unlink(missing_ok=True)
@@ -924,7 +927,7 @@ def mode_snapshot(args) -> None:
             pind.add(t2 - t1)
 
     # A THREADED snapshot.  A single np.copyto is one core against DDR5; the
-    # honest comparison for "what would a real streaming writer pay" is the
+    # accurate comparison for "what would a real streaming writer pay" is the
     # best host copy available, not the first one written.  numpy releases the
     # GIL inside copyto, so threads genuinely run.
     from concurrent.futures import ThreadPoolExecutor

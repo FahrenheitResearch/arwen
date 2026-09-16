@@ -88,7 +88,7 @@ mapping (GSW, SWCF, RTHRATENSW = swhr/86400/pi3d, ...) is provided by
 from __future__ import annotations
 
 import numpy as np
-# numpy >= 2 is load-bearing for the FP32 max_ulp-0 discipline in this
+# numpy >= 2 is essential for the FP32 max_ulp-0 discipline in this
 # module: NEP-50 weak promotion keeps float32 op python-scalar in
 # float32, while numpy 1.x would silently widen those chains to float64
 # and break bitwise parity with the WRF oracle.  Fail closed at import.
@@ -2956,9 +2956,52 @@ class CudaSW:
         self.tab_gpu = cp.asarray(packed)
         self.ngb_gpu = cp.asarray(np.asarray(tab.ngb, dtype=np.int32))
         self.max_nlay = None  # retained API attribute: workspace has no fixed layer ceiling
+        #: Per-chunk device workspace of the batched chain (Section 11):
+        #: every slot is allocated once and reused across the chunks of a
+        #: call and across calls, and only the slots the kernels read
+        #: before writing are zeroed per chunk.  Used only inside
+        #: rrtmg_sw_batched_device (stream-ordered, so sharing one engine
+        #: between adapters stays sound); release_scratch hands the bytes
+        #: back to the pool between radiation events.
+        self._scratch = SWBatchScratch(cp)
+        #: nlayers -> columns per chunk, derived once per layer count
+        #: from this device's resident threads and the VRAM free at that
+        #: moment (see batch_column_chunk).
+        self._chunk_by_nlayers = {}
 
     def _k(self, name):
         return self.module.get_function(name)
+
+    # ---- batched-chain workspace and chunk width ----------------------
+
+    @property
+    def scratch(self):
+        """The batched chain's :class:`SWBatchScratch` (allocation and
+        zeroing counters live on it)."""
+        return self._scratch
+
+    def release_scratch(self):
+        """Hand every workspace slot back to the pool.  Callers invoke it
+        after a radiation event so the transient returns to the driver
+        at the model's next pool trim, exactly as the per-chunk
+        allocations it replaces did."""
+        self._scratch.release()
+
+    def batch_column_chunk(self, nlayers):
+        """Columns per chunk for ``nlayers`` on this device, derived once
+        per layer count: the width that saturates the device's resident
+        threads, narrowed only if that width's priced transient
+        (:func:`sw_batched_vram_bytes`) would not fit in the VRAM free
+        when first asked.  Chunk width is workspace shape only; results
+        are bitwise identical at any width."""
+        nlayers = _radiation_layer_count(nlayers)
+        chunk = self._chunk_by_nlayers.get(nlayers)
+        if chunk is None:
+            chunk = sw_batch_column_chunk(
+                nlayers, free_bytes=sw_batch_free_device_bytes(
+                    self.cp, self._scratch))
+            self._chunk_by_nlayers[nlayers] = chunk
+        return chunk
 
     # ---- stage drivers (all arrays FP32; returns cupy arrays) ----
 
@@ -3397,12 +3440,11 @@ class CudaSW:
         if column_chunk:
             chunk = int(column_chunk)
         else:
-            from gpuwm.core.rrtmg_lw import batch_column_chunk
-            chunk = batch_column_chunk(
-                NGPTSW, SW_BATCH_COLUMN_CHUNK_CEILING)
+            chunk = self.batch_column_chunk(nlayers)
         if chunk < 1:
             raise ValueError("column_chunk must be >= 1")
         i32, f32 = np.int32, np.float32
+        scratch = self._scratch
 
         def hostf(a):
             h = cp.asnumpy(a) if isinstance(a, cp.ndarray) else a
@@ -3435,18 +3477,28 @@ class CudaSW:
         albdir_h[:, 9:13] = asdir_h[:, None]
         albdif_h[:, 9:13] = asdif_h[:, None]
 
-        # ---- batch-level output slabs (alive for the whole call) --------
-        O = {k: cp.zeros((ncol, nl1), dtype=cp.float32)
+        # ---- batch-level output slabs (alive for the whole call, and
+        # returned: never workspace).  Every row of every slab is
+        # assigned by the chunk loop below, so they are not zeroed. ------
+        O = {k: cp.empty((ncol, nl1), dtype=cp.float32)
              for k in ("swuflx", "swdflx", "swuflxc", "swdflxc",
                        "swdkdir", "swdkdirc", "sibvisdir", "sibnirdir",
                        "puvfd", "pnifd")}
-        swhr = cp.zeros((ncol, nlayers), dtype=cp.float32)
-        swhrc = cp.zeros((ncol, nlayers), dtype=cp.float32)
+        swhr = cp.empty((ncol, nlayers), dtype=cp.float32)
+        swhrc = cp.empty((ncol, nlayers), dtype=cp.float32)
 
         iceflg = int(iceflgsw)
         # laysolfr is computed on device from the resident jp/laytrop
         # (see _laysolfr_batch_device); the old host memo was rebuilt on
         # every call, so it never survived a step and is gone.
+        #
+        # Every per-chunk device array below that a kernel fully writes
+        # before anything reads it is a ``scratch.take`` slot: allocated
+        # once (sized to the widest chunk seen) and reused, never zeroed.
+        # The read-before-write slots are ``scratch.zeros`` and are
+        # zeroed per chunk; constant kernel inputs are ``scratch.constant``
+        # and are filled once.  SW_SCRATCH_SLOTS lists every slot with
+        # the kernel fact that puts it in its class.
         for c0 in range(0, ncol, chunk):
             c1 = min(c0 + chunk, ncol)
             nc = c1 - c0
@@ -3459,9 +3511,12 @@ class CudaSW:
             vmr_d = [_sw_dev_chunk(cp, a, rows, (slice(0, nlayers),))
                      for a in (h2ovmr, co2vmr, o3vmr, n2ovmr, ch4vmr,
                                o2vmr)]
-            pdp_d = cp.zeros((nc, nlayers), dtype=cp.float32)
-            coldry_d = cp.zeros((nc, nlayers), dtype=cp.float32)
-            wkl_d = cp.zeros((nc, nlayers, MXMOL), dtype=cp.float32)
+            pdp_d = scratch.take("pdp", (nc, nlayers), f32)
+            coldry_d = scratch.take("coldry", (nc, nlayers), f32)
+            # rsw_inatm_layers_b writes species 0-3, 5, 6 and then scales
+            # all RSW_NMOL entries in place: species 4 is read unwritten
+            # and must be zero (as the Fortran inatm zeroes wkl first).
+            wkl_d = scratch.zeros("wkl", (nc, nlayers, MXMOL), f32)
             total = nc * nlayers
             self._k("rsw_inatm_layers_b")(
                 ((total + 63) // 64,), (64,),
@@ -3487,11 +3542,17 @@ class CudaSW:
                 resnmc_d = _sw_dev_chunk(cp, resnmcl, rows,
                                          (slice(0, nlayers),))
             else:
-                cswpmc_d = cp.zeros((nc, nlayers, NGPTSW),
-                                    dtype=cp.float32)
-                resnmc_d = cp.zeros((nc, nlayers), dtype=cp.float32)
+                # rsw_cldprmc_b takes both as const inputs (never
+                # written), so the zero snow path is a filled-once
+                # constant, not a per-chunk memset.
+                cswpmc_d = scratch.constant(
+                    "cswpmc0", (nc, nlayers, NGPTSW), f32, 0.0)
+                resnmc_d = scratch.constant(
+                    "resnmc0", (nc, nlayers), f32, 0.0)
             taormc_d = taucmc_d.copy()
-            err_d = cp.zeros(1, dtype=cp.int32)
+            # The abort flag is written by the kernel only on failure
+            # and read back unconditionally: it must enter at zero.
+            err_d = scratch.zeros("err", (1,), i32)
             total = nc * nlayers * NGPTSW
             self._k("rsw_cldprmc_b")(
                 ((total + 127) // 128,), (128,),
@@ -3510,16 +3571,11 @@ class CudaSW:
             del (ciwpmc_d, clwpmc_d, cswpmc_d, fsfcmc_d, reicmc_d,
                  relqmc_d, resnmc_d, err_d)
 
-            # ---- setcoef --------------------------------------------
-            ints_d = {k: cp.zeros((nc, nlayers), dtype=cp.int32)
-                      for k in ("jp", "jt", "jt1", "indself", "indfor",
-                                "tflag", "lflag")}
-            reals_d = {k: cp.zeros((nc, nlayers), dtype=cp.float32)
-                       for k in ("colh2o", "colco2", "colo3", "coln2o",
-                                 "colch4", "colo2", "colmol", "co2mult",
-                                 "selffac", "selffrac", "forfac",
-                                 "forfrac", "fac00", "fac01", "fac10",
-                                 "fac11")}
+            # ---- setcoef (every output written per (column, layer)) --
+            ints_d = {k: scratch.take(k, (nc, nlayers), i32)
+                      for k in SETCOEF_INT_SLOTS}
+            reals_d = {k: scratch.take(k, (nc, nlayers), f32)
+                       for k in SETCOEF_REAL_SLOTS}
             total = nc * nlayers
             self._k("rsw_setcoef_b")(
                 ((total + 63) // 64,), (64,),
@@ -3544,9 +3600,10 @@ class CudaSW:
             laysolfr_d = self._laysolfr_batch_device(
                 ints_d["jp"], laytrop_d, nlayers)
 
-            # ---- taumol + sfluxzen ----------------------------------
-            taug_d = cp.zeros((nc, NGPTSW, nlayers), dtype=cp.float32)
-            taur_d = cp.zeros((nc, NGPTSW, nlayers), dtype=cp.float32)
+            # ---- taumol + sfluxzen (one write per thread, every
+            # (column, g-point, layer) and (column, g-point) covered) ---
+            taug_d = scratch.take("taug", (nc, NGPTSW, nlayers), f32)
+            taur_d = scratch.take("taur", (nc, NGPTSW, nlayers), f32)
             total = nc * nlayers * NGPTSW
             self._k("rsw_taumol_b")(
                 ((total + 127) // 128,), (128,),
@@ -3559,7 +3616,7 @@ class CudaSW:
                  reals_d["selffrac"], ints_d["indself"],
                  reals_d["forfac"], reals_d["forfrac"],
                  ints_d["indfor"], taug_d, taur_d))
-            sflux_d = cp.zeros((nc, NGPTSW), dtype=cp.float32)
+            sflux_d = scratch.take("sflux", (nc, NGPTSW), f32)
             total = nc * NGPTSW
             self._k("rsw_sfluxzen_b")(
                 ((total + 127) // 128,), (128,),
@@ -3578,19 +3635,24 @@ class CudaSW:
             # (elementwise device copies: data movement only, and the 2-D
             # cuBLAS path cp.asfortranarray(x.T) would take is avoided
             # exactly as in the per-column driver) ---------------------
-            def t201(src):
-                dst = cp.zeros((nc, NGPTSW, nlayers), dtype=cp.float32)
+            def t201(slot, src):
+                dst = scratch.take(slot, (nc, NGPTSW, nlayers), f32)
                 dst[...] = src.transpose(0, 2, 1)
                 return dst
 
-            zcldfmc_d = t201(cldfmc_d); del cldfmc_d
-            ztaucmc_d = t201(taucmc_d); del taucmc_d
-            ztaormc_d = t201(taormc_d); del taormc_d
-            zasycmc_d = t201(asmcmc_d); del asmcmc_d
-            zomgcmc_d = t201(ssacmc_d); del ssacmc_d
-            ztaua_d = cp.zeros((nc, NBNDSW, nlayers), dtype=cp.float32)
-            zasya_d = cp.zeros((nc, NBNDSW, nlayers), dtype=cp.float32)
-            zomga_d = cp.ones((nc, NBNDSW, nlayers), dtype=cp.float32)
+            zcldfmc_d = t201("zcldfmc", cldfmc_d); del cldfmc_d
+            ztaucmc_d = t201("ztaucmc", taucmc_d); del taucmc_d
+            ztaormc_d = t201("ztaormc", taormc_d); del taormc_d
+            zasycmc_d = t201("zasycmc", asmcmc_d); del asmcmc_d
+            zomgcmc_d = t201("zomgcmc", ssacmc_d); del ssacmc_d
+            # Zero-aerosol optics (aer_opt = 0 is the validated
+            # precondition): const inputs of rsw_spcvmc_gpt_b, filled once.
+            ztaua_d = scratch.constant(
+                "ztaua", (nc, NBNDSW, nlayers), f32, 0.0)
+            zasya_d = scratch.constant(
+                "zasya", (nc, NBNDSW, nlayers), f32, 0.0)
+            zomga_d = scratch.constant(
+                "zomga", (nc, NBNDSW, nlayers), f32, 1.0)
 
             albdif_d = cp.asarray(albdif_h[rows])
             albdir_d = cp.asarray(albdir_h[rows])
@@ -3598,14 +3660,20 @@ class CudaSW:
             cossza_d = cp.asarray(cossza_h[rows])
 
             # ---- spcvmc ---------------------------------------------
+            # wk/wkc: each thread carves its own RSW_SPCVMC_WK x n1 /
+            # RSW_SPCVMC_WKC x n1 slice and writes every entry it later
+            # reads (kernels/rrtmg_sw.cu rsw_spcvmc_body, rsw_reftra,
+            # rsw_vrtqdr), so the workspace enters each chunk as it left
+            # the last.  The six outputs and zincflx are written for
+            # every (column, g-point[, level]) before rsw_spc_accum_b
+            # reads them.
             nthr = nc * NGPTSW
-            wk_d = cp.zeros((nthr, SPCVMC_WK_ARRAYS * nl1),
-                            dtype=cp.float32)
-            wkc_d = cp.zeros((nthr, SPCVMC_WKC_ARRAYS * nl1),
-                             dtype=cp.uint8)
-            zincflx_d = cp.zeros((nc, NGPTSW), dtype=cp.float32)
-            zouts = [cp.zeros((nc, NGPTSW, nl1), dtype=cp.float32)
-                     for _ in range(6)]
+            wk_d = scratch.take("wk", (nthr, SPCVMC_WK_ARRAYS * nl1), f32)
+            wkc_d = scratch.take("wkc", (nthr, SPCVMC_WKC_ARRAYS * nl1),
+                                 np.uint8)
+            zincflx_d = scratch.take("zincflx", (nc, NGPTSW), f32)
+            zouts = [scratch.take(slot, (nc, NGPTSW, nl1), f32)
+                     for slot in SPCVMC_OUT_SLOTS]
             zcd_d, zcu_d, zfd_d, zfu_d, ztn_d, ztcn_d = zouts
             self._k("rsw_spcvmc_gpt_b")(
                 ((nthr + 127) // 128,), (128,),
@@ -3622,12 +3690,11 @@ class CudaSW:
                  taug_d, taur_d, sflux_d, albdif_d, albdir_d,
                  adjflux_d, cossza_d, zouts)
 
-            # ---- band accumulation + heating rates ------------------
-            acc = {k: cp.zeros((nc, nl1), dtype=cp.float32)
-                   for k in ("pbbfd", "pbbfu", "pbbcd", "pbbcu",
-                             "pbbfddir", "pbbcddir", "puvfd", "puvcd",
-                             "puvfddir", "puvcddir", "pnifd", "pnicd",
-                             "pnifddir", "pnicddir")}
+            # ---- band accumulation + heating rates (rsw_spc_accum_b
+            # sums in registers and stores once per (column, level);
+            # rsw_post_b writes every (column, layer)) -----------------
+            acc = {k: scratch.take(k, (nc, nl1), f32)
+                   for k in SPC_ACCUM_SLOTS}
             total = nc * nl1
             self._k("rsw_spc_accum_b")(
                 ((total + 63) // 64,), (64,),
@@ -3640,8 +3707,8 @@ class CudaSW:
                  acc["pnifddir"], acc["pnicddir"]))
             del zincflx_d, zcd_d, zcu_d, zfd_d, zfu_d, ztn_d, ztcn_d
 
-            swhr_d = cp.zeros((nc, nlayers), dtype=cp.float32)
-            swhrc_d = cp.zeros((nc, nlayers), dtype=cp.float32)
+            swhr_d = scratch.take("swhr", (nc, nlayers), f32)
+            swhrc_d = scratch.take("swhrc", (nc, nlayers), f32)
             total = nc * nlayers
             self._k("rsw_post_b")(
                 ((total + 63) // 64,), (64,),
@@ -3661,14 +3728,17 @@ class CudaSW:
             O["pnifd"][rows] = acc["pnifd"]
             swhr[rows] = swhr_d
             swhrc[rows] = swhrc_d
-            # Free every per-chunk transient before the next iteration so
-            # no stale slab inflates the next chunk's high-water (keeps
-            # sw_batched_vram_bytes an upper bound; data movement only).
+            # Drop the chunk's views before the next iteration: the
+            # scratch keeps the buffers (that is the point), the uploads
+            # return to the pool (keeps sw_batched_vram_bytes an upper
+            # bound; data movement only).
             del acc, pdp_d, swhr_d, swhrc_d
 
         self.cp.cuda.runtime.deviceSynchronize()
         O["swhr"] = swhr
         O["swhrc"] = swhrc
+        # The clean-sky-no-aerosol pair IS zero by the aer_opt = 0
+        # contract: these two are the only zeroed returned slabs.
         O["swuflxcln"] = cp.zeros((ncol, nl1), dtype=cp.float32)
         O["swdflxcln"] = cp.zeros((ncol, nl1), dtype=cp.float32)
         return O
@@ -3711,26 +3781,88 @@ class CudaSW:
 # the device.
 # ===========================================================================
 
-#: Ceiling of the auto-sized columns-per-chunk (#310).  2048 was the
-#: hardwired default, reasoned against a 170 SM part: the spcvmc stage
-#: runs one thread per (column, g-point), 2048 x 112 = 229,376 threads,
-#: ~0.88x that part's resident-thread capacity (170 SMs x 1536 =
-#: 261,120), and doubling the chunk would double the dominant per-chunk
-#: transient (the explicit spcvmc workspace -- see sw_batched_vram_bytes)
-#: for < 1.14x more resident work.  Every smaller part paid the same
-#: workspace for occupancy it could not host, so the default width is
-#: now ``batch_column_chunk(NGPTSW, SW_BATCH_COLUMN_CHUNK_CEILING)``
-#: (gpuwm.core.rrtmg_lw) -- the smallest quantum multiple that saturates
-#: THIS device, never above this ceiling -- resolved lazily through the
-#: module attribute ``SW_BATCH_COLUMN_CHUNK`` so CPU-only imports never
-#: touch CUDA.
-SW_BATCH_COLUMN_CHUNK_CEILING = 2048
+#: Columns per chunk when no CUDA device can be asked (CPU-only imports
+#: and host-side pricing with an unknown device): the width the chain
+#: ran at before it was sized to the device (#310), kept so pricing
+#: without a device stays deterministic.  It is NOT a ceiling: on a
+#: device the width is the one that saturates that device's resident
+#: threads (``batch_column_chunk``, gpuwm.core.rrtmg_lw), narrowed only
+#: when its priced transient would not fit the VRAM free at the time
+#: (:func:`sw_batch_column_chunk`).  The former 2048 ceiling was
+#: reasoned against 170 SMs x 1536 threads; a 170 SM part with 2048
+#: threads per SM saturates at 3328 columns, and the ceiling cost it
+#: 44 chunks where 27 cover the same columns, for no VRAM it needed to
+#: protect: every part small enough for VRAM to matter saturates well
+#: below 2048 columns.
+SW_BATCH_COLUMN_CHUNK_NO_DEVICE = 2048
+
+
+def sw_batch_free_device_bytes(cp=None, scratch=None):
+    """Device bytes a batched call can allocate right now, or ``None``
+    when no device can be asked: the driver's free bytes plus the pool's
+    cached-free blocks plus whatever ``scratch`` already holds (its
+    slots are reused, not re-allocated)."""
+    try:
+        if cp is None:
+            import cupy as cp
+        free = int(cp.cuda.runtime.memGetInfo()[0])
+        free += int(cp.get_default_memory_pool().free_bytes())
+    except Exception:
+        return None
+    if scratch is not None:
+        free += int(scratch.held_bytes())
+    return free
+
+
+def sw_vram_column_bound(nlay, free_bytes, upper, *, quantum=None):
+    """Widest multiple of ``quantum`` at most ``upper`` (itself a
+    quantum multiple) whose priced transient
+    (:func:`sw_batched_vram_bytes`) fits ``free_bytes``; never below the
+    quantum.  The pricing is monotone in the width, so the walk down
+    from ``upper`` stops at the first fit."""
+    from gpuwm.core.rrtmg_lw import BATCH_CHUNK_QUANTUM
+    quantum = int(BATCH_CHUNK_QUANTUM if quantum is None else quantum)
+    nc = max(quantum, int(upper))
+    while nc > quantum and sw_batched_vram_bytes(nc, nlay) > free_bytes:
+        nc -= quantum
+    return nc
+
+
+def sw_batch_column_chunk(nlay=None, *, resident_threads=None,
+                          free_bytes=None, quantum=None):
+    """Columns per chunk of the batched SW chain.
+
+    ``resident_threads`` is the device's resident-thread capacity (the
+    current device's when None; 0 or an unusable value means no device
+    and returns :data:`SW_BATCH_COLUMN_CHUNK_NO_DEVICE`).  The width is
+    the smallest quantum multiple whose spcvmc launch (NGPTSW threads
+    per column) covers the capacity; with ``nlay`` and ``free_bytes``
+    both given it is narrowed to the widest quantum multiple whose
+    priced transient fits (:func:`sw_vram_column_bound`).  Host-side
+    pricing passes no ``free_bytes`` and so prices the saturation
+    width, an upper bound on what a device run picks.  Width is
+    workspace shape only: per-column results are bitwise identical at
+    any width.
+    """
+    from gpuwm.core.rrtmg_lw import (BATCH_CHUNK_QUANTUM,
+                                     _device_resident_threads,
+                                     batch_column_chunk)
+    quantum = int(BATCH_CHUNK_QUANTUM if quantum is None else quantum)
+    if resident_threads is None:
+        resident_threads = _device_resident_threads()
+    if not resident_threads or int(resident_threads) <= 0:
+        return SW_BATCH_COLUMN_CHUNK_NO_DEVICE
+    width = batch_column_chunk(NGPTSW, None, quantum=quantum,
+                               resident_threads=resident_threads)
+    if nlay is not None and free_bytes is not None:
+        width = sw_vram_column_bound(nlay, int(free_bytes), width,
+                                     quantum=quantum)
+    return width
 
 
 def __getattr__(name):
     if name == "SW_BATCH_COLUMN_CHUNK":
-        from gpuwm.core.rrtmg_lw import batch_column_chunk
-        return batch_column_chunk(NGPTSW, SW_BATCH_COLUMN_CHUNK_CEILING)
+        return sw_batch_column_chunk()
     raise AttributeError(
         f"module {__name__!r} has no attribute {name!r}")
 
@@ -3740,6 +3872,136 @@ def __getattr__(name):
 #: RSW_SPCVMC_WKC in kernels/rrtmg_sw.cu.
 SPCVMC_WK_ARRAYS = 35
 SPCVMC_WKC_ARRAYS = 2
+
+#: Slot names of the batched chain's per-chunk workspace, by class.
+SETCOEF_INT_SLOTS = ("jp", "jt", "jt1", "indself", "indfor", "tflag",
+                     "lflag")
+SETCOEF_REAL_SLOTS = ("colh2o", "colco2", "colo3", "coln2o", "colch4",
+                      "colo2", "colmol", "co2mult", "selffac", "selffrac",
+                      "forfac", "forfrac", "fac00", "fac01", "fac10",
+                      "fac11")
+SPCVMC_OUT_SLOTS = ("zcd", "zcu", "zfd", "zfu", "ztn", "ztcn")
+SPC_ACCUM_SLOTS = ("pbbfd", "pbbfu", "pbbcd", "pbbcu", "pbbfddir",
+                   "pbbcddir", "puvfd", "puvcd", "puvfddir", "puvcddir",
+                   "pnifd", "pnicd", "pnifddir", "pnicddir")
+
+#: The slots the kernels READ BEFORE WRITING, zeroed per chunk
+#: (``SWBatchScratch.zeros``): wkl because rsw_inatm_layers_b scales all
+#: RSW_NMOL species after writing only six of them (species 4 is read
+#: unwritten); err because rsw_cldprmc_b writes it only on abort and the
+#: host reads it unconditionally.
+SW_CHUNK_ZEROED_SLOTS = ("wkl", "err")
+
+#: The slots that are constant kernel inputs, filled once when
+#: allocated (``SWBatchScratch.constant``): the zero-aerosol optics
+#: (ztaua, zasya = 0, zomga = 1) and the zero snow path of the non-5 ice
+#: flag (cswpmc0, resnmc0), all ``const`` parameters of their kernels.
+SW_CONSTANT_SLOTS = ("ztaua", "zasya", "zomga", "cswpmc0", "resnmc0")
+
+#: Every ``SWBatchScratch.take`` slot: written in full by the kernel or
+#: copy named before anything reads it, so it enters each chunk as the
+#: previous chunk left it and is never zeroed.
+SW_TAKE_SLOTS = (
+    ("pdp", "rsw_inatm_layers_b, every (column, layer)"),
+    ("coldry", "rsw_inatm_layers_b, every (column, layer)"),
+    *((k, "rsw_setcoef_b, every (column, layer)")
+      for k in SETCOEF_INT_SLOTS + SETCOEF_REAL_SLOTS),
+    ("taug", "rsw_taumol_b, every (column, g-point, layer)"),
+    ("taur", "rsw_taumol_b, every (column, g-point, layer)"),
+    ("sflux", "rsw_sfluxzen_b, every (column, g-point)"),
+    *((k, "elementwise transpose copy of the McICA slab")
+      for k in ("zcldfmc", "ztaucmc", "ztaormc", "zasycmc", "zomgcmc")),
+    ("wk", "rsw_spcvmc_body: every entry read is written earlier by the "
+           "same thread (rsw_reftra and rsw_vrtqdr included)"),
+    ("wkc", "rsw_spcvmc_body: lrtchkclr/lrtchkcld[0..klev-1] written in "
+            "the first layer loop, read by rsw_reftra"),
+    ("zincflx", "rsw_spcvmc_body, every (column, g-point)"),
+    *((k, "rsw_spcvmc_body, every (column, g-point, level)")
+      for k in SPCVMC_OUT_SLOTS),
+    *((k, "rsw_spc_accum_b, stored once per (column, level) from a "
+          "register sum") for k in SPC_ACCUM_SLOTS),
+    ("swhr", "rsw_post_b, every (column, layer), both branches"),
+    ("swhrc", "rsw_post_b, every (column, layer), both branches"),
+)
+
+#: Every workspace slot with its class: the audit surface for
+#: tests/test_rrtmg_sw_workspace.py.
+SW_SCRATCH_SLOTS = (
+    tuple((k, "take", why) for k, why in SW_TAKE_SLOTS)
+    + tuple((k, "constant", "const kernel input") for k in SW_CONSTANT_SLOTS)
+    + tuple((k, "zeros", "read before write") for k in SW_CHUNK_ZEROED_SLOTS)
+)
+
+
+class SWBatchScratch:
+    """Per-chunk device workspace of the batched SW chain.
+
+    ``take(slot, shape, dtype)`` returns a C-contiguous view of a byte
+    buffer kept per slot, allocated (``xp.empty``) only when the slot is
+    new or the request outgrows it, so across the chunks of a call and
+    across calls a slot is allocated once and never zeroed: every
+    ``take`` slot is fully written before it is read (SW_TAKE_SLOTS).
+    ``constant(slot, shape, dtype, fill)`` is a kernel input filled once
+    on allocation and never written; ``zeros(slot, shape, dtype)`` is a
+    fresh ``xp.zeros`` per chunk for the read-before-write slots.  The
+    counters are the test surface: ``allocations`` (buffers made),
+    ``zeroed_bytes`` (memset per ``zeros``), ``filled_bytes`` (constant
+    fills).  ``xp`` is cupy on the device and numpy in the CPU tests.
+    """
+
+    def __init__(self, xp):
+        self.xp = xp
+        self._bufs = {}
+        self._consts = {}
+        self.allocations = 0
+        self.zeroed_bytes = 0
+        self.filled_bytes = 0
+
+    @staticmethod
+    def _nbytes(shape, dtype):
+        n = 1
+        for s in shape:
+            n *= int(s)
+        return n * np.dtype(dtype).itemsize
+
+    def take(self, slot, shape, dtype):
+        shape = tuple(int(s) for s in shape)
+        nbytes = self._nbytes(shape, dtype)
+        buf = self._bufs.get(slot)
+        if buf is None or buf.nbytes < nbytes:
+            buf = self.xp.empty(nbytes, dtype=np.uint8)
+            self._bufs[slot] = buf
+            self.allocations += 1
+        return buf[:nbytes].view(np.dtype(dtype)).reshape(shape)
+
+    def constant(self, slot, shape, dtype, fill):
+        shape = tuple(int(s) for s in shape)
+        arr = self._consts.get(slot)
+        if (arr is None or arr.dtype != np.dtype(dtype)
+                or arr.shape[1:] != shape[1:] or arr.shape[0] < shape[0]):
+            arr = self.xp.full(shape, fill, dtype=np.dtype(dtype))
+            self._consts[slot] = arr
+            self.allocations += 1
+            self.filled_bytes += arr.nbytes
+        return arr[:shape[0]]
+
+    def zeros(self, slot, shape, dtype):
+        shape = tuple(int(s) for s in shape)
+        arr = self.xp.zeros(shape, dtype=np.dtype(dtype))
+        self.zeroed_bytes += arr.nbytes
+        return arr
+
+    def held_bytes(self):
+        return (sum(int(b.nbytes) for b in self._bufs.values())
+                + sum(int(a.nbytes) for a in self._consts.values()))
+
+    def slots(self):
+        """Slot names currently held (take and constant)."""
+        return tuple(self._bufs) + tuple(self._consts)
+
+    def release(self):
+        self._bufs.clear()
+        self._consts.clear()
 
 #: Every kernel in the SW translation unit (local-frame audit surface).
 SW_GPU_KERNEL_NAMES = (
@@ -3786,19 +4048,70 @@ def _sw_dev_mcica(cp, a, c0, c1, nl):
     return cp.asarray(np.ascontiguousarray(sub.transpose(1, 2, 0)))
 
 
+def sw_batched_scratch_bytes(ncol_chunk, nlay):
+    """Device bytes :class:`SWBatchScratch` holds once every slot has
+    been taken at a chunk of ``ncol_chunk`` columns: the take slots and
+    the constant slots (the zero snow pair is priced whether the ice
+    flag uploads real snow or fills the constant, since exactly one of
+    the two exists at a time and they are the same size).  Every term
+    is rounded to CuPy's 512-byte pool quantum."""
+    nc = int(ncol_chunk)
+    nl = int(nlay)
+    n1 = nl + 1
+    f = 4
+    s_nl = _r512(nc * nl * f)
+    s_n1 = _r512(nc * n1 * f)
+    s_g = _r512(nc * NGPTSW * f)
+    s_gnl = _r512(nc * NGPTSW * nl * f)      # one (nc, 112, nl) f32 slab
+    s_gn1 = _r512(nc * NGPTSW * n1 * f)
+    s_bnl = _r512(nc * NBNDSW * nl * f)
+    wk = _r512(nc * NGPTSW * SPCVMC_WK_ARRAYS * n1 * f)
+    wkc = _r512(nc * NGPTSW * SPCVMC_WKC_ARRAYS * n1)
+    return (2 * s_nl                         # pdp coldry
+            + s_gnl + s_nl                   # cswpmc0 resnmc0 (or upload)
+            + 23 * s_nl                      # 7 int + 16 real setcoef
+            + 2 * s_gnl + s_g                # taug taur sflux
+            + 5 * s_gnl                      # z* transposed inputs
+            + 3 * s_bnl                      # ztaua zasya zomga
+            + wk + wkc
+            + s_g                            # zincflx
+            + 6 * s_gn1                      # zcd zcu zfd zfu ztn ztcn
+            + 14 * s_n1                      # spc_accum outputs
+            + 2 * s_nl)                      # swhr swhrc
+
+
+def sw_batched_memset_bytes(ncol, nlay, column_chunk=None):
+    """Device bytes the batched SW chain zeroes for ``ncol`` columns
+    walked in chunks of ``column_chunk`` (default: all in one): the
+    read-before-write slots only (SW_CHUNK_ZEROED_SLOTS: wkl per chunk
+    and the 4-byte abort flag per chunk) plus the two clean-sky output
+    slabs that are zero by contract.  Unrounded, so it equals the
+    ``SWBatchScratch.zeroed_bytes`` a call adds plus the two slabs."""
+    ncol = int(ncol)
+    nl = int(nlay)
+    chunk = ncol if column_chunk is None else int(column_chunk)
+    total = 0
+    for c0 in range(0, ncol, chunk):
+        nc = min(chunk, ncol - c0)
+        total += nc * nl * MXMOL * 4 + 4
+    return total + 2 * ncol * (nl + 1) * 4
+
+
 def sw_batched_vram_bytes(ncol_chunk, nlay, ncol_total=None):
     """Peak transient device bytes of ONE chunk of the batched SW chain.
 
-    Derived from exactly the shapes rrtmg_sw_batched_device allocates, as
-    the max over its three allocation high-water stages (upload/inatm/
-    cldprmc; setcoef/taumol/sfluxzen; spcvmc with its explicit
-    workspace), plus the batch-level output slabs (priced at ncol_total,
-    default = ncol_chunk).  Every term is rounded to CuPy's 512-byte pool
-    quantum, so the estimate tracks mempool.used_bytes() tightly (the
-    honesty test requires estimate >= measured >= 0.5 * estimate).  The
-    CudaSW instance constants (packed table buffer + ngb, a few MiB) are
-    allocated at construction, before any batched call, and are NOT
-    included.
+    Derived from exactly the shapes rrtmg_sw_batched_device allocates:
+    the workspace slots the scratch holds for the whole call
+    (:func:`sw_batched_scratch_bytes`) plus the max over the three
+    allocation high-water stages of the per-chunk uploads and transients
+    that are not workspace (upload/inatm/cldprmc; setcoef/taumol/
+    sfluxzen; spcvmc), plus the batch-level output slabs (priced at
+    ncol_total, default = ncol_chunk).  Every term is rounded to CuPy's
+    512-byte pool quantum, so the estimate tracks mempool.used_bytes()
+    tightly (the accuracy test requires estimate >= measured >= 0.5 *
+    estimate, measured from a released scratch).  The CudaSW instance
+    constants (packed table buffer + ngb, a few MiB) are allocated at
+    construction, before any batched call, and are NOT included.
     """
     nc = int(ncol_chunk)
     nl = int(nlay)
@@ -3807,47 +4120,29 @@ def sw_batched_vram_bytes(ncol_chunk, nlay, ncol_total=None):
     f = 4
     s_nl = _r512(nc * nl * f)
     s_n1 = _r512(nc * n1 * f)
-    s_g = _r512(nc * NGPTSW * f)
     s_gnl = _r512(nc * NGPTSW * nl * f)      # one (nc, 112, nl) f32 slab
-    s_gn1 = _r512(nc * NGPTSW * n1 * f)
     s_b = _r512(nc * NBNDSW * f)
-    s_bnl = _r512(nc * NBNDSW * nl * f)
     s_m = _r512(nc * nl * MXMOL * f)         # wkl
     s_c = _r512(nc * f)
     # batch-level outputs, alive for the whole call
     out_b = 10 * _r512(nt * n1 * f) + 2 * _r512(nt * nl * f)
-    # stage U: uploads + inatm outputs + all McICA slabs + cldprmc
+    # stage U: uploads + wkl + the 7 McICA slabs + taormc + radii + err
     stage_u = (s_n1                          # plev
                + 2 * s_nl                    # play tlay
                + 6 * s_nl                    # vmr x6
-               + 2 * s_nl + s_m              # pdp coldry wkl
-               + 9 * s_gnl                   # 8 mcica + taormc
-               + 3 * s_nl                    # reicmc relqmc resnmc
-               + _r512(4)                    # err flag
-               + out_b)
-    # stage S: setcoef outputs + taumol/sfluxzen (mcica slabs cldfmc/
-    # taucmc/ssacmc/asmcmc/taormc still alive; play/tlay/coldry/wkl
-    # freed before the band kernels launch)
-    stage_s = (s_nl + 5 * s_gnl              # pdp + kept mcica
-               + 23 * s_nl                   # 7 int + 16 real setcoef
-               + s_c + _r512(nc * NBNDSW * f)  # laytrop + laysolfr
-               + 2 * s_gnl + s_g             # taug taur sfluxzen
-               + out_b)
-    # stage P (the peak): spcvmc inputs in both frames were never alive
-    # together (transpose sources freed one by one), outputs, and the
-    # explicit per-thread workspace
-    wk = _r512(nc * NGPTSW * SPCVMC_WK_ARRAYS * n1 * f)
-    wkc = _r512(nc * NGPTSW * SPCVMC_WKC_ARRAYS * n1)
-    stage_p = (s_nl                          # pdp
-               + 2 * s_gnl + s_g             # taug taur sfluxzen
-               + 5 * s_gnl                   # z* transposed inputs
-               + 3 * s_bnl                   # ztaua zasya zomga
-               + 3 * s_b + s_c               # albdif albdir adjflux cossza
-               + s_g                         # zincflx
-               + 6 * s_gn1                   # zcd zcu zfd zfu ztn ztcn
-               + wk + wkc
-               + out_b)
-    return max(stage_u, stage_s, stage_p)
+               + s_m                         # wkl (zeroed per chunk)
+               + 8 * s_gnl                   # 7 mcica + taormc
+               + 2 * s_nl                    # reicmc relqmc
+               + _r512(4))                   # err flag
+    # stage S: the kept McICA slabs + laytrop + laysolfr (play/tlay/
+    # coldry/wkl freed before the band kernels launch)
+    stage_s = (5 * s_gnl                     # cldfmc taucmc ssacmc asmcmc taormc
+               + s_c + _r512(nc * NBNDSW * f))  # laytrop + laysolfr
+    # stage P: the per-column host uploads (transpose sources freed one
+    # by one before the launch)
+    stage_p = 3 * s_b + s_c                  # albdif albdir adjflux cossza
+    return (sw_batched_scratch_bytes(nc, nl)
+            + max(stage_u, stage_s, stage_p) + out_b)
 
 
 def sw_batched_to_host(out):

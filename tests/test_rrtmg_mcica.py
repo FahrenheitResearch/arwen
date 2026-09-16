@@ -477,8 +477,8 @@ def test_gpu_twin_local_frames():
 
 @gpu_gate
 @pytest.mark.parametrize("chunk", [4096, 1024])
-def test_gpu_twin_vram_estimate_honesty(chunk):
-    """mcica_device_vram_bytes honesty at call level: the analytic
+def test_gpu_twin_vram_estimate_accuracy(chunk):
+    """mcica_device_vram_bytes accuracy at call level: the analytic
     call estimate (_call_vram_bytes, whose chunk-transient term is
     mcica_device_vram_bytes) bounds the pool-measured peak from above
     and stays within 2x of it, at single- and multi-chunk sizes."""

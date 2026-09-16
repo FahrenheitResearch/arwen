@@ -141,7 +141,7 @@ is 1.53e-07 / 3.40e-07 now.  It was the pressure perturbation, not the cold
 network.
 
 `aero-cold-overlap` moved the other way at ONE level and the number is
-honest: at 0-based level 4 the entry `qc` of 2.3252e-04 kg/kg is driven to
+accurate: at 0-based level 4 the entry `qc` of 2.3252e-04 kg/kg is driven to
 `1.4552e-11` by WRF and to exactly `0.0` by gpuwm.  `1.4552e-11` is `2**-36`,
 which is exactly ONE ULP of that level's `qv` (2.4005e-04, binade
 `[2**-13, 2**-12)`), and gpuwm's `qv` there is exactly one ulp HIGHER than

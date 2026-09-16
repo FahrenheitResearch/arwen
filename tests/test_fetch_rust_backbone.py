@@ -543,7 +543,7 @@ def _install_fake_backbone(monkeypatch, atmosphere: int,
 
 def test_a_late_tripwire_quarantines_the_payload_and_says_so(
         tmp_path, monkeypatch):
-    """Ordering and honesty, together: the two halves of one failure."""
+    """Ordering and accuracy, together: the two halves of one failure."""
 
     _install_fake_backbone(monkeypatch, CERTIFIED_RECORD_BARS[
         "hrrr-atmosphere"] + 11)

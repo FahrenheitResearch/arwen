@@ -1,4 +1,4 @@
-"""The sweep's two load-bearing claims, checked mechanically.
+"""The sweep's two essential claims, checked mechanically.
 
 1. The neighborhood is a square SIDE LENGTH, not a radius.  Every
    comparison in ``docs/da-vs-wofs.md`` against published WoFS skill

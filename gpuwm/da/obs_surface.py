@@ -64,7 +64,7 @@ from datetime import datetime, timedelta, timezone
 import json
 import math
 from pathlib import Path
-from typing import Mapping, Sequence
+from typing import Callable, Mapping, Sequence
 
 import numpy as np
 
@@ -81,14 +81,147 @@ ADAPTER_SCHEMA = "gpuwm-da.surface-obs-adapter.v1"
 TEMPERATURE_QUANTITY = "temperature_2m"    # K
 WIND_SPEED_QUANTITY = "wind_speed_10m"     # m s-1
 
-#: Seam quantities deliberately NOT offered.  ``dewpoint_2m`` needs a q2
-#: inversion choice nobody has reviewed; ``mslp`` mixes reduction formulas
-#: (see the module docstring).  Both are upstream/v2 questions.
-UNSUPPORTED_QUANTITIES = ("dewpoint_2m", "mslp")
+#: The seam quantity id every unsupported row names as its way out.
+SEAM_V2 = "gpuwm-obs.asos-surface.v2"
 
 
 class SurfaceObsError(ValueError):
     """The record and the filter cannot be reconciled.  Never a warning."""
+
+
+# ---------------------------------------------------------------------------
+# the seam quantity table
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class SurfaceQuantity:
+    """One row of the seam's quantity table.  Adding a quantity is a row.
+
+    A SUPPORTED row states the units the seam guarantees, the
+    :class:`SurfaceObsConfig` field that enables it, the per-type
+    localisation field, and the builder that turns the member surface
+    diagnostics into this quantity's member plane.  An UNSUPPORTED row
+    states the operator that is missing and the way out instead; it has
+    no builder, because there is no H(x) to build.
+    """
+
+    quantity: str
+    units: str = ""
+    error_field: str | None = None
+    localization_field: str | None = None
+    #: ``(t2, u10, v10) -> (R, ny, nx)`` member plane, supported rows only.
+    member_plane: Callable | None = None
+    #: What an assimilation of this quantity would need and does not have.
+    missing_operator: str | None = None
+    #: What has to land for the row to become supported.
+    way_out: str | None = None
+
+    @property
+    def supported(self) -> bool:
+        return self.error_field is not None
+
+
+def _temperature_plane(t2, u10, v10):
+    return t2
+
+
+def _wind_speed_plane(t2, u10, v10):
+    return np.hypot(u10, v10)
+
+
+#: Every quantity the v1 seam can carry, supported or not.  The two
+#: supported rows are the only ones with an observation operator; the two
+#: unsupported rows carry the operator that is missing and the way out, so
+#: a caller who names one is told why rather than being dropped in silence
+#: (see the module docstring for the physics behind each).
+SURFACE_QUANTITY_TABLE: Mapping[str, SurfaceQuantity] = {
+    TEMPERATURE_QUANTITY: SurfaceQuantity(
+        quantity=TEMPERATURE_QUANTITY,
+        units="K",
+        error_field="temperature_error_k",
+        localization_field="temperature_localization",
+        member_plane=_temperature_plane),
+    WIND_SPEED_QUANTITY: SurfaceQuantity(
+        quantity=WIND_SPEED_QUANTITY,
+        units="m s-1",
+        error_field="wind_speed_error_ms",
+        localization_field="wind_localization",
+        member_plane=_wind_speed_plane),
+    "dewpoint_2m": SurfaceQuantity(
+        quantity="dewpoint_2m",
+        units="K",
+        missing_operator=(
+            "the dewpoint-to-q2 inversion, which needs a saturation "
+            "formulation nobody has pinned here"),
+        way_out=(
+            f"pin one stated saturation formulation for the inversion and "
+            f"land it with the {SEAM_V2} seam, then add the row to "
+            f"SURFACE_QUANTITY_TABLE")),
+    "mslp": SurfaceQuantity(
+        quantity="mslp",
+        units="Pa",
+        missing_operator=(
+            "a sea level pressure operator: the seam's mslp is the "
+            "network's own reduction, and differencing it against any "
+            "model-side reduction mixes two reduction formulas"),
+        way_out=(
+            f"carry the station's own reduction metadata on the {SEAM_V2} "
+            f"seam (altimeter or station pressure against psfc adjusted to "
+            f"station elevation), then add the row to "
+            f"SURFACE_QUANTITY_TABLE")),
+}
+
+#: Spellings kept for readers of this module; both are derived from the
+#: one table so they can never drift from it.
+SUPPORTED_QUANTITIES = tuple(
+    q for q, row in SURFACE_QUANTITY_TABLE.items() if row.supported)
+UNSUPPORTED_QUANTITIES = tuple(
+    q for q, row in SURFACE_QUANTITY_TABLE.items() if not row.supported)
+
+
+def resolve_quantity(quantity: str) -> SurfaceQuantity:
+    """The one lookup both doors call: config admission and batch build.
+
+    Returns the supported row, or raises :class:`SurfaceObsError` naming
+    the quantity, the operator it does not have and the way out.  An id
+    the table does not know at all is named against the set it does.
+    """
+
+    key = str(quantity)
+    row = SURFACE_QUANTITY_TABLE.get(key)
+    if row is None:
+        known = ", ".join(sorted(SURFACE_QUANTITY_TABLE))
+        supported = ", ".join(SUPPORTED_QUANTITIES)
+        raise SurfaceObsError(
+            f"{key!r} is not a quantity the asos-surface seam carries; the "
+            f"seam's own ids are {known}, and this adapter assimilates "
+            f"{supported}. Check the spelling against the record's own "
+            f"values, or add the row to SURFACE_QUANTITY_TABLE")
+    if not row.supported:
+        raise SurfaceObsError(
+            f"{row.quantity} cannot be assimilated: this adapter has no "
+            f"observation operator for it, it is missing "
+            f"{row.missing_operator}. The way out: {row.way_out}")
+    return row
+
+
+def declined_reason(quantity: str) -> str:
+    """Why a value the record carried did not become an observation.
+
+    One sentence per quantity, for the provenance notes; it never raises,
+    because a receipt that cannot be written is worse than a limit.
+    """
+
+    row = SURFACE_QUANTITY_TABLE.get(str(quantity))
+    if row is None:
+        return ("not a quantity this adapter knows; it is absent from "
+                "SURFACE_QUANTITY_TABLE")
+    if not row.supported:
+        return (f"no observation operator here, missing "
+                f"{row.missing_operator}; way out: {row.way_out}")
+    return (f"supported, but this config stated no {row.error_field}, so "
+            f"nothing enabled it")
 
 
 @dataclass(frozen=True)
@@ -119,6 +252,15 @@ class SurfaceObsConfig:
     temperature_localization / wind_localization
         Per-type overrides, same contract as the radar config; ``None``
         falls back to the filter's default radii.
+    quantity_error_stddev
+        The table-shaped spelling of the same thing: a mapping of seam
+        quantity id to error standard deviation, for callers that carry
+        their sigmas as data rather than as field names.  Every id in it
+        is resolved through :func:`resolve_quantity`, so naming a
+        quantity this adapter has no operator for is refused by name at
+        configuration time instead of disappearing.  A supported id may
+        be stated here or through its named field, never as two
+        different numbers.
     """
 
     temperature_error_k: float | None = None
@@ -128,20 +270,39 @@ class SurfaceObsConfig:
     max_age_seconds: float = 900.0
     temperature_localization: Localization | None = None
     wind_localization: Localization | None = None
+    quantity_error_stddev: Mapping[str, float] | None = None
 
     def __post_init__(self) -> None:
-        if self.temperature_error_k is None and \
-                self.wind_speed_error_ms is None:
+        stated: dict[str, float] = {}
+        for quantity, value in (
+                (TEMPERATURE_QUANTITY, self.temperature_error_k),
+                (WIND_SPEED_QUANTITY, self.wind_speed_error_ms)):
+            if value is None:
+                continue
+            resolve_quantity(quantity)
+            stated[quantity] = float(value)
+        for quantity, value in dict(self.quantity_error_stddev or {}).items():
+            row = resolve_quantity(quantity)
+            if value is None:
+                continue
+            previous = stated.get(row.quantity)
+            if previous is not None and float(value) != previous:
+                raise SurfaceObsError(
+                    f"{row.quantity} is stated twice with two different "
+                    f"error standard deviations, {previous!r} through "
+                    f"{row.error_field} and {float(value)!r} through "
+                    f"quantity_error_stddev; state it once, in either "
+                    f"spelling")
+            stated[row.quantity] = float(value)
+        if not stated:
             raise SurfaceObsError(
                 "neither temperature_error_k nor wind_speed_error_ms is "
                 "stated, so this config would assimilate nothing. A "
                 "quantity is enabled by stating its error standard "
                 "deviation; there is no default sigma on purpose")
-        for label, value in (
-                ("temperature_error_k", self.temperature_error_k),
-                ("wind_speed_error_ms", self.wind_speed_error_ms)):
-            if value is None:
-                continue
+        object.__setattr__(self, "_stated_sigmas", stated)
+        for quantity, value in stated.items():
+            label = SURFACE_QUANTITY_TABLE[quantity].error_field
             v = float(value)
             if not math.isfinite(v) or v <= 0.0:
                 raise SurfaceObsError(
@@ -167,11 +328,28 @@ class SurfaceObsConfig:
 
     @property
     def temperature(self) -> bool:
-        return self.temperature_error_k is not None
+        return TEMPERATURE_QUANTITY in self._stated_sigmas
 
     @property
     def wind_speed(self) -> bool:
-        return self.wind_speed_error_ms is not None
+        return WIND_SPEED_QUANTITY in self._stated_sigmas
+
+    def error_stddev(self, quantity: str) -> float | None:
+        """The stated sigma for one quantity, in either spelling."""
+
+        return self._stated_sigmas.get(str(quantity))
+
+    def enabled_quantities(self) -> list[tuple[SurfaceQuantity, float]]:
+        """The rows this config enables, in the table's own order.
+
+        Every id went through :func:`resolve_quantity` at construction,
+        so nothing unsupported can reach the batch builder from here.
+        """
+
+        return [(SURFACE_QUANTITY_TABLE[quantity],
+                 self._stated_sigmas[quantity])
+                for quantity in SURFACE_QUANTITY_TABLE
+                if quantity in self._stated_sigmas]
 
 
 # ---------------------------------------------------------------------------
@@ -428,6 +606,12 @@ def surface_to_gridded_obs(
         "stations_superseded_colocated": 0,
         "values_missing_by_quantity": {},
         "values_nonfinite_by_quantity": {},
+        # Values the record carried that no batch consumed, and how many
+        # placed reports carried them.  Default-on: a declined quantity
+        # is counted and named in the provenance notes, never dropped in
+        # silence.
+        "values_declined_by_quantity": {},
+        "reports_with_declined_quantities": 0,
     }
     chosen = _select_reports(record, analysis_time, analysis_times,
                              float(config.max_age_seconds), counts)
@@ -506,18 +690,15 @@ def surface_to_gridded_obs(
     batches: list[GriddedObs] = []
     used: list[dict] = []
 
+    # One table, one lookup: the config already resolved every named
+    # quantity through resolve_quantity, so the plan is the table's own
+    # rows and nothing here decides what a quantity is.
     quantity_plan = []
-    if config.temperature:
+    for row, sigma in config.enabled_quantities():
         quantity_plan.append(
-            (TEMPERATURE_QUANTITY, "K",
-             float(config.temperature_error_k), t2_stack,
-             config.temperature_localization))
-    if config.wind_speed:
-        speed_stack = np.hypot(u10_stack, v10_stack)
-        quantity_plan.append(
-            (WIND_SPEED_QUANTITY, "m s-1",
-             float(config.wind_speed_error_ms), speed_stack,
-             config.wind_localization))
+            (row.quantity, row.units, float(sigma),
+             row.member_plane(t2_stack, u10_stack, v10_stack),
+             getattr(config, row.localization_field)))
 
     ages_used: list[float] = []
     for quantity, units, sigma, member_plane, localization in quantity_plan:
@@ -556,6 +737,30 @@ def surface_to_gridded_obs(
             "error_stddev": sigma, "error_inflation": inflation,
             "observed_points": observed,
         })
+
+    # -- declined quantities -------------------------------------------------
+    #
+    # A value a placed report carried that no batch consumed is a dropped
+    # observation.  Counting it and naming its reason once is what keeps
+    # the limit visible without a flag: a run that declined a seam
+    # quantity says so in its own receipt instead of reading exactly like
+    # a record that never carried one.
+
+    assimilated = {quantity for quantity, _, _, _, _ in quantity_plan}
+    declined_counts: dict[str, int] = counts["values_declined_by_quantity"]
+    for _placement_key, placement in sorted(placed.items()):
+        values = placement["report"].get("values") or {}
+        carried = sorted(q for q, v in values.items()
+                         if q not in assimilated and v is not None)
+        if not carried:
+            continue
+        counts["reports_with_declined_quantities"] += 1
+        for quantity in carried:
+            declined_counts[quantity] = declined_counts.get(quantity, 0) + 1
+    declined_notes = [
+        f"declined quantity {quantity}: {declined_reason(quantity)} "
+        f"({count} placed reports carried a value for it)"
+        for quantity, count in sorted(declined_counts.items())]
 
     # -- provenance ----------------------------------------------------------
 
@@ -604,6 +809,7 @@ def surface_to_gridded_obs(
             "errors are standard deviations, stated by the caller",
             "each report enters at most one analysis when the schedule "
             "is supplied",
+            *declined_notes,
         ],
     }
     return batches, provenance

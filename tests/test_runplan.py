@@ -971,7 +971,7 @@ def test_the_prepared_route_now_drives_a_multi_domain_hrrr_plan(tmp_path):
     """This asserted a refusal until the tree chain was wired.
 
     It named the two things it could not drive -- the hierarchy stage
-    and the tree runner -- so the honest replacement is that both are
+    and the tree runner -- so the accurate replacement is that both are
     now on the path.  The chain itself is covered end to end in
     tests/test_runplan_hrrr_tree.py; this is the negative-control side:
     a nested HRRR plan no longer stops at a sentence.
@@ -1760,10 +1760,10 @@ def test_sources_coverage_repeats_the_registry_window_or_says_global(capsys):
         assert coverage["grid"]
 
 
-def test_sources_names_the_run_plan_intent_reach_honestly(capsys):
+def test_sources_names_the_run_plan_intent_reach_accurately(capsys):
     """Registered rows and intent-drivable ones are separate truths.
 
-    The picker's honesty depends on this field: the registry decodes
+    The picker's accuracy depends on this field: the registry decodes
     more than the run-plan INTENT door can drive, and a picker that hid
     the difference would offer launches that refuse.  The field is the
     DERIVED verdict -- registry facts through
@@ -2823,7 +2823,7 @@ def test_estimate_reports_measured_numbers_and_nulls_the_unmeasured_ones(
     assert document["schema"] == "gpuwm.run-plan.estimate.v1"
     assert document["vram"]["estimate_bytes"] > 0
     assert document["disk"]["total_frames"] > 0
-    # The honest nulls, each with its basis stated rather than a number
+    # The accurate nulls, each with its basis stated rather than a number
     # this package never measured.
     assert document["disk"]["bytes"] is None
     assert document["wall_time"]["seconds"] is None
@@ -2904,7 +2904,7 @@ def _cli(*tokens, cwd):
 
     repo = str(Path(__file__).resolve().parents[1])
     environment = dict(os.environ)
-    # The pin is load-bearing: without it a subprocess resolves gpuwm
+    # The pin is essential: without it a subprocess resolves gpuwm
     # through whatever editable install this interpreter carries, and
     # the test silently exercises a different checkout.
     environment["PYTHONPATH"] = repo + os.pathsep + environment.get(
@@ -3301,3 +3301,58 @@ def test_a_sealed_bundle_is_not_refused_for_a_dataset_it_never_opens(
     assert ("execution", "prepared_root") in {
         (entry["scope"], entry["key"])
         for entry in resolution["automatic_resolutions"]}
+
+@pytest.mark.parametrize("stop, code", [
+    ("go_interrupted", 130),   # Ctrl-C landed while waiting on the stage
+    ("stage_sigint", 130),     # the stage answered the same SIGINT first
+    ("stage_exit_130", 130),   # ... as a Python stage does, with 130
+    ("stage_failed", 1),       # a real failure is still a failure
+    ("go_returned_130", 130),  # the in-process chain answered the stop itself
+])
+def test_a_stop_during_a_stage_exits_130_like_a_stop_between_stages(
+        tmp_path, monkeypatch, stop, code):
+    """The desktop reads the worker's exit code back from its receipts.
+
+    Its saved-run reader calls 130 "stopped" and every other nonzero
+    code "failed", and offers downscaling only from a completed or
+    stopped run.  ``run_stage`` raises ``GoInterrupted`` (not a
+    ``KeyboardInterrupt``) when the Ctrl-C lands while it waits on a
+    stage subprocess, which is where a stop during fetch, prepare,
+    forecast or render lands, so the run used to exit 1 and lose its
+    downscale door the next time the desktop opened.
+    """
+    import gpuwm.go_cli as go_cli
+    from gpuwm import capabilities
+    from gpuwm.runplan import StageExitError
+
+    monkeypatch.setattr(capabilities, "require", lambda *args, **kwargs: None)
+    raised = {
+        "go_interrupted": go_cli.GoInterrupted("render", 4242),
+        "stage_sigint": StageExitError("render", -2),
+        "stage_exit_130": StageExitError("render", 130),
+        "stage_failed": StageExitError("render", 2),
+    }.get(stop)
+
+    def fake_go_main(args, *, observer=None, **_):
+        if stop == "go_returned_130":
+            # What `gpuwm go` does with its own interrupt: names the
+            # stage, returns 130.
+            observer.stage_begin(label="render", command=["rw_wrfbatch"])
+            return 130
+        raise raised
+
+    monkeypatch.setattr(go_cli, "go_main", fake_go_main)
+    plan = load_plan(_prepared_plan(tmp_path, tmp_path / "run"))
+    plan.run_dir.mkdir(parents=True, exist_ok=True)
+    with EventStream(plan.run_dir / EVENTS_FILENAME, mirror=None) as events:
+        assert execute_plan(plan, events=events) == code
+    failed = read_events(plan.run_dir / EVENTS_FILENAME)[-1]
+    assert failed["event"] == "failed"
+    assert failed["interrupted"] is (code == 130)
+    assert failed["exit_code"] == (130 if code == 130 else 2)
+    if stop == "go_interrupted":
+        assert failed["error_class"] == "GoInterrupted"
+        assert failed["message"] == "interrupted during render"
+    if stop == "go_returned_130":
+        assert failed["error_class"] == "ChainInterrupted"
+        assert failed["message"] == "interrupted during render"

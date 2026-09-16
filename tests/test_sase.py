@@ -483,7 +483,7 @@ def test_variable_dz_collapses_to_uniform_path_generic_spacing():
     the precomputed Lagrange coefficient fl(1/(2*dz)) while the uniform
     path subtracts then divides by 2*dz, and fl(x*fl(1/400)) differs
     from fl(x/400) for generic (non-power-of-two) spacing.  The noise is
-    absolute, ~ULP(|f|*coeff) per stencil term, so the honest bound is
+    absolute, ~ULP(|f|*coeff) per stencil term, so the accurate bound is
     relative to each field's magnitude, not element-wise: theta's 300 K
     offset makes the buoyancy term's worst cell measure 5.2e-15 of the
     field max (coefficient noise scales with |theta|, the derivative
@@ -1208,7 +1208,7 @@ def test_hmix_k_diag_records_the_governed_field_the_closure_used(
         physics, "launch_bulk_richardson_zi",
         lambda *a, **kw: np.zeros((cfg.ny, cfg.nx), np.float32))
     assert set(driver.hmix_k_diag) == {"SASE_KMH", "SASE_KHH"}
-    # Zeros before any step: frame 0 is an honest zero, not a fill value.
+    # Zeros before any step: frame 0 is an accurate zero, not a fill value.
     assert np.all(driver.hmix_k_diag["SASE_KMH"] == 0.0)
     driver.compute(state, cfg)
     # The shim's step returns a uniform governed field of 30.0 m2 s-1 at
@@ -2657,7 +2657,7 @@ def test_split_step_ledger_closes_with_live_clip_and_varying_e():
     => heat locally negative, asserted.  The IMPLICIT vertical
     e-transport then re-floods the floored cells from their neighbors,
     so no cell need sit at E_MIN exactly after the step -- the sign of
-    the heat field is the honest witness that the clip channel ran.
+    the heat field is the accurate witness that the clip channel ran.
     Solve must be non-degenerate on this fixture (same values as the
     golden pair).
     """
@@ -3422,7 +3422,7 @@ def test_head_free_troposphere_is_bounded_and_the_channel_lowers_it():
     length, ``dissipation_length``'s outer min stops selecting it, and
     the e^{3/2} dissipation returns on its own.  HEAD is therefore
     BOUNDED -- at 2.8 to 39 m2/s2, two to three orders above anything
-    physical, which is the honest statement of the defect.
+    physical, which is the accurate statement of the defect.
 
     The channel is worth 5x to 475x in Ri = 0.12-0.16 (just under
     Ri* = 0.16471, where the census found 72% of live cells against a
@@ -4241,7 +4241,7 @@ def test_inversion_persistence_red_with_fixed_les_prandtl(monkeypatch):
     hence K_v -- the smoke-c runaway loop in miniature) and partially
     OFFSET by the buoyancy channel (the blended Pr also weakens the
     buoyancy e-sink at the inversion, leaving more e to mix with --
-    the honest full-formulation coupling, which is why the fixture
+    the accurate full-formulation coupling, which is why the fixture
     runs both channels).  Measured on this fixture (1800 s, dt = 60):
     RED erodes 0.529 K of the 2.075 K jump (25.5%) and the
     stable-face centroid rises 29.8 m; GREEN erodes 0.304 K (14.7%)
@@ -5123,7 +5123,7 @@ def test_ri_star_is_a_harmonic_mean_and_is_bounded_by_it():
 
     Ri* = C_KS/(C_eps/LS_COEF + C_KS/PR_RANS) is the HARMONIC MEAN of
     the steady mixing efficiency Gamma_m = C_KS*LS_COEF/C_eps and
-    PR_RANS.  Two consequences are load-bearing and neither may drift:
+    PR_RANS.  Two consequences are essential and neither may drift:
 
     * Ri* < min(Gamma_m, PR_RANS) STRICTLY, so a stability-dependent
       Prandtl number cannot lift the critical Richardson number above
@@ -5272,7 +5272,7 @@ def test_sase_split_step_stable_dissipation_default_is_bitwise(monkeypatch):
     "kwarg absent == kwarg explicitly False" is a TAUTOLOGY on its own
     -- both spellings reach the same ``if stable_dissipation:`` branch,
     so no defect in the switched-on arithmetic can move it.  It is kept
-    here as a signature/plumbing check only.  The load-bearing leg is a
+    here as a signature/plumbing check only.  The essential leg is a
     C_ES INVARIANCE probe: with C_ES monkeypatched far off its
     registered value, the DEFAULT step must still be byte-identical to
     the unpatched default step -- the off path never reads C_ES.  A
@@ -5585,7 +5585,7 @@ def test_split_step_surface_drag_ledger_boundary_consistent():
     the drag ENGAGED: dKE + dE + dHeat = dKE_sfc exactly, so the
     exported boundary-consistent residual closes to roundoff while the
     UNCORRECTED S3-6i sum misses by exactly the drag work -- the
-    boundary channel is live and load-bearing, not decorative.  The
+    boundary channel is live and essential, not decorative.  The
     diagnosed conversion channel is recorded and NOT closed: the
     modeled u*^3 deposit and the measured drag work differ (similarity
     model vs resolved-drag measurement, authority docstring)."""
@@ -5962,7 +5962,7 @@ def _charnock_ust(spd1, z1_0):
     equivalent to the frame-anchored 18Z sqrt(Cd) = 0.0372).  The
     13Z frame u* = 0.129 is STABILITY-suppressed (the onset IBL), so
     anchoring sqrt(Cd) there would under-drag the 4 h trajectory --
-    the neutral Charnock form is the honest evolving-wind drag and is
+    the neutral Charnock form is the accurate evolving-wind drag and is
     what every measured number in the report ran."""
     from gpuwm.verify import sase_ref
     ust = 0.03 * spd1 + 1.0e-3
@@ -6018,7 +6018,7 @@ def _run_lake_column(monkeypatch, state="13", hours=4.0, dt=60.0,
     qc = 0) feeds ``sase_ref.moist_n2`` and the result rides the
     split step's ``n2_moist`` seam.  The humidity is synthetic
     because the lake table carries no qv/qc -- only its UNSATURATION
-    is load-bearing (the marine premise: unsaturated at k0), and
+    is essential (the marine premise: unsaturated at k0), and
     qv = 0.7*q_s(live theta) < q_s holds structurally at every step
     (same q_s formula on both sides), so the switch never fires and
     the trajectory must be BITWISE the ``m1=False`` trajectory (the
@@ -6077,7 +6077,7 @@ def _run_lake_column(monkeypatch, state="13", hours=4.0, dt=60.0,
 
     if m1:
         # fixed hydrostatic marine pressure column for the SYNTHETIC
-        # humidity state (docstring: only unsaturation is load-bearing)
+        # humidity state (docstring: only unsaturation is essential)
         pcol = (psfc * np.exp(-sase_ref.G_ACCEL * z1
                               / (sase_ref.RD_AIR * 285.0)))[:, None, None]
 
@@ -6163,7 +6163,7 @@ def test_lake_decoupling_green_water_column_stays_decoupled(monkeypatch):
       drag, 13Z geo held): ratio_fin = 0.539, series inside
       [0.507, 0.598] for the whole 4 h -- never approaching the
       coupled class.
-    * final e below 500 m <= 0.3 m^2/s^2 -- the honest-RANS energy
+    * final e below 500 m <= 0.3 m^2/s^2 -- the accurate-RANS energy
       ceiling (the report's variants measured 0.05-0.08; the
       throttled defect equilibrium sits at 1-2.5, the run's own
       restart truth 2.03).  MEASURED here: 0.011.
@@ -6970,7 +6970,7 @@ def _run_specimen_column(name="amp", m1=True, steps=120, dt=60.0):
     balance maintain the state against turbulent consumption -- a
     single column can neither self-generate the supply (the S3-9
     lesson: every interactive column decouples) nor carry the
-    radiation physics, so the honest equilibrium question is "what
+    radiation physics, so the accurate equilibrium question is "what
     TKE/K does the closure sustain ON the specimen state", which is
     exactly the G-M5 instrument.  The interactive-thermo variant was
     measured during fixture design and is strictly WORSE for the
@@ -8453,7 +8453,7 @@ def test_m2_registry_binds_vent_constants(monkeypatch):
       M2 SHAPE-ANCHOR convention and the fourth stand-down condition it
       implies (a saturated run based in the lowest model level stands
       the limb down; :func:`test_m2_surface_based_layer_stands_down`).
-      REGISTERING IT IS LOAD-BEARING, not bookkeeping: the rule is
+      REGISTERING IT IS ESSENTIAL, not bookkeeping: the rule is
       bitwise-inert on the entire registered corpus (78 columns
       measured, 0 bytes moved), so without a constant in this registry
       a real semantic change would ship under the pre-amendment config
@@ -8637,7 +8637,7 @@ def test_m2_mask_convention_flip_pinned(monkeypatch):
 
 
 def test_m2_layer_structure_roundoff_insensitive():
-    """S4-4 REVIEW round-4, THE LOAD-BEARING PROPERTY: the M2 layer's
+    """S4-4 REVIEW round-4, THE ESSENTIAL PROPERTY: the M2 layer's
     base, its contiguity, its top and its root must not depend on
     round-off-scale condensate.
 
@@ -8686,7 +8686,7 @@ def test_m2_layer_structure_roundoff_insensitive():
       three rows, under every shift;
     * the flux response is CONTINUOUS and O(eps) -- explicitly NOT
       bitwise identical.  qt enters the entraining parcel, so a
-      perturbation of qc must move the fluxes a little; the honest
+      perturbation of qc must move the fluxes a little; the accurate
       claim is linearity, not invariance.  MEASURED: max relative
       movement 5.84e-10 over all shifts (worst cell k10), and on cell
       k12 the response scales exactly with eps -- 3.045e-11 / 3.046e-10
@@ -8881,7 +8881,7 @@ def test_m2_real_column_cloud_base_anchor(monkeypatch):
       instrumented round-4 build (HEAD df235f0, probe v5_p7_detail.py)
       measures 5.508721886012332e-05 on this column -- agreement to
       the last FP64 digit, which is what makes the analytic
-      counterfactual an honest stand-in for a second build here.
+      counterfactual an accurate stand-in for a second build here.
     """
     from gpuwm.verify import sase_ref
     args = _vent_real_args("WIN")
@@ -9548,7 +9548,7 @@ def test_m2_root_search_bound_admits_the_cloud_base_peak():
 
         k_r = where(is_peak & (k <= k_base) & (k >= k_r_floor), k, k_r)
 
-    The ``<=`` is load-bearing: a theta_es maximum sitting exactly at
+    The ``<=`` is essential: a theta_es maximum sitting exactly at
     the cloud base IS an eligible root, and admitting it is what keeps
     the plume anchored at cloud base instead of reaching down into a
     deeper decrease layer -- the defect the round-5 root/anchor
@@ -10685,7 +10685,7 @@ def test_m2_export_bound_emerges_on_specimen(monkeypatch):
       0.1, the a_up = 0.1 family the closure deliberately does NOT
       use) over-vents into the envelope's forbidden full-supply class
       (>= 2.0e-4 kg/m2/s) -- the registered Grant coefficient is
-      load-bearing, not decorative.  MEASURED round-6: 2.5358e-4, and
+      essential, not decorative.  MEASURED round-6: 2.5358e-4, and
       the same monkeypatch drives the ratio to 1.2872, well outside
       M2_RATIO_CLASS -- the derived ratio rails still fail a build that
       over-vents, because they are the export rails.
@@ -11039,7 +11039,7 @@ def test_m2_condense_dont_clear_partition():
     converts it" -- MEASURABLY FALSE for the recipient: post-deposit
     qt(k16) = 10.0878 g/kg is still 0.460 g/kg SHORT of qs(k16) =
     10.5479 g/kg, i.e. the arriving moisture does NOT condense on
-    arrival.  What actually happens (honest, per the design doc
+    arrival.  What actually happens (accurate, per the design doc
     amendment): the recipient cell EVAPORATES the arriving condensate
     (net column LWP = rho1*thick_16*d_qc_16 = -2.694 g/m2 per 60-s step
     = -161.6 g/m2/h, MEASURED round-5; round-4 gave -2.884 and

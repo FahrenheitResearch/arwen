@@ -35,7 +35,7 @@
 #   The trusted manual GPU dispatch in ci.yml runs BOTH declared shards.
 #
 #   Run it with GPUWM_NO_LOCAL_GPU UNSET.  That variable is what makes the
-#   CPU legs honest; setting it here would skip the entire shard and report
+#   CPU legs accurate; setting it here would skip the entire shard and report
 #   green, which is the exact class of defect this file was created to end.
 #
 # FORMAT

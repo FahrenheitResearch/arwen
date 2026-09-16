@@ -50,7 +50,7 @@ FIDELITY NOTES
 The exported ``CK`` vector is indexed by the ``CK_INDEX`` mapping; the
 CUDA kernel mirrors those indices with ``#define`` rows so its body keeps
 the Fortran spelling (``GC13``, ``ckQr1``, ...).  The order is
-load-bearing: kernels/milbrandt2.cu is generated against it.
+essential: kernels/milbrandt2.cu is generated against it.
 """
 
 from __future__ import annotations

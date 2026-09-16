@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import os
 import re
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -26,7 +27,7 @@ _HEADER_KEY = "__gpuwm_restart_header__"
 
 
 def _write_checkpoint(path, *, grid_id: int, domain_ids=None,
-                      corrupt: str | None = None) -> None:
+                      corrupt: str | None = None, written_mode=None) -> None:
     arrays = {
         "state/u": np.arange(6, dtype=np.float32).reshape(2, 3),
         "state/v": np.zeros((2, 3), dtype=np.float32),
@@ -40,6 +41,10 @@ def _write_checkpoint(path, *, grid_id: int, domain_ids=None,
     }
     if domain_ids is not None:
         header["domain_ids"] = list(domain_ids)
+    if written_mode is not None:
+        # The writer's provenance stamp; absent by default, because a
+        # checkpoint written before it existed must resume unchanged.
+        header["written_mode"] = dict(written_mode)
     if corrupt == "manifest":
         # A member the manifest does not declare: manifest-invalid.
         arrays["state/orphan"] = np.ones(2, dtype=np.float32)
@@ -59,14 +64,15 @@ def _single(outdir, instant: str, *, corrupt=None):
 
 
 def _tree(outdir, instant: str, set_id: str, domains=(1, 2, 3), *,
-          declared=None, corrupt_member=None):
+          declared=None, corrupt_member=None, written_mode=None):
     declared = list(domains) if declared is None else list(declared)
     paths = {}
     for gid in domains:
         path = outdir / f"gpuwmrst_d{gid:02d}_{instant}__{set_id}.npz"
         _write_checkpoint(
             path, grid_id=gid, domain_ids=declared,
-            corrupt=("manifest" if gid == corrupt_member else None))
+            corrupt=("manifest" if gid == corrupt_member else None),
+            written_mode=written_mode)
         paths[gid] = path
     return paths
 
@@ -194,7 +200,8 @@ def test_cli_resume_resolves_then_dispatches_as_run(tmp_path, monkeypatch,
                                                     capsys):
     """End-to-end through cli.main up to the (stubbed) run dispatch."""
     _single(tmp_path, "1974-04-03_13_00_00")
-    tree = _tree(tmp_path, "1974-04-03_15_00_00", "abc123")
+    tree = _tree(tmp_path, "1974-04-03_15_00_00", "abc123",
+                 written_mode={"mode": "resident", "shape": [2, 3]})
     config = tmp_path / "exp.toml"
     config.write_text("[experiment]\n")  # sniffed as experiment-shaped
 
@@ -226,6 +233,10 @@ def test_cli_resume_resolves_then_dispatches_as_run(tmp_path, monkeypatch,
     assert seen["restart"] == tree[1]
     out = capsys.readouterr().out
     assert re.search(r"resume: continuing from .*abc123\.npz", out)
+    # The notes reach the operator on the same stream as the continuation
+    # line: the mode this run resolves to and the road the file names.
+    assert ("resume: this checkpoint was WRITTEN resident and this run "
+            "resolves [tiles] to resident") in out
 
 
 # --- tie-break determinism ---------------------------------------------
@@ -270,3 +281,170 @@ def test_a_subsecond_newer_set_wins_over_its_predecessor(tmp_path):
 
     assert [entry.set_id for entry in discover_checkpoint_sets(tmp_path)] == \
         ["aaa111", "zzz999"]
+
+
+# --- which memory road wrote the checkpoint ----------------------------
+#
+# restart x memory mode is a FREE combination and must stay one:
+# ``streaming.identity_payload_entry`` contributes nothing to the restart
+# identity on purpose, so a checkpoint written streamed resumes resident
+# and one written resident resumes streamed, which is the operation that
+# lets a forecast outgrowing its card continue on the same card.  The
+# stamp below is provenance for the operator and never a condition.
+
+
+def test_the_restart_writer_stamps_the_road_it_wrote_on():
+    from gpuwm.io import restart
+
+    cfg = SimpleNamespace(nx=41, ny=37)
+    resident = restart.written_mode_note(restart.RESIDENT_WRITTEN_MODE, cfg)
+    assert resident == {"mode": "resident", "shape": [37, 41]}
+    streamed = restart.written_mode_note(
+        restart.STREAMED_WRITTEN_MODE, cfg, store="host")
+    assert streamed == {"mode": "streamed", "shape": [37, 41], "store": "host"}
+    with pytest.raises(ValueError, match="written mode must be"):
+        restart.written_mode_note("swapped", cfg)
+
+    assert restart.header_written_mode({"written_mode": resident}) == "resident"
+    assert restart.header_written_mode({"written_mode": streamed}) == "streamed"
+    # A file that names no road, written before the stamp existed or by
+    # the streamed writer, which does not stamp yet, says nothing, and
+    # saying nothing is never a refusal.
+    assert restart.header_written_mode({"producer": {}}) is None
+    assert restart.header_written_mode({"written_mode": "resident"}) is None
+    assert restart.header_written_mode("not a header") is None
+
+
+# --- what the resume discloses about this run's memory mode ------------
+#
+# Nothing here refuses, clamps or downgrades anything; the resume states
+# the fact so the operator does not have to derive it from two modules.
+
+
+def _tiles_config(tmp_path, mode: str, *, name="exp.toml"):
+    config = tmp_path / name
+    config.write_text(
+        "[experiment]\nname = \"resume-mode\"\n\n"
+        f"[tiles]\nmode = \"{mode}\"\n", encoding="utf-8")
+    return config
+
+
+def test_resume_states_this_run_resolved_memory_mode(tmp_path):
+    resident_cfg = _tiles_config(tmp_path, "off")
+    _single(tmp_path, "1974-04-03_13_00_00")
+
+    resolution = resolve_resume_checkpoint(tmp_path, LATEST,
+                                           config=resident_cfg)
+    assert len(resolution.notes) == 1
+    note = resolution.notes[0]
+    assert "resident" in note
+    assert "mode-independent" in note
+    assert "written either way" in note and "resumes either way" in note
+
+    streamed_cfg = _tiles_config(tmp_path, "on", name="streamed.toml")
+    streamed = resolve_resume_checkpoint(tmp_path, LATEST,
+                                         config=streamed_cfg).notes
+    assert len(streamed) == 1
+    assert "streamed" in streamed[0]
+    assert "mode-independent" in streamed[0]
+
+    # The note is disclosure, so it never becomes a condition: the same
+    # checkpoint resolves under either mode, to the same file.
+    assert resolve_resume_checkpoint(tmp_path, LATEST,
+                                     config=streamed_cfg).checkpoint == \
+        resolve_resume_checkpoint(tmp_path, LATEST,
+                                  config=resident_cfg).checkpoint
+
+    # CONTROL: no config, no note, and the resolution is otherwise the
+    # same object it always was.
+    assert resolve_resume_checkpoint(tmp_path, LATEST).notes == ()
+
+
+def test_the_memory_mode_note_declines_to_guess_rather_than_refusing(tmp_path):
+    """An unreadable config costs a note, never the resume."""
+    from gpuwm.resume import resume_memory_mode_note
+
+    assert resume_memory_mode_note(tmp_path / "absent.toml") is None
+    broken = tmp_path / "broken.toml"
+    broken.write_text("this is not = = toml\n", encoding="utf-8")
+    assert resume_memory_mode_note(broken) is None
+    _single(tmp_path, "1974-04-03_13_00_00")
+    assert resolve_resume_checkpoint(tmp_path, LATEST,
+                                     config=broken).notes == ()
+
+
+def test_the_memory_mode_note_reads_per_domain_overrides_too(tmp_path):
+    """A tree whose grids disagree is not reported as if they agreed."""
+    from gpuwm.resume import resume_memory_mode_note
+
+    config = tmp_path / "mixed.toml"
+    config.write_text(
+        "[experiment]\nname = \"mixed\"\n\n"
+        "[tiles]\nmode = \"on\"\n\n"
+        "[[domain]]\ngrid_id = 1\n\n"
+        "[[domain]]\ngrid_id = 2\ntiles = { mode = \"off\" }\n",
+        encoding="utf-8")
+    note = resume_memory_mode_note(config)
+    assert note is not None
+    assert "per-domain mix" in note
+    assert "mode-independent" in note
+
+
+def test_the_resume_states_the_road_the_checkpoint_was_written_on(tmp_path):
+    """The sentence resume_memory_mode_note could not say by itself.
+
+    Reading the experiment can only ever report the mode of the run doing
+    the READING.  The written mode comes off the file, so a checkpoint
+    left by a run whose logs are gone still says which road it died on.
+    """
+    from gpuwm.resume import resume_written_mode_note
+
+    streamed_header = {"written_mode": {"mode": "streamed",
+                                        "shape": [37, 41], "store": "host"}}
+    resident_cfg = _tiles_config(tmp_path, "off", name="resident.toml")
+
+    note = resume_written_mode_note(
+        tmp_path / "ckpt.npz", read_header=lambda path: streamed_header,
+        config=resident_cfg)
+    assert "WRITTEN streamed" in note
+    assert "resolves [tiles] to resident" in note
+    assert "mode-independent" in note
+
+    # No config: the file's own half still gets said.
+    alone = resume_written_mode_note(
+        tmp_path / "ckpt.npz", read_header=lambda path: streamed_header)
+    assert "WRITTEN streamed" in alone
+
+    # A file with no stamp, and a file that cannot be read at all, each
+    # cost the note and never the resume.
+    assert resume_written_mode_note(
+        tmp_path / "ckpt.npz", read_header=lambda path: {}) is None
+
+    def unreadable(path):
+        raise ValueError("unreadable header")
+
+    assert resume_written_mode_note(
+        tmp_path / "ckpt.npz", read_header=unreadable) is None
+
+
+def test_the_resolution_carries_both_halves_of_the_memory_mode_sentence(tmp_path):
+    """Written mode and resolved mode, side by side, on the resolution."""
+    stamped = tmp_path / "gpuwmrst_d01_1974-04-03_13_00_00.npz"
+    _write_checkpoint(stamped, grid_id=1,
+                      written_mode={"mode": "streamed", "shape": [37, 41],
+                                    "store": "host"})
+    config = _tiles_config(tmp_path, "off")
+
+    notes = resolve_resume_checkpoint(tmp_path, LATEST, config=config).notes
+    assert len(notes) == 2
+    assert "this run resolves [tiles] to resident" in notes[0]
+    assert "WRITTEN streamed" in notes[1]
+
+    # An explicit --from path is the same door and says the same thing.
+    explicit = resolve_resume_checkpoint(tmp_path, stamped, config=config).notes
+    assert explicit == notes
+
+    # Disclosure, never a condition: the same file resolves either way.
+    assert resolve_resume_checkpoint(tmp_path, LATEST, config=config).checkpoint \
+        == resolve_resume_checkpoint(tmp_path, LATEST).checkpoint
+    assert len(resolve_resume_checkpoint(tmp_path, LATEST).notes) == 1

@@ -8,6 +8,7 @@ import numpy as np
 import pytest
 
 from gpuwm.ingest.cpu_backend import CpuPreprocessBackend
+from conftest import requires_wrf_eta_bridge
 
 FIXTURE = json.loads((Path(__file__).parent/'fixtures/wrf_eta_v461.json').read_text())
 
@@ -19,6 +20,7 @@ def backend():
         pytest.skip(f'native CPU bridge is not available: {error}')
 
 
+@requires_wrf_eta_bridge
 @pytest.mark.parametrize('case', FIXTURE['cases'], ids=lambda c:c['name'])
 def test_automatic_eta_matches_independent_wrf_fortran(case):
     native=backend()
@@ -38,17 +40,28 @@ def test_automatic_eta_matches_independent_wrf_fortran(case):
     assert actual[0] == 1 and actual[-1] == 0 and np.all(np.diff(actual)<0)
 
 
+# THE GATE IS PER CASE.  The two auto_levels_opt rows are refused by the
+# Python door before the library is reached, so they pass on a box with no
+# staged bridge at all; the rest are the Rust body's own validation and
+# need it.  A gate on the whole function skipped both kinds, which threw
+# away two refusal tests for want of a binary they never open.
 @pytest.mark.parametrize('name,value,message', [
     ('auto_levels_opt',True,'integer'),('auto_levels_opt',3,'1 or 2'),
-    ('p_top',0,'p_top'),('p_top',100000,'p_top'),('p_top',1e100,'finite'),
-    ('max_dz',0,'max_dz'),('dzbot',-1,'dzbot'),
-    ('dzstretch_s',0,'dzstretch_s'),('dzstretch_u',float('nan'),'finite'),
+    pytest.param('p_top',0,'p_top',marks=requires_wrf_eta_bridge),
+    pytest.param('p_top',100000,'p_top',marks=requires_wrf_eta_bridge),
+    pytest.param('p_top',1e100,'finite',marks=requires_wrf_eta_bridge),
+    pytest.param('max_dz',0,'max_dz',marks=requires_wrf_eta_bridge),
+    pytest.param('dzbot',-1,'dzbot',marks=requires_wrf_eta_bridge),
+    pytest.param('dzstretch_s',0,'dzstretch_s',marks=requires_wrf_eta_bridge),
+    pytest.param('dzstretch_u',float('nan'),'finite',
+                 marks=requires_wrf_eta_bridge),
 ])
 def test_automatic_eta_rejects_invalid_actual_algorithm_inputs(name,value,message):
     with pytest.raises(ValueError,match=message):
         backend().generate_wrf_eta(80,**{name:value})
 
 
+@requires_wrf_eta_bridge
 def test_eta_failure_does_not_modify_caller_output():
     native=backend()
     call=native._library.gpuwm_wrf_eta_f32
@@ -68,6 +81,7 @@ def run_without_eta(*, controls=None, source_top_pressure_pa=None):
         root=SimpleNamespace(run=SimpleNamespace(nz=79,base_temp=290.))))
 
 
+@requires_wrf_eta_bridge
 def test_metgrid_default_materializes_actual_wrf_levels_and_receipt():
     import tomllib
     from gpuwm.metem_forecast import resolve_metem_vertical
@@ -79,6 +93,7 @@ def test_metgrid_default_materializes_actual_wrf_levels_and_receipt():
     assert 'WRF automatic' in policy
 
 
+@requires_wrf_eta_bridge
 def test_metgrid_explicit_generator_option_reaches_native_generator():
     import tomllib
     from gpuwm.metem_forecast import resolve_metem_vertical
@@ -209,6 +224,7 @@ def test_eta_selector_cannot_wrap_before_native_call(selector):
         native.generate_wrf_eta(80, auto_levels_opt=selector)
 
 
+@requires_wrf_eta_bridge
 @pytest.mark.parametrize('marker', [-1.0, -1.00000005, -0.99999994])
 @pytest.mark.parametrize('option', [1, 2])
 def test_metgrid_automatic_sentinel_reaches_selected_wrf_generator(tmp_path, marker, option):

@@ -42,7 +42,9 @@ request an evicted frame through the normal viewer contract.
     directory = viewer._directory(root, job)
     counts = {"committed": len(commits), "ready": 0, "evicted": 0,
               "failed": 0, "backpressure": 0, "queued": 0, "pending": 0}
-    selection = viewer._selection()
+    # The run's own recorded render selection, read through the one function
+    # the plot gallery reads it through, so one job prepares one product set.
+    selection = viewer.job_selection(_record)
     with Lease(root / "schedule.lock", timeout=3) as schedule:
         if schedule.file is None:
             raise ValueError("The compact viewer queue is being updated")
@@ -93,7 +95,7 @@ def ensure(workspace, job):
     from gpuwm import remote_worker as rw
 
     record = rw._record(rw._directory(workspace, job))
-    if record.get("action") != "start-plan" or not record.get("snapshot_plan"):
+    if ra.plan_binding(record) is None:
         return
     directory = viewer._directory(viewer._root(workspace), job)
     previous = directory / "preparation.json"

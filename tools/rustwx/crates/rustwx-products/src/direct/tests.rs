@@ -874,7 +874,7 @@ fn rectangular_variant_expands_tall_bounds_to_target_aspect() {
 /// stays consistent across HRRR's nat→sfc routing and product
 /// overrides; the production path now builds requests inside the
 /// loader, but the same routing logic lives in the planner so this
-/// thin shim stays honest.
+/// thin shim stays accurate.
 fn build_direct_fetch_request(
     request: &DirectBatchRequest,
     latest: &LatestRun,

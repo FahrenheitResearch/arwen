@@ -36,7 +36,7 @@
 //! | 4 | [`NODATA`] | -- | ODIM-only |
 //! | 5 | [`SENTINEL_AMBIGUOUS`] | -- | ODIM-only |
 //!
-//! Code 2 is the load-bearing gap. NEXRAD's range-folded gate has no ODIM
+//! Code 2 is the essential gap. NEXRAD's range-folded gate has no ODIM
 //! counterpart, and ODIM's `nodata` is *not* range folding -- so `nodata`
 //! takes a fresh code rather than borrowing 2. A consumer that reads both
 //! planes with one table therefore cannot mistake a European unmeasured gate

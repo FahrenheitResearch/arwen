@@ -13,7 +13,7 @@ unrelated arithmetic if this source is composed later.
 
 The coefficient tables are copied from the already-authoritative Python
 transcriptions into ``__constant__`` memory after compilation.  Keeping them
-out of the CUDA source is load-bearing: ptxas 12.x has been observed to
+out of the CUDA source is essential: ptxas 12.x has been observed to
 mis-fold FP32 ties at compile time.
 """
 

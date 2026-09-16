@@ -10,6 +10,7 @@ import io
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
@@ -18,6 +19,18 @@ from urllib.parse import urlsplit
 SCHEMA = "arwen.cds-credentials.v1"
 DEFAULT_URL = "https://cds.climate.copernicus.eu/api"
 _LIMIT = 16384
+#: The endpoint of the CDS API that was switched off in September 2024. A
+#: file written for it carries ``url: .../api/v2`` and a ``UID:KEY`` token;
+#: cdsapi 0.7 still routes that shape to its retired client, so every
+#: request it makes fails at the server instead of at the file.
+_RETIRED_ENDPOINT_SUFFIX = "/api/v2"
+_LEGACY_KEY = re.compile(r"^\d+:\S+$")
+#: Token shapes worth masking even when the value itself is not known: a
+#: personal access token is a UUID, a retired key is ``UID:hex-uuid``.
+_TOKEN_SHAPES = re.compile(
+    r"\b\d+:[0-9a-fA-F-]{8,}\b"
+    r"|\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b"
+    r"|(?i:\bbearer\s+\S+|\b(?:private-token|key)\s*[:=]\s*\S+)")
 
 
 def _path() -> Path:
@@ -39,7 +52,14 @@ def _endpoint(value) -> str:
         valid = False
     if not valid:
         raise ValueError("Enter an HTTPS CDS API endpoint without a key or password in its URL.")
+    if _retired(value):
+        raise ValueError("The CDS API v2 endpoint was switched off in 2024, so every request to it fails. "
+                         f"Use {DEFAULT_URL} with a personal access token.")
     return value
+
+
+def _retired(url) -> bool:
+    return isinstance(url, str) and url.strip().rstrip("/").lower().endswith(_RETIRED_ENDPOINT_SUFFIX)
 
 
 def _profile(path: Path) -> dict:
@@ -61,25 +81,232 @@ def _profile(path: Path) -> dict:
         return {}
 
 
-def status() -> dict:
-    path = _path()
-    profile = _profile(path)
-    overrides = [name for name in ("CDSAPI_KEY", "CDSAPI_URL")
-                 if os.environ.get(name) is not None]
-    key = os.environ.get("CDSAPI_KEY", profile.get("key"))
-    endpoint = os.environ.get("CDSAPI_URL", profile.get("url"))
-    configured = isinstance(key, str) and bool(key.strip())
+def _encoding(head: bytes) -> str:
+    """How cdsapi will read these bytes: it opens the file as text with no
+    BOM handling, so a byte-order mark becomes part of the first key and a
+    UTF-16 file is two bytes per character that never spell ``url:``."""
+    if head.startswith((b"\xff\xfe", b"\xfe\xff")):
+        return "utf-16"
+    if head.startswith(b"\xef\xbb\xbf"):
+        return "utf-8-bom"
     try:
-        url = _endpoint(endpoint)
+        head.decode("utf-8")
+    except UnicodeDecodeError:
+        return "undecodable"
+    return "utf-8"
+
+
+def inspect() -> dict:
+    """Where the CDS client will look, what it will find there, and why that
+    is or is not usable.  Never a key value: every field is a path, a kind,
+    a count or a sentence.
+
+    THE BREAKAGE THIS PREVENTS: the fetch used to refuse with one sentence
+    whether the file was missing, sat in a different home than the one the
+    fetch process resolves, was saved by Notepad as ``.cdsapirc.txt``, was
+    written by a PowerShell redirect as UTF-16, carried a byte-order mark,
+    named only a key, or held the retired ``UID:KEY`` format.  Nobody could
+    tell those apart from the sentence, so a user who had entered a key was
+    told to enter a key.
+    """
+    override = os.environ.get("CDSAPI_RC")
+    try:
+        home = str(Path.home())
+    except (RuntimeError, OSError):
+        home = None
+    try:
+        path = _path()
+    except (RuntimeError, OSError):
+        path = Path(override) if override is not None else Path(".cdsapirc")
+    report = {"path": str(path), "selected_by": "CDSAPI_RC" if override is not None else "home",
+              "home": home, "exists": False, "bytes": None, "encoding": None,
+              "url_line": False, "key_line": False, "key_shape": None, "url_shape": None,
+              "environment_overrides": [name for name in ("CDSAPI_KEY", "CDSAPI_URL")
+                                        if os.environ.get(name) is not None],
+              "sibling": None, "problem": None, "remedy": None}
+    profile = {}
+    try:
+        if path.is_file():
+            report["exists"] = True
+            report["bytes"] = path.stat().st_size
+            with path.open("rb") as stream:
+                head = stream.read(_LIMIT + 1)
+            report["encoding"] = _encoding(head[:_LIMIT])
+            if report["encoding"] == "utf-8":
+                profile = _profile(path)
+        else:
+            for name in (path.name + ".txt", path.name.lstrip(".") + ".txt", path.name.lstrip(".")):
+                if name != path.name and path.with_name(name).is_file():
+                    report["sibling"] = str(path.with_name(name))
+                    break
+    except OSError as error:
+        report["problem"] = "unreadable"
+        report["remedy"] = (f"The credential file {path} cannot be read ({type(error).__name__}). "
+                            "Make it readable by the account that runs ArWen, or save the key again "
+                            "from the CDS key panel.")
+    env_key = os.environ.get("CDSAPI_KEY")
+    env_url = os.environ.get("CDSAPI_URL")
+    key = env_key if env_key is not None else profile.get("key")
+    url = env_url if env_url is not None else profile.get("url")
+    report["url_line"] = "url" in profile
+    report["key_line"] = "key" in profile
+    if isinstance(key, str) and key.strip():
+        report["key_shape"] = "legacy-uid-key" if _LEGACY_KEY.match(key.strip()) else "personal-access-token"
+    if isinstance(url, str) and url.strip():
+        try:
+            _endpoint(url)
+            report["url_shape"] = "current"
+        except ValueError:
+            report["url_shape"] = "retired-v2" if _retired(url) else "invalid"
+    where = (f"{path} (chosen by CDSAPI_RC)" if override is not None
+             else f"{path} (the .cdsapirc in the home folder {home} of the process that fetches)")
+    panel = "Save the key from the CDS key panel in ArWen's terminal (Settings, CDS key), which writes this file correctly"
+    then_panel = "save it from the CDS key panel in ArWen's terminal (Settings, CDS key), which writes this file correctly"
+    if report["problem"] is None and not report["exists"] and (env_key is None or env_url is None):
+        if env_key is not None:
+            report["problem"] = "no-url"
+            report["remedy"] = (f"CDSAPI_KEY is set but CDSAPI_URL is not, and no {where} exists to supply the "
+                                f"endpoint. Set CDSAPI_URL={DEFAULT_URL} beside it, or clear CDSAPI_KEY and {then_panel}.")
+        else:
+            report["problem"] = "missing"
+            sibling = (f" A file named {report['sibling']} is beside it; the client reads only the exact name "
+                       f"{path.name}, so rename it." if report["sibling"] else "")
+            report["remedy"] = (f"No credential file exists at {where}.{sibling} {panel}, or write the file "
+                                f"there yourself as plain UTF-8 with two lines, 'url: {DEFAULT_URL}' and "
+                                "'key: <your personal access token>'.")
+    elif report["problem"] is None and report["exists"] and report["encoding"] != "utf-8" and (env_key is None or env_url is None):
+        report["problem"] = "encoding"
+        how = {"utf-16": "UTF-16, which is what a PowerShell redirect writes",
+               "utf-8-bom": "UTF-8 with a byte-order mark, which hides the first line's name",
+               "undecodable": "bytes that are not UTF-8 text"}[report["encoding"]]
+        report["remedy"] = (f"The credential file {where} is saved as {how}; the CDS client reads it as plain "
+                            f"UTF-8 and finds no 'url:' or 'key:' line. {panel}, or re-save the file as UTF-8 "
+                            "without a byte-order mark.")
+    elif report["problem"] is None and not (isinstance(key, str) and key.strip()):
+        report["problem"] = "no-key"
+        report["remedy"] = (f"The credential file {where} exists but has no 'key:' line"
+                            + (" and no 'url:' line" if not report["url_line"] and env_url is None else "")
+                            + f". {panel}, or add 'key: <your personal access token>' to it.")
+    elif report["problem"] is None and not (isinstance(url, str) and url.strip()):
+        report["problem"] = "no-url"
+        report["remedy"] = (f"The credential file {where} has a key but no 'url:' line, and CDSAPI_URL is not set. "
+                            f"{panel}, or add 'url: {DEFAULT_URL}' to it.")
+    elif report["problem"] is None and report["key_shape"] == "legacy-uid-key":
+        report["problem"] = "legacy-key"
+        report["remedy"] = ("The key has the retired 'UID:KEY' shape of the CDS API that was switched off in 2024; "
+                            "the client routes it to that retired service and every request fails. Create a "
+                            "personal access token on your CDS profile page at https://cds.climate.copernicus.eu "
+                            f"and {then_panel}.")
+    elif report["problem"] is None and report["url_shape"] != "current":
+        report["problem"] = "retired-url" if report["url_shape"] == "retired-v2" else "invalid-url"
+        report["remedy"] = (("The endpoint names the CDS API v2 service that was switched off in 2024, so every request "
+                             "to it fails." if report["url_shape"] == "retired-v2" else
+                             "The endpoint is not an HTTPS URL the CDS client can use.")
+                            + f" Use 'url: {DEFAULT_URL}'" + (" in CDSAPI_URL" if env_url is not None else
+                                                              f" in {where}") + f", or {then_panel}.")
+    return report
+
+
+def evidence(report: dict | None = None) -> str:
+    """One sentence a refusal can carry: which file, whether it is there,
+    which source the client will use.  Never a key value."""
+    report = inspect() if report is None else report
+    if report["selected_by"] == "CDSAPI_RC":
+        where = f"Credential file {report['path']} (chosen by CDSAPI_RC)"
+    else:
+        where = f"Credential file {report['path']} (the .cdsapirc of home folder {report['home']})"
+    if report["problem"] == "unreadable":
+        state = "cannot be read"
+    elif report["exists"]:
+        state = f"exists ({report['bytes']} bytes, {report['encoding']}" + (
+            f", url line {'present' if report['url_line'] else 'absent'}, key line "
+            f"{'present' if report['key_line'] else 'absent'}" if report["encoding"] == "utf-8" else "") + ")"
+    else:
+        state = "is missing" + (f"; {report['sibling']} is beside it" if report["sibling"] else "")
+    overrides = report["environment_overrides"]
+    if len(overrides) == 2:
+        source = "the client uses CDSAPI_URL and CDSAPI_KEY from the environment, not the file"
+    elif overrides:
+        source = f"the client takes {overrides[0]} from the environment and the rest from the file"
+    else:
+        source = "the client reads the file"
+    return f"{where} {state}; {source}."
+
+
+def redact(text, *secrets) -> str:
+    """``text`` with every known secret and every token-shaped run masked."""
+    text = str(text)
+    for secret in secrets:
+        if isinstance(secret, str) and secret.strip():
+            text = text.replace(secret.strip(), "[redacted]")
+    return _TOKEN_SHAPES.sub("[redacted]", text)
+
+
+def _secrets() -> tuple:
+    secrets = [os.environ.get("CDSAPI_KEY")]
+    try:
+        secrets.append(_profile(_path()).get("key"))
+    except Exception:
+        pass
+    return tuple(secret for secret in secrets if isinstance(secret, str))
+
+
+def client_refusal(error: BaseException) -> str:
+    """The sentence for a ``cdsapi.Client()`` that raised: the client's own
+    error class and (redacted) message, the file it looked for and whether
+    that file exists, the source it would use, and the way out."""
+    report = inspect()
+    message = redact(error, *_secrets()).strip().splitlines()
+    raised = f"{type(error).__name__}: {message[0][:300]}" if message else type(error).__name__
+    remedy = report["remedy"] or (
+        "The file and its lines look usable, so the client itself failed to start: reinstall "
+        "cdsapi>=0.7.7 and ecmwf-datastores-client in this ArWen Python environment.")
+    return (f"Cannot initialize the CDS client: cdsapi raised {raised}. {evidence(report)} "
+            f"Next: {remedy} No key value is logged.")
+
+
+def retrieval_refusal(error: BaseException) -> str:
+    """The sentence for a CDS request that failed after the client started."""
+    report = inspect()
+    message = redact(error, *_secrets()).strip().splitlines()
+    raised = f"{type(error).__name__}: {message[0][:300]}" if message else type(error).__name__
+    status = getattr(getattr(error, "response", None), "status_code", None)
+    if isinstance(status, int):
+        raised = f"HTTP {status}, {raised}"
+    if report["problem"] in ("legacy-key", "retired-url"):
+        remedy = report["remedy"]
+    elif isinstance(status, int) and status in (401, 403):
+        remedy = ("CDS rejected the token. Check that the key line holds your current personal access "
+                  "token from https://cds.climate.copernicus.eu, and that both ERA5 dataset licences are "
+                  "accepted on that site.")
+    else:
+        remedy = ("Check the configured token, accept both ERA5 dataset licences in the CDS website, "
+                  "and check network and CDS service availability.")
+    return (f"ERA5 retrieval failed at CDS: {raised}. {evidence(report)} Next: {remedy} "
+            "No input file was published and no key value is logged.")
+
+
+def status() -> dict:
+    report = inspect()
+    path = Path(report["path"])
+    overrides = report["environment_overrides"]
+    configured = report["problem"] is None
+    url = os.environ.get("CDSAPI_URL")
+    if url is None:
+        try:
+            url = _profile(path).get("url") if report["encoding"] == "utf-8" else None
+        except Exception:
+            url = None
+    try:
+        url = _endpoint(url)
     except ValueError:
         url = DEFAULT_URL
-        configured = False
     return {"schema": SCHEMA, "configured": configured, "path": str(path),
             "source": "environment" if overrides else "file" if configured else "missing",
             "url": url, "editable": not overrides,
-            "environment_overrides": overrides,
+            "environment_overrides": overrides, "problem": report["problem"],
             "message": ("Configured locally; authentication is checked when downloading."
-                        if configured else "No usable CDS credentials are configured.")}
+                        if configured else report["remedy"] or "No usable CDS credentials are configured.")}
 
 
 def acquisition_readiness() -> dict:
@@ -187,7 +414,17 @@ def save(request: dict) -> dict:
     if (not isinstance(key, str) or not key or len(key) > 8192
             or any(character in key for character in ("\r", "\n", "\0"))):
         raise ValueError("Enter a CDS personal access token on one line.")
-    url = _endpoint(request.get("url") or prior.get("url") or DEFAULT_URL)
+    if _LEGACY_KEY.match(key):
+        raise ValueError("That is a 'UID:KEY' pair for the CDS API switched off in 2024; the client would send "
+                         "it to that retired service and every request would fail. Enter the personal access "
+                         "token from your profile page at https://cds.climate.copernicus.eu instead.")
+    # A file written for the retired endpoint keeps its dead URL through a
+    # key change unless the caller names one; a new token is for the
+    # current service, so the current endpoint replaces the retired one.
+    requested_url = request.get("url")
+    if not requested_url and _retired(prior.get("url")):
+        requested_url = DEFAULT_URL
+    url = _endpoint(requested_url or prior.get("url") or DEFAULT_URL)
     body = f"url: {url}\nkey: {key}\n"
     if "verify" in prior:
         body += f"verify: {prior['verify']}\n"

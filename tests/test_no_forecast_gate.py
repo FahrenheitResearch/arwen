@@ -188,7 +188,7 @@ def test_the_gate_fires_on_a_freshly_written_progress_file(empty_runs):
 
 def test_the_gate_passes_when_nothing_is_running(empty_runs):
     """A gate that always refuses gets disabled by whoever it inconveniences
-    first, so the permissive case is as load-bearing as the refusing one.
+    first, so the permissive case is as essential as the refusing one.
     """
     result = run_gate(empty_runs, patterns=SELFTEST_PATTERN)
     assert result.returncode == 0, (

@@ -127,7 +127,7 @@ def test_supervised_worker_keeps_original_source_directory(tmp_path, monkeypatch
     import subprocess
     from gpuwm import go_cli, supervisor, wrfinput_door, wrfinput_forecast
     from gpuwm.filesystem_paths import canonical_path
-    monkeypatch.setattr(wrfinput_door, 'resolve_wrfinput_run', lambda *a, **kw: SimpleNamespace())
+    monkeypatch.setattr(wrfinput_door, 'resolve_wrfinput_run', lambda *a, **kw: SimpleNamespace(experiment=None))
     monkeypatch.setattr(go_cli, 'render_extra_missing', lambda: None)
     monkeypatch.setattr(supervisor, 'select_gpu', lambda *a: SimpleNamespace(uuid='test-device'))
     monkeypatch.setattr(supervisor, 'GPUFileLock', lambda *a, **kw: nullcontext())

@@ -17,7 +17,7 @@ runnable (`nam`, `href`, `rtma`, …) refuses naming its registry status,
 because nothing in this ArWen could read the bytes a download produced.
 
 This page covers each route end to end, the manifest handoff into the
-preprocessor, and honest disk numbers (all measured).
+preprocessor, and accurate disk numbers (all measured).
 
 Three routes to keep straight from the start:
 
@@ -427,7 +427,7 @@ every row. Adding a model's front door is a row in that file.
 
 ```bash
 # one command per source; --cycle is explicit (these producers' lags
-# differ by hours, so there is no honest 'latest' to resolve)
+# differ by hours, so there is no accurate 'latest' to resolve)
 gpuwm fetch --source rap      --cycle 2026-08-16T00 --hours 6 --out data/rap
 gpuwm fetch --source icon-eu  --cycle 2026-08-17T12 --hours 6 --out data/icon
 gpuwm fetch --source gefs     --cycle 2026-08-17T00 --hours 6 --out data/gefs --member c00
@@ -842,7 +842,7 @@ Two hosts serve byte-identical archives:
   you asked for; it is the fallback when per-dataset tarballs are
   unavailable.
 
-**Integrity, honestly stated.** NCAR publishes no checksums for these
+**Integrity, accurately stated.** NCAR publishes no checksums for these
 archives. The pins gpuwm enforces were computed from a TLS download
 from UCAR on 2026-07-29 (sizes independently confirmed against the
 server's own Content-Length headers, contents byte-compared against an

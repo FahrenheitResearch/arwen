@@ -110,7 +110,7 @@ def test_the_real_device_exception_classes_degrade(monkeypatch):
         # the host, before the chunk loop and outside its try, so a shape
         # test fires there and never reaches the path under test.  The
         # chunk loop is the only caller handing this function device
-        # memory, which makes the namespace the honest discriminator.
+        # memory, which makes the namespace the accurate discriminator.
         if isinstance(distance, cp.ndarray):
             calls["n"] += 1
             if calls["n"] == 1:

@@ -1,7 +1,7 @@
 """The promotion rule's four clauses, and its refusal to ratify itself.
 
 The exact test's small-sample arithmetic is pinned against the numbers the
-specification states in prose, because those numbers are the honest limit of
+specification states in prose, because those numbers are the accurate limit of
 what a seven-case battery can certify and a silently-approximated p-value
 would erase exactly that limit: at n = 7 the minimum attainable p is 1/128, a
 6-1 split passes only when the loss is the smallest in magnitude (2/128), and

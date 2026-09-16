@@ -499,7 +499,7 @@ fn apply_folds(
 /// the region and edge counts.
 ///
 /// Behind a feature so it stays out of the default public surface; it exists
-/// to keep optimization work honest, not for callers.
+/// to keep optimization work accurate, not for callers.
 #[cfg(feature = "profiling")]
 pub fn profile_phases(
     observed: &[f32],

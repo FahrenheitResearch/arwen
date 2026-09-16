@@ -1236,7 +1236,7 @@ fn grid_difference(left: &AbiFixedGrid, right: &AbiFixedGrid) -> String {
 }
 
 /// The pointer `cwp` appends to a grid refusal: at CONUS the trio is 2 km
-/// and ACHA/CTP are 10 km, so the honest answer is a second pack, not a
+/// and ACHA/CTP are 10 km, so the accurate answer is a second pack, not a
 /// resample.
 const CLOUD_TOP_HINT: &str =
     " The ABI cloud suite publishes cloud-top height and pressure on a coarser fixed grid \
@@ -2186,7 +2186,7 @@ mod tests {
     #[test]
     fn abi_marker_names_every_contract_it_pins() {
         // The marker is a literal (no const-format crate in the offline
-        // vendor closure), so this is what keeps it honest: bump a schema
+        // vendor closure), so this is what keeps it accurate: bump a schema
         // without touching the marker and this test is the refusal.
         for needle in [FETCH_SCHEMA, pack::CWP_SCHEMA, cloudtop::CLOUDTOP_SCHEMA] {
             assert!(
@@ -2946,7 +2946,7 @@ mod tests {
         assert!(err.contains("--ctp"), "{err}");
         assert!(err.contains("ABI-L2-ACTPC"), "{err}");
         // The matching flag gets past the name gate and fails on the
-        // absent file instead, which is the next honest error.
+        // absent file instead, which is the next accurate error.
         let err = decode_source(
             Path::new("OR_ABI-L2-CTPC-M6_G19_s20262161801170_e20262161803543_c20262161805066.nc"),
             CloudProduct::CloudTopPressure,

@@ -9,13 +9,18 @@ Three properties matter more than speed here, and each is a deliberate
 choice rather than a default:
 
 **It never contends and it never kills.**  Before every arm it asks
-``gpuwm run``'s own admission predicate whether a launch would be allowed
+``gpuwm run``'s own admission whether that arm would be allowed to launch
 (:mod:`gpuwm.supervisor.preflight_exclusive_gpu`, via ``--gate``), and if
-the answer is no it waits and asks again.  Polling the same function the
-launch will call makes the wait condition and the refusal condition the
-same condition by construction, so the queue cannot clear its own gate
-and then be refused.  A queue that gives up is a *recorded verdict*, not
-a silent exit.
+the answer is no it waits and asks again.  That admission PRICES the arm's
+reservation against the memory the device reports free, so the gate is
+given the arm's configuration to price: a plan (or an arm) that names
+``gate_config`` is waited on with the very number ``gpuwm run`` will price
+it from, which makes the wait condition and the refusal condition the same
+condition by construction and stops the queue clearing its own gate and
+then being refused.  An arm that names no configuration is gated on the
+stricter unpriced question the gate states in its own output: wait for a
+card with no CUDA compute co-tenant at all.  A queue that gives up is a
+*recorded verdict*, not a silent exit.
 
 **It captures stderr.**  A sibling queue in this tree lost the entire
 diagnosis of a failed run because it piped only stdout, leaving a
@@ -68,11 +73,35 @@ class Status:
         print(line, flush=True)
 
 
-def gate_clear(gate: Path, log: Path) -> tuple[bool, str]:
-    """Would a forecast be admitted right now?  Fail closed."""
+def expand_tokens(value: str, *, run_dir: Path, repo: Path,
+                  case_root: Path | None) -> str:
+    """Bind one plan string's ``${...}`` tokens.
 
-    proc = subprocess.run([sys.executable, str(gate)],
-                          capture_output=True, text=True)
+    ONE spelling of the substitution, used by the step arguments and by the
+    gate configuration alike, so the path an arm is gated on and the path
+    that arm runs cannot be spelled two different ways.
+    """
+
+    value = value.replace("${RUN_DIR}", str(run_dir)).replace(
+        "${REPO}", str(repo))
+    if case_root is not None:
+        value = value.replace(CASE_ROOT_TOKEN, str(case_root))
+    return value
+
+
+def gate_clear(gate: Path, log: Path,
+               config: Path | str | None = None) -> tuple[bool, str]:
+    """Would this arm be admitted right now?  Fail closed.
+
+    ``config`` is the experiment configuration the gate prices the card
+    against, which is what makes this poll ask the question the launch
+    will ask rather than a neighbouring one.
+    """
+
+    command = [sys.executable, str(gate)]
+    if config is not None:
+        command += ["--config", str(config)]
+    proc = subprocess.run(command, capture_output=True, text=True)
     with log.open("a", encoding="utf-8") as handle:
         handle.write(f"{datetime.now(timezone.utc).isoformat()} "
                      f"exit {proc.returncode} {proc.stdout.strip()}"
@@ -108,10 +137,11 @@ def wait_for_predecessors(status: Status, files: list[Path], *,
 
 
 def wait_for_card(status: Status, gate: Path, gate_log: Path, *, label: str,
-                  poll_seconds: int, deadline: float) -> bool:
+                  poll_seconds: int, deadline: float,
+                  config: Path | str | None = None) -> bool:
     polls = 0
     while True:
-        clear, detail = gate_clear(gate, gate_log)
+        clear, detail = gate_clear(gate, gate_log, config)
         if clear:
             status.say(f"{label}: card clear after {polls} poll(s)")
             return True
@@ -130,10 +160,8 @@ def run_step(status: Status, step: dict, *, run_dir: Path, repo: Path,
              case_root: Path | None, env: dict, arm: str, index: int) -> int:
     """One subprocess, both streams captured to their own files."""
 
-    argv = [a.replace("${RUN_DIR}", str(run_dir)).replace("${REPO}", str(repo))
+    argv = [expand_tokens(a, run_dir=run_dir, repo=repo, case_root=case_root)
             for a in step["argv"]]
-    if case_root is not None:
-        argv = [a.replace(CASE_ROOT_TOKEN, str(case_root)) for a in argv]
     if argv and argv[0] == "${PYTHON}":
         argv[0] = sys.executable
     logs = run_dir / "logs"
@@ -251,6 +279,14 @@ def main(argv: list[str] | None = None) -> int:
             continue
 
         status.say(f"{name}: {arm['what']}")
+        # The gate prices the card against the configuration this arm will
+        # launch, so the queue waits exactly while `gpuwm run` would refuse
+        # that arm.  An arm that names none is gated on the gate's stricter
+        # unpriced question, which the gate states in its own output.
+        declared = arm.get("gate_config", plan.get("gate_config"))
+        gate_config = (None if declared is None else expand_tokens(
+            str(declared), run_dir=run_dir, repo=args.repo,
+            case_root=case_root))
         # An arm that never touches the card must not wait for it.  Radar
         # fetching, decoding and superobbing are network and CPU; holding
         # the gate's verdict while they run would idle the card for tens
@@ -259,7 +295,7 @@ def main(argv: list[str] | None = None) -> int:
         if arm.get("needs_gpu", True):
             if not wait_for_card(status, args.gate, gate_log, label=name,
                                  poll_seconds=args.poll_seconds,
-                                 deadline=deadline):
+                                 deadline=deadline, config=gate_config):
                 outcomes[name] = "not run (card held to the deadline)"
                 break
         else:
@@ -289,7 +325,7 @@ def main(argv: list[str] | None = None) -> int:
                 if not wait_for_card(status, args.gate, gate_log,
                                      label=f"{name}/{step['name']}/retry",
                                      poll_seconds=args.poll_seconds,
-                                     deadline=deadline):
+                                     deadline=deadline, config=gate_config):
                     status.say(f"{name}: card held to the deadline; not "
                                "retrying, and nothing was stopped")
                     break
@@ -312,7 +348,7 @@ def main(argv: list[str] | None = None) -> int:
                                      label=f"{name}/before "
                                            f"{arm['steps'][index + 1]['name']}",
                                      poll_seconds=args.poll_seconds,
-                                     deadline=deadline):
+                                     deadline=deadline, config=gate_config):
                     failed = "card held to the deadline mid-arm"
                     break
         elapsed = time.monotonic() - started

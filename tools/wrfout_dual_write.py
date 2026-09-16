@@ -210,8 +210,15 @@ def render_products(wrfout, out_root, *, width: int = 1200,
     out_dir.mkdir(parents=True, exist_ok=True)
     rows, _summary = rustwx.list_products(
         renderer, Path(wrfout), store_root=store_root)
-    slugs = [slug for slug, _kind, status, _detail in rows
-             if status == "renderable"]
+    # The lane's ONE verdict function, rather than a second spelling of
+    # "status == renderable" here: two consumers of one listing that
+    # decide availability differently is how a comparison comes to
+    # render a set a door would have skipped.  gpuwm/render.py still
+    # reads the listing with its own prose match and is out of this
+    # lane's boundary, so it has not adopted this yet.
+    spec, _excluded = rustwx.catalog_verdict(
+        rows, [slug for slug, _kind, _status, _detail in rows])
+    slugs = [token for token in spec.split(",") if token]
     if not slugs:
         raise SystemExit(f"{wrfout}: no renderable products in the catalog")
     _written, failures, _skipped = rustwx.run_renderer(

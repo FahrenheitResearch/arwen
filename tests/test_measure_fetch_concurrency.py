@@ -2,7 +2,7 @@
 
 Five instruments in one night once gave confident wrong answers, so the
 measurement driver is held to known answers in both directions before
-it measures anything: a good set passes with an honest receipt, a bad
+it measures anything: a good set passes with an accurate receipt, a bad
 digest refuses by name, and a flaky server is retried exactly once with
 the server's own Retry-After honored.  No network anywhere.
 """
@@ -52,7 +52,7 @@ def _url_list(tmp_path: Path, *, with_expectations: bool) -> Path:
     return listing
 
 
-def test_a_known_good_set_passes_and_receipts_honestly(tmp_path):
+def test_a_known_good_set_passes_and_receipts_accurately(tmp_path):
     receipt = driver.run(
         _url_list(tmp_path, with_expectations=True), tmp_path / "out",
         workers=4, label="unit", opener=_opener_for(PAYLOADS))

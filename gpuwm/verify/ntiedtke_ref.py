@@ -113,7 +113,7 @@ def np_ntiedtke_prep(
     slimsk = int(abs(_F(xland) - _F(2.0)))
 
     # :404-411.  Interface heights by upward accumulation from zero.  The
-    # accumulation order is load-bearing: zi[k+1] = zi[k] + dz[k] carries the
+    # accumulation order is essential: zi[k+1] = zi[k] + dz[k] carries the
     # rounding of every layer below it.
     zi = np.zeros(nz + 1, dtype=np.float32)
     for k in range(nz):
@@ -332,7 +332,7 @@ def np_ntiedtke_cuinin(*, pten, pqen, pqsen, puen, pven, pverv, pgeo,
                        paph, pgeoh, c=None):
     """cuinin (:1141-1215), one column, 0-based.
 
-    Fortran is 1-based here and the index arithmetic is load-bearing, so
+    Fortran is 1-based here and the index arithmetic is essential, so
     the loop bounds carry their Fortran form in comments.  klev is nz;
     klevm1 is nz-1.
 
@@ -1759,7 +1759,7 @@ def np_ntiedtke_cudlfsn(*, kcbot, kctop, lndj, ldcum, ptenh, pqenh,
 #
 # paph[klev+1] IS READ, three times (:2618, :2648, :2649).  That is the
 # surface interface the cuascn fixture deliberately poisons with NaN because
-# cuascn never touches it.  Here it is load-bearing and captured.
+# cuascn never touches it.  Here it is essential and captured.
 #
 # pud AND pvd ARE NEVER WRITTEN, exactly as in cudlfsn: both are
 # intent(inout) dummies (:2580) that appear nowhere else in the routine.
@@ -1949,7 +1949,7 @@ def np_ntiedtke_cuddrafn(*, lddraf, ptenh, pqenh, pgeo, pgeoh, paph,
 # FOUR CLASS-1 DUMMIES -- lddraf, ktype, pmfu, pmfd -- and beyond those,
 # pmfus/pmfuq/pmfds/pmfdq/plglac/pqsen/pdmfup/pdmfdp are all rewritten IN
 # PLACE off their incoming values.  Nearly the whole argument list is
-# load-bearing on entry, so the fixture captures it whole.
+# essential on entry, so the fixture captures it whole.
 #
 # pmflxr AND pmflxs ARE klev+1 ARRAYS.  :2920-2923 writes their klev+1 slot
 # and the loop writes jk+1 up to klev+1; the surface slot is the scheme's
@@ -3005,7 +3005,7 @@ def np_ntiedtke_ke_dissipation(*, ldcum, kctop, paph, puen, pven,
 # post_run has no class-2 rows in the aliasing audit despite six intent(inout)
 # arrays.  Measured by reading :514-524, not assumed from the intent.
 #
-# THE ASSOCIATION IS LOAD-BEARING.  `(tf - t)/exner*rdelt` is left to right:
+# THE ASSOCIATION IS ESSENTIAL.  `(tf - t)/exner*rdelt` is left to right:
 # subtract, DIVIDE, then multiply.  Folding it as `(tf - t) * (rdelt/exner)`
 # is algebraically identical and bitwise different.
 

@@ -143,7 +143,7 @@ def self_test() -> int:
     src = "  private :: ALPHA\n  x = 1.0\n  private :: BETA\n"
     good, lifted = patch_text(src)
     if check(src, good, lifted) is not None:
-        print("SELFTEST FAIL: honest patch rejected")
+        print("SELFTEST FAIL: accurate patch rejected")
         return 1
 
     tampered = [
@@ -157,7 +157,7 @@ def self_test() -> int:
             print(f"SELFTEST FAIL: tampered patch accepted ({name})")
             return 1
         print(f"  negative control rejected as required: {name}")
-    print("SELFTEST OK: honest patch accepted, 4 tampered patches rejected")
+    print("SELFTEST OK: accurate patch accepted, 4 tampered patches rejected")
     return 0
 
 

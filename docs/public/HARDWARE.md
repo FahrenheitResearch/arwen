@@ -205,7 +205,7 @@ processes; unobserved child PIDs are printed and recorded so a supervised
 worker is never orphaned by terminating only its parent supervisor. Once the
 create-only publication probe succeeds, interruptions during directory claims,
 authority monitoring, checks, forecasts, or final publication also attempt an
-honest create-only receipt naming the stage and every claimed directory and
+accurate create-only receipt naming the stage and every claimed directory and
 known child PID. Unexpected failures stop the non-daemon monitor, attempt a
 `failed` receipt, and then propagate a group error with the original exception
 preserved as its cause.
@@ -301,7 +301,7 @@ in-process) prices a run in three layers:
    The middle term scales with the DEVICE (its SM count) and the kernel
    set your physics selects -- not with the grid. That is why the model
    has to have an intercept, and why the version that did not
-   [got the sign of its own error wrong](#where-the-envelope-comes-from-the-honest-part).
+   [got the sign of its own error wrong](#where-the-envelope-comes-from-the-accurate-part).
 
    The wizard bisects grid sizes until this fits the budget with
    headroom to spare; a wizard-emitted config passes `gpuwm check` on a
@@ -339,7 +339,7 @@ cards of its class rather than equal to the best one. Before
 tier emitted failed `gpuwm check` on a real 16 GB card minutes after
 the wizard printed PASS.
 
-## Where the envelope comes from (the honest part)
+## Where the envelope comes from (the accurate part)
 
 The envelope is not a safety margin picked to look prudent; it is a
 measurement of the estimator being wrong, kept visible.
@@ -731,8 +731,8 @@ machine-level facts worth knowing:
   flags, one compile -- and they did not measure alike, so on this device
   the outcome follows the instruction the compiler emitted rather than the
   hardware alone.
-  The control arm is load-bearing: the 3 distinct bit tables among the 6 arms
-  are what shows the pipeline responds to the flag at all.
+  The control arm is essential: the 3 distinct bit tables among the 6 arms are
+  what shows the pipeline responds to the flag at all.
   The consequences reach physics: each known instance is recorded in the
   physics registry ([PHYSICS.md](PHYSICS.md)), and the radiation preparation
   path routes one subnormal-sensitive block through the host by design.

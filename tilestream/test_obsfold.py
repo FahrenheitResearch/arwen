@@ -468,7 +468,7 @@ def run_streamed(cfg, nsteps, *, boundaries, tile=TILE, poison_step=None,
     assert streaming.is_streaming(stepper)
     if control is not None:
         # THE NEGATIVE CONTROL: break exactly one of the fold's three
-        # load-bearing properties, in place, after the run is built.  Each
+        # essential properties, in place, after the run is built.  Each
         # one MUST make the comparison against the resident reduction fail;
         # a control that passes is a control that proves nothing.
         fold = stepper.tiled_run.health

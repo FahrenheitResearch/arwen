@@ -1135,6 +1135,60 @@ def test_the_moving_domain_is_named_because_a_domain_that_moves_is_a_nest():
     assert "d02" in text and "host store" in text
 
 
+#: A valid storm-tracking table, the shape ``[[domain]].follow`` wraps.
+_DOMAIN_FOLLOW = dict(field="pressure", threshold=30.0, level_hpa=850.0,
+                      search_margin_cells=10, min_shift_cells=1,
+                      max_shift_cells=4, cooldown_seconds=0.0)
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="HANDED BACK: the moving-root set is the ONE union "
+           "gpuwm.static.corridor.moving_grid_ids already answers -- the "
+           "name gpuwm/runplan.py:1041 imports, and the name "
+           "gpuwm/core/streamed_relocation.py mark_reconstruction_nodes "
+           "now reads instead of recomputing the union inline.  The "
+           "refusal that has to read it lives at "
+           "gpuwm/core/streaming.py:4462-4483 refuse_streamed_nests, "
+           "which is outside this lane's boundary.  Three edits are owed "
+           "there.  Drop the exp.relocation-only early returns at "
+           ":4464-4469 and iterate moving_grid_ids(exp) instead of "
+           "the single int(relocation.grid_id) at :4470, so a per-domain "
+           "[[domain]].follow mover is gated too.  Widen the mode test at "
+           ":4477 to include 'auto', but ONLY for a store = 'device' the "
+           "[[domain]] row declares itself: auto never selects a device "
+           "store, so an explicit one under auto is a contradiction, "
+           "while a domain with no tiles table of its own inherits the "
+           "tree-wide table whole (options_for_domain REPLACES rather "
+           "than merges, streaming.py:4268-4272/:4280-4281), and "
+           "inheriting a device store from the tree is not a declaration "
+           "about this domain.  The test is available today as "
+           "getattr(domain_cfg, 'tiles', None) is not None; no new field "
+           "on StreamingOptions is needed.  Replace the message at "
+           ":4479-4483 with one naming the breakage and both remedies.  "
+           "STRICT: when that lands this fails loudly and the marker must "
+           "be deleted.")
+def test_device_store_follower_is_refused_at_config_load():
+    """A per-domain follower with a device store dies at the first move.
+
+    The move captures the OUTGOING child's arrays and closes its tile
+    owner; the reconstruction road publishes a pinned HOST store, so a
+    device store frees the donor the overlap transplant still has to
+    read, and keeping it alive holds two whole domain stores on the card.
+    A device store saves no VRAM, so neither remedy costs capability.
+    Today this configuration loads and crashes mid-run instead.
+    """
+    raw = _raw_nested_experiment()
+    raw["domain"][1]["follow"] = dict(_DOMAIN_FOLLOW, cadence_seconds=600.0)
+    raw["domain"][1]["tiles"] = {"mode": "on", "store": "device"}
+    with pytest.raises(StreamingRefused) as refusal:
+        _build(raw)
+    text = str(refusal.value)
+    assert "d02" in text
+    assert "tiles.store = 'host'" in text
+    assert "tiles.mode = 'off'" in text
+
+
 def test_bounds_only_relocation_does_not_refuse_a_stationary_streamed_child():
     raw = _raw_nested_experiment()
     raw["tiles"] = {"mode": "on"}
@@ -1188,9 +1242,10 @@ def test_a_nest_that_opts_out_makes_a_streamed_parent_expressible():
     ``mode = "on"`` over a tree used to be refused unconditionally, and
     the refusal's own words were that the shape "is not expressible as
     mode = 'on'" because ``[tiles]`` was a tree-wide block.  It is
-    expressible now: the nest carries its own table and says OFF, so the
-    edge d01 -> d02 no longer has both ends streamed and there is nothing
-    left to refuse.
+    expressible now: the nest carries its own table and says OFF.  What is
+    asserted here is the SURFACE -- per-domain tables resolve to per-domain
+    modes -- not a refusal; either or both ends of a coupling edge may
+    stream, and nothing in the load path refuses a tree for streaming.
     """
     raw = _raw_nested_experiment()
     raw["tiles"] = {"mode": "on"}
@@ -1454,7 +1509,7 @@ def test_auto_consults_the_planner_about_a_child_and_prices_it():
 
     A nest used to short-circuit to RESIDENT under ``auto`` without the
     planner being asked, because the builder could not stream it.  The
-    builder streams it now (``gpuwm.core.nest_stream``), so the honest
+    builder streams it now (``gpuwm.core.nest_stream``), so the accurate
     decision is the planner's own, with its arithmetic on the decision --
     a child priced like any domain.  The machine is fabricated, not
     detected, so the test needs no card and no cupy probe.
@@ -1703,7 +1758,7 @@ def test_the_reservation_reaches_the_receipt_an_operator_reads():
 
 
 def test_a_tree_that_cannot_fit_after_reserving_refuses_with_both_numbers():
-    """The honest refusal: what was left, and what the reservation took.
+    """The accurate refusal: what was left, and what the reservation took.
 
     Reserving is not a licence to pretend.  When the children's claims
     genuinely leave the parent nothing to tile with, the walk must refuse
@@ -1887,7 +1942,7 @@ def test_the_freed_budget_does_not_buy_a_tile_the_radiation_call_kills(
     """The other half of the fix, and it is measured on both sides.
 
     Removing the phantom bytes hands the tile search 7.5 GiB it did not
-    have, and left alone it spends them: at the honest budget it picks a
+    have, and left alone it spends them: at the accurate budget it picks a
     350x250 tile whose steady footprint the measured run put at ~14.34 GiB.
     Radiation's per-call transient measured +2.74 GiB on that card, so that
     tiling peaks at 17.08 GiB against a 15.92 GiB card -- dead at the first
@@ -2052,7 +2107,7 @@ def test_a_dataclass_scheme_is_twinned_at_the_tiles_extents():
 # every [tiles] run of the SHIPPED DEFAULT physics suite died in
 # TiledRun.__init__ -- streaming was reachable only by selecting rte-rrtmgp.
 # These hold the recipe that rebuilds it and the two audits that keep the
-# recipe honest, without constructing one (its constructor wants CUDA).
+# recipe accurate, without constructing one (its constructor wants CUDA).
 
 
 def _recipe_key(cls):
@@ -2282,7 +2337,7 @@ def test_the_routes_that_stream_do_not_refuse_the_mode_that_asks_for_it():
 def test_the_run_route_reads_tiles_instead_of_refusing_it():
     """``gpuwm run`` streams now, so its front-door refusal is GONE.
 
-    The refusal it replaced was honest while it stood: the route wired no
+    The refusal it replaced was accurate while it stood: the route wired no
     builder, so a [tiles] block was read, validated, echoed into the
     resolved-config report and dropped, and the run went resident saying
     nothing.  The remedy for that was never a permanent refusal -- it was
@@ -2592,7 +2647,7 @@ def test_a_resident_store_refresh_reports_zero_rather_than_copying():
     """``store = "device"`` makes the store the state's OWN arrays.
 
     refresh_state returns 0 there because a refresh would be a self-copy of
-    the whole manifest, and the route must record that honestly rather than
+    the whole manifest, and the route must record that rather than
     claim a refresh it did not need.
     """
     streamed = object.__new__(streaming.StreamedDomain)

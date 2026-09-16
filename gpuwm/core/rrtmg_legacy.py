@@ -237,7 +237,7 @@ def _t8w_columns(t3d, z_at_w, fnm, fnp):
 
 
 # ---------------------------------------------------------------------------
-# VRAM pricing (model preflight + the wiring honesty gate).
+# VRAM pricing (model preflight + the wiring accuracy gate).
 # ---------------------------------------------------------------------------
 
 #: WRF v4.6.1 use_mp_re scheme table, FIRST BLOCK: the
@@ -537,7 +537,7 @@ def legacy_radiation_vram_bytes(*, ncol, nz, p_top, column_chunk=None,
                                 resident_threads=None):
     """Peak transient device bytes of ONE adapter call.
 
-    Composes the engines' own honest pricing functions
+    Composes the engines' own accurate pricing functions
     (``lw_batched_vram_bytes`` + ``lw_batched_const_bytes``,
     ``sw_batched_vram_bytes``) and the McICA device pricing
     (``mcica_device_vram_bytes``) with the adapter-held device arrays the
@@ -565,9 +565,10 @@ def legacy_radiation_vram_bytes(*, ncol, nz, p_top, column_chunk=None,
     nc_lw = min(chunk or _lw.batch_column_chunk(
         _lw.NGPTLW, _lw.LW_BATCH_COLUMN_CHUNK_CEILING,
         resident_threads=resident_threads), ncol)
-    nc_sw = min(chunk or _lw.batch_column_chunk(
-        _sw.NGPTSW, _sw.SW_BATCH_COLUMN_CHUNK_CEILING,
-        resident_threads=resident_threads), max(nday, 0))
+    # Host-side pricing passes no free-VRAM figure, so this is the
+    # saturation width: an upper bound on the width a device run picks.
+    nc_sw = min(chunk or _sw.sw_batch_column_chunk(
+        nlay_sw, resident_threads=resident_threads), max(nday, 0))
     f = 4
     estimate = 0
     if longwave:
@@ -754,11 +755,16 @@ def _cuda_sw(tab):
     engine would multiply both the compile and the resident device tables
     that streaming exists to save.
 
-    Sharing is sound because ``CudaSW`` is immutable after construction --
-    every ``self.<x> =`` in it is in ``__init__`` (``cp``, ``tab``,
-    ``module``, ``tab_gpu``, ``ngb_gpu``, ``max_nlay``), all read-only
-    thereafter, and its stage drivers allocate their outputs per call.  It
-    is a compiled module plus constant tables, not a carrier.
+    Sharing is sound because ``CudaSW`` carries no state between calls
+    that a caller can observe: every ``self.<x> =`` in it is in
+    ``__init__`` (``cp``, ``tab``, ``module``, ``tab_gpu``, ``ngb_gpu``,
+    ``max_nlay``, ``_scratch``, ``_chunk_by_nlayers``), its stage drivers
+    allocate their outputs per call, and the one mutable member -- the
+    batched chain's per-chunk workspace (``CudaSW.scratch``) -- is
+    touched only inside ``rrtmg_sw_batched_device`` on the one stream,
+    holds nothing a result aliases, and is released by this adapter after
+    every radiation event.  It is a compiled module plus constant tables
+    plus reusable workspace, not a carrier.
 
     Keyed on the tables OBJECT, not merely cached once: ``_sw_tables`` is
     itself a process singleton, so the identity check is normally free, but
@@ -1368,7 +1374,12 @@ class RRTMGLegacyRadiation:
                 coszen[night_idx])
         else:
             self._night_outputs = None
-        chunk_sw = self.column_chunk or _sw.SW_BATCH_COLUMN_CHUNK
+        # The engine sizes the chunk to this device once per layer count
+        # (swrad_prep_batch's nlay is kte + 1 = nz + 1, as the pricing
+        # above assumes); an explicit column_chunk is untouched.
+        chunk_sw = (self.column_chunk
+                    or (self._cuda_sw.batch_column_chunk(nz + 1)
+                        if self.shortwave else _sw.SW_BATCH_COLUMN_CHUNK))
         for c0 in range(0, day_idx.size if self.shortwave else 0, chunk_sw):
             idx = day_idx[c0:c0 + chunk_sw]
             ps = _prep.swrad_prep_batch(
@@ -1402,6 +1413,13 @@ class RRTMGLegacyRadiation:
             tten = (res["swhr"][:, :nz] / F(86400.0)).astype(np.float32)
             rthratensw[idx] = (tten / pi3d[idx]).astype(np.float32)
             del res
+        if self.shortwave:
+            # The engine's per-chunk workspace served every chunk of this
+            # event; handing it back here lets the model's step-boundary
+            # pool trim return the bytes to the driver, so the run's
+            # resident footprint is what it was before the workspace was
+            # hoisted out of the chunk loop.
+            self._cuda_sw.release_scratch()
 
         # ---- driver-level SWDOWN = GSW/(1-ALBEDO) (driver line 2877) --
         swdown = (gsw / (F(1.0) - surf["albedo"]).astype(

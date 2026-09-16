@@ -10,12 +10,12 @@
     "10m_wind_1h_max": {
       "kind": "windowed",
       "minimum_hours": 1,
-      "input_note": "stored sub-hourly 1 h max 10 m wind speed (wind_speed_10m_max_1h) at F003 (top-of-hour instantaneous fallback at F003: no stored sub-hourly max field — a lower bound on the native sub-hourly max)"
+      "input_note": "stored sub-hourly 1 h max 10 m wind speed (wind_speed_10m_max_1h) at F003 (top-of-hour instantaneous fallback at F003: no stored sub-hourly max field, a lower bound on the native sub-hourly max)"
     },
     "10m_wind_run_max": {
       "kind": "windowed",
       "minimum_hours": 1,
-      "input_note": "run max of stored sub-hourly 1 h max 10 m wind speeds (top-of-hour instantaneous fallback at F001, F002, F003: no stored sub-hourly max field — a lower bound on the native sub-hourly max)"
+      "input_note": "run max of stored sub-hourly 1 h max 10 m wind speeds (top-of-hour instantaneous fallback at F001, F002, F003: no stored sub-hourly max field, a lower bound on the native sub-hourly max)"
     },
     "10m_wind_speed_and_direction": {
       "kind": "direct",
@@ -31,6 +31,26 @@
       "kind": "direct",
       "minimum_hours": 0,
       "input_note": "200mb Height / Winds [fill: geopotential_height_200hpa]"
+    },
+    "200mb_rh_height_winds": {
+      "kind": "direct",
+      "minimum_hours": 0,
+      "input_note": "isobaric chart cut from the stored isobaric volumes; no window requirement recorded, so it is priced at the most conservative recorded basis of zero hours"
+    },
+    "200mb_temperature_height_winds": {
+      "kind": "direct",
+      "minimum_hours": 0,
+      "input_note": "isobaric chart cut from the stored isobaric volumes; no window requirement recorded, so it is priced at the most conservative recorded basis of zero hours"
+    },
+    "250mb_height_winds": {
+      "kind": "direct",
+      "minimum_hours": 0,
+      "input_note": "isobaric chart cut from the stored isobaric volumes; no window requirement recorded, so it is priced at the most conservative recorded basis of zero hours"
+    },
+    "250mb_temperature_height_winds": {
+      "kind": "direct",
+      "minimum_hours": 0,
+      "input_note": "isobaric chart cut from the stored isobaric volumes; no window requirement recorded, so it is priced at the most conservative recorded basis of zero hours"
     },
     "2m_dewpoint": {
       "kind": "direct",
@@ -72,10 +92,40 @@
       "minimum_hours": 0,
       "input_note": "2m AGL Temperature / 10m Winds [fill: temperature_2m_agl]"
     },
+    "300mb_height_winds": {
+      "kind": "direct",
+      "minimum_hours": 0,
+      "input_note": "isobaric chart cut from the stored isobaric volumes; no window requirement recorded, so it is priced at the most conservative recorded basis of zero hours"
+    },
+    "300mb_rh_height_winds": {
+      "kind": "direct",
+      "minimum_hours": 0,
+      "input_note": "isobaric chart cut from the stored isobaric volumes; no window requirement recorded, so it is priced at the most conservative recorded basis of zero hours"
+    },
+    "300mb_temperature_height_winds": {
+      "kind": "direct",
+      "minimum_hours": 0,
+      "input_note": "isobaric chart cut from the stored isobaric volumes; no window requirement recorded, so it is priced at the most conservative recorded basis of zero hours"
+    },
     "500mb_height_winds": {
       "kind": "direct",
       "minimum_hours": 0,
       "input_note": "500mb Height / Winds [fill: geopotential_height_500hpa]"
+    },
+    "500mb_rh_height_winds": {
+      "kind": "direct",
+      "minimum_hours": 0,
+      "input_note": "isobaric chart cut from the stored isobaric volumes; no window requirement recorded, so it is priced at the most conservative recorded basis of zero hours"
+    },
+    "500mb_temperature_height_winds": {
+      "kind": "direct",
+      "minimum_hours": 0,
+      "input_note": "isobaric chart cut from the stored isobaric volumes; no window requirement recorded, so it is priced at the most conservative recorded basis of zero hours"
+    },
+    "700mb_dewpoint_height_winds": {
+      "kind": "direct",
+      "minimum_hours": 0,
+      "input_note": "isobaric chart cut from the stored isobaric volumes; no window requirement recorded, so it is priced at the most conservative recorded basis of zero hours"
     },
     "700mb_height_winds": {
       "kind": "direct",
@@ -92,10 +142,20 @@
       "minimum_hours": 0,
       "input_note": "700mb Temperature / Height / Winds [fill: temperature_700hpa]"
     },
+    "850mb_dewpoint_height_winds": {
+      "kind": "direct",
+      "minimum_hours": 0,
+      "input_note": "isobaric chart cut from the stored isobaric volumes; no window requirement recorded, so it is priced at the most conservative recorded basis of zero hours"
+    },
     "850mb_height_winds": {
       "kind": "direct",
       "minimum_hours": 0,
       "input_note": "850mb Height / Winds [fill: geopotential_height_850hpa]"
+    },
+    "850mb_rh_height_winds": {
+      "kind": "direct",
+      "minimum_hours": 0,
+      "input_note": "isobaric chart cut from the stored isobaric volumes; no window requirement recorded, so it is priced at the most conservative recorded basis of zero hours"
     },
     "850mb_temperature_height_winds": {
       "kind": "direct",
@@ -195,7 +255,7 @@
     "uh_2to5km_run_max": {
       "kind": "windowed",
       "minimum_hours": 1,
-      "input_note": "run max of stored sub-hourly 1 h max 2-5 km UH planes (WRF UP_HELI_MAX per-history-interval max at F001, F002, F003: reset each history frame — the exact trailing 1 h max at this hourly cadence)"
+      "input_note": "run max of stored sub-hourly 1 h max 2-5 km UH planes (WRF UP_HELI_MAX per-history-interval max at F001, F002, F003: reset each history frame, the exact trailing 1 h max at this hourly cadence)"
     },
     "var:wrf_lapse_rate_0_3km": {
       "kind": "generic",
@@ -220,6 +280,7 @@
     "lapse_rate_0_3km": "The stored 0-3 km lapse-rate plot uses plain temperature. It is not the virtual-temperature lapse rate; the virtual-temperature quantity requires separate analysis.",
     "lapse_rate_700_500": "The stored 700-500 hPa lapse-rate plot uses plain temperature. It is not the virtual-temperature lapse rate; the virtual-temperature quantity requires separate analysis.",
     "precipitation_type": "Precipitation-type categories are not supplied by the current ArWen history renderer. Temperature and moisture plots provide environmental context; rain/snow/freezing-rain/ice-pellet classification requires separate analysis or observations.",
+    "simulated_ir_satellite": "Simulated infrared brightness temperature needs a forward radiative-transfer operator, and no such operator exists on the history-import lane; this product is served only from a fetched GRIB store. The nearest stored quantity on this lane is top-of-atmosphere outgoing longwave radiation, drawn with --products var:wrf_olr, which is a flux in W m-2 and NOT a brightness temperature: the two are different quantities and one must not be read as the other.",
     "theta_e_2m_10m_winds": "The plots show temperature, dewpoint and winds separately. The current ArWen history renderer does not calculate 2 m equivalent potential temperature; that quantity requires separate analysis.",
     "visibility": "Low cloud cover and near-surface humidity describe the fog environment, not visibility distance. Visibility and verified fog boundaries require separate analysis or observations.",
     "vpd_2m": "Air temperature and relative humidity are context only. Vapour-pressure deficit is not calculated by this history-rendering path and requires separate analysis.",

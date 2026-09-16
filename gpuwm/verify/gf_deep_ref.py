@@ -998,7 +998,7 @@ def cup_up_aa1bl(*, t, tn, q, qo, dtime, z, kbcon, ierr, ktf):
     """module_cu_gf_deep.F:3990-4061.
 
     ``zu``, ``dby``, ``gamma_cup`` and ``t_cup`` are declared ``intent(in)``
-    and never read, which is load-bearing: ``CUP_gf:1186`` passes ``dbyo_bl``,
+    and never read, which is essential: ``CUP_gf:1186`` passes ``dbyo_bl``,
     ``GAMMAo_CUP_bl`` and ``tn_cup_bl``, three arrays that are only ever
     filled on the dead ``iversion = 0`` branch.  WRF passes uninitialised
     memory here on every call and gets away with it.

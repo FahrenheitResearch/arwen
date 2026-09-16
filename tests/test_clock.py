@@ -39,7 +39,7 @@ Architecture section C pins (docs/superpowers/specs/
   domain's dt; Davies weights keyed by the child dt via
   ``_resident_weights``; the KF calendar exists on d01 only;
 - the code-audit test enforcing the no-float-elapsed-accumulation rule
-  (hardened per shadow F4; scope stated honestly, dycore legacy sites
+  (hardened per shadow F4; scope stated accurately, dycore legacy sites
   pinned).
 
 All CPU.
@@ -1102,7 +1102,7 @@ def _target_identifier(node):
 def test_no_float_elapsed_accumulation_audit():
     """AST audit of the executor-facing clock modules (section C).
 
-    SCOPE (stated honestly, shadow F4): this is an AST-level tripwire
+    SCOPE (stated accurately, shadow F4): this is an AST-level tripwire
     over gpuwm/core/clock.py -- plus gpuwm/core/model.py once T14 lands
     it -- not a type-system proof.  It enforces:
 

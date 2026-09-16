@@ -52,7 +52,7 @@ THE NEGATIVE CONTROLS ARE THE POINT
 -----------------------------------
 A bit-exact two-GPU physics result is exactly the shape of good news this
 project has been wrong about six times.  The specific way it would be wrong
-here is that the ordering being credited was never load-bearing: two workers
+here is that the ordering being credited was never essential: two workers
 that happen to run far enough apart give the right answer for the wrong
 reason, and the ``cudaStreamWaitEvent``-on-an-unrecorded-event hazard
 ``mgstream`` documents is silent by construction.  So each arm is also run
@@ -546,7 +546,7 @@ def negative_controls(ngpu: int, *, nsteps=8, nx=CX, ny=CY,
 
     Run on ``(0, 0)`` FIRST and on ``(0, 1)`` after.  The two-worker-one-card
     pass is the one that always runs -- it needs no second free card -- and it
-    is what proves the ordering machinery is load-bearing at all.  The
+    is what proves the ordering machinery is essential at all.  The
     two-card pass proves the same rules still bind when the readers are on
     different devices, which is the claim this module exists for.  Reporting
     only the second would leave the whole set NOT RUN on a busy box and the
@@ -649,7 +649,7 @@ def scaling(ngpu: int, *, nx=512, ny=512, tile=128, nsteps=8, nz=NZ,
 
     No digest comparison here -- correctness is settled above at a geometry
     chosen to discriminate, and re-deriving it at a size chosen for timing
-    would only make the timing dishonest.  What IS checked is that the two
+    would only make the timing inaccurate.  What IS checked is that the two
     device counts produce the SAME digest as each other, because a transport
     that silently skips work looks exactly like a speedup.
     """

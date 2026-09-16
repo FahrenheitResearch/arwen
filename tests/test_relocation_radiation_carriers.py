@@ -376,7 +376,7 @@ def test_the_preparer_carries_the_carriers_and_reports_them(monkeypatch):
         timestep_seconds=DT_SECONDS)
 
 
-def test_the_preparer_is_honest_when_the_rebuilt_child_has_no_driver(
+def test_the_preparer_is_accurate_when_the_rebuilt_child_has_no_driver(
         monkeypatch):
     preparer, node, new_dc, initialized, _out, new_state = (
         _preparer_fixture(monkeypatch))

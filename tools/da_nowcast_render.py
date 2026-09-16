@@ -55,7 +55,7 @@ Layout read from the case directory (the front door's own):
     gallery/                    output (index.html + PNGs, replaced
                                 in place on re-render)
 
-HONESTY: demo-grade nowcast output, UNSCORED; free-forecast panels are
+ACCURACY: demo-grade nowcast output, UNSCORED; free-forecast panels are
 stamped "PAST LAST OBS" until an observed counterpart exists, and the
 verification numbers (>=35 dBZ column counts in the echo mask, and
 FSS(30 dBZ, 27 km) via :func:`gpuwm.verify.field_metrics.fss_distance`)
@@ -521,7 +521,7 @@ class Gallery:
         return self.leg_valid(leg).strftime("%H:%MZ")
 
     def cadence_label(self) -> str:
-        """How the applied cycles were spaced, said honestly.
+        """How the applied cycles were spaced, said accurately.
 
         A fixed-cadence run says its cadence; a run that cycled on the
         radar's own volume times says the range it actually used, which
@@ -872,7 +872,7 @@ class Gallery:
         solves = ", ".join(f"{v['solve_seconds']}s" for v in a)
         fig.suptitle(
             f"Across the applied cycles (solves: {solves}) — "
-            "honest numbers, unscored", fontsize=11.5)
+            "accurate numbers, unscored", fontsize=11.5)
         self.stamp(fig)
         f = "02-cycle-numbers.png"
         fig.savefig(self.out / f, dpi=self.dpi)
@@ -1272,21 +1272,60 @@ class Gallery:
                     rows, extra_labels=("control",)),
                 "frames": rows}, indent=1), encoding="utf-8")
 
-    def render(self):
+    def engine_resolution(self, engine: str) -> str:
+        """``""`` when the native observation engine resolved, else why not.
+
+        It does NOT decide whether the fallback drew: every weather-field
+        panel in these sheets is composed locally on every run.  What it
+        adds is the reason the single-panel product tier is out of reach
+        on this box, so a reader who wants it learns what to fix.
+        """
+
+        from gpuwm import rustwx_lanes
+
+        try:
+            resolved, why = rustwx_lanes.resolve_obsgrid_engine(engine)
+        except RuntimeError as refusal:
+            return str(refusal).split("[[explain]]")[0].strip()
+        if resolved != "rust":
+            return f"--engine {engine}: {why}"
+        return ""
+
+    def fallback_notice(self, engine: str) -> str:
+        """The DEPRECATED FALLBACK sentence, true of every run.
+
+        ``render`` composes these sheets itself and drives no engine, so
+        the weather-field panels are the fallback whether or not
+        ``rw_obsgrid`` is built here.  The sentence is therefore printed
+        unconditionally; what the engine resolution changes is only
+        whether the single-panel tier beside it is reachable today.
+        """
+
+        notice = ("da_nowcast_render: WARNING -- the WEATHER-FIELD panels "
+                  "in these sheets are the render law's DEPRECATED "
+                  "FALLBACK, kept only because the sheets are multi-panel "
+                  "COMPOSITIONS and the renderer composes one panel.  "
+                  "This tool composes them itself and drives no engine, "
+                  "so the fallback is what drew them on this run.\n"
+                  "Single-panel product tier for the same data:\n"
+                  "  gpuwm render --engine rust <leg composite wrfout>\n"
+                  "  rw_obsgrid --obs <obs .nc> --out-dir OUT\n")
+        reason = self.engine_resolution(engine)
+        if reason:
+            notice += (f"That tier is not reachable here: {reason}\n")
+        return notice + (
+            "The innovation/spread chart and the verification table are "
+            "NOT demoted; the render law allows matplotlib for charts "
+            "that are not weather fields.")
+
+    def render(self, *, engine: str = "auto"):
         self.out.mkdir(parents=True, exist_ok=True)
         # Printed where a user actually is, not only in the docstring: a
         # fallback nobody was told about is how a matplotlib panel ends
-        # up in a product gallery.
-        print("da_nowcast_render: WARNING -- the WEATHER-FIELD panels in "
-              "these sheets are the render law's DEPRECATED FALLBACK, kept "
-              "only because the sheets are multi-panel COMPOSITIONS and "
-              "the renderer composes one panel.  Single-panel product "
-              "tier for the same data:\n"
-              "  gpuwm render --engine rust <leg composite wrfout>\n"
-              "  rw_obsgrid --obs <obs .nc> --out-dir OUT\n"
-              "The innovation/spread chart and the verification table are "
-              "NOT demoted; the render law allows matplotlib for charts "
-              "that are not weather fields.", flush=True)
+        # up in a product gallery.  Every run, because every run takes
+        # it -- a warning gated on a route this tool never drives would
+        # be silence on the boxes where the engine happens to be built.
+        print(self.fallback_notice(engine), flush=True)
         self.fig_lead()
         self.fig_strip()
         self.fig_numbers()
@@ -1425,6 +1464,15 @@ def main(argv=None) -> int:
                         help="output directory (default: "
                              "<case-dir>/gallery)")
     parser.add_argument("--dpi", type=int, default=150)
+    parser.add_argument("--engine", default="auto",
+                        choices=("auto", "rust", "matplotlib"),
+                        help="which engine the single-panel weather-field "
+                             "products come from (default auto). The "
+                             "sheets here are multi-panel compositions "
+                             "and are drawn locally either way; this "
+                             "decides only whether the fallback notice "
+                             "can also name why that tier is out of "
+                             "reach on this machine")
     parser.add_argument("--authority-dir", type=Path, default=None,
                         help="override for <case-dir>/authority, for a "
                              "case laid out by hand")
@@ -1435,7 +1483,7 @@ def main(argv=None) -> int:
     gallery = args.gallery or args.case_dir / "gallery"
     Gallery(args.case_dir, gallery, args.dpi,
             authority_dir=args.authority_dir,
-            cycle_dir=args.cycle_dir).render()
+            cycle_dir=args.cycle_dir).render(engine=args.engine)
     return 0
 
 

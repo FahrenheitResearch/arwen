@@ -159,7 +159,7 @@ def test_a_skip_still_exits_1_when_it_leaves_nothing_drawn(tmp_path):
 
     Ask for exactly the product whose input is absent and no image is
     produced at all.  A render that drew nothing is a failed render
-    however honest its reason, so the exit code stays 1.
+    however accurate its reason, so the exit code stays 1.
     """
     path = _wrfout_without(tmp_path, "REFL_10CM")
     out = tmp_path / "png"
@@ -583,7 +583,7 @@ def test_the_workaround_notice_is_install_aware_in_one_line(monkeypatch):
     The 1.0.1 remedy contract stopped doctor sending pip users to a
     directory a wheel does not carry; this second call site assembled its
     own string and kept doing it.  It is bound to ONE physical line, and
-    the pip-shape answer is a whole bootstrap -- so the honest one-line
+    the pip-shape answer is a whole bootstrap -- so the accurate one-line
     composition names `gpuwm doctor` rather than inlining a command that
     cannot work here.
     """

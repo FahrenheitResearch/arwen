@@ -488,7 +488,7 @@ def test_no_scheme_whitelist_restates_the_scheme_set():
 
     The guard is structural rather than another list: no module may compare
     ``cu_physics`` against a literal tuple.  A negative control keeps it
-    honest -- the pattern must actually match the shape it forbids.
+    accurate -- the pattern must actually match the shape it forbids.
     """
     import pathlib
     import re

@@ -56,7 +56,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 FCBASE = ["-w", "-ffree-form", "-ffree-line-length-none",
           "-fconvert=big-endian", "-frecord-marker=4"]
 
-# The comparison is run at -O0 by default, and that choice is load-bearing.
+# The comparison is run at -O0 by default, and that choice is essential.
 # At -O2 GCC's interprocedural passes are *allowed* to see that a `private`
 # procedure has no external callers: it clones it (.isra, .constprop), inlines
 # it, or drops it entirely.  Making the symbol public removes that freedom, so

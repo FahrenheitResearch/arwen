@@ -55,7 +55,7 @@ _SPECIFIC_STACKS = (
 _HYDROMETEOR_STACKS = ("QC", "QR", "QI", "QS", "QG", "QH")
 
 #: 2-D fields read under their own names.  ``PSFC`` and ``SOILHGT`` are
-#: load-bearing -- ``initialize_real`` refuses without a source orography
+#: essential -- ``initialize_real`` refuses without a source orography
 #: for either pressure policy: moisture integrates on the analyzed surface.
 _REQUIRED_2D = ("PSFC", "SOILHGT", "HGT_M")
 

@@ -914,7 +914,7 @@ beside everything else. The `completed` event repeats it as
 `first_products_seconds` (null when nothing was published early), so
 comparing two runs does not mean scanning two streams.
 
-It is measured honestly: the event is emitted before the frame is
+It is measured accurately: the event is emitted before the frame is
 digested and before the receipt is written, because both of those are
 bookkeeping for the finalize stage and hashing a 362 MB history frame
 first would have put a second of it inside the number.

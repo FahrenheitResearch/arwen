@@ -35,7 +35,7 @@ use std::collections::{BTreeMap, BTreeSet};
 /// Logical alias attached to a planned bundle. Captures the original
 /// `BundleRequirement` plus any explicit family slug surfaced through
 /// the planner. Used by manifest builders to keep `planned_family_aliases`
-/// honest when the planner reroutes a logical family onto a different
+/// accurate when the planner reroutes a logical family onto a different
 /// canonical bundle (HRRR `nat -> sfc`).
 #[derive(Debug, Clone, PartialEq, Eq, Ord, PartialOrd, Serialize, Deserialize)]
 pub struct PlannedFamilyAlias {

@@ -22,6 +22,13 @@ import numpy as np
 from gpuwm.local_da import SCHEMA, PlanError, canonical, digest, utc
 
 
+def _analysis_time(backend, index):
+    origin = getattr(backend, '_continuous_epoch', None)
+    if origin is not None:
+        return origin + timedelta(seconds=(index + 1) * backend.plan['selected']['cadence_seconds'])
+    return backend.analysis_times[index]
+
+
 def _sha(path):
     h = hashlib.sha256()
     with Path(path).open('rb') as handle:
@@ -113,10 +120,33 @@ def observation_usage(method):
         0 if method.get('method') == 'forecast-only' else None)
     return dict(accepted_for_analysis=count, batches=batches,
         cwp_accepted=None if count is None else sum(row['accepted'] for row in batches if row['name'] == CWP_NAME),
-        basis='analysis innovation masks after QC and thinning; no forecast-skill claim',
+        basis=('analysis innovation masks after QC and thinning; these are '
+               'accepted observation counts and not a skill number, and the '
+               'skill of the forecast that follows is the nowcast score '
+               'written beside this receipt'),
         reason=method.get('reason'), routes=[{key: row[key] for key in
             ('id', 'route', 'status', 'reason', 'observed_columns', 'acquisition', 'latency_class') if key in row}
             for row in method.get('routes', ()) if 'id' in row or 'route' in row])
+
+
+def nowcast_score(plan, root, *, analysis_time, forecast_manifest,
+                  receipt_path=None, now=None):
+    """The forecast's skill against the radar, scored by default at run end.
+
+    Every lead whose scan time has passed and whose MRMS composite is
+    reachable is scored now; a lead still in the future, or one the archive
+    has not published, is recorded pending with its reason. A scoring
+    problem never fails the run: the forecast ran, and this is a number
+    about it rather than a gate on it.
+    """
+    from gpuwm.local_da_score import RECEIPT_NAME, cache_root_for, score_window
+    root = Path(root)
+    return score_window(plan=plan,
+                        receipt_path=receipt_path or root / RECEIPT_NAME,
+                        analysis_time=analysis_time,
+                        forecast_manifest=forecast_manifest,
+                        cache_root=cache_root_for(root), case_root=root,
+                        now=now)
 
 
 def _completed_observation_usage(manifest_path):
@@ -205,6 +235,8 @@ def launch(path, *, backend=None, cycle_runner=None, forecast_runner=None, roste
     path = Path(path).resolve()
     plan = read_plan(path)
     scratch_override = execution_scratch_override()
+    if plan.get('continuous', {}).get('enabled'):
+        return launch_continuous(path, plan=plan, backend=backend)
     root = path.parent
     from gpuwm.ensemble.config import load_ensemble_config
     from gpuwm.ensemble.cycle import run_cycles, read_analysis_roster, cycle_root
@@ -305,6 +337,9 @@ def launch(path, *, backend=None, cycle_runner=None, forecast_runner=None, roste
                           forecast_manifest=str(forecast.manifest_path),
                           cycles=list(getattr(cycles, 'cycles_run', ())),
                           products=backend.products(forecast), elapsed_seconds=time.monotonic() - started)
+            report['nowcast_score'] = nowcast_score(plan, root,
+                analysis_time=plan['analysis_times'][-1],
+                forecast_manifest=forecast.manifest_path)
             _atomic(root / 'execution.json', report)
             return report
         except BaseException as exc:
@@ -336,6 +371,8 @@ class PreparedBackend:
         self.analysis_times = [utc(s) for s in plan['analysis_times']]
         self.route_receipts = []
         self.warnings = []
+        self.renewal = None
+        self.preserve_forcing = False
 
     def preflight(self):
         from gpuwm import capabilities, go_cli
@@ -411,8 +448,9 @@ class PreparedBackend:
         from gpuwm.ingest.hrrr_physics import initialize_prepared_physics
         from gpuwm.case_data import trace_gas_overrides_from_config
         inputs, exp = self.inputs, self.inputs.experiment
-        restored = restore_prepared_cache(inputs.prepared_cache_path,
-            expected_identity=inputs.cache_identity, cfg=exp.root.run, static=inputs.static)
+        active = self.renewal or inputs
+        restored = restore_prepared_cache(active.prepared_cache_path,
+            expected_identity=active.cache_identity, cfg=exp.root.run, static=inputs.static)
         if restored.surface is None:
             raise PlanError('The prepared cache has no canonical surface state; rebuild preparation before forecasting.', code='MISSING_SURFACE')
         initialize_prepared_physics(restored.initial_result, exp.root.run, restored.met, restored.surface,
@@ -429,7 +467,8 @@ class PreparedBackend:
         prepared = runtime.PreparedRealCase(cfg=exp.root.run, grid=inputs.grid,
             static_fields=inputs.static, initial_result=restored.initial_result,
             final_analysis=None, initial_snow_water_kgm2=np.zeros_like(self._host(self.state.mup)),
-            forcing_times=tuple(exp.start_time + timedelta(hours=h) for h in inputs.forcing_hours))
+            forcing_times=tuple(exp.start_time + timedelta(hours=h) for h in active.forcing_hours),
+            preserved_forcing_prefix=self.preserve_forcing)
         data = SimpleNamespace(output_title='Local rapid cycling', output_domain=1)
         return exp, data, prepared
 
@@ -533,7 +572,6 @@ class PreparedBackend:
             physics = getattr(self.state, 'physics', None)
             surface = {name: self._host(getattr(physics, 'fields', {}).get(name)) for name in ('t2', 'u10', 'v10')}
             surface = {k: v for k, v in surface.items() if v is not None}
-            self._surface[str(Path(kwargs['member_dir']).resolve())] = surface
             receipt = dict(schema='arwen.local-da-surface-diagnostics.v1',
                 elapsed_seconds=float(outcome.sim_seconds), checkpoint_sha256=outcome.final_state_sha256,
                 fields=sorted(surface), label='forecast-leg-end diagnostics')
@@ -564,7 +602,7 @@ class PreparedBackend:
         path = self.root / 'observations' / f'cycle_{cycle_index:03d}' / 'window.json'
         if recovering and not path.is_file():
             raise PlanError('The original observation window is missing; restore it before recovering this analysis.', code='OBSERVATION_WINDOW_CHANGED')
-        when = self.analysis_times[cycle_index]
+        when = _analysis_time(self, cycle_index)
         self._observation_window(cycle_index, when, member_states)
         window = json.loads(path.read_text())
         if window.get('schema') != WINDOW_SCHEMA:
@@ -574,7 +612,8 @@ class PreparedBackend:
         paths.extend(Path(asset['path']) for asset in window['assets'])
         paths.extend(Path(info['member_dir']) / 'surface-end.npz' for info in member_states.values())
         return dict(review_sha256=self.plan['review_sha256'],
-                    analysis_time=self.plan['analysis_times'][cycle_index],
+                    analysis_time=(when.isoformat() if getattr(self, '_continuous_epoch', None) is not None
+                                   else self.plan['analysis_times'][cycle_index]),
                     observation_window_sha256=digest(window),
                     method_settings=dict(self.plan['cadence_settings']['applied']),
                     covariance_members=self.plan['selected']['covariance_members'],
@@ -597,7 +636,7 @@ class PreparedBackend:
         checkpoints = {index: member_background_checkpoint(member_states[index]['member_dir']) for index in index_list}
         background = [read_checkpoint_state(checkpoints[i]) for i in index_list]
         surface = self._surface_for_members(member_states)
-        when = self.analysis_times[cycle_index]
+        when = _analysis_time(self, cycle_index)
         obs = self._observation_window(cycle_index, when, member_states)
         states, static_receipt = background, None
         if len(background) == 1:
@@ -696,7 +735,7 @@ class PreparedBackend:
         from gpuwm.local_da_fetch import observation_window
         return observation_window(self, cycle_index, when, member_states)
 
-    def products(self, forecast):
+    def products(self, forecast, *, product_root=None):
         from gpuwm import go_cli
         from gpuwm.ensemble.manifest import read_manifest, ENSEMBLE_MANIFEST_SCHEMA
         from gpuwm.ensemble.wrfout_inventory import WRFOUT_INVENTORY_KEY
@@ -713,7 +752,7 @@ class PreparedBackend:
             if not frames:
                 reports.append(dict(member=member['index'], status='unavailable', reason='The member manifest carries no output frames.'))
                 continue
-            render = dict(self.go, render=self.root / 'products' / f"member_{member['index']:03d}")
+            render = dict(self.go, render=(Path(product_root) if product_root else self.root / 'products') / f"member_{member['index']:03d}")
             missing = go_cli.render_extra_missing()
             if missing:
                 reports.append(dict(member=member['index'], status='unavailable', reason=missing))
@@ -730,3 +769,246 @@ class PreparedBackend:
 
     def close(self):
         self._release_state()
+
+
+def launch_continuous(path, *, plan=None, backend=None):
+    """A saved continuous review runs its windows through the durable controller."""
+    from gpuwm.local_da_controller import Controller
+    path = Path(path).resolve()
+    plan = read_plan(path) if plan is None else plan
+    continuous = plan['continuous']
+    selected = plan['selected']
+    forcing_interval = plan.get('background', {}).get('selection', {}).get('forcing_interval_seconds', 3600)
+    controller = Controller(path.parent / 'continuous', binding={'review_sha256': plan['review_sha256']},
+        epoch=plan['request']['epoch'], cadence_seconds=selected['cadence_seconds'],
+        forecast_seconds=selected['forecast_seconds'], members=selected['members'],
+        windows=continuous['windows'], forcing_wait_seconds=forcing_interval, plan_path=path)
+    backend = backend or ContinuousBackend(plan, path.parent, controller=controller)
+    from gpuwm.local_da_controller import WindowFailure
+    try:
+        return controller.run(backend)
+    except WindowFailure as error:
+        failure = PlanError(str(error) + ' ' + error.recovery, code='CONTINUOUS_WINDOW_FAILED', details=error.details)
+        failure.forecast_started = error.forecast_started
+        raise failure from error
+
+
+class ContinuousBackend(PreparedBackend):
+    """One original prepared atmosphere, renewable forcing, indexed windows."""
+    def __init__(self, plan, root, *, controller):
+        super().__init__(plan, root)
+        from gpuwm.ensemble.config import load_ensemble_config
+        self.controller = controller
+        self.cfg = load_ensemble_config(self.root / 'ensemble.toml')
+        self._continuous_epoch = utc(plan['request']['epoch'])
+        self._active_index = 0
+        self.scratch_override = execution_scratch_override()
+        # Every checkpoint of a continuous case carries the preserved
+        # forcing-prefix contract, so a leg restarted after a renewal is
+        # admitted on the forcing it ran under plus what was appended.
+        self.preserve_forcing = True
+
+    def _stage(self, name, **details):
+        self.controller.stage(name, active_window=self._active_index, **details)
+
+    def member_runner(self, **kwargs):
+        self.controller.forecast_started = True
+        self._stage('forecast')
+        return super().member_runner(**kwargs)
+
+    def _schedule(self, index):
+        self._active_index = index
+        # Only neighbouring boundaries can own a report admitted within one
+        # cadence. Include the following boundary for the surface nearest rule.
+        self.analysis_times = [_analysis_time(self, i) for i in range(max(0, index-1), index+2)]
+
+    def _ensure_initial(self):
+        if self.inputs is None:
+            self._stage('preparation')
+            super().prepare()
+
+    def _active_times(self):
+        return (self.renewal.forcing_times if self.renewal else
+                tuple(self.inputs.experiment.start_time + timedelta(hours=h) for h in self.inputs.forcing_hours))
+
+    def restore_window(self, prepared, directory):
+        self._schedule(int(directory.name.split('_')[-1]))
+        self._ensure_initial()
+        from gpuwm.local_da_controller import _verify_files
+        _verify_files(prepared['assets'])
+        if prepared.get('renewal_receipt'):
+            from gpuwm.regional_preparation import read_background_renewal
+            self.renewal = read_background_renewal(prepared['renewal_receipt'], plan=self.plan,
+                                                   root=self.root, original=self.inputs)
+        else:
+            self.renewal = None
+
+    def _restore_previous_generation(self, prior):
+        if prior is None:
+            return
+        from gpuwm.ensemble.analysis_commit import read_record
+        from gpuwm.local_da_controller import _verify_files
+        decision = read_record(prior['analysis_decision']['path'])
+        _verify_files([decision['inputs']])
+        inputs = read_record(decision['inputs']['path'])
+        self.restore_window(inputs['prepared'], Path(decision['inputs']['path']).parent)
+
+    def prepare_window(self, index, when, forecast, directory, *, prior=None):
+        from gpuwm.output_identity import file_record
+        self._ensure_initial()
+        self._restore_previous_generation(prior)
+        self._schedule(index)
+        target = when + timedelta(seconds=forecast)
+        current_end = self._active_times()[-1]
+        current_end = current_end.replace(tzinfo=timezone.utc) if current_end.tzinfo is None else current_end.astimezone(timezone.utc)
+        if current_end < target:
+            if prior is None:
+                raise ValueError("The reviewed forcing ends before the first window's products; the review prices at least one window, so restore the reviewed background before launching.")
+            self._stage('preparation', renewal=dict(current_end=current_end.isoformat(), needed_end=target.isoformat()))
+            from gpuwm.background_contract import BackgroundWindowError
+            from gpuwm.local_da_controller import ForcingUnavailable
+            from gpuwm.regional_preparation import renew_background
+            try:
+                self.renewal = renew_background(self.plan, self.root, self.inputs, previous=self.renewal,
+                    end_time=target, directory=directory / 'forcing', geog=self.geog)
+            except BackgroundWindowError as error:
+                raise ForcingUnavailable(str(error)) from error
+        active = self.renewal or self.inputs
+        paths = [self.inputs.proof_path, self.inputs.source_manifest_path,
+                 Path(active.prepared_cache_path) / 'header.json']
+        if self.renewal:
+            paths.append(self.renewal.receipt_path)
+        return dict(original_epoch=self.plan['request']['epoch'],
+            renewal_receipt=None if self.renewal is None else str(self.renewal.receipt_path),
+            forcing_generation=0 if self.renewal is None else self.renewal.generation,
+            forcing_times=[value.isoformat() for value in self._active_times()],
+            assets=[file_record(path) for path in paths])
+
+    def _observation_window(self, cycle_index, when, member_states):
+        self._stage('observations')
+        result = super()._observation_window(cycle_index, when, member_states)
+        self._stage('analysis')
+        return result
+
+    def analyze_window(self, index, directory, prior, inputs):
+        from gpuwm.ensemble.cycle import run_cycles, cycle_root, read_analysis_roster
+        from gpuwm.output_identity import file_record
+        self._schedule(index)
+        restarts = None if prior is None else {i:row['path'] for i,row in enumerate(prior['analysis'])}
+        self._stage('forecast')
+        def scratch_budget(planned_mib):
+            budget, receipt = analysis_execution_budget(planned_mib, override_mib=self.scratch_override)
+            self._stage('analysis', analysis_execution=receipt)
+            return budget, receipt
+        def progress(value):
+            self._stage('analysis', analysis_progress=dict(value))
+        from gpuwm.da.radar_assimilation import analysis_execution_options
+        binding = {k: v for k, v in inputs.items() if k != 'assets'}
+        with analysis_execution_options(scratch_budget=scratch_budget, progress=progress):
+            result = run_cycles(self.cfg, directory / 'cycles', n_cycles=1, first_cycle=index,
+                initial_restarts=restarts, input_binding=binding, cycle_seconds=self.plan['selected']['cadence_seconds'],
+                assimilate=self.assimilate, runner=self.member_runner, positivity='clip', restart_from_analysis=True,
+                moment_policy='full-moment', moment_repair=True, mp_physics=self.mp_physics,
+                analysis_context=self.analysis_context)
+        if result.status != 'COMPLETE':
+            raise RuntimeError('The analysis window did not complete; recover its existing member receipts')
+        roster = read_analysis_roster(cycle_root(directory / 'cycles', index), n_members=self.cfg.n_members)
+        usage = _completed_observation_usage(result.manifest_path)
+        return dict(analysis=[file_record(path) for _,path in sorted(roster.items())],
+                    cycle_manifest=str(result.manifest_path), observation_usage=usage)
+
+    def produce_window(self, index, directory, decision):
+        from gpuwm.ensemble.engine import run_ensemble
+        from gpuwm.ensemble.analysis_commit import read_record, write_record
+        from gpuwm.output_identity import file_record
+        from gpuwm.local_da_controller import _verify_products
+        receipt = directory / 'products.json'
+        if receipt.exists():
+            value = read_record(receipt)
+            if value.get('window') != index or value.get('review_sha256') != self.plan['review_sha256']:
+                raise ValueError('The product receipt belongs to another review or window')
+            _verify_products(value)
+            return {k:v for k,v in value.items() if k != 'self_sha256'}
+        intent_path = directory / 'products-intent.json'
+        if intent_path.exists():
+            return self._commit_products(index, directory, read_record(intent_path))
+        self._schedule(index)
+        self._stage('forecast')
+        restarts = {i:row['path'] for i,row in enumerate(decision['analysis'])}
+        horizon = (index+1)*self.plan['selected']['cadence_seconds']+self.plan['selected']['forecast_seconds']
+        forecast = run_ensemble(self.cfg, _forecast_output_root(directory), run_seconds=horizon,
+            restarts=restarts, runner=self.member_runner, resume=True)
+        if forecast.status != 'COMPLETE':
+            raise RuntimeError('The window forecast did not complete; resume its existing members')
+        self._stage('render')
+        products = self.products(forecast, product_root=directory / 'products')
+        from gpuwm.ensemble.wrfout_inventory import WRFOUT_INVENTORY_KEY, verify_entry
+        document = json.loads(forecast.manifest_path.read_text(encoding='utf-8'))
+        paths = [forecast.manifest_path, Path(decision['outcome']['cycle_manifest']), self.cfg.base_config]
+        for member in document['members']:
+            member_dir = forecast.ens_root / member['member_dir']
+            inventory = member.get(WRFOUT_INVENTORY_KEY) or []
+            if not inventory or any(verify_entry(entry, member_dir=member_dir) for entry in inventory):
+                raise RuntimeError('The completed forecast has missing or changed frames; recover its ordinary output inventory')
+            paths += [member_dir / entry['path'] for entry in inventory]
+        images = sorted((directory / 'products').rglob('*.png'))
+        if not images:
+            raise ProductFailure({'members':[{'status':'failed','reason':'The renderer produced no images.'}]})
+        paths += images
+        from gpuwm.local_da_score import RECEIPT_NAME as NOWCAST_RECEIPT
+        score = nowcast_score(self.plan, self.root,
+            analysis_time=_analysis_time(self, index),
+            forecast_manifest=forecast.manifest_path,
+            receipt_path=directory / NOWCAST_RECEIPT)
+        execution = dict(schema='arwen.local-da-execution.v1', review_sha256=self.plan['review_sha256'],
+            status='COMPLETE', forecast_started=True, base_config=str(self.cfg.base_config),
+            base_config_sha256=self.cfg.base_config_sha256, cycle_manifest=decision['outcome']['cycle_manifest'],
+            forecast_manifest=str(forecast.manifest_path), products=products, cycles=[index],
+            images=[str(path) for path in images],
+            observation_usage=decision['outcome']['observation_usage'],
+            nowcast_score=score,
+            elapsed_seconds=self.controller.monotonic()-self.controller.started)
+        intent = write_record(intent_path, dict(execution=execution,
+                                               artifacts=[file_record(path) for path in paths]))
+        return self._commit_products(index, directory, intent)
+
+    def rescore_pending(self, *, now=None):
+        """Fill in earlier windows' pending leads as later ones complete.
+
+        At real time the 60 minute lead of window 0 cannot be scored until an
+        hour after window 0's analysis, which is after window 3 has run. So
+        every completed window rescores the ones before it: the receipts are
+        rewritten, the status document reads them, and a lead that was
+        pending stops being pending without anyone asking.
+        """
+        from gpuwm.local_da_score import score_case_root
+        return score_case_root(self.plan, self.root, now=now,
+                               plan_path=self.controller.plan_path)
+
+    def _commit_products(self, index, directory, intent):
+        from gpuwm.ensemble.analysis_commit import write_record
+        from gpuwm.output_identity import file_record
+        from gpuwm.local_da_controller import _verify_files
+        execution = intent['execution']
+        if (execution.get('review_sha256') != self.plan['review_sha256'] or execution.get('cycles') != [index]
+                or execution.get('base_config_sha256') != self.cfg.base_config_sha256
+                or execution.get('base_config') != str(self.cfg.base_config)
+                or execution.get('status') != 'COMPLETE'):
+            raise ValueError('The product publication intent belongs to another review or window')
+        _verify_files(intent['artifacts'])
+        execution_path = directory / 'execution.json'
+        write_record(execution_path, execution)
+        record = file_record(execution_path)
+        value = dict(status='complete', window=index, review_sha256=self.plan['review_sha256'],
+            execution_path=str(execution_path), execution_sha256=record['sha256'], execution_size_bytes=record['bytes'],
+            base_config=str(self.cfg.base_config), base_config_sha256=self.cfg.base_config_sha256,
+            forecast_manifest=execution['forecast_manifest'], cycle_manifest=execution['cycle_manifest'],
+            images=execution.get('images', []),
+            # The score as it stood when this window committed. The receipt
+            # it names is rewritten as pending leads become scoreable, so
+            # the receipt is the current answer and this is the record at
+            # completion; the receipt is deliberately not a hashed artifact.
+            nowcast_score=execution.get('nowcast_score'),
+            verified_at_publication=True, artifacts=[record]+intent['artifacts'])
+        write_record(directory / 'products.json', value)
+        return value

@@ -1,5 +1,111 @@
 # Changelog
 
+## 2.7.5 (2026-09-16)
+
+New:
+
+**ICON global forcing**
+
+- `--source icon-global` runs DWD's 13 km global ICON like any other source, from `gpuwm domain`, `fetch`, `prep` and `go`. Aliases `icon`, `icon-13km`, `dwd-icon`. Eighteen pressure levels, surface and near-surface state, the TERRA soil column, sea ice and snow, three-hourly to f180 from 00 and 12 UTC and to f120 from 06 and 18 UTC. Data: Deutscher Wetterdienst, opendata.dwd.de, CC BY 4.0.
+- The icosahedral remapper `gdt101_remap` joins the bridge bundle and reads any source on WMO grid template 101. A bundle built before this release does not carry it, and preparation says so by name.
+- A new producer on that grid is authority documents and a table row, not code.
+
+**Local DA: a skill number, and continuous cycling**
+
+- Every local DA run scores its own forecast against the MRMS composite, with no flag: neighbourhood FSS at 15, 30, 45 and 60 minutes, at 20, 30 and 40 dBZ, in 9 km and 27 km boxes. Beside every score sits the radar-persistence baseline and the difference, so the number reads as skill over the last scan. The receipt is `nowcast-score.json` beside each window; `--status` shows it.
+- A lead that cannot be scored yet stays `pending` with its reason, never a zero. `gpuwm local-da --score PLAN` fills it in later; MRMS scans cache inside the case.
+- `gpuwm local-da --continuous WINDOWS` cycles a regional analysis: each window restarts from the last analysis, assimilates its observations, runs the short forecast and renders it. `--status` says where it is, `--stop` is durable, `--launch` resumes without recomputing an analysis.
+- Boundary forcing renews itself from the same source cycle when a window runs past it, and a checkpoint can carry the forcing prefix it ran under, so cycling restarts inside a forcing interval.
+
+**Cyclone quick-start**
+
+- `gpuwm cyclone-setup --start-hour N` begins a run at forecast lead N of the selected cycle instead of at its analysis, so a storm the model only develops at a late lead can be forecast now. Every registered source that publishes leads takes it, on its own published ladder; a lead past that cycle's horizon is refused naming the horizon. `--latest-map` takes the same hour, so the centre is clicked on the field the run starts from.
+- `gpuwm cyclone-setup --nest-budget-gib GIB` sizes the following nest to a memory budget instead of leaving it at the preset 160x160 whatever the card holds: a 16 GB card was running a nest that fits in under 4 GB. The nest grows square in whole parent cells to the largest layout whose priced tree the budget admits, its movement maximums and search box are derived for the size it reaches, and a budget the card or the preset floor refuses is named with what bound it, what the floor costs here and the way out.
+
+**Offline downscaling and mixed-scheme nesting**
+
+- Offline downscaling changes the child's microphysics scheme the way live nesting does, for the initial state and every boundary frame: WDM6, P3, Milbrandt-Yau, NSSL and every other ported scheme, not NSSL only.
+- A nest edge that changes scheme runs off a streamed parent, and two-way feedback runs across it. Both default-on.
+
+**Ensemble and render products**
+
+- `gpuwm enprod` files its panels in the same `<out>/<domain>/<product>/<valid-day>/` tree as every other product, on both engines, with a `render-summary.json`. `--domain dNN` works on the rust engine, `--dpi 300` renders 2400x1800, and `--field` takes any field the engine lists.
+- The terminal plot catalog says, per preset, which products this install will not draw and why.
+
+**Remote execution**
+
+- `gpuwm remote sync-outputs` retrieves a run's whole committed output set and resumes if interrupted. `remote list-products` prints what the node's renderer serves, and a selection may name the renderer's `var:`, `xsec:` and `mesh:` families or nothing for the node's default set.
+- `--device` names the card a remote run uses. `remote resume` takes the same inputs `start` takes, and a resumed map run stays a map run.
+- A launch is a named attempt, so a retry answers with the job already created instead of starting a second forecast on the same card. Long reviews and transfers are no longer cut off: the deadline measures silence.
+- `remote status` says which route a job planned and why, and names what could not start or be read. A node too old for what the client sends is named with the version to update to.
+
+**Speed and memory, measured on an RTX 5070 Ti**
+
+- MYNN runs at 8,192 columns per launch, the swept optimum: 15.5 percent cheaper per root cycle than the 16,384 of 2.7.4 on half the workspace. A 1,500-step nested pair went from 2,877 s to 2,390 s with every history frame byte-identical. `GPUWM_MYNN_COLUMN_CHUNK` overrides it.
+- The shortwave chain keeps its chunk workspace instead of rebuilding it: about 50 GB of memset per nested radiation event becomes about 0.35 GB.
+- The RUC land surface admits a whole call's inputs with one device read instead of 568.
+- Forecast receipts split GPU memory into this process, other processes and the card, with the seconds a co-tenant was present, so a run that grew is told from a card that filled up underneath it.
+
+**Elsewhere**
+
+- The terminal's banner and `arwen-tui --help` read the version from the crate, so both say 2.7.5.
+
+Fixed:
+
+**Installed wheels**
+
+- The manylinux wheel's bridge binaries install executable under `pip`. Installs made with `uv` never showed this; Windows was never affected.
+- The installed cycle bridge keeps site-packages on its path, so the first leg of a cycle no longer dies with `No module named 'cupy'`.
+- `rw_mpas_convert`'s receipt records the converted frame's own digest, not the source history's.
+
+**ERA5 and CDS credentials**
+
+- The terminal's CDS key panel saves a key again. It ran `python -m gpuwm`, which had nothing to run, so a key typed into the product was written nowhere.
+- An ERA5 fetch that cannot reach the CDS client says which file it looked for, whether it exists, its encoding, and cdsapi's own error, with the way out. The retired v2 endpoint and `UID:KEY` shape are reported as not configured, and saving a token over them writes the current endpoint.
+- The keyless ARCO provider works again: Google's ERA5 Zarr spells its level unit `Hectopascal(hPa)`, which was compared as text against `hPa`, so every request refused before the first chunk. A configuration written for ARCO needs no hand edit: `gpuwm domain` wrote a `.grib` forcing name while the fetch publishes `.nc`.
+
+**Running and stopping**
+
+- A forecast stopped mid-stage exits 130, not 1, so the desktop reads it as stopped and the run can still be downscaled after the app is reopened. Runs stopped under 2.7.4 stay failed.
+- A shared GPU is priced against this run's reservation instead of refused for being shared. `--allow-shared-gpu` is accepted and has no effect.
+
+**Moving nests**
+
+- A following nest holds where it is instead of jumping when its search box carries no closed circulation. A cyclone quick forecast started where no cyclone was proposed a 37 parent-cell move toward a ridge at its first cadence and ended there; it now runs the six hours out with the nest where it was placed, and every hold records what it declined on.
+- A move that would leave too little of the nest overlapping is made as large as the overlap floor allows instead of ending the run, on the tracked nest and on a containment slide alike, and the receipt names the bound that cut it. Naming a placement outright is still refused, now with the per-axis move that floor implies and the knob that widens it.
+- The cyclone quick-start's movement maximum is derived from its overlap floor and from the nest it actually proposes, so it is always a move the nest can make: 6 parent cells at the full layout, 5 on a card that fits down to a 144-cell nest, 3 at the smallest layout the door proposes. A fitted proposal shows both numbers among its reviewed changes.
+
+**Preparation and data**
+
+- A conformant IEEE-packed GRIB2 message decodes instead of being refused, and a stale mapped decode engine is named as a rebuild rather than blamed on the publisher's bytes.
+- A following nest no longer refuses its first move when its parent spans the antimeridian. Source pixels are binned at their canonical column, so a crop of the sealed statics corridor equals the statics built directly for that footprint byte for byte; a corridor sealed before this fix is refused at load naming the re-preparation. The stencil averages also reduce in a fixed order, so two builds of the same ground agree to the bit.
+- A real-data initialization is no longer refused because the vertical operator undershot a sharp dry slot: vapour taken below zero is floored at WRF's own `qv_min_value` and receipted, for the parent and every spawned child.
+- Radial velocity is dealiased by default at every radar door; `--no-dealias` turns it off on the nowcast doors and the radar-grid tools. A coherent fold used to reach the analysis as a plausible wrong wind field.
+- A Noah-MP option that reaches no gpuwm code is set with one line saying it changes nothing, rather than refused.
+- A spawned child carries its own aerosol receipt across the nest boundary.
+
+**Rendering**
+
+- Frames at forecast hour 1000 and beyond are filed correctly instead of left flat at the render root.
+- A research recipe is no longer refused for naming a product the packaged table does not list: the renderer's catalog is the vocabulary.
+- `enprod --engine auto` refuses rather than drawing weather fields with matplotlib when the rust engine is missing. A run whose history dropped `OLR`, or a downscale asking for `xsec:` products, is refused at plan review rather than after the run.
+- `simulated_ir_satellite` left the general and hurricane presets and carries its reason: no forward radiative-transfer operator exists on the history-import route.
+- The terminal workspace's Plot history guide pins `--engine rust` on the timeline it builds. `--series` renders a whole timeline into one renderer store, so windowed products can be differenced across frames (`qpf_6h` is F012 minus F006); the matplotlib engine renders one file at a time, holds no store and carries no windowed product, and `--timeidx` would index inside each file. The pair is refused rather than silently ignored.
+
+**Remote execution**
+
+- A remote forecast started from a configuration already on the node serves its frames, stores, maps and gallery instead of six doors refusing it.
+- A node whose card memory could not be measured is priced against its most conservative capacity and launched, not refused. Inputs too large for the staging manifest travel by verified transfer. A saved case naming any registered source has its forcing relocated to the node cache.
+
+Known limits:
+
+- `gpuwm cycle` shows no picture while it runs.
+- The standalone rw-wps bundle does not carry `gdt101_remap`; `gpuwm doctor` names the gap.
+- The desktop's weather map cannot draw ICON global fields; the forecast itself is unaffected.
+- The local DA nowcast score masks a 9 km rim and scores one member, which the receipt names.
+- An ARCO window sized for a 16 GiB card refuses in initialization with "specific humidity must be finite in [0, 1)"; the 8 GiB sizing runs end to end.
+
+Detail behind every row: [the 2.7.5 development record](docs/2.7.5-development-record.md).
 ## 2.7.4 (2026-09-13)
 
 - Full-world map bounds retain all longitude columns instead of collapsing to one meridian. The desktop regenerates affected normalized map caches, including AIFS and IFS cyclone previews.

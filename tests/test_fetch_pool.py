@@ -250,7 +250,7 @@ def test_receipt_records_files_bytes_workers_wall_and_speedup():
     assert receipt["effective_speedup"] > 1.0
 
 
-def test_receipt_speedup_is_honest_about_serial_runs():
+def test_receipt_speedup_is_accurate_about_serial_runs():
     jobs = [_job(f"j{i}", (lambda i=i: (time.sleep(0.02),
                                         _entry(f"j{i}"))[1]))
             for i in range(3)]

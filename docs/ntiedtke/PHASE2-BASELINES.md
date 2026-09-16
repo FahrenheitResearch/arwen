@@ -51,7 +51,7 @@ run of any fresh kernel set, and compare warm runs, which reproduce peak
 VRAM exactly.** Stated now, before the NT number exists, so the threshold
 cannot be chosen after seeing it.
 
-If a later comparison does land close, the honest reading is still
+If a later comparison does land close, the accurate reading is still
 "indistinguishable" rather than "equal" — but on this evidence the
 instrument is sharper than a 0.11 GiB band would have allowed, and treating
 0.11 as irreducible would have thrown away real resolution.
@@ -395,7 +395,7 @@ instead of one slot, which removes the cycle in three lines.
 resident where one was needed and fragments the pool around them, so it
 removes the cycle while adding residency — it confounds the two things the
 experiment was built to separate.  Read literally it says the hypothesis is
-refuted; read honestly it says nothing about the hypothesis at all, because
+refuted; read accurately it says nothing about the hypothesis at all, because
 the intervention changed two variables.
 
 ### The instrument that does isolate
@@ -520,7 +520,7 @@ before the run rather than discovered during it — which is the same
 argument that put arm 2 into the acceptance condition.
 
 It also retires a claim made three messages ago.  "Not the pool" was true
-of the 30-minute run and false in general, and the honest form is:
+of the 30-minute run and false in general, and the accurate form is:
 **the reservation is eliminated by direct measurement; the pool is not
 eliminated at all.**
 

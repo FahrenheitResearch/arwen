@@ -1199,7 +1199,7 @@ fn read_wrf_products(
     // same low/mid/high layer-maximum cloud fraction; publish the three
     // planes under their canonical selectors so the recipes see them.
     // WRF carries no total-cloud field, so `cloud_cover` (total) stays
-    // honestly unstored.
+    // accurately unstored.
     for (derived_plane, canonical_field) in [
         ("wrf_cloudfrac_low", CanonicalField::LowCloudCover),
         ("wrf_cloudfrac_mid", CanonicalField::MiddleCloudCover),
@@ -1332,7 +1332,7 @@ fn read_wrf_products(
     // write phase and beyond at zero recompute cost (measured: working set
     // fell 8.8 GB -> 1.3 GB at this point instead of riding the write).
     // Usually a no-op now that `build_iso_volumes` clears after its last
-    // getvar, but still load-bearing when `core_fields` is off (no volume
+    // getvar, but still essential when `core_fields` is off (no volume
     // build) or the volume build failed partway. catch_unwind: if a caught
     // diagnostic panic above poisoned the cache mutex, clearing would
     // re-panic; a stuck cache must not fail the hour.

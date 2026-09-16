@@ -4,6 +4,7 @@ The runner emits protocol-only bytes, never weather. Queue entries are already
 processed/evicted so this test cannot invoke a renderer or another viewer worker.
 """
 from contextlib import contextmanager
+from datetime import datetime, timedelta, timezone
 import json
 import os
 from pathlib import Path
@@ -29,25 +30,70 @@ pytestmark = pytest.mark.skipif(
     or not hasattr(signal, "pidfd_send_signal"), reason="Linux pidfd ownership contract")
 WATCHDOG = 10  # Deadlock guard only; never establishes the interleaving.
 
-RUNNER = r'''
+#: Name of the fixture clock anchor the wrapper and runner read.
+CLOCK_ENV = "ARWEN_FIXTURE_CLOCK_ANCHOR"
+
+#: Every instant this fixture records is compared against one that a DIFFERENT
+#: process recorded: the job record's creation time, the runner's manifest
+#: start, its event stamps and the wrapper's end time. That comparison assumes
+#: CLOCK_REALTIME only moves forward, and this platform's does not: measured on
+#: 2026-09-12, one reading of 11:58:53.991756+00:00 was followed by
+#: 11:58:52.002429+00:00, a 1.99 s step backward, which turns a valid
+#: transition into "manifest was published after this job ended". CLOCK_MONOTONIC
+#: is shared across processes on Linux, so one anchor read once orders all of
+#: them whatever the wall clock does. This is the fixture's own clock only: no
+#: tolerance is added to anything under test, and
+#: test_measured_wrapper_settlement_fits_the_completion_budget deliberately does
+#: not use this fixture, so it still observes the real clock.
+STEADY_CLOCK = r'''
+import os as _os, time as _time
+from datetime import datetime as _dt, timedelta as _td
+_wall, _mono = _os.environ["ARWEN_FIXTURE_CLOCK_ANCHOR"].split("|")
+_wall, _mono = _dt.fromisoformat(_wall), float(_mono)
+def _steady_datetime():
+    return _wall + _td(seconds=_time.monotonic() - _mono)
+def _steady_now():
+    return _steady_datetime().isoformat()
+def _steady_unix_ms():
+    return int(_steady_datetime().timestamp() * 1000)
+'''
+
+_ANCHOR_WALL = datetime.now(timezone.utc)
+_ANCHOR_MONO = time.monotonic()
+
+
+def clock_anchor():
+    return _ANCHOR_WALL.isoformat() + "|" + repr(_ANCHOR_MONO)
+
+
+def steady_now():
+    return (_ANCHOR_WALL + timedelta(seconds=time.monotonic() - _ANCHOR_MONO)).isoformat()
+
+
+RUNNER = STEADY_CLOCK + r'''
 import json, os, socket, sys, time
 from pathlib import Path
 from gpuwm import remote_worker as rw
+rw._now = _steady_now
 record = rw._record(Path(sys.argv[1]))
 root = Path(record["outdir"])
 prepared = sys.argv[4] == "prepared"
 started = rw._now()
+# Whatever this record's own route publishes: the staged plan document and its
+# reviewed digest, or "gpuwm go <saved config>" with a digest the run computes.
+plan_source = record.get("snapshot_plan") or "gpuwm go " + record["snapshot_config"]
+plan_sha256 = record.get("plan_sha256") or "e" * 64
 manifest = {"schema": "gpuwm.run-manifest.v1", "route": "prepared" if prepared else "experiment",
     "run_id": "fixture-native-run", "pid": os.getpid(), "started_at_utc": started,
-    "run_dir": str(root), "outputs_dir": str(root), "plan_source": record["snapshot_plan"],
-    "plan_sha256": record["plan_sha256"], "events_path": str(root / "events.jsonl")}
+    "run_dir": str(root), "outputs_dir": str(root), "plan_source": plan_source,
+    "plan_sha256": plan_sha256, "events_path": str(root / "events.jsonl")}
 rw._write(root / "run-manifest.json", manifest)
 frame = root / "wrfout_d01_fixture"
 frame.write_bytes(b"protocol-only committed bytes, not weather")
-base = {"schema_version": "gpuwm.run-plan.event.v1", "emitted_unix_ms": int(time.time()*1000)}
+base = {"schema_version": "gpuwm.run-plan.event.v1", "emitted_unix_ms": _steady_unix_ms()}
 events = [
     {**base, "sequence": 1, "event": "resolved_plan", "config_source": record["snapshot_config"],
-     "config_sha256": record["config_sha256"]},
+     "config_sha256": record["snapshot_sha256"]},
     {**base, "sequence": 2, "event": "output_committed", "domain": 1, "path": str(frame),
      "size_bytes": frame.stat().st_size, "valid_time": "2026-09-07T18:00:00Z"},
     {**base, "sequence": 3, "event": "completed", "dry_run": False,
@@ -58,7 +104,7 @@ if prepared:
     producer.mkdir(parents=True)
     (producer.parent / "latest-run.txt").write_text(producer.name+"\n")
     native_start = rw._now()
-    emitted = int(time.time()*1000)
+    emitted = _steady_unix_ms()
     inner = {**manifest, "route": "experiment", "run_id": "inner-native-run",
         "started_at_utc": native_start, "run_dir": str(producer), "outputs_dir": str(producer),
         "events_path": str(producer / "events.jsonl"),
@@ -70,7 +116,7 @@ if prepared:
     native_events = [{**row, "emitted_unix_ms": emitted} for row in events]
     native_events[-1].update(run_dir=str(producer), receipt_path=str(producer / "run-manifest.json"))
     (producer / "events.jsonl").write_text("".join(json.dumps(row)+"\n" for row in native_events))
-    events[-1]["emitted_unix_ms"] = int(time.time()*1000)
+    events[-1]["emitted_unix_ms"] = _steady_unix_ms()
 (root / "events.jsonl").write_text("".join(json.dumps(row)+"\n" for row in events))
 with socket.socket(socket.AF_UNIX) as ready:
     ready.connect(sys.argv[2])
@@ -79,11 +125,12 @@ with socket.socket(socket.AF_UNIX) as ready:
 raise SystemExit(int(sys.argv[3]))
 '''
 
-WRAPPER = r'''
+WRAPPER = STEADY_CLOCK + r'''
 import os, sys
 from pathlib import Path
 from types import SimpleNamespace
 from gpuwm import remote_worker as rw
+rw._now = _steady_now
 notice, release = int(sys.argv[2]), int(sys.argv[3])
 receipt = len(sys.argv) < 5 or sys.argv[4] != "no-runner-receipt"
 write, popen = rw._write, rw.subprocess.Popen
@@ -154,7 +201,10 @@ def job_record(tmp_path, directory, output, config, plan, argv):
 
 
 @pytest.fixture
-def transition(tmp_path):
+def transition(tmp_path, monkeypatch):
+    # One anchor for this test's three processes; see STEADY_CLOCK above.
+    monkeypatch.setenv(CLOCK_ENV, clock_anchor())
+    monkeypatch.setattr(rw, "_now", steady_now)
     processes, descriptors, sockets = [], [], []
     directory, output, config, plan = job_inputs(tmp_path, "completion-fixture")
     # Short socket path: pytest's own tmp_path may exceed AF_UNIX's 108 bytes.
@@ -171,8 +221,16 @@ def transition(tmp_path):
         c = SimpleNamespace(workspace=tmp_path, directory=directory, record=record,
                             output=output, config=config, plan=plan, processes=processes)
 
-        def launch(exit_code=0, *, prepared=False, receipt=True):
+        def launch(exit_code=0, *, prepared=False, receipt=True, configuration=False):
             record["argv"][-2:] = [str(exit_code), "prepared" if prepared else "experiment"]
+            if configuration:
+                # The node-configuration route exactly as the RPC door saves it:
+                # no staged plan, and a snapshot staging re-emitted, so the
+                # source file's digest is a different number from the digest of
+                # the snapshot the run actually loads.
+                record.update(action="start", snapshot_plan=None, plan_sha256=None,
+                              config_sha256="d" * 64,
+                              snapshot_inputs={"case.toml": rw._file_sha(config)})
             if prepared:
                 rewrite(plan, lambda value: value.update(route="prepared"))
                 record["plan_sha256"] = record["snapshot_inputs"]["plan.json"] = rw._file_sha(plan)
@@ -341,6 +399,37 @@ def test_runner_exit_before_wrapper_result_settles(transition, monkeypatch, prep
         expect_wait(w)
         assert not viewer._queue(viewer._root(c.workspace), c.record["id"])
         # Multiple full revalidations while the real wrapper cannot publish.
+        w.resume()
+        expect_wait(w)
+        c.publish()
+        assert rw._status(c.directory)["state"] == "completed"
+        w.resume()
+        receipt = expect_done(w, 0)
+        assert receipt["state"] == "complete" and receipt["evicted"] == 1
+
+
+def test_a_configuration_route_job_proves_its_own_runner_exit_window(transition):
+    """A job started from the node's own configuration has a provable window.
+
+    The runner receipt is that proof, so every route whose run publishes a
+    manifest records one. Without it this job's completion is refused with a
+    race that never happened, at the doors that now serve its frames.
+    """
+    c = transition.launch(configuration=True)
+    assert c.record["config_sha256"] != c.record["snapshot_sha256"]
+    assert rw._json(c.directory / "runner.json")["token"] == c.record["token"]
+    state = rw._status(c.directory)
+    assert state["state"] == "running"
+    with pytest.raises(ra.ProducerCompletionPending) as pending:
+        ra.bound_manifest(c.record, state, job_directory=c.directory)
+    assert not isinstance(pending.value, ra.ProducerCompletionUnprovable)
+    assert pending.value.evidence
+
+
+def test_a_configuration_route_job_settles_through_the_same_transition(transition, monkeypatch):
+    c = transition.launch(configuration=True)
+    with watching(c, monkeypatch) as w:
+        expect_wait(w)
         w.resume()
         expect_wait(w)
         c.publish()
@@ -656,12 +745,14 @@ def test_off_linux_the_transition_names_the_platform_breakage(transition, monkey
 def published_plot(c, state="failed"):
     """A frame whose gallery receipt already exists: no renderer is reachable."""
     root = plots._root(c.workspace, c.record["id"])
+    # A receipt belongs to one gallery selection: this job's own.
+    directory = plots._selection_root(root, plots.render_selection(c.record))
     authority = ra._sha(c.events.read_bytes().splitlines(keepends=True)[1])
     value = {"schema": plots.SCHEMA, "state": state, "job_id": c.record["id"], "domain": 1,
              "sequence": 2, "commit_sha256": authority}
     if state == "failed":
         value["error"] = "fixture: this frame's compact store was retired before plots ran"
-    rw._write(plots._receipt(root, 2), value)
+    rw._write(plots._receipt(directory, 2), value)
     return root
 
 
@@ -1043,7 +1134,7 @@ frame.write_bytes(b"protocol-only committed bytes, not weather")
 base = {"schema_version": "gpuwm.run-plan.event.v1", "emitted_unix_ms": int(time.time()*1000)}
 events = [
     {**base, "sequence": 1, "event": "resolved_plan", "config_source": record["snapshot_config"],
-     "config_sha256": record["config_sha256"]},
+     "config_sha256": record["snapshot_sha256"]},
     {**base, "sequence": 2, "event": "output_committed", "domain": 1, "path": str(frame),
      "size_bytes": frame.stat().st_size, "valid_time": "2026-09-07T18:00:00Z"},
     {**base, "sequence": 3, "event": "completed", "dry_run": False, "run_dir": str(root),
@@ -1062,9 +1153,19 @@ raise SystemExit(0)
 '''
 
 PLAIN_WRAPPER = r'''
-import os, sys
+import os, sys, time
 from pathlib import Path
 from gpuwm import remote_worker as rw
+root = Path(rw._record(Path(sys.argv[1]))["outdir"])
+write = rw._write
+def stamped(path, value):
+    write(path, value)
+    if path.name == "result.json":
+        # The far end of the interval under measurement, on the same clock the
+        # runner stamped its last instruction with.
+        (root / "publish-stamp.json").write_text(
+            '{"published_monotonic_ns": %d}' % time.monotonic_ns())
+rw._write = stamped
 raise SystemExit(rw.run_worker(Path(sys.argv[1]), os.environ[rw.TOKEN_ENV]))
 '''
 

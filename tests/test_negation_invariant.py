@@ -1,7 +1,7 @@
 """The resolved-scale disclaimer stays negated, and the guard can see it fail.
 
 ``tools/check_negation_invariant.py`` is only worth shipping if it changes
-its verdict when the negation is removed.  So the load-bearing tests here
+its verdict when the negation is removed.  So the essential tests here
 are the three mutants: each deletes one negation from a scratch copy of
 ``README.md`` -- the mutants are built in ``tmp_path`` and never written
 back to the tree -- and the checker must return FAIL where the unmutated
@@ -25,22 +25,30 @@ from tools.check_negation_invariant import check, documents, scan_text
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
+#: The published page that carries the negated claim the mutants edit.
+#: README.md stopped naming resolved tornado structure when the release
+#: documentation was refreshed on 2026-09-09; the disclaimer of record is
+#: VERIFICATION.md's "Not claimed" section.
+MUTANT_PAGE = Path("docs/public/VERIFICATION.md")
+
 #: (name, exact source text, exact replacement) for each mutant.
 MUTANTS = (
     (
+        # The negation moves to the previous line: the sentence still
+        # holds it, the line with the occurrence no longer does.
         "M1",
-        "  not tornado-resolving simulations.",
-        "  tornado-resolving simulations.",
+        "  case-study evidence, not a tornado-resolving claim.",
+        "  case-study evidence, and not\n  a tornado-resolving claim.",
     ),
     (
         "M2",
-        "  and mesocyclone-proxy diagnostic, not as a resolved-tornado claim:",
-        "  and mesocyclone-proxy diagnostic, as a resolved-tornado claim:",
+        "- **No resolved tornado dynamics.**",
+        "- **Resolved tornado dynamics.**",
     ),
     (
         "M3",
-        "  It does not resolve tornado dynamics:",
-        "  It resolves tornado dynamics:",
+        "  case-study evidence, not a tornado-resolving claim.",
+        "  case-study evidence, a tornado-resolving claim.",
     ),
 )
 
@@ -74,10 +82,10 @@ def test_scratch_copy_is_a_positive_control(tmp_path):
 @pytest.mark.parametrize("name,before,after", MUTANTS, ids=[m[0] for m in MUTANTS])
 def test_deleting_one_negation_flips_the_verdict(tmp_path, name, before, after):
     root = _scratch_tree(tmp_path)
-    readme = root / "README.md"
-    text = readme.read_text(encoding="utf-8")
+    page = root / MUTANT_PAGE
+    text = page.read_text(encoding="utf-8")
     assert text.count(before) == 1, f"{name} anchor is not unique"
-    readme.write_text(text.replace(before, after), encoding="utf-8")
+    page.write_text(text.replace(before, after), encoding="utf-8")
 
     report = check(root)
     assert report["verdict"] == "FAIL", name
@@ -87,10 +95,10 @@ def test_deleting_one_negation_flips_the_verdict(tmp_path, name, before, after):
 def test_line_scope_is_what_catches_m1(tmp_path):
     """M1 keeps an earlier negation in its sentence; only the line sees it."""
     root = _scratch_tree(tmp_path)
-    readme = root / "README.md"
+    page = root / MUTANT_PAGE
     name, before, after = MUTANTS[0]
-    readme.write_text(
-        readme.read_text(encoding="utf-8").replace(before, after),
+    page.write_text(
+        page.read_text(encoding="utf-8").replace(before, after),
         encoding="utf-8",
     )
     failures = [

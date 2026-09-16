@@ -4029,7 +4029,7 @@ def _rte_gpt_tile(kernel, ncol: int, ngpt: int, *,
     #     SW ms  3.345   2.575   3.020   3.259   3.862   3.864
     #
     # LW wants two blocks per SM now, SW still wants one.  Reading the frame
-    # off the compiled kernel keeps this honest if either changes again.
+    # off the compiled kernel keeps this accurate if either changes again.
     frame = 0
     if kernel is not None:
         try:

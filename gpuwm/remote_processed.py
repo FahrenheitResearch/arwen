@@ -61,8 +61,6 @@ def _job(workspace, job, *, completion=False):
     from gpuwm import remote_worker as rw
     directory = rw._directory(workspace, job)
     record, state = rw._record(directory), rw._status(directory)
-    if record.get("action") != "start-plan" or not record.get("snapshot_plan"):
-        raise ValueError("Native stores require this job's saved run-plan manifest")
     bound = ra.bound_manifest(record, state, **({"job_directory": directory} if completion else {}))
     commits = []
     if bound is not None:
@@ -123,7 +121,7 @@ def ensure(workspace, job, *, priority=None):
     from gpuwm import remote_worker as rw
     directory = rw._directory(workspace, job)
     record = rw._record(directory)
-    if record.get("action") != "start-plan":
+    if ra.plan_binding(record) is None:
         return
     root = _root(workspace)
     requests = _owned_directory(root / "requests")
@@ -350,7 +348,7 @@ def catalog(request, workspace, *, start=True):
         return value
     _producer, manifest_path, manifest, manifest_bytes, _started, binding = bound
     value.update(run_id=manifest["run_id"], run_manifest=ra._authority(manifest_path, manifest_bytes),
-                 remote_output_root=record["outdir"], remote_pid=manifest["pid"])
+                 remote_output_root=record["outdir"], run_root=str(ra.run_root(record)), remote_pid=manifest["pid"])
     if binding is not None:
         value["producer_binding"] = binding
     if not selected:
@@ -404,8 +402,9 @@ def stream(request, workspace, output):
 def stream_main():
     from gpuwm import remote_worker as rw
     try:
-        if sys.platform != "linux":
-            raise ValueError("Remote native store streams require Linux")
+        # One ownership provider answers the platform question at every door:
+        # this stream serves a job whose ownership is established the same way.
+        rw._ownership_provider()
         payload = sys.stdin.buffer.read(rw.MAX_BYTES + 1)
         if len(payload) > rw.MAX_BYTES:
             raise ValueError("Native store stream request exceeds its metadata limit")

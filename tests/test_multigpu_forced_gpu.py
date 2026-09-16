@@ -31,7 +31,7 @@ def test_scatter_geography_imposes_domain_flags():
     has_msf/rotational alongside the arrays it installs.
 
     The rank buffers are built on ``harness.neutral_geography``, whose
-    docstring makes the imposition load-bearing by design: the neutral build
+    docstring makes the imposition essential by design: the neutral build
     derives both flags False, and writing real msf/f arrays into the buffer
     is exactly the bypass ``set_map_coriolis`` warns about -- the arrays
     change, the flags do not, and every msf-weighted dycore path plus the

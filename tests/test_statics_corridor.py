@@ -1,7 +1,7 @@
 """The statics corridor: sealed child-resolution statics for prepared
 moving nests (gpuwm.static.corridor).
 
-THE LOAD-BEARING TEST here is crop-vs-direct bit-identity: a footprint
+THE ESSENTIAL TEST here is crop-vs-direct bit-identity: a footprint
 cropped out of the parent-extent corridor must equal, byte for byte, the
 statics built directly for that footprint from the same geography --
 the same ``identical source + identical cells = identical bytes``
@@ -32,6 +32,7 @@ from gpuwm.static.corridor import (
     CORRIDOR_REBUILT_STATICS,
     ChildStaticsCorridor,
     CorridorRefusal,
+    STATICS_CORRIDOR_BUILD_CONTRACT,
     STATICS_CORRIDOR_RECEIPT,
     build_child_statics_corridor,
     corridor_cost,
@@ -288,7 +289,7 @@ def test_translated_extent_override_defaults_stay_byte_inert():
 
 
 # ---------------------------------------------------------------------------
-# THE LOAD-BEARING TEST: crop == direct build, bitwise; instrument armed
+# THE ESSENTIAL TEST: crop == direct build, bitwise; instrument armed
 # ---------------------------------------------------------------------------
 
 def test_crop_equals_direct_footprint_build_bitwise(
@@ -393,6 +394,34 @@ def test_load_refuses_a_corridor_from_a_different_tree(corridor_build,
     directory, receipt = _sealed(corridor_build, tmp_path)
     with pytest.raises(CorridorRefusal, match="reference_i_parent_start"):
         _load(directory, receipt, child_dc=_child_dc(i_parent_start=5))
+
+
+def test_load_refuses_a_corridor_sealed_by_the_pre_fold_build(
+        corridor_build, tmp_path):
+    """A corridor whose BYTES predate canonical-column binning is refused
+    by name, with the re-preparation that repairs it.
+
+    THE BREAKAGE THIS PREVENTS: a corridor sealed before 2.7.5 binned its
+    source pixels at unwrapped column indices wherever its window crossed
+    the x-wrap seam, so on a dateline-spanning parent its crop differs
+    from the footprint build and the FIRST relocation refuses on the
+    overlap-statics equality, hours into a run and far from the cause.
+    The digest relay cannot catch this: those bytes are exactly the ones
+    preparation wrote.
+    """
+    directory, receipt = _sealed(corridor_build, tmp_path)
+    stale = json.loads(json.dumps(receipt))
+    del stale["domains"]["d02"]["build_contract"]
+    (directory / STATICS_CORRIDOR_RECEIPT).write_text(
+        json.dumps(stale, indent=2, sort_keys=True), encoding="utf-8")
+    with pytest.raises(CorridorRefusal, match="build contract"):
+        _load(directory, stale)
+
+
+def test_sealed_corridor_records_its_build_contract(corridor_build, tmp_path):
+    _, receipt = _sealed(corridor_build, tmp_path)
+    assert (receipt["domains"]["d02"]["build_contract"]
+            == STATICS_CORRIDOR_BUILD_CONTRACT)
 
 
 def test_load_refuses_an_uncovered_grid_id(corridor_build, tmp_path):

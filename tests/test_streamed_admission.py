@@ -91,7 +91,7 @@ def _config(tmp_path, *, nx=550, ny=550, tiles=_TILES, name="exp",
         [fetch]
         source = "{source}"
         cycle = "2024-05-03T12"
-        hours = 1
+        hours = 6
 
         [shared]
         nz = 49
@@ -666,7 +666,7 @@ def _moist_config(tmp_path, *, nx=550, ny=550, name="moist"):
         [fetch]
         source = "gfs"
         cycle = "2024-05-03T12"
-        hours = 1
+        hours = 6
 
         [shared]
         """) + _MOIST_SHARED + "\n" + _TILES + f"""

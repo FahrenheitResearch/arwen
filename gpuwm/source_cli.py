@@ -1382,6 +1382,7 @@ def _apply_packaged_profile(
         return errors
 
     args.source_format = declared_format
+    args._packaged_input_normalizer = profile.get("input_normalizer")
     args.mapping = authorities["mapping"]
     args.composition = authorities["composition"]
     args.provenance = [
@@ -2792,6 +2793,25 @@ def dispatch(args: argparse.Namespace, *,
                 file=sys.stderr,
             )
             return EXIT_USAGE
+
+    normalizer = getattr(args, "_packaged_input_normalizer", None)
+    if normalizer is not None:
+        from gpuwm.source_normalization import (declared_normalization,
+                                                normalize_packaged_inputs)
+        try:
+            if args.dry_run:
+                # A dry run names the stage and goes on to print the same
+                # command every other source prints.  It decompresses
+                # nothing, invokes no native binary, writes no manifest and
+                # opens no input -- no other source's dry run opens one
+                # either, and a door that refused an unreadable path for one
+                # source alone would be a per-model dry run.
+                print(_json(declared_normalization(normalizer)))
+            else:
+                normalize_packaged_inputs(normalizer, args)
+        except (OSError, TypeError, ValueError, RuntimeError) as error:
+            print(f"source input normalization failed: {error}", file=sys.stderr)
+            return EXIT_CONFIG
 
     if adapter.runner == "mapped_composition_v1" and (
         args.descriptor is not None or args.author_input_manifest is not None

@@ -667,10 +667,17 @@ def prepare_launch(input_root: Path, input_manifest: Path, run_dir: Path,
 def gpu_allocation_preflight(effective_config: Path, run_dir: Path,
                              gpu_uuid: str | None) -> dict[str, object]:
     """Run exclusive-device and measured allocation gates in a fresh process."""
-    from gpuwm.supervisor import preflight_exclusive_gpu, select_gpu
+    from gpuwm.supervisor import (preflight_exclusive_gpu,
+                                  priced_reservation_bytes, select_gpu)
 
     gpu = select_gpu(gpu_uuid)
-    preflight_exclusive_gpu(gpu.uuid, approved_pids={os.getpid()})
+    # The supervisor this runner goes on to launch prices the same card
+    # against the same configuration.  Pricing it here from the same
+    # function is what keeps this gate and that one from answering one
+    # shared card two different ways.
+    preflight_exclusive_gpu(
+        gpu.uuid, approved_pids={os.getpid()},
+        reservation_bytes=priced_reservation_bytes(effective_config))
     env = os.environ.copy()
     env["CUDA_VISIBLE_DEVICES"] = gpu.uuid
     command = [

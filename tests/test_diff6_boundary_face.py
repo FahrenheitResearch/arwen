@@ -88,7 +88,7 @@ def wrf_sixth_order_diffusion(field, mut, c1, c2, factor, dt, opt, name,
     Independent float64 loop transcription (bounds :6332-6444, x fluxes
     :6461-6533, y fluxes :6543-6616, combine :6624), 0-based storage, NO
     periodic wrap anywhere: every stencil read is the stored datum, which
-    inside the WRF bounds is always in range -- including the honest
+    inside the WRF bounds is always in range -- including the accurate
     boundary reads u[..., nx] / v[..., ny, :] at the outermost computed
     staggered faces.  ``mapx``/``mapy`` are the per-direction TENDENCY
     map factors (WRF msfux/msfuy for u, msfvx/msfvy for v, msftx/msfty
@@ -684,7 +684,7 @@ def test_apply_diff6_computes_wrf_boundary_faces(flags):
     rng = np.random.default_rng(43)
     # Independent boundary-installed data on the last staggered column/row
     # (random_acoustic_state enforces periodic duplicates; a duplicate east
-    # face would make the honest read indistinguishable from the wrap).
+    # face would make the accurate read indistinguishable from the wrap).
     s.u[:, :, -1] = cp.asarray(
         2.0 * rng.standard_normal(s.u.shape[:2]), dtype=s.u.dtype)
     s.v[:, -1, :] = cp.asarray(

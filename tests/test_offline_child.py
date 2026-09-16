@@ -6,24 +6,23 @@ import netCDF4
 import numpy as np
 import pytest
 
+from conftest import requires_gpu, requires_netcdf_bridge
 from gpuwm.offline_child import (
     OFFLINE_CHILD_MP_PHYSICS,
     PARENT_SCHEME_CONTRACT,
     _resolve_source_physics,
     bind_parent_physics_from_wrf_namelist,
     build_offline_child_domain_state,
-    MomentDiagnosisRequired,
     OfflineChildContractError,
     OfflineChildPlacement,
     build_offline_lateral_boundaries,
     inspect_parent_history_frame,
     interpolate_parent_boundary_snapshot,
     interpolate_parent_initial_state,
-    map_microphysics_to_nssl18,
+    offline_cross_scheme_refusal,
     read_parent_microphysics,
     validate_parent_history,
 )
-from gpuwm import netcdf_bridge
 from gpuwm.config import RunConfig
 from gpuwm.offline_child_run import (
     _ChildProgress,
@@ -69,21 +68,17 @@ def test_offline_child_capabilities_are_warning_only_and_exact(capsys):
     capability = json.loads(capsys.readouterr().out)
     assert capability["schema"] == "gpuwm-offline-child-capabilities-v1"
     assert capability["explicit_expert_consent_required"] is False
-    # 28 (Thompson aerosol-aware) joined the same-scheme list when the lane
-    # learned to read its transported nc/nwfa/nifa and its two per-domain
-    # surface-emission constants.  50 (P3) joined the same way, when the
-    # lane learned its qv,qc,qr,qi + ni/nr + qir/qib inventory.  Both are
-    # deliberately absent from cross_scheme_transitions, which stays empty:
-    # every mixed edge touching either is refused by name (see the refusal
-    # tests below), matching the online nest lane's
-    # UNVALIDATED_MIXED_EDGE_SELECTORS.
-    # 0, 1 and 9 joined with audit R-017: the lane reads a vapour-only
-    # parent, a Kessler parent and a Milbrandt-Yau parent (the last through
-    # its own scheme-qualified QHAIL/QNHAIL map), and gpuwm's history
-    # writer publishes QNHAIL for mp=9 at last.
+    # Every ported scheme is read same-scheme; 16 (WDM6) joined last, when
+    # the field map learned its scheme-qualified QNCCN row.  A child of a
+    # different scheme is converted by the online nest edge's own contract
+    # and kernel on the parent archive, for every ordered pair of the
+    # schemes that edge ports; the one edge without a contract is mp=0.
     assert capability["same_scheme_mp_physics"] == [
-        0, 1, 6, 8, 9, 10, 18, 28, 50]
-    assert capability["cross_scheme_transitions"] == []
+        0, 1, 6, 8, 9, 10, 16, 18, 28, 50]
+    assert capability["cross_scheme_transitions"]["mp_physics"] == [
+        1, 6, 8, 9, 10, 16, 18, 28, 50]
+    assert capability["cross_scheme_transitions"]["order"] == (
+        "diagnose-parent-then-spatially-interpolate")
     # Was pinned to False while the runner refused any child whose nz
     # differed from its parent's.  A child may now carry its OWN eta ladder
     # when it declares one, through the conservative host-side remap in
@@ -312,76 +307,82 @@ def test_parent_history_reader_and_moisture_inventory(tmp_path):
     assert moisture["qv"].shape == (2, 3, 4)
 
 
-def _mass_fields(shape=(2, 3, 4)):
-    return {name: np.zeros(shape, dtype=np.float32)
-            for name in ("qv", "qc", "qr", "qi", "qs", "qg")}
+def test_the_cross_scheme_contract_is_the_online_ported_set():
+    """The offline conversion IS the online one, so its admitted set is
+    derived from PORTED_MP_PHYSICS rather than re-spelled; mp=0 is the one
+    scheme the lane reads that has no mixed-edge contract."""
+    from gpuwm.core import microphysics_transition as mt
+
+    assert PARENT_SCHEME_CONTRACT == (
+        OFFLINE_CHILD_MP_PHYSICS & frozenset(mt.PORTED_MP_PHYSICS))
+    assert PARENT_SCHEME_CONTRACT == frozenset(
+        {1, 6, 8, 9, 10, 16, 18, 28, 50})
+    for source in sorted(PARENT_SCHEME_CONTRACT):
+        for target in sorted(PARENT_SCHEME_CONTRACT):
+            assert offline_cross_scheme_refusal(source, target) is None
+    # Same-scheme is never refused, mp=0 included.
+    assert offline_cross_scheme_refusal(0, 0) is None
+    # The ONE refusal: a microphysics-off end, named at either end.
+    for source, target in ((0, 18), (10, 0), (0, 16)):
+        message = offline_cross_scheme_refusal(source, target)
+        assert message is not None and "REFUSED" in message
+        assert "mp_physics=0" in message
+        assert f"mp_physics={source} -> {target}" in message
+        assert "no microphysics-transition contract" in message
 
 
-def test_thompson_to_nssl_carries_available_moments_and_initializes_background():
-    fields = _mass_fields()
-    fields["qr"][0, 0, 0] = 1.0e-4
-    fields["nr"] = np.full(fields["qr"].shape, 123.0, dtype=np.float32)
-    mapped, receipt = map_microphysics_to_nssl18(
-        fields, source_mp_physics=8)
-    assert tuple(mapped) == (
-        "qv", "qc", "qr", "qi", "qs", "qg", "qh", "qndrop", "qnr",
-        "qni", "qns", "qng", "qnh", "qnn", "qvolg", "qvolh")
-    assert np.array_equal(mapped["qnr"], fields["nr"])
-    assert np.all(mapped["qh"] == 0.0)
-    assert np.all(mapped["qnn"] == np.float32(0.5e9 / 1.225))
-    assert receipt["category_mapping"] == "graupel-to-graupel"
+def test_a_microphysics_off_mixed_edge_is_refused_at_both_sites(tmp_path):
+    frame = tmp_path / "parent-mp0.nc"
+    _history(frame, datetime(1974, 4, 3, 12), mp=0, ny=18, nx=20)
+    placement = _mp28_placement()
+    with pytest.raises(OfflineChildContractError, match="mp_physics=0"):
+        interpolate_parent_initial_state(
+            frame, placement, source_mp_physics=0, target_mp_physics=18,
+            backend="cpu")
+    with pytest.raises(OfflineChildContractError, match="mp_physics=0"):
+        interpolate_parent_boundary_snapshot(
+            frame, placement, source_mp_physics=0, target_mp_physics=18,
+            backend="cpu")
 
 
-def test_active_mass_without_target_number_diagnosis_fails_closed():
-    fields = _mass_fields()
-    fields["qs"][0, 0, 0] = 2.0e-5
-    with pytest.raises(MomentDiagnosisRequired, match="qns"):
-        map_microphysics_to_nssl18(fields, source_mp_physics=8)
+def test_the_offline_edge_contract_is_the_online_contract():
+    """resolve_microphysics_transition, with the parent's bound switches."""
+    from gpuwm.core import microphysics_transition as mt
+    from gpuwm.offline_child import _offline_transition_contract
 
-    def diagnose(mapped, names):
-        return {name: np.full(mapped["qv"].shape, 7.0, dtype=np.float32)
-                for name in names}
-
-    mapped, receipt = map_microphysics_to_nssl18(
-        fields, source_mp_physics=8, diagnose_missing=diagnose)
-    assert np.all(mapped["qns"] == 7.0)
-    assert receipt["diagnosed_target_moments"] == ("qns",)
-
-    fields["qs"][0, 0, 0] = -1.0e-5
-    with pytest.raises(OfflineChildContractError, match="negative"):
-        map_microphysics_to_nssl18(fields, source_mp_physics=8)
-
-
-def test_morrison_hail_receipt_is_required_and_reclassifies_rimed_category():
-    fields = _mass_fields()
-    fields["qg"][0, 0, 0] = 1.0e-3
-    fields["ng"] = np.full(fields["qg"].shape, 11.0, dtype=np.float32)
-    with pytest.raises(OfflineChildContractError, match="morr_rimed_ice"):
-        map_microphysics_to_nssl18(fields, source_mp_physics=10)
-    mapped, receipt = map_microphysics_to_nssl18(
-        fields, source_mp_physics=10, morr_rimed_ice=1)
-    assert np.all(mapped["qg"] == 0.0)
-    assert np.array_equal(mapped["qh"], fields["qg"])
-    assert np.array_equal(mapped["qnh"], fields["ng"])
-    assert receipt["category_mapping"] == "morrison-hail-to-nssl-hail"
-
-
-def test_nssl18_passthrough_is_exact_and_complete():
-    names = (
-        "qv", "qc", "qr", "qi", "qs", "qg", "qh", "qndrop", "qnr",
-        "qni", "qns", "qng", "qnh", "qnn", "qvolg", "qvolh")
-    fields = {
-        name: np.full((2, 3, 4), index + 1, dtype=np.float32)
-        for index, name in enumerate(names)}
-    mapped, receipt = map_microphysics_to_nssl18(
-        fields, source_mp_physics=18)
-    assert tuple(mapped) == names
-    assert all(np.array_equal(mapped[name], fields[name]) for name in names)
-    assert receipt["category_mapping"] == "nssl18-passthrough"
-
-    fields.pop("qvolh")
-    with pytest.raises(OfflineChildContractError, match="lacks transported"):
-        map_microphysics_to_nssl18(fields, source_mp_physics=18)
+    contract = _offline_transition_contract(
+        10, 18, morr_rimed_ice=1, hail_opt=None, child_cfg=None)
+    assert contract.mixed and contract.policy_id == mt.EDGE_MATRIX_POLICY
+    assert contract.source_rimed_category == "hail"
+    assert contract.mass_source("qh") == "qg"
+    # The ratified pair keeps its own policy id.
+    assert (_offline_transition_contract(
+        8, 18, morr_rimed_ice=None, hail_opt=None).policy_id
+        == mt.MP8_TO_MP18_POLICY)
+    # WSM6's hail switch reaches the contract as the parent's category.
+    assert _offline_transition_contract(
+        6, 10, morr_rimed_ice=None, hail_opt=1).source_rimed_category == "hail"
+    assert _offline_transition_contract(
+        6, 10, morr_rimed_ice=None, hail_opt=None
+    ).source_rimed_category == "graupel"
+    # The child's own config supplies its switches: the WDM6 seed.
+    child = RunConfig(
+        nx=12, ny=10, nz=2, dx=1000.0, dy=1000.0, ztop=9000.0, dt=5.0,
+        run_seconds=300.0, hybrid_opt=2, etac=0.2, moist=True,
+        moist_cq=True, mp_physics=16, wdm6_ccn_conc=2.5e8, specified=True,
+        nested=False, terrain_opt=1, map_proj=1, hypsometric_opt=2)
+    contract = _offline_transition_contract(
+        10, 16, morr_rimed_ice=0, hail_opt=None, child_cfg=child)
+    assert contract.target_wdm6_ccn_conc == 2.5e8
+    # The online contract's own gate reaches the offline caller in words:
+    # a child config without the moist/CQ contract is refused by name.
+    dry = replace(child, moist_cq=False)
+    with pytest.raises(OfflineChildContractError, match="child.moist_cq=true"):
+        _offline_transition_contract(
+            10, 16, morr_rimed_ice=0, hail_opt=None, child_cfg=dry)
+    with pytest.raises(OfflineChildContractError, match="mp_physics=16"):
+        _offline_transition_contract(
+            10, 18, morr_rimed_ice=0, hail_opt=None, child_cfg=child)
 
 
 def test_inventory_inference_is_advisory_when_companion_binds_physics(tmp_path):
@@ -392,66 +393,30 @@ def test_inventory_inference_is_advisory_when_companion_binds_physics(tmp_path):
     assert info.inferred_mp_physics == 10
 
 
-@pytest.mark.parametrize("parent_mp", [16])
-def test_offline_child_parent_scheme_refusal_names_the_switch(
-        tmp_path, parent_mp):
-    """A genuine unreadable-parent refusal, watched at all four gates.
-
-    This route's parent contract is NOT a profile whitelist: it names the
-    parents whose transported state the lane can actually read.  mp 0
-    (vapour plus the warm-rain pair) and mp 1 (Kessler) LEFT this test
-    with audit R-017 -- their inventories are the prefix the lane already
-    built, and refusing them was the admission set contradicting the
-    lane's own helper -- and mp=9 joined the admitted set with them once
-    the lane learned its scheme-qualified QHAIL/QNHAIL rows.  What still
-    stands here is mp=16 (WDM6), and it stands on a named breakage: nn and
-    NSSL's qnn both publish under QNCCN, so the field map has no
-    unambiguous row and a WDM6 child would start with a zero-filled CCN
-    reservoir.  What the 2026-07-31 suite ruling demands is that the
-    refusal name the exact switch and its value, and be pinned rather than
-    believed.
-    """
-
-    namelist = tmp_path / f"namelist-mp{parent_mp}.input"
+def test_wdm6_parent_is_read_through_its_own_ccn_row(tmp_path):
+    """mp=16 stood at every gate on one named breakage: QNCCN publishes
+    both WDM6's ``nn`` and NSSL's ``qnn`` and the field map had no
+    scheme-qualified row.  The row exists now, so the binding, the frame
+    inspection and the reader all admit a WDM6 parent and the reservoir
+    is read rather than zero-filled."""
+    namelist = tmp_path / "namelist-mp16.input"
     namelist.write_text(
-        f"&physics\n mp_physics = {parent_mp},\n/\n", encoding="utf-8")
-    with pytest.raises(
-            OfflineChildContractError,
-            match=f"mp_physics={parent_mp}"):
-        bind_parent_physics_from_wrf_namelist(namelist)
+        "&physics\n mp_physics = 16,\n hail_opt = 1,\n/\n",
+        encoding="utf-8")
+    binding = bind_parent_physics_from_wrf_namelist(namelist)
+    assert binding.mp_physics == 16 and binding.hail_opt == 1
+    assert binding.receipt()["hail_opt"] == 1
 
-    frame = tmp_path / "parent.nc"
-    _history(frame, datetime(1974, 4, 3, 12))
-    with pytest.raises(
-            OfflineChildContractError,
-            match=f"mp_physics={parent_mp}"):
-        inspect_parent_history_frame(frame, source_mp_physics=parent_mp)
-
-    with pytest.raises(
-            OfflineChildContractError,
-            match=f"mp_physics={parent_mp}"):
-        map_microphysics_to_nssl18({}, source_mp_physics=parent_mp)
-
-    with pytest.raises(
-            OfflineChildContractError,
-            match=f"mp_physics={parent_mp}"):
-        _resolve_source_physics(parent_mp, None, None)
-
-    # The four enforcement points read ONE named contract, so a scheme
-    # can never be carried by one of them and refused by another.
-    # Re-measured with audit R-017: 0, 1 and 9 are READ by this lane now,
-    # and each is held out of the CROSS-scheme contract by its own named
-    # reason rather than by being unreadable
-    # (_OFFLINE_CROSS_LEG_UNBUILT_REASONS).
-    # mp=28 joined when its online mixed edge was ratified and the derived
-    # closure mirror emptied: its masses are classic Thompson's and the
-    # NSSL conversion is the one mp=8 already runs.
-    assert PARENT_SCHEME_CONTRACT == frozenset({6, 8, 10, 18, 28})
-    assert {0, 1, 9} <= OFFLINE_CHILD_MP_PHYSICS
-    for mp in (0, 1, 9):
-        with pytest.raises(OfflineChildContractError,
-                           match="offline cross-physics conversion"):
-            map_microphysics_to_nssl18({}, source_mp_physics=mp)
+    frame = tmp_path / "parent-mp16.nc"
+    _history(frame, datetime(1974, 4, 3, 12), mp=16)
+    info = inspect_parent_history_frame(frame, source_mp_physics=16)
+    assert info.source_mp_physics == 16 and info.inferred_mp_physics == 16
+    moisture = read_parent_microphysics(frame, source_mp_physics=16)
+    assert set(moisture) == {
+        "qv", "qc", "qr", "qi", "qs", "qg", "nn", "nc", "nr"}
+    assert np.all(moisture["nn"] == np.float32(1.0e8))
+    assert _resolve_source_physics(16, None, None) == (16, None)
+    assert 16 in OFFLINE_CHILD_MP_PHYSICS and 16 in PARENT_SCHEME_CONTRACT
 
 
 def test_conservative_parent_snapshot_and_streamed_lateral_intervals(tmp_path):
@@ -487,6 +452,8 @@ def test_conservative_parent_snapshot_and_streamed_lateral_intervals(tmp_path):
     assert np.any(interval.fields["theta"].west.tendency != 0.0)
 
 
+@pytest.mark.gpu
+@requires_gpu
 def test_thompson_parent_boundary_can_change_to_nssl_inventory(tmp_path):
     path = tmp_path / "parent.nc"
     _history(path, datetime(1974, 4, 3, 12), ny=18, nx=20)
@@ -500,7 +467,16 @@ def test_thompson_parent_boundary_can_change_to_nssl_inventory(tmp_path):
         "qi", "qs", "qg", "qh", "qndrop", "qnr", "qni", "qns",
         "qng", "qnh", "qnn", "qvolg", "qvolh"}
     assert np.all(snapshot.fields["qh"] == 0.0)
-    assert snapshot.receipt["conversion"]["target_mp_physics"] == 18
+    conversion = snapshot.receipt["conversion"]
+    assert conversion["target_mp_physics"] == 18
+    assert conversion["source"]["mp_physics"] == 8
+    assert conversion["target"]["mp_physics"] == 18
+    assert conversion["policy_id"] == "mp8-to-mp18-mass-diagnosed-v1"
+    assert conversion["translation_order"] == (
+        "diagnose-parent-then-spatially-interpolate")
+    # The default preprocess backend is the host, so the conversion went
+    # through the device in bands and the receipt says so.
+    assert conversion["host_chunked"] is True and conversion["chunks"] >= 1
 
 
 def test_parent_initial_state_builds_standalone_numpy_domain(tmp_path):
@@ -681,20 +657,22 @@ def test_mp28_streamed_lateral_intervals_include_the_aerosol_tracers(
 #: Reading a parent history file goes through the Rust NetCDF decoder
 #: (gpuwm.netcdf_bridge.NetcdfBridgeMissing otherwise).  Per test rather than
 #: module-wide: the rest of this deck writes its fixtures with netCDF4 and
-#: asks gpuwm to decode none of them.
-needs_netcdf_bridge = pytest.mark.skipif(
-    netcdf_bridge.find_netcdf_bin() is None,
-    reason="rw_netcdf is not built; build tools/rustwx to run this")
+#: asks gpuwm to decode none of them.  The gate is the CAPABILITY probe in
+#: conftest, not `find_netcdf_bin() is None`: that call raises on a
+#: GPUWM_RW_NETCDF override naming a missing file, and evaluated here at
+#: import it took the whole collection down with it.
+needs_netcdf_bridge = requires_netcdf_bridge
 
 
 @needs_netcdf_bridge
+@pytest.mark.gpu
+@requires_gpu
 def test_mp28_offline_converts_to_nssl_and_drops_only_its_aerosols(tmp_path):
-    """The closure-mirror refusal retired with the online one.
+    """mp=28 -> 18 runs the online edge on the archive.
 
-    mp=28 carries classic Thompson's six masses and adds nc/nwfa/nifa.
-    The NSSL conversion is the one mp=8 already runs -- nc rides the
-    qndrop alias, the two aerosol tracers have no NSSL counterpart and
-    are dropped -- so there was nothing left for the mirror to refuse.
+    mp=28 carries classic Thompson's six masses and adds nc/nwfa/nifa; the
+    contract's species actions record the three as dropped and every NSSL
+    moment as diagnosed, exactly as the live nest edge receipts it.
     """
     aero = tmp_path / "parent-mp28.nc"
     _history(aero, datetime(1974, 4, 3, 12), mp=28, ny=18, nx=20)
@@ -709,6 +687,13 @@ def test_mp28_offline_converts_to_nssl_and_drops_only_its_aerosols(tmp_path):
         aero, placement, source_mp_physics=28, target_mp_physics=18,
         backend="cpu")
     assert snapshot is not None
+    actions = state.receipt["conversion"]["species_actions"]
+    dropped = {row["source_field"] for row in actions
+               if row["action"] == "dropped"}
+    assert {"nc", "nwfa", "nifa"} <= dropped
+    assert set(state.microphysics) == {
+        "qv", "qc", "qr", "qi", "qs", "qg", "qh", "qndrop", "qnr", "qni",
+        "qns", "qng", "qnh", "qnn", "qvolg", "qvolh"}
 
 
 def test_every_admitted_parent_scheme_has_a_transport_mapping():
@@ -898,7 +883,7 @@ def test_p3_parent_reader_is_scheme_aware(tmp_path):
     assert set(moisture) == {
         "qv", "qc", "qr", "qi", "ni", "nr", "qir", "qib"}
     assert np.all(moisture["qir"] == np.float32(1.0e-4))
-    # No scheme evidence means no smaller inventory is honestly complete:
+    # No scheme evidence means no smaller inventory is accurately complete:
     # a P3 archive has no QSNOW/QGRAUP, and the blind contract says so.
     with pytest.raises(OfflineChildContractError, match="mass fields"):
         read_parent_microphysics(path)
@@ -937,17 +922,15 @@ def test_p3_streamed_lateral_intervals_include_the_rime_pair(tmp_path):
     assert np.all(interval.fields["qir"].west.value != 0.0)
 
 
-def test_p3_cross_scheme_offline_edges_are_refused_by_name(tmp_path):
+@pytest.mark.gpu
+@requires_gpu
+def test_p3_cross_scheme_offline_edges_run_the_ratified_closure(tmp_path):
     """Both directions, both the initial-state and forcing paths.
 
-    Same shape as mp=28's refusal test, DIFFERENT reason now: the online
-    nest lane RATIFIED 50's rime-pair closure (it left
-    UNVALIDATED_MIXED_EDGE_SELECTORS), so what refuses these edges is no
-    longer the derived closure mirror but this module's own named gate
-    (``_P3_OFFLINE_EDGE_UNBUILT_MP_PHYSICS``): the offline lane has no leg
-    that runs the ratified merge/split maps, and converting without them
-    would zero-fill or invent the rime pair.  Landing the leg retires the
-    row.
+    The online lane ratified 50's rime-pair closure; the offline lane now
+    runs that closure on the archive, so a P3 parent leaves through the
+    exit split and a classic parent enters through the merge, with the
+    P3 constants in the receipt.
     """
     p3 = tmp_path / "parent-mp50.nc"
     classic = tmp_path / "parent-mp8.nc"
@@ -955,33 +938,34 @@ def test_p3_cross_scheme_offline_edges_are_refused_by_name(tmp_path):
     _history(classic, datetime(1974, 4, 3, 12), mp=8, ny=18, nx=20)
     placement = _p3_placement()
 
-    # 50 -> 18 (the one cross-scheme target the lane otherwise supports).
-    with pytest.raises(OfflineChildContractError, match="REFUSED"):
-        interpolate_parent_initial_state(
-            p3, placement, source_mp_physics=50, target_mp_physics=18,
-            backend="cpu")
-    with pytest.raises(OfflineChildContractError, match="REFUSED"):
-        interpolate_parent_boundary_snapshot(
-            p3, placement, source_mp_physics=50, target_mp_physics=18,
-            backend="cpu")
+    # 50 -> 18: the archived ice (3e-4, rime 1e-4 at 500 kg/m3) is split
+    # by rime state; total frozen mass is conserved.
+    leaving = interpolate_parent_initial_state(
+        p3, placement, source_mp_physics=50, target_mp_physics=18,
+        backend="cpu")
+    frozen = sum(leaving.microphysics[name]
+                 for name in ("qi", "qs", "qg", "qh"))
+    assert np.allclose(frozen, 3.0e-4, rtol=1e-5)
+    assert np.all(leaving.microphysics["qi"] > 0.0)
+    assert leaving.receipt["conversion"]["p3_edge"]["direction"] == "leave"
+    snapshot = interpolate_parent_boundary_snapshot(
+        p3, placement, source_mp_physics=50, target_mp_physics=18,
+        backend="cpu")
+    assert {"qh", "qvolh", "qnn"} <= set(snapshot.fields)
 
-    # 8 -> 50 (a child the lane could not seed).
-    with pytest.raises(OfflineChildContractError, match="REFUSED"):
-        interpolate_parent_initial_state(
-            classic, placement, source_mp_physics=8, target_mp_physics=50,
-            backend="cpu")
-    with pytest.raises(OfflineChildContractError, match="REFUSED"):
-        interpolate_parent_boundary_snapshot(
-            classic, placement, source_mp_physics=8, target_mp_physics=50,
-            backend="cpu")
-
-    # And the direct converter names P3's own closure, nobody else's.
-    with pytest.raises(OfflineChildContractError) as caught:
-        map_microphysics_to_nssl18({}, source_mp_physics=50)
-    assert "REFUSED" in str(caught.value)
-    assert "mp_physics=50" in str(caught.value)
-    assert "qir/qib" in str(caught.value)
-    assert "CCN reservoir" not in str(caught.value)
+    # 8 -> 50: a child the lane could not seed before carries the rime
+    # pair the entry diagnosis defines.
+    entering = interpolate_parent_initial_state(
+        classic, placement, source_mp_physics=8, target_mp_physics=50,
+        backend="cpu")
+    assert set(entering.microphysics) == {
+        "qv", "qc", "qr", "qi", "nr", "ni", "qir", "qib"}
+    assert entering.receipt["conversion"]["p3_edge"]["direction"] == "enter"
+    snapshot = interpolate_parent_boundary_snapshot(
+        classic, placement, source_mp_physics=8, target_mp_physics=50,
+        backend="cpu")
+    assert {"qir", "qib", "ni", "nr"} <= set(snapshot.fields)
+    assert "qs" not in snapshot.fields and "qg" not in snapshot.fields
 
 
 def test_p3_clamp_membership_matches_the_online_lane(tmp_path):
@@ -1197,33 +1181,18 @@ def test_a_gpuwm_warm_rain_frame_is_not_claimed_as_kessler(tmp_path):
         assert frame.source_mp_physics == 1
 
 
-def test_an_undeclared_parent_inferring_an_unsupported_scheme_is_refused(
-        tmp_path):
-    """A WDM6 archive satisfies the blind six-species contract.
-
-    With nothing declared, the inventory is the only scheme evidence there
-    is, and these arms are single-package discriminants rather than subset
-    matches.  Left to fall through, the child was prepared with the
-    parent's warm-rain numbers and its CCN reservoir dropped in silence --
-    the same cross-scheme entry-closure breakage the online mixed nest edge
-    refuses by name for mp=16.
-    """
+def test_an_undeclared_wdm6_parent_is_inferred_and_admitted(tmp_path):
+    """A WDM6 archive used to satisfy the blind six-species contract and
+    was refused on inference for want of a QNCCN row.  The row exists, so
+    the inference names 16 and the frame is admitted with or without a
+    declaration, like every other ported scheme."""
     frame = tmp_path / "wdm6.nc"
     _history(frame, datetime(1974, 4, 3, 12), mp=16)
-
-    with pytest.raises(OfflineChildContractError) as excinfo:
-        inspect_parent_history_frame(frame)
-    message = str(excinfo.value)
-    assert "mp_physics=16" in message
-    assert "no parent scheme was declared" in message
-    # It names the way out and the row an editor would change, not a bare
-    # "unsupported".
-    assert "consumers.offline_child" in message
-
-    # Declaring 16 is refused too, on the same registry row -- the point is
-    # that the two routes agree rather than one being a hole.
-    with pytest.raises(OfflineChildContractError, match="mp_physics=16"):
-        inspect_parent_history_frame(frame, source_mp_physics=16)
+    info = inspect_parent_history_frame(frame)
+    assert info.inferred_mp_physics == 16
+    assert info.source_mp_physics is None
+    declared = inspect_parent_history_frame(frame, source_mp_physics=16)
+    assert declared.source_mp_physics == 16
 
 
 def test_an_admitted_scheme_inferred_from_a_frame_still_needs_no_declaration(

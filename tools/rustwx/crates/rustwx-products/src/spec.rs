@@ -77,7 +77,7 @@ const LEGACY_NON_ECAPE_ALIAS_ROUTES: &[LegacyProductAliasRoute] = &[
         alias_title: "1h QPF",
         canonical_slug: "qpf_1h",
         canonical_kind: ProductKind::Windowed,
-        note: "Legacy plot-recipe slug from the big list. The honest HRRR implementation is the 1-hour windowed APCP product; alias wiring belongs in the windowed lane rather than a fake native/direct recipe.",
+        note: "Legacy plot-recipe slug from the big list. The accurate HRRR implementation is the 1-hour windowed APCP product; alias wiring belongs in the windowed lane rather than a fake native/direct recipe.",
     },
 ];
 
@@ -800,10 +800,10 @@ fn direct_render_style(recipe: &PlotRecipe) -> &'static str {
 fn direct_entry_notes(slug: &str) -> Vec<String> {
     match slug {
         "cloud_cover_levels" => vec![
-            "Rendered as an honest HRRR direct composite panel over low, middle, and high cloud-cover component fields".to_string(),
+            "Rendered as an accurate HRRR direct composite panel over low, middle, and high cloud-cover component fields".to_string(),
         ],
         "precipitation_type" => vec![
-            "Rendered as an honest HRRR direct composite panel over categorical rain, freezing-rain, ice-pellet, and snow phase flags".to_string(),
+            "Rendered as an accurate HRRR direct composite panel over categorical rain, freezing-rain, ice-pellet, and snow phase flags".to_string(),
         ],
         _ => Vec::new(),
     }

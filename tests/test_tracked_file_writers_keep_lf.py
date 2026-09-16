@@ -155,7 +155,7 @@ def test_the_writer_uses_no_translating_write(script, destination):
                     reason="the destination list is a checkout property")
 @pytest.mark.parametrize("script,destination", _WRITERS)
 def test_the_destination_is_tracked_and_still_lf(script, destination):
-    """The list stays honest: each destination is tracked, and is LF now.
+    """The list stays accurate: each destination is tracked, and is LF now.
 
     If a destination stops being tracked the entry belongs elsewhere --
     a scratch file may carry whatever the platform gives it -- and if one

@@ -2,7 +2,7 @@
 
 :func:`_apply_thompson_aerosol` is a **sibling** of
 ``gpuwm.core.microphysics._apply_thompson``, not a branch inside it.  That is
-deliberate and load-bearing: the classic function body stays textually
+deliberate and essential: the classic function body stays textually
 diffable against its model-validated form, so ``tests/test_mp8_frozen.py``'s
 receipts and any future ``git diff`` can prove mp=8 was not touched by this
 port.  The cost is a copied skeleton; the benefit is that "mp=8 is frozen" is

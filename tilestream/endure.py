@@ -14,7 +14,7 @@ fatal:
 these rented machines reports the HOST's memory rather than the container's,
 and page-locked pages are ordinary anonymous RSS as far as
 ``/proc/self/status`` is concerned (``VmLck`` counts ``mlock``, which
-``cudaHostAlloc`` does not use).  So the only honest instrument is the
+``cudaHostAlloc`` does not use).  So the only accurate instrument is the
 process's own ledger, which is why :func:`tilestream.hoststore.pinned_ledger`
 exists and why this module samples it every step rather than at the end: a
 leak has to be visible as a TREND, because the alternative -- inferring one

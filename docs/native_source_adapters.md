@@ -208,7 +208,7 @@ GRIB2 series. A create-only manifest binds member identity to exact
 `memNNN_YYYYMMDDHH_{pl,sfc}.grb2` filenames, and the installed wheel supplies
 byte-verified mapping, composition, and provenance authorities that cannot be
 replaced at the command line. It uses the shared native hierarchy preparation
-path with the packaged mapping's honest `max_dom=4` ceiling. This route is
+path with the packaged mapping's accurate `max_dom=4` ceiling. This route is
 runnable and distribution-complete, but remains uncertified until its retained
 input/domain envelope passes unchanged stock WRF.
 

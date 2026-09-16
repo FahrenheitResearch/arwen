@@ -1,7 +1,7 @@
 # tests/test_case_registry.py
 """Cases are data: the driver discovers them instead of naming them.
 
-The load-bearing assertion is :func:`test_a_new_case_needs_no_driver_edit`
+The essential assertion is :func:`test_a_new_case_needs_no_driver_edit`
 -- a case module written into a directory this repository does not contain
 becomes a ``gpuwm verify`` choice, runs, and has its gates enforced, with
 no edit to ``gpuwm/cli.py``.  Everything else pins the classification that

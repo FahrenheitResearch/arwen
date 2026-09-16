@@ -307,11 +307,11 @@ def test_the_fixture_dependent_satellite_suite_is_still_listed() -> None:
 
     ``rw-sat``'s ``tests/cloud_products.rs`` decodes real GOES-19
     granules the repository does not carry and PANICS by name when they
-    are absent, so it cannot ride the offline leg.  The honest form of
+    are absent, so it cannot ride the offline leg.  The accurate form of
     that is two entries -- ``--lib`` on the battery shard and the
-    integration target on ``fixtures`` -- and the dishonest form is one
+    integration target on ``fixtures`` -- and the inaccurate form is one
     ``--lib`` entry with nothing saying what was left out.  This test
-    pins the honest form: dropping the fixtures row is allowed, but it
+    pins the accurate form: dropping the fixtures row is allowed, but it
     has to be an argument in a commit message, not a line that
     disappears while every gate stays green.
     """

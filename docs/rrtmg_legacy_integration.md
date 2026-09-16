@@ -138,7 +138,7 @@ chunk default 4096, ~1.51 GiB transient) and
 ~2.13 GiB transient; day-columns-only). Both: batched == per-column
 bitwise over the full fixture decks at 4 chunk sizes, end-to-end
 max_ulp 0 vs the oracle at batch width, ≥50k-column replica
-determinism, honest VRAM pricing (`*_batched_vram_bytes`, estimate ==
+determinism, accurate VRAM pricing (`*_batched_vram_bytes`, estimate ==
 measured pool peak), local-frame audits (worst frame:
 `rlw_rtrn_march` 2048 B/thread ⇒ ~510 MiB machine-wide reservation;
 every SW kernel 0 B after the spcvmc workspace restructure — which

@@ -30,18 +30,31 @@ MAX_METADATA_BYTES = 512 * 1024
 MAX_QUEUED = 32
 MAX_PREFETCH = 8
 MAX_ENTRIES = 100_000
+#: The node's own viewer bound, as the node's viewer profile states it: a
+#: request naming more than this many products fails the whole frame there.
+NODE_PRODUCT_LIMIT = 128
+#: The node's own per-product spelling bound, from the same profile.
+MAX_SELECTOR_CHARS = 128
+#: A selection also has to fit inside the fixed RPC envelope the worker reads,
+#: with room left for the request built around it.
+MAX_SELECTION_BYTES = 96 * 1024
+#: How long one asked catalog answers for. The renderer's vocabulary changes
+#: only when the node's renderer is replaced, and the question costs a process.
+CATALOG_SECONDS = 300
 SLUG = re.compile(r"[a-z0-9][a-z0-9_-]{0,95}\Z")
+#: A first-class product selector. The plain slug is one spelling; the
+#: renderer's own vocabulary also has colon-bearing families (`var:<field>`,
+#: `xsec:<fill>[/<overlay>...]`, `mesh:<variable>`) that name a field rather
+#: than a catalog entry, so a character class without a colon refused the
+#: renderer's own spellings before the node ever saw them. The node's catalog
+#: decides what it can serve; this grammar only refuses a spelling no node
+#: could parse.
+SELECTOR = re.compile(r"[a-z0-9][a-z0-9_-]{0,95}(?::[A-Za-z0-9][A-Za-z0-9_.,:=~@+/-]*)?\Z")
+#: The renderer's own selector families, named in a refusal so a reader is told
+#: what a selector may be rather than only that theirs was not one.
+SELECTOR_FAMILIES = ("var:<stored 2-D variable>", "xsec:<fill>[/<overlay>...]",
+                     "mesh:<history variable>")
 
-
-
-DEFAULT_PRODUCTS = [
-    "composite_reflectivity", "1km_reflectivity", "2m_temperature",
-    "2m_dewpoint", "2m_relative_humidity", "10m_wind_speed_and_direction",
-    "mslp_10m_winds", "total_qpf", "precipitable_water",
-    "850mb_temperature_height_winds", "850mb_height_winds",
-    "700mb_rh_height_winds", "500mb_height_winds", "300mb_height_winds",
-    "sbcape", "mlcape", "sbcin", "bulk_shear_0_6km", "srh_0_1km", "uh_2to5km",
-]
 
 
 class Backpressure(ValueError):
@@ -59,11 +72,82 @@ def _directory(root, job):
     return _owned_directory(root / job)
 
 
+_CATALOG = {}
+
+
+def node_catalog(*, now=None):
+    """This node's own product vocabulary, asked rather than transcribed.
+
+    `rw_wrfbatch --list-products` is the renderer's own answer and this tree
+    already has one reader for it, so the viewer keeps no second copy of the
+    catalog. A node that cannot answer says so in this document and refuses
+    nothing: the catalog names what a reader may ask for, and whether a named
+    selector can actually be served is decided on the node when the frame is
+    derived.
+    """
+    moment = time.monotonic() if now is None else now
+    cached = _CATALOG.get("value")
+    if cached is not None and moment - _CATALOG.get("at", 0) < CATALOG_SECONDS:
+        return cached
+    document = {"schema": "arwen.node-product-catalog.v1", "products": None, "count": None,
+                "product_limit": NODE_PRODUCT_LIMIT,
+                "product_limit_basis": "the node's own viewer profile bound on named products",
+                "selector_families": list(SELECTOR_FAMILIES),
+                "source": None, "error": None}
+    try:
+        from gpuwm.runplan import render_catalog
+        answered = render_catalog()
+        rows = answered.get("products")
+        if isinstance(rows, list):
+            names = [str(row.get("name")) for row in rows if isinstance(row, dict) and row.get("name")]
+            document.update(products=names, count=len(names),
+                            source=answered.get("source") or "the node renderer's own --list-products",
+                            group_keywords=answered.get("group_keywords") or [])
+        else:
+            document["error"] = str(answered.get("error") or "this node's renderer published no catalog")
+    except Exception as error:  # noqa: BLE001 - an unreadable catalog is stated, never raised.
+        document["error"] = f"{type(error).__name__}: {error}"[:1000]
+    _CATALOG.update(value=document, at=moment)
+    return document
+
+
+def _catalog_note():
+    """One clause naming the catalog door, with what a renderer here answered.
+
+    The same sentence is read on a node and on a desktop, so it says which
+    renderer answered rather than claiming the selected node's catalog from a
+    machine that may hold a different one.
+    """
+    catalog = node_catalog()
+    if catalog.get("count"):
+        return (f" The renderer this check could ask publishes {catalog['count']} selectable "
+                "products; `gpuwm remote list-products` prints the selected node's own.")
+    return " `gpuwm remote list-products` prints what the selected node's renderer serves."
+
+
 def _products(value):
-    if not isinstance(value, list) or not 1 <= len(value) <= 96:
-        raise ValueError("Viewer products must contain 1..96 canonical product slugs")
-    if any(not isinstance(item, str) or not SLUG.fullmatch(item) for item in value):
-        raise ValueError("Viewer products contain an invalid product slug")
+    if not isinstance(value, list) or not value:
+        raise ValueError("Viewer products must name at least one canonical product slug; send an "
+                         "empty selection to take the node's own default set instead.")
+    if len(value) > NODE_PRODUCT_LIMIT:
+        raise ValueError(f"This request names {len(value)} viewer products and the node's viewer "
+                         f"profile accepts at most {NODE_PRODUCT_LIMIT} named products, so the node "
+                         "would refuse the whole frame rather than any one product. Ask for fewer "
+                         "products, or send an empty selection to take the node's default set."
+                         + _catalog_note())
+    measured = len(ra._encoded(value))
+    if measured > MAX_SELECTION_BYTES:
+        from gpuwm.remote_worker import MAX_BYTES
+        raise ValueError(f"This product selection is {measured} bytes and a selection may use at "
+                         f"most {MAX_SELECTION_BYTES} of the node's {MAX_BYTES} byte request "
+                         "envelope, because the rest of the envelope carries the request built "
+                         "around it. Ask for fewer products.")
+    for item in value:
+        if not isinstance(item, str) or not SELECTOR.fullmatch(item) or len(item) > MAX_SELECTOR_CHARS:
+            raise ValueError(f"Viewer products contain an invalid product slug: {str(item)[:120]!r}. "
+                             "A selector is a catalog slug, or one of the renderer's own families "
+                             f"({', '.join(SELECTOR_FAMILIES)}), of at most "
+                             f"{MAX_SELECTOR_CHARS} characters.")
     return sorted(set(value))
 
 
@@ -126,7 +210,9 @@ def _initialization(record):
         raise ValueError("Saved forecast initialization has no owned configuration path")
     with path.open("rb") as stream:
         payload = stream.read(128 * 1024 + 1)
-    if len(payload) > 128 * 1024 or record.get("config_sha256") != ra._sha(payload):
+    # The snapshot is the document the run loads; its own recorded digest is
+    # what binds it, and the source file's digest is a different number here.
+    if len(payload) > 128 * 1024 or record.get("snapshot_sha256") != ra._sha(payload):
         raise ValueError("Saved forecast configuration changed before viewer processing")
     value = tomllib.loads(payload.decode("utf-8"))["experiment"]["start_time"]
     if hasattr(value, "isoformat"):
@@ -216,9 +302,13 @@ def _convert(root, record, bound, event, authority, selection):
         if result.get("schema") != "arwen.wrf-process-result.v2" or result.get("profile") != PROFILE:
             raise ValueError("Installed native processor needs the compact viewer v2 upgrade")
         statuses = result.get("products")
-        if (not isinstance(statuses, list) or sorted(row.get("slug", "") for row in statuses) != selection["products"]
+        # The node's returned set is the authority: a named selection must be
+        # covered by it, and a node-default selection is whatever it answered.
+        returned = sorted(row.get("slug", "") for row in statuses) if isinstance(statuses, list) else None
+        if (returned is None or not returned
                 or any(type(row.get("available")) is not bool or not isinstance(row.get("source_fields"), list)
-                       or not isinstance(row.get("missing_reasons"), list) for row in statuses)):
+                       or not isinstance(row.get("missing_reasons"), list) for row in statuses)
+                or not set(selection["products"]).issubset(returned)):
             raise ValueError("Native viewer product capabilities do not match the selected products")
     members = _native_members(result, store_root)
     value = {"schema": SCHEMA, "state": "ready", "job_id": record["id"], "run_id": bound[2]["run_id"],
@@ -288,7 +378,7 @@ def stream(request, workspace, output):
         raise ValueError("Invalid native viewer member stream request")
     if any(not ra.HEX.fullmatch(str(request[key])) for key in digests):
         raise ValueError("Invalid native viewer member authority digest")
-    selection = _selection(request["profile"], request["products"] or DEFAULT_PRODUCTS)
+    selection = selection_for(request)
     directory = _directory(_root(workspace), request["job"])
     path = _entry_path(_root(workspace), request["job"], ra._sequence(request["sequence"]), selection)
     with Lease(directory / (path.stem + ".lock"), timeout=5) as lease:
@@ -320,8 +410,9 @@ def stream(request, workspace, output):
 def stream_main():
     from gpuwm import remote_worker as rw
     try:
-        if sys.platform != "linux":
-            raise ValueError("Remote native viewer streams require Linux")
+        # One ownership provider answers the platform question at every door:
+        # this stream serves a job whose ownership is established the same way.
+        rw._ownership_provider()
         payload = sys.stdin.buffer.read(rw.MAX_BYTES + 1)
         if len(payload) > rw.MAX_BYTES:
             raise ValueError("Native viewer stream request exceeds its metadata limit")
@@ -336,10 +427,105 @@ def stream_main():
 
 
 def _selection(profile=PROFILE, products=None):
+    """A selection is either named products or the node's own default set."""
     if profile not in (PROFILE, SCIENCE_PROFILE):
         raise ValueError("Unknown native viewer processing profile")
-    value = {"profile": profile, "products": [] if profile == SCIENCE_PROFILE else _products(products if products is not None else DEFAULT_PRODUCTS)}
-    return {**value, "selection_id": ra._sha(ra._encoded(value))}
+    if profile == SCIENCE_PROFILE:
+        value, token = {"profile": profile, "products": []}, None
+    elif products is None or not list(products):
+        # An empty or absent selection is a stable token for "whatever the
+        # node's own viewer profile defaults to", never a transcribed list.
+        value, token = {"profile": profile, "products": []}, True
+    else:
+        value, token = {"profile": profile, "products": _products(products)}, None
+    identity = value if token is None else {**value, "node_default_products": token}
+    return {**value, "selection_id": ra._sha(ra._encoded(identity))}
+
+
+def selection_for(request):
+    """The one selection a request carries, read the same way at every door.
+
+    The catalog door and the member stream door both ask this, so one request
+    cannot yield two selection identities and read one entry under a lease
+    taken for the other.
+    """
+    return _selection(request.get("profile", PROFILE), request.get("products"))
+
+
+def job_selection(record):
+    """The product selection this job's own run asked for.
+
+    The background map preparer and the plot gallery both read the render
+    selection the run was started with through this one function, so one job
+    never derives two product sets under two publication identities.
+    """
+    return _selection(PROFILE, selectors(record.get("products")))
+
+
+def selectors(spec):
+    """A recorded render selector string as a product list.
+
+    `all` and `none` are the renderer's group vocabulary rather than named
+    products, and the node's viewer profile takes named products only, so they
+    resolve to the node's own default set and `selection_basis` says so.
+    """
+    if spec is None:
+        return []
+    if isinstance(spec, list):
+        return [str(item).strip() for item in spec if str(item).strip()]
+    text = str(spec).strip()
+    if not text or text.casefold() in ("all", "none"):
+        return []
+    return [token.strip() for token in text.split(",") if token.strip()]
+
+
+def selection_basis(profile, products):
+    """Say where a selection's product set came from, in one sentence."""
+    if profile == SCIENCE_PROFILE:
+        return "the full-science profile derives a volume rather than a named product set"
+    if products is None or not list(products):
+        return "the node's own viewer profile default set, resolved on the node"
+    return "the products this request named"
+
+
+def selection_estimate(root, job, selection):
+    """Price a selection from this job's own published frames; never refuse.
+
+    The basis is the largest bytes-per-product ratio any frame of this job has
+    actually published. On the first frame there is no recorded basis at all,
+    which is said rather than treated as a reason to refuse.
+    """
+    named, published = len(selection["products"]), 0
+    ratio = None
+    try:
+        paths = sorted((_directory(root, job) / "entries").glob("*.json"))
+    except (OSError, ValueError):
+        paths = []
+    for path in paths[:MAX_ENTRIES]:
+        try:
+            entry, _ = ra._raw(path, MAX_METADATA_BYTES)
+        except (OSError, ValueError):
+            continue
+        rows = entry.get("products")
+        if entry.get("state") != "ready" or not isinstance(rows, list) or not rows:
+            continue
+        if type(entry.get("bytes")) is not int:
+            continue
+        if entry.get("selection_id") == selection["selection_id"]:
+            # A node-default selection has no product count until the node has
+            # answered one; its own published frames are where that count is.
+            published = max(published, len(rows))
+        measured = entry["bytes"] / len(rows)
+        ratio = measured if ratio is None or measured > ratio else ratio
+    named = named or published or None
+    if ratio is None or named is None:
+        return {"products": named, "estimated_bytes": None, "warn": False,
+                "basis": "no frame has been published for this job yet, so this selection has no "
+                         "recorded basis to be priced against; it is run and stated."}
+    estimate = int(ratio * named)
+    return {"products": named, "estimated_bytes": estimate,
+            "cache_budget_bytes": DEFAULT_CACHE_BYTES, "warn": estimate > DEFAULT_CACHE_BYTES,
+            "basis": "the largest bytes per product any frame of this job has published"}
 
 
 def _queue(root, job):
@@ -499,7 +685,8 @@ def catalog(request, workspace, *, start=True):
     if not isinstance(prefetch, list) or len(prefetch) > MAX_PREFETCH:
         raise ValueError("Explicit loop prefetch must contain at most eight committed frame sequences")
     prefetch = list(dict.fromkeys(ra._sequence(value) for value in prefetch))
-    selection = _selection(request.get("profile", PROFILE), request.get("products"))
+    selection = selection_for(request)
+    root = _root(workspace)
     completing = False
     try:
         record, state, bound, commits = legacy._job_completing(workspace, job)
@@ -509,19 +696,21 @@ def catalog(request, workspace, *, start=True):
         # no frame authority is returned until that wrapper settles.
         completing, record, state, bound, commits = True, None, {"state": "running"}, None, []
     _expected_run(request, bound)
-    root = _root(workspace)
     selected = [(event, authority) for event, authority in commits
                 if event["domain"] == domain and (sequence is None or event["sequence"] == sequence)]
     value = {"schema": SCHEMA, "job_id": job, "domain": domain, "sequence": sequence,
              "waiting": True, "state": "waiting_for_output", "profile": selection["profile"],
-             "selection_products": selection["products"], "products": [], "processing": index_metadata(workspace, job)}
+             "selection_products": selection["products"], "products": [],
+             "selection_estimate": selection_estimate(root, job, selection),
+             "selection_basis": selection_basis(request.get("profile", PROFILE), request.get("products")),
+             "processing": index_metadata(workspace, job)}
     if completing:
         value["producer_completing"] = True
     if bound is None:
         return value
     _producer, manifest_path, manifest, manifest_bytes, _started, binding = bound
     value.update(run_id=manifest["run_id"], run_manifest=ra._authority(manifest_path, manifest_bytes),
-                 remote_output_root=record["outdir"], remote_pid=manifest["pid"])
+                 remote_output_root=record["outdir"], run_root=str(ra.run_root(record)), remote_pid=manifest["pid"])
     if binding is not None:
         value["producer_binding"] = binding
     if not selected:

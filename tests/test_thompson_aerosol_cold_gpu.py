@@ -738,7 +738,7 @@ def test_koop_haze_freezing_matches_committed_oracle(classic_tables):
 
 #: THE PER-CELL RATCHET on the comparison below: the largest relative
 #: difference this kernel shows against ``_WRF_COLD_REFERENCE``, per fixture
-#: and per field.  The gate is 1.0e-6; these are the honest distances from it
+#: and per field.  The gate is 1.0e-6; these are the accurate distances from it
 #: and they are asserted individually so a residual cannot triple and still
 #: pass.
 #:
@@ -2046,7 +2046,7 @@ def test_two_gamma_snow_number_survivors_are_exactly_one_ulp():
     nothing left to repair inside the helper.
 
     The assertions are: (1) both states still differ, so the limit stays
-    honest rather than being quietly claimed away, and (2) neither differs by
+    accurate rather than being quietly claimed away, and (2) neither differs by
     more than one ulp, which is the ratchet.
     """
     import cupy as cp

@@ -9,8 +9,11 @@ boundary is stamped from evidence rather than from optimism.
 from __future__ import annotations
 
 import json
+import shutil
+import site
 import subprocess
 import sys
+import sysconfig
 import textwrap
 from pathlib import Path
 
@@ -145,6 +148,120 @@ def test_guard_refuses_installation_when_gpuwm_is_already_live():
     result = _probe(source)
     assert result["result"] == "REFUSED"
     assert "already imported" in result["why"]
+
+
+# --------------------------------------------------------------------------
+# rule 2b: the bootstrap's scrub is free from a checkout and must not fire
+# from an installation
+
+
+def _running_library_dirs() -> list[str]:
+    """Where THIS interpreter keeps its installed distributions.
+
+    Asked of the interpreter rather than guessed from the path's shape,
+    the same way the bootstrap under test asks.  Used to give a throwaway
+    environment the dependencies the worker imports at module scope; the
+    test below says why inheriting the base interpreter's library is not
+    enough.
+    """
+
+    found: set[str] = set()
+    paths = sysconfig.get_paths()
+    for key in ("purelib", "platlib"):
+        entry = paths.get(key)
+        if entry:
+            found.add(str(Path(entry).resolve()))
+    getter = getattr(site, "getsitepackages", None)
+    if getter is not None:
+        try:
+            found.update(str(Path(entry).resolve()) for entry in getter())
+        except Exception:         # site disabled (-S): nothing to report
+            pass
+    return sorted(found)
+
+
+BOOTSTRAP_PROBE = textwrap.dedent("""
+    import json, runpy, sys
+    module = runpy.run_path({worker!r})
+    report = {{
+        "root": str(module["_REPO_ROOT"]),
+        "root_is_library": module["_ROOT_IS_LIBRARY"],
+        "root_on_path": str(module["_REPO_ROOT"]) in sys.path,
+    }}
+    {extra}
+    print(json.dumps(report))
+""")
+
+
+def test_a_checkout_bridge_still_drops_its_repository_root():
+    """From a checkout the scrub costs nothing, so it still happens.
+
+    The root of a checkout holds the live spine tree and nothing the
+    forecast needs, so dropping it makes the spine unreachable as well as
+    refused.  That half of the bootstrap is unchanged and this pins it.
+    """
+    probe = BOOTSTRAP_PROBE.format(worker=str(mpas_bridge.worker_path()),
+                                   extra="")
+    result = _probe(probe)
+    assert result["root_is_library"] is False
+    assert result["root_on_path"] is False
+
+
+def test_an_installed_bridge_keeps_its_library_directory_on_the_path(tmp_path):
+    """Installed, the root IS site-packages and the scrub must not fire.
+
+    The breakage: the bootstrap dropped its own root unconditionally, so
+    an installed worker dropped site-packages and took every other
+    installed distribution with it.  The pinned Arwen tree imports cupy
+    at module scope, so the worker died "No module named 'cupy'" at the
+    seed leg of cycle 1 while the same commit run from a checkout was
+    fine -- numpy, already in sys.modules by that line, hid it.  Here the
+    bridge is installed into a throwaway environment beside a stand-in
+    dependency, and the stand-in must still import once the bootstrap has
+    run.
+    """
+    environment = tmp_path / "env"
+    subprocess.run([sys.executable, "-m", "venv", "--without-pip",
+                    str(environment)],
+                   check=True, capture_output=True, timeout=600)
+    libraries = sorted(environment.glob("**/site-packages"))
+    assert len(libraries) == 1, libraries
+    library = libraries[0]
+    shutil.copytree(mpas_bridge.worker_path().parent,
+                    library / "mpas_cycle_bridge")
+    (library / "stand_in_dependency.py").write_text(
+        "VALUE = 'installed beside the bridge'\n", encoding="utf-8")
+    # The worker imports numpy at module scope, by way of anchor_codec, so
+    # the throwaway environment has to resolve it.  ``--system-site-packages``
+    # cannot supply it: a venv's base is the interpreter it was BUILT from,
+    # so a child venv inherits the base's library while numpy normally lives
+    # in the running venv.  Measured on a uv-provisioned 3.11: the child's
+    # sys.path named the base interpreter's site-packages and not this one,
+    # and the probe died "No module named 'numpy'" -- so the assertion below
+    # passed only on a box whose base interpreter happened to carry numpy.
+    # A .pth names this interpreter's own library directories instead; site
+    # reads it even under PYTHONSAFEPATH, and its entries land after the
+    # throwaway library, so every assertion below still measures whether the
+    # bootstrap kept its own root.
+    (library / "_running_interpreter.pth").write_text(
+        "\n".join(_running_library_dirs()) + "\n", encoding="utf-8")
+    python = environment / "Scripts" / "python.exe"
+    if not python.exists():
+        python = environment / "bin" / "python"
+
+    probe = BOOTSTRAP_PROBE.format(
+        worker=str(library / "mpas_cycle_bridge" / "worker.py"),
+        extra=("import stand_in_dependency\n"
+               "report['dependency'] = stand_in_dependency.VALUE"))
+    completed = subprocess.run([str(python), "-c", probe],
+                               env=mpas_bridge.child_environment(),
+                               capture_output=True, text=True, timeout=600)
+    assert completed.returncode == 0, completed.stderr
+    result = json.loads(completed.stdout.strip().splitlines()[-1])
+    assert result["root"] == str(library)
+    assert result["root_is_library"] is True
+    assert result["root_on_path"] is True
+    assert result["dependency"] == "installed beside the bridge"
 
 
 # --------------------------------------------------------------------------
@@ -298,7 +415,7 @@ def test_missing_evidence_downgrades_the_stamp(overrides, needle):
     """A stamp that overstates is worse than a missing feature.
 
     Each of these is a way a run can look finished and not be one, and
-    each must produce ``mpas-cuda-frames`` -- the honest label -- with
+    each must produce ``mpas-cuda-frames`` -- the accurate label -- with
     the gap named.
     """
     verdict = mpas_bridge.stamp_for_segment(_complete_manifest(**overrides),

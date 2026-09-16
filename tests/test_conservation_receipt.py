@@ -73,11 +73,11 @@ def test_three_terms_are_separate_and_none_defaults_to_zero():
 def test_hardcoded_zero_forcing_is_visible_in_the_residual():
     """The false-closure control: zeroing a real forcing term must move
     the residual, so a receipt cannot pass by structurally omitting it."""
-    honest = {"lateral_flux_integral": -3.0,
+    accurate = {"lateral_flux_integral": -3.0,
               "lbc_mass_forcing_integral": 1.0,
               "specified_zone_mass_reset": 0.5}
-    faked = dict(honest, lbc_mass_forcing_integral=0.0)
-    assert cc.mass_budget_residual(100.0, 98.5, honest) == pytest.approx(0.0)
+    faked = dict(accurate, lbc_mass_forcing_integral=0.0)
+    assert cc.mass_budget_residual(100.0, 98.5, accurate) == pytest.approx(0.0)
     assert abs(cc.mass_budget_residual(100.0, 98.5, faked)) == pytest.approx(
         1.0)
 
@@ -88,7 +88,7 @@ def test_relative_residual_refuses_a_zero_measure():
         cc.relative_residual(1.0, 0.0)
 
 
-def test_guard_inventory_is_honest_in_both_directions():
+def test_guard_inventory_is_accurate_in_both_directions():
     counted = cc.guard_entry("w_damping", "host mirror",
                              counted=True, count=7)
     assert counted["count_or_null"] == 7 and counted["why_not_counted"] is None
@@ -219,7 +219,7 @@ def test_no_case_token_in_the_receipt_module_or_its_keys():
     assert pattern.search(json.dumps({"case": "real74"}))
 
 
-# ---- D-29: guard inventory with host-side mirrors and honest gaps ---------
+# ---- D-29: guard inventory with host-side mirrors and accurate gaps ---------
 
 def _countable_sites():
     return [str(entry["site"]) for entry in cc.GUARD_SITES

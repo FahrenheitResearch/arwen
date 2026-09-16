@@ -40,8 +40,8 @@ guards, so every gate here is written to be *unanswerable-means-silent*:
   cannot disagree; it has no git anywhere, no vendored Rust workspace,
   and its renderer can only ever come from the staging directory.  Both
   gates pass without printing a word.
-* A source tree nobody installed: ``gpuwm.__version__`` honestly reports
-  ``0+unknown``, and an honest "I do not know" is not a contradicting
+* A source tree nobody installed: ``gpuwm.__version__`` accurately reports
+  ``0+unknown``, and an accurate "I do not know" is not a contradicting
   claim.  No refusal.
 * A checkout whose renderer is built in its own ``tools/rustwx/target``:
   the binary is inside the executing tree by construction.  No refusal,
@@ -110,12 +110,12 @@ def executing_version(prov: Provenance | None = None) -> str:
     1. the version the CODE declares -- ``pyproject.toml`` in a source
        tree or an editable install, and for a wheel the metadata pip
        wrote beside the code it installed (there is no second
-       declaration in a wheel, and saying so is honest);
+       declaration in a wheel, and saying so is accurate);
     2. failing that, the metadata of the distribution that actually
        provides this package;
     3. failing that, whatever ``gpuwm.__version__`` produced -- but only
        when provenance did not find it BORROWED;
-    4. :data:`gpuwm.provenance.UNKNOWN_VERSION`, which is the honest
+    4. :data:`gpuwm.provenance.UNKNOWN_VERSION`, which is the accurate
        answer and the one this project already ships for an uninstalled
        tree.
     """
@@ -175,8 +175,8 @@ def version_identity_refusal(prov: Provenance | None = None) -> str | None:
       ``pyproject.toml`` beside the package, which is the only version
       written down by hand in a source tree.
 
-    Both must be known, and the reported one must not be the honest
-    ``0+unknown`` sentinel.  That exemption is load-bearing: a plain
+    Both must be known, and the reported one must not be the accurate
+    ``0+unknown`` sentinel.  That exemption is essential: a plain
     ``git clone`` with nothing installed reports ``0+unknown`` against a
     tree that declares 1.8.7, and refusing THAT would refuse the
     project's own development flow over a non-defect.

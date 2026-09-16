@@ -162,7 +162,7 @@ on every column where the two differ.
 perturbed-state `cup_env_clev` (:760) is handed `po_cup` and `gamma_cup`
 themselves, not fresh arrays, and the routine zeroes its outputs *before* its
 `ierr` guard.  Nothing downstream reads either on a rejected column, so this
-is invisible in WRF and load-bearing in a capture.  The same call also
+is invisible in WRF and essential in a capture.  The same call also
 overwrites `xhe`: `cup_env`'s third argument is its `he` output, and the guard
 is `itest .le. 0`, so the perturbed moist static energy built from `dellah` at
 :731 is thrown away before `xhc` reads it -- 3 to 5 lanes per column, 1-2 ULP,
@@ -250,8 +250,8 @@ the whole prepared column bitwise on all 216 columns.
 
 The stored word and the arithmetic disagree, and the fixture settles it.
 Assigned to a real(8) and written out, `con_g` reads `0x40239D0140000000` =
-`float64(float32(9.80665))`, not the honest `0x40239D013A92A305`.  But
-reproducing GFDRV needs the honest double:
+`float64(float32(9.80665))`, not the accurate `0x40239D013A92A305`.  But
+reproducing GFDRV needs the accurate double:
 
 | constants used | `omeg` lanes wrong | `dhdt` lanes wrong |
 | --- | ---: | ---: |
@@ -261,7 +261,7 @@ reproducing GFDRV needs the honest double:
 
 out of 8640 lanes each.  Every miss is exactly 1 ULP.  `gf-pow-probe.txt`
 records the stored word so the trap is visible, and
-`tests/test_gf_wrf461_parity.py::test_gfs_constants_are_the_honest_doubles`
+`tests/test_gf_wrf461_parity.py::test_gfs_constants_are_the_accurate_doubles`
 exists so nobody "corrects" the reference back to it.
 
 There is deliberately no micro-probe of the expression in `pow_probe.F90`: a
@@ -397,7 +397,7 @@ GFS values (`9.80665`, `1004.6`, `2.5e6`, `461.5`) while `module_cu_gf_deep.F`
 and `module_cu_gf_sh.F` each declare their own (`9.81`, `1004.`, `2.5e6`,
 `461.`).  A port must reproduce both sets in the places WRF uses them.
 
-## The tile geometry is load-bearing
+## The tile geometry is essential
 
 GFDRV computes its own write window as `ibegc = max(its, ids+4)`,
 `iendc = min(ite, ide-5)`, `jbegc = max(jts, jds+4)`, `jendc = min(jte, jde-5)`

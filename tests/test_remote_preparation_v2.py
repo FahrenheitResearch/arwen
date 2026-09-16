@@ -10,7 +10,7 @@ def test_background_covers_all_domains_with_bounded_interactive_priority(native)
     c = native.case
     c.events.write_bytes(b"".join(encoded({**c.event, "sequence": index,
         "domain": 1 + index % 3, "valid_time": f"2026-09-07T18:{index:02d}:00Z"}) for index in range(1, 45)))
-    request = query(c, domain=2, sequence=1, products=viewer.DEFAULT_PRODUCTS)
+    request = query(c, domain=2, sequence=1, products=[])
     viewer.catalog(request, c.tmp_path)
     state = preparation.prepare(c.tmp_path, c.record["id"], start=False)
     root = viewer._root(c.tmp_path)

@@ -582,6 +582,7 @@ MAPPED_DIRECT_PROOF_KEYS = frozenset({
     "schema", "status", "stock_wrf_export", "forcing_times", "soil_texture_downscale",
     "forcing_hours", "boundary_interval_seconds", "execution_inputs",
     "source_composition", "preprocessing", "static", "geometry",
+    "moisture_floors",
     "prepared_cache", "export", "timing_seconds", "proof_content_sha256",
 })
 MAPPED_HIERARCHY_PROOF_KEYS = frozenset({
@@ -590,9 +591,15 @@ MAPPED_HIERARCHY_PROOF_KEYS = frozenset({
     "boundary_interval_seconds", "target_contract", "execution_inputs",
     "source_composition", "preprocessing", "hierarchy_workers",
     "root_static", "root_geometry", "static_catalog", "source_coverage",
-    "artifact_receipt", "wrf_manifest", "timing_seconds",
-    "proof_content_sha256",
+    "artifact_receipt", "moisture_floors_by_domain", "wrf_manifest",
+    "timing_seconds", "proof_content_sha256",
 })
+#: The moisture-floor receipt keys, by document.  Named as a pair because
+#: the discard below has to know which one a given schema expects, and
+#: because "the key this release added" is the thing a reader of the
+#: discard needs told.
+MAPPED_MOISTURE_FLOOR_KEYS = frozenset({
+    "moisture_floors", "moisture_floors_by_domain"})
 #: Top-level proof keys the writer publishes ONLY when that preparation
 #: opted in, so the runner has to take the document with them and
 #: without them.  ``gpuwm/mapped_direct.py`` spreads these in
@@ -1806,7 +1813,7 @@ def _refuse_declared_physics_drift(
         # switching a PBL parameterization back ON over nests running
         # resolved turbulence.  The flag asserts every domain runs the
         # suite; this config says more than the suite on purpose, and
-        # the one honest instruction is to stop asserting.
+        # the one accurate instruction is to stop asserting.
         remedy = (
             f"  REMEDY: omit --physics-profile.  This config's root "
             f"domain already resolves to {profile}, and the values "
@@ -2382,6 +2389,54 @@ def _load_json_object(path: Path, label: str) -> dict[str, object]:
     return value
 
 
+def _check_normalized_provenance(path: Path, profile_id: str, source: str) -> None:
+    """A normalizer's provenance authority is the packaged one plus its receipt.
+
+    Named breakage this prevents: a prepared tree that claims a packaged
+    profile while carrying a SUBSTITUTED terrain provenance document, so the
+    forecast's record of where terrain came from describes bytes nobody
+    shipped.  A profile whose source publishes bytes the mapped engine cannot
+    read runs an input-normalization stage first, and that stage carries the
+    packaged declaration through with one key added -- the receipt naming
+    every raw input, the converter, the plan and the normalized outputs.  So
+    the bound document cannot be compared byte for byte.  It is compared
+    exactly instead: the packaged content, plus that one key, and nothing
+    else, with the receipt naming the normalizer the profile declares and
+    pinning inside itself the digests of the authorities it ran under --
+    including the very document it extends.
+
+    The way out when this refuses: re-run the preparation.  Do not edit the
+    provenance document in a prepared tree.
+    """
+
+    from gpuwm.source_authorities import (packaged_authorities,
+                                          packaged_authority_sha256,
+                                          packaged_profile)
+    from gpuwm.source_normalization import NORMALIZATION_RECEIPT_KEY
+
+    profile = packaged_profile(profile_id)
+    normalizer = profile.get("input_normalizer")
+    bound = _load_json_object(path, f"mapped {source} provenance authority")
+    receipt = bound.pop(NORMALIZATION_RECEIPT_KEY, None)
+    packaged_path = packaged_authorities(profile_id)["provenance"]
+    packaged = _load_json_object(packaged_path, f"packaged {source} provenance")
+    if bound != packaged:
+        raise ValueError(
+            f"mapped {source} provenance authority differs: the bound "
+            f"document is not the packaged {profile_id} declaration extended "
+            f"by its {normalizer} receipt")
+    pins = packaged_authority_sha256(profile_id)
+    request = receipt.get("request") if isinstance(receipt, dict) else None
+    authorities = request.get("authorities") if isinstance(request, dict) else None
+    if (not isinstance(authorities, dict)
+            or request.get("normalizer") != normalizer
+            or authorities.get("provenance") != pins["provenance"]
+            or authorities.get("normalization") != pins["normalization"]):
+        raise ValueError(
+            f"mapped {source} normalization receipt does not name the "
+            f"{normalizer} authorities this release ships")
+
+
 def _require_digest(value, label: str) -> str:
     if (not isinstance(value, str) or len(value) != 64
             or any(character not in _HEX for character in value)):
@@ -2733,7 +2788,7 @@ def _resolve_or_refuse(path: Path, flag: str) -> Path:
     entirely.  Found by running the fix on Linux against the installed
     wheel -- the Windows box this was written on cannot create a looping
     symlink without privilege, so the test skipped and the guard looked
-    correct.  The catch is narrow enough to stay honest: it wraps one
+    correct.  The catch is narrow enough to stay accurate: it wraps one
     call whose only failure mode is "this path does not resolve".
     """
     from gpuwm.filesystem_paths import canonical_path
@@ -3095,7 +3150,7 @@ def _runtime_source_identity() -> dict[str, object]:
     }
     # One resolver for all three installs (gpuwm.runtime_manifest).  The
     # branch this replaced degraded a wheel install to
-    # `runtime-module-sha256-only` -- honest, but weaker than the truth:
+    # `runtime-module-sha256-only` -- accurate, but weaker than the truth:
     # pip knows exactly which artifact it wrote, and RECORD says so.  It
     # also raised, uncaught, when site-packages happened to sit INSIDE
     # some unrelated repository, binding a stranger's commit or dying;
@@ -4264,6 +4319,13 @@ def _validate_packaged_mapped_evidence(
     elif (not isinstance(proof["stock_wrf_export"], str)
           or proof["stock_wrf_export"] not in {"off", "optional", "required"}):
         raise ValueError("mapped stock-WRF export mode is invalid")
+    # Bundles prepared before the initialization moisture-floor receipt
+    # existed carry no such key, and their forecasts are still valid
+    # preparations: requiring it would refuse every mapped bundle already
+    # on disk.  A bundle that HAS it keeps the exactness -- the key is in
+    # the required set above, so a document carrying a MALFORMED spelling
+    # of it is still refused.
+    expected_proof_keys -= MAPPED_MOISTURE_FLOOR_KEYS - set(proof)
     # Every required key present, and nothing beyond them but the
     # declared-optional ones: a missing key and an unrecognised key are
     # both still refusals, which is the exactness this inventory exists
@@ -4364,7 +4426,11 @@ def _validate_packaged_mapped_evidence(
             raise ValueError("mapped terrain provenance role is missing")
         terrain_digest = provenance_rows[terrain_role]["sha256"]
         if profile_id and terrain_digest != expected_authority_sha256["provenance"]:
-            raise ValueError(f"mapped {source} provenance authority differs")
+            if not packaged_profile(profile_id).get("input_normalizer"):
+                raise ValueError(f"mapped {source} provenance authority differs")
+            _check_normalized_provenance(
+                provenance_paths[f"mapped_provenance:{terrain_role}"],
+                profile_id, source)
         expected_authority_sha256["provenance"] = terrain_digest
         provenance_path = provenance_paths[f"mapped_provenance:{terrain_role}"]
 
@@ -5677,7 +5743,7 @@ def preflight_prepared_forecast(
                 f"f{expected_source_hours[-1]:03d}")
         unused = sorted(set(manifest_hours) - set(expected_source_hours))
         if unused:
-            # Bound, decoded, and honestly not used: a manifest authored
+            # Bound, decoded, and accurately not used: a manifest authored
             # over a whole fetch while the run starts partway into it.
             warn("the GFS source manifest binds forecast hour(s) "
                  + ", ".join(f"f{hour:03d}" for hour in unused)
@@ -6189,7 +6255,7 @@ _MEASURED_BARE_STATE_BYTES_PER_COLUMN = 11276.5
 _MEASURED_PREPARED_BYTES_PER_COLUMN = 15780.0
 
 #: The ``nz`` both per-column measurements were taken at.  They are scaled
-#: LINEARLY in ``nz`` off this reference, which is the honest reading of one
+#: LINEARLY in ``nz`` off this reference, which is the accurate reading of one
 #: measurement at one height: the prepared case is overwhelmingly 3-D arrays,
 #: and the 2-D surface inventory that does not scale is a small enough share
 #: that pretending it does costs a slight OVER-price below nz = 49 and a
@@ -6404,7 +6470,7 @@ def _free_device_bytes() -> tuple[int, int]:
 
     Not the planner's budget and not a nameplate capacity: the question the
     pricing asks is whether this allocation would succeed on this card in this
-    process, and the only honest source for that is what is free at the
+    process, and the only accurate source for that is what is free at the
     instant the decision is taken.
     """
 
@@ -7034,6 +7100,7 @@ def run_prepared_forecast(
     from gpuwm.core.dycore import stability_gate_failed
     from gpuwm.core.gpu_mem_watch import (
         GpuPeakMemoryWatcher, default_cupy_probes,
+        nvidia_smi_process_probes, process_memory_receipt,
     )
     from gpuwm.core.health import StateHealthValidator
     from gpuwm.core.model import (
@@ -7307,7 +7374,11 @@ def run_prepared_forecast(
     # 22.34 GiB true on the four-domain tree shape).  The watcher polls
     # from a daemon thread as well, and the boundary/end-of-run
     # sample() calls below fold into the same maxima.
-    memory_watch = GpuPeakMemoryWatcher(default_cupy_probes())
+    # The per-process NVML views ride beside the runtime and pool views
+    # so the receipt can say WHOSE bytes the card carried: a foreign
+    # process sharing the card was otherwise read as this run's growth.
+    memory_watch = GpuPeakMemoryWatcher(
+        default_cupy_probes() + nvidia_smi_process_probes())
 
     writers = PerDomainWrfoutWriters(
         model, outdir / "wrfout", start_time=exp.start_time,
@@ -7880,6 +7951,10 @@ def run_prepared_forecast(
                 "cupy_pool_total"),
             "cupy_pool_peak_used_bytes_observed": memory_watch.peak_bytes(
                 "cupy_pool_used"),
+            # WHOSE bytes: this process, every other process on the card,
+            # the card itself, and how long the card was shared.  None
+            # where NVML cannot attribute memory per process.
+            **process_memory_receipt(memory_watch),
             "cpu_peak_rss_bytes": _peak_rss_bytes(),
             # What each number above actually measured, how often it was
             # sampled, and whether observation stayed complete.
@@ -8045,11 +8120,11 @@ def run_prepared_forecast(
                 "io_mode": "history",
                 "history_interval_seconds": cadence_seconds},
             # DETERMINISM.md lists the configuration bytes as a
-            # load-bearing pin, and this route hash-binds the experiment
+            # essential pin, and this route hash-binds the experiment
             # TOML before it runs a step -- the published wheel's capsule
             # still said "the run context did not supply this pin"
             # because the value was never handed over (the 4090 stress
-            # run's honesty finding).  Both byte pins bind here now,
+            # run's accuracy finding).  Both byte pins bind here now,
             # git or no git.
             "config_bytes": {
                 "path": str(inputs.experiment_config),

@@ -41,6 +41,61 @@ def test_corridor_authority_covers_all_followers_and_descendants():
     assert moving_grid_ids(removed) == set()
 
 
+def test_the_capacity_scope_marks_exactly_the_relocating_subtree():
+    """The capacity scope and the corridor authority are ONE answer.
+
+    ``gpuwm.core.streamed_relocation.mark_reconstruction_nodes`` decides
+    which nodes need a retained reconstruction slab, and that is the same
+    question ``moving_grid_ids`` answers for the corridor: which children
+    a configured move relocates.  It used to recompute the union inline,
+    so the two could agree today and part the first time either learned
+    about a new kind of mover -- a per-domain ``[[domain]].follow`` child
+    on a tree with no ``[relocation]`` block at all was already exactly
+    that case, and the inline copy had to be taught it separately.  The
+    marker now reads this set, and this is what says so.
+
+    A PARITY LOCK, and GREEN ON BASE on purpose: the extraction is
+    behaviour neutral, so there is no red for it to carry.  The two
+    unions answer identically for every experiment that exists; the one
+    input they part on is an enabled ``[relocation]`` naming no
+    ``grid_id``, where the inline copy died in ``int(None)`` and the
+    corridor union skips it, and no test can reach that input from
+    either direction: ``RelocationConfig.__post_init__``
+    (``gpuwm/experiment.py:947-951``) refuses it at construction, not
+    merely at load.  What this locks is the property the extraction
+    exists for: the capacity scope answers the corridor's answer, and a
+    later edit that parts them fails here.
+    """
+    from gpuwm.core.streamed_relocation import mark_reconstruction_nodes
+
+    exp = cohort()
+    nodes = {int(dc.grid_id): SimpleNamespace(
+        cfg=SimpleNamespace(grid_id=int(dc.grid_id)), parent=None)
+        for dc in exp.domains}
+    for dc in exp.domains:
+        if int(dc.parent_id):
+            nodes[int(dc.grid_id)].parent = nodes[int(dc.parent_id)]
+    walked = [nodes[key] for key in sorted(nodes)]
+    mark_reconstruction_nodes(walked, exp)
+    marked = {int(node.cfg.grid_id) for node in walked
+              if getattr(node, '_streamed_reconstruction_required', False)}
+    assert marked == set(relocating_subtree_grid_ids(exp)) == {2, 3}
+    assert all(nodes[grid_id]._reconstruction_p_top
+               == float(exp.vertical.p_top) for grid_id in marked)
+
+    # A bounds-only [relocation] declares BOUNDS, not a move, so nothing
+    # is marked and no node carries a slab it will never fill.
+    bounds_only = replace(
+        exp, relocation=RelocationConfig(enabled=True, grid_id=2),
+        domains=tuple(replace(dc, follow=None) for dc in exp.domains))
+    assert moving_grid_ids(bounds_only) == set()
+    clean = [SimpleNamespace(cfg=SimpleNamespace(grid_id=int(dc.grid_id)),
+                             parent=None) for dc in bounds_only.domains]
+    mark_reconstruction_nodes(clean, bounds_only)
+    assert not any(getattr(node, '_streamed_reconstruction_required', False)
+                   for node in clean)
+
+
 def test_runplan_decision_has_every_target_without_legacy_identity():
     from gpuwm.runplan import follow_statics_decision
     decision = follow_statics_decision(cohort(), chain='prepared:go')

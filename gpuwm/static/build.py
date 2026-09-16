@@ -556,6 +556,35 @@ def four_pt(vals, xi, yi, x0=1, y0=1):
     return np.where(ok, res, np.nan)
 
 
+def _nansum_count(planes):
+    """Sum a stencil PLANE BY PLANE, skipping NaN, and count what counted.
+
+    Not ``np.nansum(stack, axis=0)``.  That reduction's summation order
+    depends on how many POINTS are in the batch: numpy reduces a small
+    (k, n) stack per element, pairwise, and a large one by accumulating
+    whole planes, and the two orders differ in the last bits.  A batch is
+    whatever the caller happened to have left to interpolate, so the same
+    stencil over the same source gave a different answer depending on how
+    many other cells came with it.  MEASURED on the Bering Sea cyclone
+    case: SNOALB at one cell of the 3 km child came out
+    79.93333333333334 from the corridor build and 79.93333333333332 from
+    the footprint build, from identical coordinates and identical source
+    bytes, which is enough to refuse a relocation on the overlap-statics
+    equality.  Plane order is also what the crate's ``nansum_count``
+    does, so the two routes now agree by construction rather than by
+    luck.
+    """
+    planes = list(planes)
+    total = None
+    count = None
+    for plane in planes:
+        good = ~np.isnan(plane)
+        term = np.where(good, plane, 0.0)
+        total = term if total is None else total + term
+        count = good.astype(np.int64) if count is None else count + good
+    return total, count
+
+
 def average_4pt(vals, xi, yi, x0=1, y0=1):
     """Mean of the valid pixels among the surrounding 2x2 (>= 1 required)."""
     xx = np.asarray(xi, dtype=np.float64)
@@ -586,11 +615,10 @@ def average_4pt(vals, xi, yi, x0=1, y0=1):
     i1 = np.clip(i1, 0, nx - 1)
     j0 = np.clip(j0, 0, ny - 1)
     j1 = np.clip(j1, 0, ny - 1)
-    stack = np.stack([vals[j0, i0], vals[j0, i1],
-                      vals[j1, i0], vals[j1, i1]])
-    cnt = (~np.isnan(stack)).sum(axis=0)
+    total, cnt = _nansum_count((vals[j0, i0], vals[j0, i1],
+                               vals[j1, i0], vals[j1, i1]))
     with np.errstate(invalid="ignore"):
-        res = np.nansum(stack, axis=0) / np.maximum(cnt, 1)
+        res = total / np.maximum(cnt, 1)
     return np.where(ok & (cnt > 0), res, np.nan)
 
 
@@ -604,14 +632,12 @@ def average_16pt(vals, xi, yi, x0=1, y0=1):
     ok = (i0 >= 1) & (i0 <= nx - 3) & (j0 >= 1) & (j0 <= ny - 3)
     i0c = np.clip(i0, 1, max(nx - 3, 1))
     j0c = np.clip(j0, 1, max(ny - 3, 1))
-    stack = np.stack([
+    total, cnt = _nansum_count(
         vals[j0c + dj, i0c + di]
         for dj in (-1, 0, 1, 2)
-        for di in (-1, 0, 1, 2)
-    ])
-    cnt = (~np.isnan(stack)).sum(axis=0)
+        for di in (-1, 0, 1, 2))
     with np.errstate(invalid="ignore"):
-        res = np.nansum(stack, axis=0) / np.maximum(cnt, 1)
+        res = total / np.maximum(cnt, 1)
     return np.where(ok & (cnt > 0), res, np.nan)
 
 
@@ -1104,28 +1130,44 @@ class _DomainSampler:
             # `window` unwraps x by +nx_global for a domain that straddles
             # the antimeridian, so a pixel arrives here as x + nx_global
             # while a domain that does not straddle reads the very same
-            # ground at x.  `xy_to_latlon` is affine in the index, so those
-            # two produce longitudes that differ by ~1e-13 -- the same
-            # ground, rounded differently -- and a pixel column sitting on
-            # a destination cell boundary then NINTs into a different cell
-            # on one branch than on the other.  Folding the LONGITUDE is
-            # not enough: the two indices have already rounded apart by
-            # then.  The index is what has to be canonical.
+            # ground at x.  `read_window` has ALREADY resolved that wrap:
+            # the raster at window position i holds the CANONICAL column's
+            # bytes.  The index must be folded to match, and the size of
+            # not folding it is not a rounding.  `xy_to_latlon` is affine
+            # in the index, so index x + nx_global answers
+            # `known_lon + (x - 1 + nx_global)*dx`, which is the canonical
+            # longitude plus `nx_global*dx - 360` -- and a WPS_GEOG index
+            # declares a TRUNCATED decimal: 30-arcsec trees say
+            # dx = 0.00833333, whose 43200-fold is 359.999856 deg.  The
+            # unwrapped pixel is therefore placed 1.44e-4 deg (7.4 m at
+            # 62 N) west of the ground whose value it carries.
             #
-            # MEASURED on a 27/9/3 km Pacific tree whose d01 crosses the
-            # dateline: the parent-extent statics corridor and the d02
-            # footprint build disagreed on the pixel count of six whole
-            # destination columns (100 vs 110 source pixels), moving
-            # LANDUSEF/SOILCTOP/SOILCBOT by one float32 ULP.  A corridor
-            # crop and a direct build are compared in exactly one place --
-            # the first move's overlap-statics equality -- so that is what
-            # this guards.  It is NOT what caused the mid-run refusals;
-            # see the attribution note in `cell_coords`.
+            # MEASURED twice.  On a 27/9/3 km Pacific tree whose d01
+            # crosses the dateline the corridor and the d02 footprint
+            # build disagreed on the pixel count of six destination
+            # columns.  On the Bering Sea 12/3 km cyclone case (parent
+            # spanning the dateline, 3 km follower) the corridor crop and
+            # the prepared d02 statics differed in 198 LANDUSEF cells and
+            # 40 soil cells, flipping LU_INDEX in 3 and SCT_DOM/SCB_DOM in
+            # 2, and the first relocation refused on the overlap-statics
+            # equality.  A corridor crop and a direct build are compared in
+            # exactly one place -- that equality -- so that is what this
+            # guards; it also straightens the statics of any single domain
+            # whose own window crosses the seam.
             xs_use = xs_abs
             if getattr(ds, "wraps_x", False):
-                nxg = int(ds.nx_global)
-                xs_use = ((xs_abs - 1) % nxg + 1 if nxw > nxg else
-                          np.where(xs_abs > nxg, xs_abs - nxg, xs_abs))
+                # Fold EVERY absolute column, not only the ones a
+                # wider-than-global window repeats: `read_window`
+                # mosaics a wrapping source by canonical column, so a
+                # merely seam-CROSSING window holds column 661's bytes
+                # at absolute index 43861, and a real WPS_GEOG index
+                # declares a truncated decimal (dx = 0.00833333, whose
+                # 43200-fold is 359.999856 deg) -- binning at 43861
+                # places the pixel 1.44e-4 deg west of the ground its
+                # value came from.  The one-sided subtraction this
+                # replaces also left a window that starts BELOW column 1
+                # uncanonicalized.
+                xs_use = (xs_abs - 1.0) % int(ds.nx_global) + 1.0
             lat, lon = ds.xy_to_latlon(xs_use[None, :], yy[:, None])
             # The accumulation path was already oracle-matched in float64;
             # only target-point stencil selection needs WPS's real precision.
@@ -1255,12 +1297,15 @@ class _DomainSampler:
             jj = (np.floor(yi[empty] + 0.5).astype(np.int64) - win.y0)
             nyw, nxw = win.raw.shape[1:]
             if ds.wraps_x:
-                # cell_coords speaks DATASET coordinates; a window that
-                # crossed the wrap seam runs past nx_global, so re-frame
-                # in integer index space.  Doing it to the float
-                # coordinate instead is the lossy round trip that made
-                # two builds of the same ground disagree.
-                ii = np.where(ii < 0, ii + ds.nx_global, ii)
+                # cell_coords speaks DATASET coordinates; the window's own
+                # frame may start past nx_global (a read that crossed the
+                # seam) or below column 1 (one that reached west of it), so
+                # take the offset MODULO the global width and let the bounds
+                # test below decide.  A one-sided correction left the second
+                # frame unresolved, and doing it to the float coordinate
+                # instead is the lossy round trip that made two builds of
+                # the same ground disagree.
+                ii = np.mod(ii, ds.nx_global)
             inside = (ii >= 0) & (ii < nxw) & (jj >= 0) & (jj < nyw)
             cat = np.full(ii.shape, -1, dtype=np.int64)
             cat[inside] = win.raw[0][jj[inside], ii[inside]].astype(np.int64)

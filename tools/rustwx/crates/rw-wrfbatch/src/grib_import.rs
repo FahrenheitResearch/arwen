@@ -535,7 +535,7 @@ pub(crate) fn era128_param(parameter: u8) -> Option<EraParam> {
 
 /// How one message lands in the store: a canonical 2D field (real
 /// `FieldSelector`, so production styles resolve for the names the HRRR
-/// recipe set knows) or a derived slug (the honest `{"derived": slug}`
+/// recipe set knows) or a derived slug (the accurate `{"derived": slug}`
 /// marker for everything without a units-safe canonical mapping).
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum PlannedField {
@@ -1430,7 +1430,7 @@ pub(crate) fn import_grib1_files(
                 values,
             })
             .collect();
-        // The grid-aware seam permits honest derived-only hours (for example
+        // The grid-aware seam permits accurate derived-only hours (for example
         // forecast surface roughness) without inventing a canonical selector
         // solely to carry coordinates.
         let written = write_hour_from_grid_with_derived(

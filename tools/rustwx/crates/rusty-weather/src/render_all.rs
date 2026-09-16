@@ -82,8 +82,19 @@ impl ProductRequest {
 /// The four families overlap in principle (a slug is classified by the
 /// first family that claims it), so this counts distinct spellings rather
 /// than summing the catalogs.
+///
+/// The direct half is the WHOLE direct catalog, opt-in ensemble and
+/// probabilistic families included, because this answers "what may I ask
+/// for by name?" and those families are exactly the ones a user MUST ask
+/// for by name.  It is deliberately not `store_direct_recipe_slugs`,
+/// which answers the different question "what does `all` expand to" and
+/// must keep excluding them.  A slug the unknown-product refusal counts
+/// but the listing hides is a vocabulary nobody can read.
 pub fn known_product_slugs() -> Vec<String> {
-    let mut slugs: Vec<String> = store_direct_recipe_slugs();
+    let mut slugs: Vec<String> = rustwx_products::spec::direct_product_specs()
+        .into_iter()
+        .map(|spec| spec.slug)
+        .collect();
     slugs.extend(store_derived_recipe_slugs().into_iter().map(str::to_string));
     slugs.extend(store_heavy_recipe_slugs().into_iter().map(str::to_string));
     slugs.extend(

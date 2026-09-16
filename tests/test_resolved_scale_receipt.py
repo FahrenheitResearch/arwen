@@ -3,7 +3,7 @@
 A committed receipt that nothing re-checks is a snapshot of a claim, not
 evidence for it: edit the docs, leave the JSON alone, and the receipt now
 describes a tree that no longer exists.  These tests re-measure the
-load-bearing fields against the live tree, so drift fails the build rather
+essential fields against the live tree, so drift fails the build rather
 than ageing quietly.
 
 The internal half is checked here too.  The performance-gate sentence is
@@ -133,7 +133,7 @@ def test_every_diff_field_measured_the_change_the_receipt_declares():
     So the range is recorded, and every diff-measured field has to name the
     same one.  This does not pin a particular range -- a branch still being
     worked on records one endpoint and a merged one records two -- it pins
-    the receipt to being internally honest about its own scope.
+    the receipt to being internally accurate about its own scope.
     """
     receipt = _public()
     scope = receipt["edit_range"]

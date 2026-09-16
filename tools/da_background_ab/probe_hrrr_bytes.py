@@ -2,7 +2,7 @@
 
 The disk budget for a staged experiment has to be a number before the
 experiment runs, not after.  For the two HRRR arms that number is
-dominated by GRIB2, and the honest way to get it is the one thing NOAA
+dominated by GRIB2, and the accurate way to get it is the one thing NOAA
 publishes for free: the ``.idx`` byte-range index beside every object.
 
 So this asks the SAME selection the real downloader asks

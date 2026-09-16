@@ -109,7 +109,7 @@ def default_config(bl_pbl_physics: int = 1) -> RunConfig:
     mixing the km_opt operator would otherwise apply, and stacking the
     two would double-count it, so it is refused at config load.  Reading
     the requirement off the registry rather than hard-coding a number
-    keeps this case honest if another such scheme is ever registered.
+    keeps this case accurate if another such scheme is ever registered.
     """
     from gpuwm.config import SASE_PBL_SCHEME
 
@@ -382,7 +382,7 @@ def sweep_band(envelope, sigma_seed: float, n: int = 6):
     ``[env_lo - 2*sigma_seed/sqrt(n), env_hi + 2*sigma_seed/sqrt(n)]``:
     the published envelope is the observations' own scatter, and the
     additive term is the standard error of the n-seed mean at two
-    sigma -- the band is honest about our own noise without ever being
+    sigma -- the band is accurate about our own noise without ever being
     narrower than the published spread.
     """
     lo, hi = (float(v) for v in envelope)

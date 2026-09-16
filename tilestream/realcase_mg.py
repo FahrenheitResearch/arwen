@@ -48,9 +48,9 @@ exactly the shape of good news this project has been wrong about before:
 ``skip``      one edge rank's boundary application suppressed (the dycore's
               ``apply_state_lateral_boundaries`` no-opped for that rank's
               state only) MUST differ -- the per-rank application is
-              load-bearing, in the direction of doing less.
+              essential, in the direction of doing less.
 ``double``    another edge rank's application run twice per RK stage MUST
-              differ -- load-bearing in the direction of doing more.  The
+              differ -- essential in the direction of doing more.  The
               spec-zone overwrite is idempotent, so what this control
               measures is the relaxation-zone blend, which is not.
 
@@ -189,8 +189,8 @@ def _sabotaged_run(dom, steps: int, *, mode: str, victim: int) -> None:
     The patch is identity-gated on the victim's ``DomainState``, so the other
     ranks -- and any resident state alive in the process -- apply their
     boundaries exactly as before.  ``skip`` answers "is the application
-    load-bearing at all"; ``double`` answers "is the CADENCE of application
-    load-bearing" (one blend per RK stage, not two).
+    essential at all"; ``double`` answers "is the CADENCE of application
+    essential" (one blend per RK stage, not two).
     """
     import gpuwm.core.dycore as dyc
 
@@ -416,7 +416,7 @@ def stage_gate(args) -> None:
         results["controls"]["skip_rank0_differs"] = skip_fired
         if h != "nan-refusal":
             print(f"    control skip rank0 application: {h} "
-                  f"{'DIFFER (application is load-bearing)' if skip_fired else 'MATCH -- THE APPLICATION DID NOTHING'}")
+                  f"{'DIFFER (application is essential)' if skip_fired else 'MATCH -- THE APPLICATION DID NOTHING'}")
 
         last = multi[0] * multi[1] - 1
         h, double_fired = must_differ(f"double rank{last} application",
@@ -424,7 +424,7 @@ def stage_gate(args) -> None:
         results["controls"][f"double_rank{last}_differs"] = double_fired
         if h != "nan-refusal":
             print(f"    control double rank{last} application: {h} "
-                  f"{'DIFFER (cadence is load-bearing)' if double_fired else 'MATCH -- A SECOND APPLICATION IS INVISIBLE'}")
+                  f"{'DIFFER (cadence is essential)' if double_fired else 'MATCH -- A SECOND APPLICATION IS INVISIBLE'}")
 
         ok = ok and poison_ok and scaled_fired and skip_fired and double_fired
 

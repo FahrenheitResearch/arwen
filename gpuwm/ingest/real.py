@@ -280,7 +280,7 @@ WRF_REAL_PACKAGE_ABSENT_SPECIES_POLICY = {
 #: silently zero and an mp=28 aerosol field that is deliberately zero look
 #: identical in the state, and only one of them is correct.
 #:
-#: ``deferred_to`` is the load-bearing entry.  Nothing in this module fills
+#: ``deferred_to`` is the essential entry.  Nothing in this module fills
 #: nwfa/nifa/nwfa2d; the fill is a one-time per-domain step that belongs to
 #: the physics init path, exactly as WRF calls ``thompson_init`` from
 #: ``phys/module_physics_init.F`` and not from ``module_initialize_real.F``.
@@ -1673,6 +1673,146 @@ def _floor_flag_sh_surface_mixing_ratio(surface_qv, surface_pressure):
     return floored, receipt
 
 
+_PROGNOSTIC_QV_FLOOR_WRF_REFERENCE = {
+    "wrf_version": "v4.7.1",
+    "wrf_citation": (
+        "dyn_em/module_initialize_real.F:1744-1758 (use_sh_qv: vert_interp "
+        "of qv_gc as var_type 'Q' at the namelist lagrange_order, "
+        "Registry.EM_COMMON:2290 default 2, lagrange_setup's averaged pair "
+        "of second-order Lagrange polynomials), :1830-1851 (rh_to_mxrat1 "
+        "and rh_to_mxrat2, and with them the qv_min floor, are skipped when "
+        "use_sh_qv is true), :7318-7320 and :7505-7507 (the floor those "
+        "routines apply: p < qv_min_p_safe and q < qv_min_flag -> "
+        "qv_min_value), :1862-2075 (every hydrometeor and number field is "
+        "vertically interpolated with linear_interp, Registry:2291, never "
+        "with lagrange_order)"),
+    "wrf_behavior": (
+        "the second-order polynomial overshoots at a sharp minimum: a "
+        "vapour column that is non-negative on every source level yields a "
+        "NEGATIVE mixing ratio on a target level that falls inside a dry "
+        "slot bracketed by moister levels, and real.exe writes it to "
+        "wrfinput as it is, because the use_sh_qv lane is the one lane that "
+        "never passes through rh_to_mxrat"),
+    "gpuwm_behavior": (
+        "a target level the operator took below zero is floored to WRF's "
+        "own qv_min_value where p < qv_min_p_safe -- the identical floor "
+        "rh_to_mxrat1 applies to the identical quantity on the RH lane and "
+        "_floor_flag_sh_surface_mixing_ratio applies to this lane's "
+        "surface value -- and the count, the levels and the minimum are "
+        "receipted on RealInitResult.prognostic_moisture_floor; a "
+        "non-finite value, or a negative one at or above qv_min_p_safe "
+        "where WRF's rule does not reach, is still refused, naming the "
+        "level, the column and the value"),
+    "gpuwm_divergence_reason": (
+        "a negative vapour mixing ratio is not a state any scheme "
+        "integrates, and the source column was validated non-negative "
+        "before the operator ran (_specific_humidity_to_mixing_ratio "
+        "refuses this lane's source below zero), so a negative here is the "
+        "interpolating polynomial's own undershoot and not evidence about "
+        "the forcing; refusing the whole domain for it halted real-data "
+        "initializations at the first sharp mid-tropospheric dry slot the "
+        "forcing carried"),
+}
+
+
+def _refuse_non_finite_prognostic_qv(qv):
+    """The garbage guard, kept: a non-finite interpolated vapour value is
+    refused naming where it is, because no floor is a remedy for it."""
+    finite = np.isfinite(qv)
+    if finite.all():
+        return
+    bad = np.argwhere(~finite)
+    k, j, i = (int(v) for v in bad[0])
+    raise ValueError(
+        "interpolated specific-humidity qv is invalid | observed: "
+        f"non_finite_cells={int(bad.shape[0])}, first at level {k} row {j} "
+        f"column {i} value {float(qv[k, j, i])!r}, levels "
+        f"{sorted({int(v) for v in bad[:, 0]})}; the vertical operator was "
+        "handed a finite, non-negative source column, so this is a defect "
+        "in the pressures the column was interpolated on, not a value to "
+        "floor")
+
+
+def _floor_sh_vertical_undershoot(qv, pressure):
+    """Apply WRF's ``qv_min`` floor to the use_sh_qv lane's interpolated vapour.
+
+    WRF real's default vertical operator is the second-order Lagrange
+    polynomial (``lagrange_order=2``), and a second-order polynomial
+    through three non-negative samples undershoots below zero when the
+    middle one is a sharp minimum: a dry slot a few levels deep between
+    moister layers -- the ordinary shape of a mid-tropospheric dry
+    intrusion in a model's own column -- puts a NEGATIVE mixing ratio on
+    the target level that lands inside it.  On the RH lane that value
+    never surfaces, because ``rh_to_mxrat1`` floors everything it returns
+    at ``qv_min_value``; on the use_sh_qv lane real.exe skips
+    ``rh_to_mxrat`` and writes the negative to wrfinput
+    (:data:`_PROGNOSTIC_QV_FLOOR_WRF_REFERENCE`).  This function makes the
+    two lanes agree: cells the operator took below zero are floored at the
+    identical constant, under WRF's own ``qv_min_p_safe`` condition, and
+    receipted.  Cells the operator left at or above zero are untouched, so
+    no artifact that passed before this floor existed moves.
+
+    The source column is validated non-negative BEFORE the operator runs
+    (``_specific_humidity_to_mixing_ratio`` refuses this lane's source
+    below zero; the surface pseudo-level alone may carry WPS's admitted
+    undershoot), so a negative here is the operator's own -- either its
+    undershoot or that surface undershoot carried up one layer -- and not
+    evidence about the forcing.  A negative at or above ``qv_min_p_safe``,
+    where WRF's rule does not reach, is refused by name.
+    """
+    qv = np.asarray(qv, dtype=np.float64)
+    pressure = np.asarray(pressure, dtype=np.float64)
+    if pressure.shape != qv.shape:
+        raise ValueError("pressure and interpolated qv shapes differ")
+    negative = qv < 0.0
+    if not negative.any():
+        return qv, {}
+    below = negative & (pressure < _WRF_QV_MIN_P_SAFE)
+    unreached = negative & ~below
+    if unreached.any():
+        bad = np.argwhere(unreached)
+        k, j, i = (int(v) for v in bad[0])
+        raise ValueError(
+            "interpolated specific-humidity qv is invalid | observed: "
+            f"negative_cells_at_or_above_qv_min_p_safe={int(bad.shape[0])}, "
+            f"first at level {k} row {j} column {i} value "
+            f"{float(qv[k, j, i])!r} at {float(pressure[k, j, i]):.1f} Pa; "
+            f"WRF's qv_min floor (qv_min_p_safe {_WRF_QV_MIN_P_SAFE:g} Pa) "
+            "does not reach a level at that pressure, and a negative vapour "
+            "value is not a state to start from")
+    floored = np.where(below, _WRF_QV_MIN_VALUE, qv)
+    cells = np.argwhere(below)
+    levels = sorted({int(v) for v in cells[:, 0]})
+    columns = int(np.unique(cells[:, 1:], axis=0).shape[0])
+    minimum = float(np.min(qv[below]))
+    at = np.unravel_index(
+        int(np.argmin(np.where(below, qv, np.inf))), qv.shape)
+    receipt = {
+        "policy": "use-sh-qv-vertical-undershoot-floored-to-wrf-qv-min-value",
+        "wrf_reference": dict(_PROGNOSTIC_QV_FLOOR_WRF_REFERENCE),
+        "qv_min_value": _WRF_QV_MIN_VALUE,
+        "qv_min_p_safe": _WRF_QV_MIN_P_SAFE,
+        "floored_cells": int(cells.shape[0]),
+        "columns": columns,
+        "levels": levels,
+        "min_pre_floor": minimum,
+        "min_pre_floor_at": {
+            "level": int(at[0]), "row": int(at[1]), "column": int(at[2]),
+            "pressure_pa": float(pressure[at])},
+    }
+    print(
+        f"prognostic moisture floor: {cells.shape[0]} interpolated vapour "
+        f"value(s) in {columns} column(s) on level(s) {levels} were taken "
+        "below zero by WRF's second-order vertical operator at a sharp dry "
+        f"slot (min {minimum:.6g} at level {at[0]} row {at[1]} column "
+        f"{at[2]}, {float(pressure[at]):.0f} Pa) and are floored to WRF's "
+        f"qv_min_value {_WRF_QV_MIN_VALUE:g}, the floor rh_to_mxrat1 applies "
+        "on the RH lane and real.exe never applies on the use_sh_qv lane "
+        "(module_initialize_real.F:1744-1758, :1831)",
+        file=sys.stderr)
+    return floored, receipt
+
+
 def _mixing_ratio_to_relative_humidity_serial(
         temperature, pressure, mixing_ratio, *, allow_wps_undershoot=False):
     """Diagnose and validate one contiguous relative-humidity chunk."""
@@ -2520,6 +2660,14 @@ class RealInitResult:
     #: (:mod:`gpuwm.ingest.init_perturbation`).  Empty when no perturbation
     #: was requested -- the OFF path stores nothing and runs nothing.
     initial_perturbation: dict[str, object] = field(default_factory=dict)
+    #: The use_sh_qv lane's interpolated vapour cells that WRF's
+    #: second-order vertical operator took below zero and this
+    #: initialization floored at WRF's ``qv_min_value``
+    #: (:func:`_floor_sh_vertical_undershoot`): the count, the levels, the
+    #: minimum and where it was.  Empty when nothing was floored, and
+    #: always empty on the RH lane, whose :func:`_saturation_mixing_ratio`
+    #: floors inline.
+    prognostic_moisture_floor: dict[str, object] = field(default_factory=dict)
 
 
 def _wif_grid_latlon_from(grid, state):
@@ -3054,10 +3202,17 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
     theta_h = _potential_temperature_from_temperature(
         temperature_h, total_pressure_h,
         column_workers=column_workers)
+    prognostic_qv_floor: dict[str, object] = {}
     if use_sh_qv:
         qv_h = _host(qv).astype(np.float64)
-        if not np.isfinite(qv_h).all() or np.any(qv_h < 0.0):
-            raise ValueError("interpolated specific-humidity qv is invalid")
+        _refuse_non_finite_prognostic_qv(qv_h)
+        # The source column was validated non-negative before the plan
+        # ran, so what the second-order operator hands back below zero is
+        # its own undershoot at a sharp dry slot; WRF's qv_min floor, the
+        # one the RH lane gets from rh_to_mxrat1, is applied here and
+        # receipted (_PROGNOSTIC_QV_FLOOR_WRF_REFERENCE).
+        qv_h, prognostic_qv_floor = _floor_sh_vertical_undershoot(
+            qv_h, total_pressure_h)
     else:
         qv_h = _cap_stratospheric_qv(
             _saturation_mixing_ratio(
@@ -3070,7 +3225,7 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
     # pressure recurrence -- the vert_interp calls for QR/QC/QI/QS/QG/QH
     # are at module_initialize_real.F:1862-1982 and the recurrence at
     # :3908 -- because that recurrence loads TOTAL water (:3913-3916),
-    # not vapour.  The order is load-bearing, not cosmetic.
+    # not vapour.  The order is essential, not cosmetic.
     hydrometeors = {}
     hydrometeor_initialization: dict[str, object] = {}
     if decoded_species:
@@ -3842,7 +3997,8 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
         hydrometeor_initialization=hydrometeor_initialization,
         aerosol_initialization=aerosol_initialization,
         surface_moisture_floor=surface_qv_floor,
-        initial_perturbation=perturbation_receipt)
+        initial_perturbation=perturbation_receipt,
+        prognostic_moisture_floor=prognostic_qv_floor)
 
 
 def source_orography_from_catalog(catalog, grid, *,

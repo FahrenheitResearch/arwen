@@ -15,7 +15,7 @@ and the compile mode all match.  Those four are hashed into one
 ``comparability.key``, the key is inside the sealed body, and every
 comparison door in this module calls :func:`assert_comparable` first.
 Editing a capsule to force a match breaks the seal, so the two halves
-close each other: an honest capsule refuses the comparison by name, and a
+close each other: an accurate capsule refuses the comparison by name, and a
 doctored one refuses to be read at all.  That is the difference between
 discouraging an incomparable comparison and preventing it.
 
@@ -77,7 +77,7 @@ COURSE_ASSET_DIR = "speedrun"
 #: How the capsule is sealed.  A CONTENT seal: it makes tampering
 #: evident, and it is not a signature -- it proves the bytes have not
 #: moved since the run wrote them, not who wrote them.  Naming it
-#: "sha256-canonical-json" rather than "signature" is the honest label.
+#: "sha256-canonical-json" rather than "signature" is the accurate label.
 SEAL_ALGORITHM = "sha256-canonical-json"
 
 #: The two compile modes a course may declare.
@@ -169,7 +169,7 @@ def canonical_bytes(document: Any) -> bytes:
     Sorted keys, no insignificant whitespace, UTF-8, and ``\\n`` nowhere
     -- so a capsule written on Windows and a capsule written on Linux
     hash the same when they say the same thing.  A seal that moved when
-    a file crossed an operating system would refuse every honest record
+    a file crossed an operating system would refuse every accurate record
     that travelled.
     """
 

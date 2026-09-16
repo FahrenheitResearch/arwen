@@ -453,7 +453,7 @@ fn cmd_stations(options: &Options) -> Result<String, Box<dyn Error>> {
             if !lat.is_finite() || !lon.is_finite() || !elevation.is_finite() {
                 // A station the battery cannot place, or cannot compare
                 // against model terrain, is not a station the battery can
-                // screen. Dropping it here is honest; carrying a NaN
+                // screen. Dropping it here is accurate; carrying a NaN
                 // elevation into the seam is not.
                 continue;
             }

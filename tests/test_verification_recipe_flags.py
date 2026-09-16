@@ -5,7 +5,7 @@ fed to the parser that would receive it.  A flag the document invents, or a
 flag a command drops, fails here rather than in the hands of the first reader
 who tries to follow the recipe.
 
-Two of those flags are load-bearing rather than cosmetic, and the criterion
+Two of those flags are essential rather than cosmetic, and the criterion
 names why: without ``--start-time`` the comparator writes an empty
 ``forecast_hour`` for every row, and the acceptance band is keyed by lead;
 without ``--done-file`` the poll loop has no terminating condition at all.

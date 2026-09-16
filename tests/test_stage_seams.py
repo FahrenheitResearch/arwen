@@ -583,7 +583,7 @@ def test_the_simulation_stage_never_imports_the_fetch_machinery(tmp_path):
     instead of borrowing that one.
 
     ``urllib.request`` is deliberately NOT asserted absent, and the
-    honesty matters: :mod:`gpuwm.table_assets`, which the single-domain
+    accuracy matters: :mod:`gpuwm.table_assets`, which the single-domain
     runner imports for its Thompson-table check, imports it at module
     scope.  That is a pre-existing property of the runner, it predates
     this seam, and claiming otherwise here would be a test that passes

@@ -190,7 +190,7 @@ def spawn_land_state_from_parent(child_dc, parent_node, *, static_fields,
     ArWen keeps the half of ``fine_input_stream = 2`` it CAN have -- the
     own-grid statics (:func:`prepare_spawn_statics`) -- which is strictly
     more than ``input_from_file = .false.`` gives, and is exactly why the
-    masked interpolator is load-bearing rather than decorative: the child's
+    masked interpolator is essential rather than decorative: the child's
     land-use categories are its OWN, resolved at the child's dx, so they
     disagree with the parent's wherever finer terrain resolves a coast,
     lake or island the parent smoothed away.  Those disagreements are

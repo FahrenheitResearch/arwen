@@ -2253,7 +2253,7 @@ def bench(nx: int, ny: int, nz: int = _harness.DEFAULT_NZ, *,
     """Median ms/step for the decomposition, with a full sync on BOTH devices.
 
     Timed with ``time.perf_counter`` around a ``run`` that ends in a
-    ``deviceSynchronize`` on every device, which is the only honest barrier
+    ``deviceSynchronize`` on every device, which is the only accurate barrier
     when two devices are involved (a CUDA event is per-device).
 
     Setup is slow and the GPU is idle for all of it: ``make_state`` draws

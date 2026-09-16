@@ -230,11 +230,18 @@ def test_persisted_remote_job_retains_original_reviewed_source_identity_not_curr
     assert "source_config_sha256" not in rw._status(tmp_path)
 
 
-def test_large_selected_input_names_the_required_file(saved):
+def test_an_emitted_document_too_large_to_inline_names_its_bytes_and_the_bound(saved):
+    """The configuration is emitted into the manifest, so it cannot stream."""
     config, _ = saved
-    config.with_suffix(".d01-target.json").write_bytes(b"x" * (rp.MAX_SINGLE_BYTES + 1))
-    with pytest.raises(ValueError, match="saved map.d01-target.json.*automatic companion staging"):
-        bundle(saved)
+    config.write_bytes(config.read_bytes() + b"\n# " + b"x" * (rp.MAX_SINGLE_BYTES + 1))
+    with pytest.raises(ValueError) as failure:
+        rp.build_bundle(saved[1], workspace="/node/work", outdir="/node/work/new-output",
+            geog_root="/node/geography", expected_plan_sha256=sha(saved[1].read_bytes()),
+            expected_config_sha256=sha(config.read_bytes()))
+    message = str(failure.value)
+    assert config.name in message
+    assert f"{rp.MAX_SINGLE_BYTES:,} bytes" in message
+    assert "emitted into the staging manifest rather than streamed" in message
 
 
 def test_remote_wps_relocation_preserves_stable_ids_and_compact_slots(tmp_path):
@@ -317,7 +324,8 @@ def test_large_bundle_needs_verified_objects_and_captures_them_without_bulk_snap
     for item, source in zip(document["blobs"], selected):
         assert (directory / item["name"]).read_bytes() == source.read_bytes()
     value = {"memory": {"measured": True, "refuse": False}, "source_blobs": transfer.source_blobs(document),
-             "plan_sha256": "a", "config_sha256": "b", "input_sha256": "c"}
+             "plan_sha256": "a", "config_sha256": "b", "input_sha256": "c",
+             "entry": {"door": "run-plan", "document": str(directory / "plan.json"), "flags": []}}
     monkeypatch.setattr(rp, "review", lambda *_: (copy.deepcopy(value), saved_bundle, directory))
     observed = []
     monkeypatch.setattr(rw, "_launch_review", lambda *args: observed.append(args) or {"job": {"id": "fixture"}})
@@ -395,8 +403,13 @@ def test_required_missing_forcing_without_matching_fetch_is_not_dropped(saved):
         "vtable": "Vtable", "wps_namelist": "namelist.wps", "geog_root": "geo",
         "sfcp_to_sfcp": True, "output_title": "selected forcing"}
     config.write_text(emit_experiment_toml(raw))
-    with pytest.raises(ValueError, match="specifically-selected.grib.*not the exact output"):
+    with pytest.raises(ValueError) as failure:
         bundle(saved)
+    message = str(failure.value)
+    assert "specifically-selected.grib" in message
+    assert "acquisition recipe does not produce it on the node" in message
+    # The refusal names the declared source, never a model the door knows about.
+    assert "'gfs'" in message and "ERA5" not in message
 
 
 def test_worker_staging_is_idempotent_and_detects_changed_input(saved, tmp_path):
@@ -498,7 +511,8 @@ def test_connection_probes_sizing_once_and_review_reuses_the_existing_measuremen
 @pytest.mark.parametrize("measured,refused", [(False, False), (True, True)])
 def test_launch_retains_settings_when_memory_estimate_warns(monkeypatch, tmp_path, measured, refused):
     review = {"memory": {"measured": measured, "refuse": refused, "verdict": "native refusal"},
-              "plan_sha256": "a" * 64, "config_sha256": "b" * 64, "input_sha256": "c" * 64}
+              "plan_sha256": "a" * 64, "config_sha256": "b" * 64, "input_sha256": "c" * 64,
+              "entry": {"door": "run-plan", "document": str(tmp_path / "plan.json"), "flags": []}}
     monkeypatch.setattr(rp, "review", lambda *_: (review, {"files": [], "geog_root": None}, tmp_path))
     launched = []
     monkeypatch.setattr(rw, "_launch_review", lambda *args:
@@ -533,3 +547,65 @@ def test_review_cli_stages_then_reviews_without_starting(saved, monkeypatch, cap
     assert rc.remote_main(args) == 0
     assert [c["action"] for c in calls] == ["stage-plan", "review-plan"]
     assert json.loads(capsys.readouterr().out)["dry_run"] is True
+
+
+def _plan_with(saved, tmp_path, **options):
+    config, plan = saved
+    document = json.loads(plan.read_text())
+    document["run_options"].update(options)
+    plan.write_text(json.dumps(document), encoding="utf-8")
+    return config, plan
+
+
+def test_a_plan_run_option_is_relocated_onto_the_nodes_own_copy(saved, tmp_path):
+    """C-268: the review relocates a large authority per key instead of refusing."""
+    local = tmp_path / "local prepared"
+    local.mkdir()
+    config, plan = _plan_with(saved, tmp_path, prepared_root=str(local))
+    document = rp.build_bundle(plan, workspace="/node/work", outdir="/node/work/new-output",
+        geog_root="/node/geography", prepared_root="/node/prepared", wps_namelist="/node/prepared/namelist.wps",
+        device="1", expected_plan_sha256=sha(plan.read_bytes()),
+        expected_config_sha256=sha(config.read_bytes()))
+    remote = json.loads(contents(document, "plan.json"))
+    assert remote["run_options"]["prepared_root"] == "/node/prepared"
+    assert remote["run_options"]["wps_namelist"] == "/node/prepared/namelist.wps"
+    assert remote["run_options"]["device"] == "1"
+    fields = {row["field"]: row for row in document["rewrites"]}
+    assert fields["run_options.prepared_root"]["before"] == str(local)
+    assert fields["run_options.prepared_root"]["after"] == "/node/prepared"
+    assert fields["run_options.device"]["after"] == "1"
+
+
+def test_a_plan_run_option_with_no_node_copy_names_the_flag_that_relocates_it(saved, tmp_path):
+    local = tmp_path / "local prepared"
+    local.mkdir()
+    config, plan = _plan_with(saved, tmp_path, prepared_root=str(local))
+    with pytest.raises(ValueError) as failure:
+        bundle((config, plan))
+    message = str(failure.value)
+    assert "--prepared-root" in message and "64 KiB" in message
+    assert "remove that run option" in message
+
+
+def test_a_run_option_this_plans_route_does_not_carry_names_that_route(saved, tmp_path):
+    config, plan = saved
+    document = json.loads(plan.read_text())
+    document["route"] = "experiment"
+    plan.write_text(json.dumps(document), encoding="utf-8")
+    with pytest.raises(ValueError) as failure:
+        rp.build_bundle(plan, workspace="/node/work", outdir="/node/work/new-output",
+            geog_root="/node/geography", prepared_root="/node/prepared",
+            expected_plan_sha256=sha(plan.read_bytes()),
+            expected_config_sha256=sha(config.read_bytes()))
+    assert "'experiment' route" in str(failure.value) and "prepared_root" in str(failure.value)
+
+
+def test_the_review_plan_door_registers_the_options_it_relocates():
+    from gpuwm.cli import build_parser
+    options = build_parser().parse_args(["remote", "review-plan", "--host", "node", "--python", "/opt/python",
+        "--workspace", "/work", "--plan", "plan.json", "--outdir", "/node/out",
+        "--prepared-root", "/node/prepared", "--wps-namelist", "/node/prepared/namelist.wps",
+        "--restart", "/node/out/rst.npz", "--device", "1",
+        "--expected-plan-sha256", "a" * 64, "--expected-config-sha256", "b" * 64])
+    assert options.prepared_root == "/node/prepared" and options.restart == "/node/out/rst.npz"
+    assert options.wps_namelist == "/node/prepared/namelist.wps" and options.device == "1"

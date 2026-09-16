@@ -10,10 +10,10 @@ then died on ``ModuleNotFoundError: No module named 'shapefile'`` after a
 whole forecast and every DA cycle had already run.  ``huggingface_hub`` was
 the same defect, still open, at the time this file was written.
 
-*Declared but unimported* is the other half of the same dishonesty: a
+*Declared but unimported* is the other half of the same inaccurate: a
 requirement nobody consumes costs every user download bytes and install time
 for nothing, and it makes the table unreadable -- a reviewer cannot tell which
-lines are load-bearing.
+lines are essential.
 
 *In an extra when it should be in the base install* is the third, and it is
 the one that actually removes features from users.  ``pip install gpuwm`` must
@@ -124,6 +124,10 @@ _PROVIDERS: dict[str, tuple[str, ...]] = {
     # PATH from a bound checkout by mpas_cycle_bridge/portbind.py -- see
     # _OPTIONAL_BY_DESIGN for the full reason.
     "mpas_port": (),
+    "arwen_global": ("arwen-global",),
+    "cdsapi": ("cdsapi",),
+    "setuptools": ("setuptools",),
+    "xdist": ("pytest-xdist",),
 }
 
 #: Modules this project deliberately never declares, because a *declared*
@@ -173,6 +177,15 @@ _GENERATED_SOURCE_CONSUMERS: dict[str, tuple[str, str, str]] = {
         "nothing. No AST walk can see that, and without this row the "
         "gpuwm-data pin reads as a declared dependency nobody consumes.",
     ),
+    "xdist": (
+        "tools/battery/no_silent_deselection.py",
+        "pytest-xdist",
+        "The suite runs under `pytest -n` in the battery and in publish.yml, "
+        "and pytest loads xdist through its plugin entry point, so no file "
+        "imports it by name. The deselection guard names the plugin because "
+        "its controller process holds no collected items, which is the one "
+        "place the dependency is consumed in source.",
+    ),
 }
 
 #: Modules that are genuinely optional at run time: the importing code has a
@@ -205,6 +218,22 @@ _OPTIONAL_BY_DESIGN: dict[str, str] = {
         "the binding itself refuses first, with PortBindingError naming "
         "what is missing. Declaring it would declare a package pip cannot "
         "install."
+    ),
+    "arwen_global": (
+        "The local DA doors read the separately published arwen-global "
+        "distribution's observation streams only when it is installed: "
+        "gpuwm/local_da_observations.py asks importlib.util.find_spec for it "
+        "before importing, and gpuwm/local_da_fetch.py imports it inside the "
+        "neutral-stream route branch that only exists for a stream that "
+        "inspection registered. Without the package the doors list no such "
+        "route and refuse nothing."
+    ),
+    "setuptools": (
+        "tools/promote_prepared_release.py enumerates the expected wheel "
+        "contents with setuptools' own package finder, inside the function "
+        "that does it. The controller runs only in publish.yml, which "
+        "installs setuptools>=77 explicitly beside twine before calling it; "
+        "a user's install never reaches that function."
     ),
 }
 

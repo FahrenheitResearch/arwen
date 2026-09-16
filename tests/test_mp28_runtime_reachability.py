@@ -1433,7 +1433,7 @@ def test_the_mp28_restart_identity_fails_closed_on_the_ccn_table(tmp_path):
 
 @requires_gpu
 def test_an_mp28_restart_refuses_a_different_ccn_activation_table():
-    """The table identity is LOAD-BEARING, not decorative.
+    """The table identity is ESSENTIAL, not decorative.
 
     Writing the digests into the header only helps if the reader compares
     them.  This mutates the stored CCN activation SHA-256, recomputes the
@@ -1743,40 +1743,32 @@ def test_the_ccn_activation_blob_is_present_in_the_built_package_data():
         "inclusion against an absent file")
 
 
-def test_the_offline_child_lane_refuses_the_edges_it_has_no_leg_for():
-    """mp=28 is IN the lane for same-scheme, OUT for every mixed edge.
+def test_the_offline_child_lane_converts_every_ported_edge():
+    """mp=28 is IN the lane for same-scheme AND for every mixed edge.
 
     Recorded here as one assertion rather than left implicit, because the
     failure mode this whole package exists to remove is a scheme that is
-    half-supported by accident.
+    half-supported by accident: the offline conversion is the online
+    nest edge's own contract and kernel, so the admitted cross-scheme set
+    is derived from PORTED_MP_PHYSICS.
     """
     from gpuwm.offline_child import (OFFLINE_CHILD_MP_PHYSICS,
-                                     _CROSS_SCHEME_REFUSED_MP_PHYSICS)
+                                     PARENT_SCHEME_CONTRACT,
+                                     offline_cross_scheme_refusal)
     from gpuwm.offline_child_run import _CAPABILITIES
     from gpuwm.core import microphysics_transition as mt
 
     assert 28 in OFFLINE_CHILD_MP_PHYSICS
-    # Re-measured with audit R-017: 0, 1 and 9 joined the same-scheme
-    # admission set when the lane learned their transported inventories.
     assert _CAPABILITIES["same_scheme_mp_physics"] == [
-        0, 1, 6, 8, 9, 10, 18, 28, 50]
-    assert _CAPABILITIES["cross_scheme_transitions"] == []
-    # The offline refusal set MIRRORS the online one by DERIVATION, so
-    # ratifying mp=16's and mp=28's entry closures emptied it here too.
-    assert (set(_CROSS_SCHEME_REFUSED_MP_PHYSICS)
-            == set(mt.UNVALIDATED_MIXED_EDGE_SELECTORS) == set())
-    assert 16 not in OFFLINE_CHILD_MP_PHYSICS
-    # mp=50 no longer mirrors mp=16's shape on either count: the offline
-    # reader learned P3's transported set (same-scheme readable like 28),
-    # AND its closure refusal left the derived mirror when the online
-    # closure was ratified.  What still refuses a P3 cross-scheme edge
-    # offline is the lane's own named gate
-    # (offline_child._P3_OFFLINE_EDGE_UNBUILT_MP_PHYSICS, follow-up
-    # offline-p3-edge-closure), pinned with the contract in
-    # test_microphysics_transition.py and exercised end to end in
-    # test_offline_child.py.
-    assert 50 in OFFLINE_CHILD_MP_PHYSICS
-    assert 50 not in _CROSS_SCHEME_REFUSED_MP_PHYSICS
+        0, 1, 6, 8, 9, 10, 16, 18, 28, 50]
+    assert _CAPABILITIES["cross_scheme_transitions"]["mp_physics"] == sorted(
+        PARENT_SCHEME_CONTRACT)
+    assert PARENT_SCHEME_CONTRACT == (
+        OFFLINE_CHILD_MP_PHYSICS & frozenset(mt.PORTED_MP_PHYSICS))
+    assert {16, 28, 50} <= PARENT_SCHEME_CONTRACT
+    for other in sorted(PARENT_SCHEME_CONTRACT - {28}):
+        assert offline_cross_scheme_refusal(28, other) is None
+        assert offline_cross_scheme_refusal(other, 28) is None
 
 
 # ---------------------------------------------------------------------------

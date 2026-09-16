@@ -112,10 +112,11 @@ def read_manifest(path: pathlib.Path) -> list[str]:
 # ---------------------------------------------------------------------------
 
 
-def _module_name(path: pathlib.Path) -> str:
+def _module_name(path: pathlib.Path,
+                 root: pathlib.Path | None = None) -> str:
     """The dotted module name a product file is importable as."""
 
-    rel = path.relative_to(REPO_ROOT)
+    rel = path.relative_to(REPO_ROOT if root is None else root)
     parts = list(rel.with_suffix("").parts)
     if parts and parts[-1] == "__init__":
         parts.pop()
@@ -185,22 +186,36 @@ def _parse(path: pathlib.Path) -> ast.Module | None:
         return None
 
 
-def build_index() -> tuple[dict[str, str], dict[str, set[str]]]:
-    """``(module name -> product path, product path -> {test paths})``."""
+def build_index(root: pathlib.Path | None = None
+                ) -> tuple[dict[str, str], dict[str, set[str]]]:
+    """``(module name -> product path, product path -> {test paths})``.
 
+    ``root`` is the tree to walk, defaulting to this repository.  It is a
+    parameter because the two properties that can only be measured on a
+    REAL on-disk walk -- a product module deleted underneath the index,
+    and a test file that does not parse -- were measured by writing those
+    files into the working tree and deleting them again.  Under ``-n``
+    that is shared mutable state: every other worker walking ``tests/``
+    at that instant sees a file that does not parse and refuses, or sees
+    a probe module that is gone by the time it is opened.  Pointing the
+    walk at a tree of the test's own keeps the measurement real and the
+    mutation private.
+    """
+
+    root = REPO_ROOT if root is None else pathlib.Path(root)
     modules: dict[str, str] = {}
     for tree_name in PRODUCT_TREES:
-        for path in sorted((REPO_ROOT / tree_name).rglob("*.py")):
-            rel = path.relative_to(REPO_ROOT).as_posix()
+        for path in sorted((root / tree_name).rglob("*.py")):
+            rel = path.relative_to(root).as_posix()
             if "/rescued-tools/" in rel or rel.startswith("tilestream/test_"):
                 continue
-            modules[_module_name(path)] = rel
+            modules[_module_name(path, root)] = rel
 
     importers: dict[str, set[str]] = {}
     unreadable: list[str] = []
     for tree_name in TEST_TREES:
-        for path in sorted((REPO_ROOT / tree_name).rglob("test_*.py")):
-            rel = path.relative_to(REPO_ROOT).as_posix()
+        for path in sorted((root / tree_name).rglob("test_*.py")):
+            rel = path.relative_to(root).as_posix()
             if "/rescued-tools/" in rel:
                 continue
             tree = _parse(path)
@@ -279,11 +294,19 @@ def _is_test_path(rel: str) -> bool:
 
 def select(touched: list[str],
            importers: dict[str, set[str]] | None = None,
+           root: pathlib.Path | None = None,
            ) -> dict[str, list[str]]:
-    """``{test file: [reasons]}`` for a list of repository-relative paths."""
+    """``{test file: [reasons]}`` for a list of repository-relative paths.
 
+    ``root`` travels with :func:`build_index`: the existence questions
+    below ("is this touched test file still there", "does this gate
+    exist") have to be asked of the same tree the index was built from,
+    or a selection made against one tree is filtered by another.
+    """
+
+    root = REPO_ROOT if root is None else pathlib.Path(root)
     if importers is None:
-        _modules, importers = build_index()
+        _modules, importers = build_index(root)
 
     selected: dict[str, list[str]] = {}
 
@@ -292,12 +315,13 @@ def select(touched: list[str],
         if reason not in reasons:
             reasons.append(reason)
 
-    for entry in read_manifest(ALWAYS_LIST):
+    for entry in read_manifest(root / "tools" / "battery"
+                               / "always_files.txt"):
         add(entry, "always (repo-scanning gate)")
 
     for rel in touched:
         if _is_test_path(rel):
-            if (REPO_ROOT / rel).is_file():
+            if (root / rel).is_file():
                 add(rel, "its own file was touched")
             continue
         if not rel.endswith(".py"):
@@ -314,7 +338,7 @@ def select(touched: list[str],
             for suffix, gates in _NON_PYTHON_GATES.items():
                 if rel.endswith(suffix):
                     for gate in gates:
-                        if (REPO_ROOT / gate).is_file():
+                        if (root / gate).is_file():
                             add(gate, f"reads {suffix} bytes; {rel} touched")
             continue
         for test_path in sorted(importers.get(rel, ())):

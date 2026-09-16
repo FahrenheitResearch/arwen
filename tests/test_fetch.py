@@ -1717,7 +1717,7 @@ def test_refetch_hours_extension_still_resumes(tmp_path, monkeypatch,
 
 def test_gfs_interrupt_manifests_verified_prefix_and_resumes(
         tmp_path, monkeypatch, capsys):
-    """Ctrl-C is an orderly, byte-honest outcome: the completed prefix
+    """Ctrl-C is an orderly, byte-accurate outcome: the completed prefix
     is digest-bound, an in-flight .part is named but not blessed, and the
     printed command resumes without re-downloading good bytes."""
     def interrupted_download(url, destination, **kwargs):
@@ -2375,9 +2375,9 @@ def test_fetch_hrrr_wait_polls_nomads_and_transfers_from_the_mirror(
     assert by_name["hrrr.t05z.wrfnatf01.grib2"] == "nomads"
 
 
-def test_fetch_hrrr_wait_times_out_honestly_and_resumes(tmp_path,
+def test_fetch_hrrr_wait_times_out_accurately_and_resumes(tmp_path,
                                                         monkeypatch):
-    """The honest timeout: the complete f00 prefix is manifested (so a
+    """The accurate timeout: the complete f00 prefix is manifested (so a
     re-run RESUMES rather than refusing at the pre-manifest-interrupt
     gate), and the error says exactly what was and was not fetched."""
     schedule = {

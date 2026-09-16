@@ -17,7 +17,7 @@ cells the background had left clear, so the analysis held ``q`` up to
 6.4 g/kg with ``N`` still at the background's exact zero -- for one
 member, **100%** of the in-mask offenders were background-clear cells:
 21 332 rain, 37 592 snow, 27 548 graupel.  Morrison's slope math then
-does what it honestly must:
+does what it accurately must:
 
     lam = (six_c * N / q)**(1/3)  ->  0
     ilam = 1/lam                  ->  +inf

@@ -139,7 +139,7 @@ def test_a_v1_pack_reads_with_no_censor_plane_at_all(tmp_path):
     """The do-no-harm side of the reader.
 
     ``None`` is not "all measured": it is "the reasons were never
-    recorded", which is the only honest reading of a v1 pack.
+    recorded", which is the only accurate reading of a v1 pack.
     """
 
     path = tmp_path / "v1.pack"

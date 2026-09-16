@@ -1153,7 +1153,7 @@ def test_timestep_one_initializes_open_water_and_seaice_state(params):
 def test_config_sf_surface_physics(tmp_path):
     """The sf_surface_physics key is plumbed, and slab (1) is refused.
 
-    ``sf_sfclay_physics = 91`` in both TOMLs is load-bearing, not garnish:
+    ``sf_sfclay_physics = 91`` in both TOMLs is essential, not garnish:
     573939c moved the driver's LSM/surface-layer coupling refusal to
     ``load_config``, and this test's original bare ``sf_surface_physics=2``
     TOML was the configuration that refusal exists for.  WRF v4.6.1

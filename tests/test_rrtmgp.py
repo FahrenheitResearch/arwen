@@ -3188,7 +3188,7 @@ def test_hydrometeor_paths_incloud_scaling_matches_wrf_division():
 def _chunk_invariance_case():
     """A cloudy, horizontally heterogeneous state whose McICA masks matter.
 
-    Heterogeneous surface pressure is load-bearing: the subcolumn generator
+    Heterogeneous surface pressure is essential: the subcolumn generator
     seeds KISS from the fractional Pa of each column's bottom four layer
     pressures (gpuwm/core/kernels/rrtmgp_mcica.cu:36-45), so a uniform
     column stack would give every column the same mask and could not detect

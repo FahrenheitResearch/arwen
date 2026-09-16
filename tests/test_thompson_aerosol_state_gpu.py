@@ -907,7 +907,7 @@ def test_state_finalize_rounds_every_real4_subexpression_that_feeds_a_double():
     ASSUMED.  Widening is measured on NVRTC 12.8, 12.9 AND 13.0 (all sm_120
     RTX 5090 hosts; the 13.0 point is driver 610.74, 2026-08-03, on the
     reference 5090 box), which is what proved the ``.cu`` pins
-    load-bearing.  Exact agreement is measured only at NVRTC 13.1 (RTX 4090
+    essential.  Exact agreement is measured only at NVRTC 13.1 (RTX 4090
     sm_89, driver 590.48.01, 2026-08-03, arwen-stress-4090): there all
     three spellings agree bitwise with the Fortran-faithful answer, 1 FP32
     ULP away from the widened one.  So the split below is ``>= (13, 1)``,
@@ -919,7 +919,7 @@ def test_state_finalize_rounds_every_real4_subexpression_that_feeds_a_double():
     This test fired its own "re-measure before relaxing the pins"
     instruction on 13.1, and the re-measurement's verdict is recorded per
     toolchain below: on a widening NVRTC the unpinned spellings must
-    produce the WIDENED answer (the pins are load-bearing); on a
+    produce the WIDENED answer (the pins are essential); on a
     non-widening NVRTC they must produce the WRF answer EXACTLY (the pins
     are belt and suspenders -- they pin behaviour the toolchain now
     guarantees only by default, and they STAY, because the same wheel
@@ -1022,12 +1022,12 @@ def test_state_finalize_rounds_every_real4_subexpression_that_feeds_a_double():
             f"gpuwm/core/kernels/thompson_aerosol_state.cu")
         print("NVRTC %s does not widen the unpinned spellings: all three "
               "agree with the REAL(4) answer bitwise; the .cu pins are "
-              "belt and suspenders on this toolchain and load-bearing on "
+              "belt and suspenders on this toolchain and essential on "
               "the toolchains measured to widen (12.8, 12.9, 13.0)"
               % (".".join(str(p) for p in nvrtc_version),))
     else:
         # Widening measured at 12.8, 12.9 and 13.0 -- everything below the
-        # 13.1 boundary above.  The pins are load-bearing here.
+        # 13.1 boundary above.  The pins are essential here.
         assert (F(inlined) == widened_answer
                 and F(via_named) == widened_answer), (
             f"NVRTC {nvrtc_version} no longer widens the unpinned "
@@ -1136,7 +1136,7 @@ def test_terminal_clamp_block_member_by_member_against_wrf():
     assert nu_c_wrf != nu_c_if_converted, (
         "this state no longer separates the two spellings of :3976")
 
-    # -- :3976 ACCUMULATION, and :3976 LOWER bound (honestly scoped). -------
+    # -- :3976 ACCUMULATION, and :3976 LOWER bound (accurately scoped). -------
     # ncten reaches the clamp multiplied by DT: 1e6 + 2e5*10 = 3e6.
     _, accumulated, _, _ = run([1.0e-4], [1.0e6], zero[:1], zero[:1],
                                [2.0e5], zero[:1], zero[:1], [1.0], 10.0)

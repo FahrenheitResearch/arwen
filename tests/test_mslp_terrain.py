@@ -35,6 +35,7 @@ import numpy as np
 import pytest
 
 from gpuwm.verify import metrics
+from conftest import requires_wrf_rust
 
 
 # Standard-atmosphere constants, spelled as the reduction spells them
@@ -194,6 +195,7 @@ def _write_synthetic_wrfout(path: Path, terrain: np.ndarray, nz: int = 8):
         writer.write_frame("1974-04-04_12:00:00", frame)
 
 
+@requires_wrf_rust
 def test_wrf_diagnostics_carries_raw_and_display_mslp(tmp_path):
     """_wrf_diagnostics keeps the frozen scored 'mslp' and adds
     'mslp_display', which is exactly the terrain-keyed treatment of it."""
@@ -224,6 +226,7 @@ def test_wrf_diagnostics_carries_raw_and_display_mslp(tmp_path):
     assert np.isfinite(diagnostics["mslp"]).all()
 
 
+@requires_wrf_rust
 def test_the_display_twin_is_computed_but_never_drawn_here(tmp_path):
     """The smoothing survives the render-law move; the drawing does not.
 

@@ -3,7 +3,7 @@
 The bit-exact end-to-end proof lives in ``test_gate --graph-only``: fourteen
 rungs, real geography, ring and shadow, N = 1 / 3 / 8, every digest compared
 against a monolithic run, plus the two negative controls that show the cache
-key and the scalar replay are load-bearing.  This module tests the pieces the
+key and the scalar replay are essential.  This module tests the pieces the
 gate cannot isolate, and every test here is written so that it FAILS if the
 mechanism is switched off or subtly weakened rather than merely absent.
 

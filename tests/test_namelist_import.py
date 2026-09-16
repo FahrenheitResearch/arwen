@@ -885,7 +885,7 @@ def test_rejects_unmapped_scheme(tmp_path):
     # mp_physics = 8 stood here while Thompson was env-gated; it imports
     # first-class now (see test_thompson_maps_without_substitution_or_
     # environment).  Lin (mp 2) has no gpuwm implementation and keeps this
-    # rejection path honest.
+    # rejection path accurate.
     inp = INPUT_TEXT.replace("mp_physics = 55, 55", "mp_physics = 2, 2")
     with pytest.raises(ValueError, match="no ratified gpuwm mapping"):
         import_namelists(*_pair(tmp_path, inp=inp))

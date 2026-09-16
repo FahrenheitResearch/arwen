@@ -22,6 +22,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Mapping, Sequence
 
+from gpuwm import first_products
 from gpuwm.ensemble.config import EnsembleConfig
 from gpuwm.ensemble.manifest import (
     ENSEMBLE_MANIFEST_NAME, ENSEMBLE_MANIFEST_SCHEMA, first_incomplete_member,
@@ -156,6 +157,28 @@ def _check_compatible(existing, cfg: EnsembleConfig, seeds, path, *,
               "config that produced this manifest.")
 
 
+def member_render_plan(cfg: EnsembleConfig, member_dir: Path) -> dict:
+    """The render plan for one member, in the four keys every door uses.
+
+    A member writes its frames into its own directory: ``run_member``
+    hands that directory straight to ``integrate_prepared_case``
+    (``gpuwm/ensemble/member.py:292``), which is also the writer that
+    raises the landing hook this render is armed on
+    (``gpuwm/runtime.py:4095`` for the analysis frame at t = 0, and
+    ``gpuwm/runtime.py:4289`` for every later one).  So "the run",
+    "where the frames are" and "where the pictures go" are that
+    directory and a ``png`` tree inside it.
+
+    Spelled as the dict :func:`gpuwm.go_cli.render_command` composes
+    from, so a member's early pictures and any later render of the same
+    member are composed from one description of what to draw.
+    """
+
+    return {"run": member_dir, "wrfout_dir": member_dir,
+            "render": member_dir / "png",
+            "render_products": cfg.render_products}
+
+
 def run_ensemble(cfg: EnsembleConfig, ens_root: str | Path, *,
                  members: Sequence[int] | None = None,
                  run_seconds: float | None = None,
@@ -172,6 +195,13 @@ def run_ensemble(cfg: EnsembleConfig, ens_root: str | Path, *,
     from the base config as before.  It is a per-member mapping and not a
     single path because the whole point of the analysis is that the
     members differ.
+
+    A member whose ensemble named ``render_products`` draws its first
+    committed frame while that member is still integrating, through
+    :func:`gpuwm.first_products.arm` -- the same function, with the
+    same answer to "did this run ask for pictures", that every other
+    forecast door arms with.  Naming no products is the default and
+    leaves this engine exactly as it was.
     """
     root = Path(ens_root)
     manifest_path = prepare_ensemble(cfg, root, run_seconds=run_seconds)
@@ -229,13 +259,39 @@ def run_ensemble(cfg: EnsembleConfig, ens_root: str | Path, *,
                     "from the base config instead would be a cycling run "
                     "that quietly stopped cycling.")
         started = time.perf_counter()
+
+        def _ready(receipt, index=index):
+            _emit(on_event, {"event": "member-first-products",
+                             "index": index, "receipt": receipt})
+
+        def _declined(code, message, index=index, **fields):
+            _emit(on_event, {"event": "warning", "index": index,
+                             "code": code, "message": message, **fields})
+
+        # The same two steps every other door takes, taken by the same
+        # function: `arm` answers "did this member ask for pictures"
+        # and returns what the landing is armed with, or None.  A
+        # member draws its analysis frame while it is still
+        # integrating instead of leaving a finished ensemble with no
+        # picture in it.
+        first_frame = first_products.arm(
+            member_render_plan(cfg, member_dir),
+            report=_ready, warn=_declined)
+        # Handed to the runner only when there IS a render, so a runner
+        # that never accepted this argument -- every one written before
+        # the early render reached this engine -- is called exactly as
+        # it was.  The member runner's own parameter is the one it
+        # already had (gpuwm/ensemble/member.py:161).
+        hook = ({} if first_frame is None
+                else {"progress_callback": first_products.FrameHook(
+                    first_frame)})
         try:
             outcome = runner(
                 base_config=cfg.base_config, member_dir=member_dir,
                 index=index, seed=int(record["seed"]),
                 perturbation=cfg.perturbation,
                 perturbation_options=dict(cfg.perturbation_options),
-                run_seconds=run_seconds, restart=restart)
+                run_seconds=run_seconds, restart=restart, **hook)
         except BaseException as error:
             record["status"] = "FAILED"
             record["wall_seconds"] = time.perf_counter() - started
@@ -249,6 +305,18 @@ def run_ensemble(cfg: EnsembleConfig, ens_root: str | Path, *,
             _emit(on_event, {"event": "member-failed", "index": index,
                              "error": str(error)})
             raise
+        finally:
+            if first_frame is not None:
+                # Collected on BOTH paths, before this member is left
+                # behind.  The render is a daemon thread: a process
+                # exiting on the last member, or on this member's
+                # failure, would otherwise walk out on a render still
+                # holding its scratch directory open.  A member whose
+                # pictures are still being written is also not a member
+                # a reader can be told is finished.  Nothing here can
+                # fail the run: wait() reports a wedged render as a
+                # warning and returns.
+                first_frame.wait()
 
         record["status"] = "DONE"
         # Recorded, not inferred: "this member started from an analysis"

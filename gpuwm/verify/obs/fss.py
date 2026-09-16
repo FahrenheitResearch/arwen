@@ -28,7 +28,7 @@ With an all-true mask, an all-true scored region and the ``edge`` boundary
 below, this reduces term for term to ``1 - field_metrics.fss_distance``;
 ``tests/test_obs_fss.py`` pins that identity rather than asserting it here.
 
-One boundary property worth stating because it is load-bearing and easy to
+One boundary property worth stating because it is essential and easy to
 get quietly wrong.  :func:`gpuwm.verify.field_metrics.boxcar` pads by edge
 extension, which replicates the outermost row outward -- i.e. it assumes the
 field continues past the domain.  For a model-vs-model comparison that is

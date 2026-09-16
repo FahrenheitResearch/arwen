@@ -464,7 +464,7 @@ def test_a_surface_hotter_than_the_planck_table_is_clamped_not_crashed(
 
 def test_the_signature_assertions_fail_when_the_longwave_is_stubbed(
         monkeypatch) -> None:
-    """The physics checks above must be load-bearing, not decorative.
+    """The physics checks above must be essential, not decorative.
 
     Two mutations, each aimed at the assertion it should break.  Both
     leave the transfer running and every flux finite and in bounds, so a
@@ -979,7 +979,7 @@ def test_a_classic_wrf_namelist_imports_rrtm_natively(tmp_path) -> None:
     assert radiation_substitutions == [], radiation_substitutions
 
 
-def test_the_registry_row_is_honest_about_the_missing_oracle() -> None:
+def test_the_registry_row_is_accurate_about_the_missing_oracle() -> None:
     registry = json.loads(
         (MODEL / "gpuwm" / "physics_registry_v2.json").read_text(
             encoding="utf-8"))

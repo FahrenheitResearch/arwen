@@ -45,7 +45,7 @@ from gpuwm.obs.target_grid import GridMismatchError, TargetGrid
 #: The contract string.  Consumers pin this exact value.
 GOES_GRID_SCHEMA = "gpuwm-obs.goes-grid.v1"
 
-#: What this lane can honestly claim.  Stronger wording than the radar
+#: What this lane can accurately claim.  Stronger wording than the radar
 #: product's, for a reason that is not modesty: the radar error model is a
 #: documented parameterization, and this one is a set of constants nobody
 #: has calibrated (see :class:`gpuwm.obs.goes_cwp.CwpErrorModel`).  No
@@ -57,7 +57,7 @@ GOES_GRID_STATUS = "EXPERIMENTAL_UNCALIBRATED_ERROR_MODEL"
 _MASS = ("south_north", "west_east")
 
 #: Every variable this schema defines, with the **dimension tuple** it must
-#: carry, its storage type, and its units.  The tuple is the load-bearing
+#: carry, its storage type, and its units.  The tuple is the essential
 #: part for exactly the reason :mod:`gpuwm.obs.radar_grid` gives: a
 #: transposed field on a square grid has the right shape and the wrong
 #: values, and only the tuple tells them apart.

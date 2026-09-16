@@ -3,7 +3,7 @@
 CPU-only by construction (no CuPy import), so the whole file runs
 without a device.
 
-The load-bearing properties of a nudging scheme are not its typical
+The essential properties of a nudging scheme are not its typical
 output but its edges: that it does nothing when the forecast is already
 right, that its bounds hold against inputs chosen to break them, and
 that the branch most likely to hurt is off unless someone asks for it.

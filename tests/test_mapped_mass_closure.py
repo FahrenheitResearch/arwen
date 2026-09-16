@@ -218,7 +218,7 @@ def test_the_mass_flux_accumulator_allocates_once_and_never_per_substep():
 
     ``tests/test_physics_allocation_inventory.py`` records two device
     allocations in this module that are not drawn from any workspace, and a
-    recorded row is only honest while its bound is true.  The bound claimed
+    recorded row is only accurate while its bound is true.  The bound claimed
     there is *one 8-byte scalar per accumulator object* -- which is a claim
     about ``add``, not about ``__init__``: ``add`` runs once per acoustic
     substep of every final RK stage, so if it allocated, the row would scale

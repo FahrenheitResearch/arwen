@@ -18,7 +18,7 @@ On a Linux host with gfortran:
 ```
 
 The build compiles at `-O2 -fno-tree-vectorize`, and that second flag is
-load-bearing.  From GCC 12 on, `-O2` implies `-ftree-vectorize`, and a
+essential.  From GCC 12 on, `-O2` implies `-ftree-vectorize`, and a
 vectorised loop containing `exp`/`pow`/`log` links glibc's libmvec SIMD entry
 points instead of the scalar routines.  libmvec is not bit-identical to scalar
 libm, and which loops vectorise depends on the cost model, which depends on how

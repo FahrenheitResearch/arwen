@@ -195,7 +195,7 @@ def leg1_perturbation(halo: int) -> list[str]:
         # agree is then a coin toss weighted by gap/ulp, and a gate this
         # size wins the toss.  Summing gap/ulp over the domain gives the
         # expected number of flips WITHOUT waiting for one, which is the
-        # only honest way to extrapolate from 1.5 M cells to 54 M.
+        # only accurate way to extrapolate from 1.5 M cells to 54 M.
         gaps = {}
         flips = 0
         expected = 0.0
@@ -335,7 +335,7 @@ def float64_flip_forecast(background) -> list[str]:
     so the expected number of flips over a domain is the SUM of that ratio
     -- computable exactly, from the two increments before the cast, without
     waiting for a flip to happen.  This function computes it at the gate's
-    size and extrapolates by cell count, which is the only honest way to get
+    size and extrapolates by cell count, which is the only accurate way to get
     from 1.5 M cells to the 54 M of an operational domain.
 
     Read it as: the float64 arm agreeing above is a property of the gate's

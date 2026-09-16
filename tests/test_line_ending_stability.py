@@ -245,7 +245,9 @@ _CRLF_DEBT = frozenset({
     "tools/inflow_fetch_meter.py",
     "tools/obs_battery_score.py",
     "tools/obs_fetch_asos.py",
-    "tools/obs_fetch_mrms.py",
+    # tools/obs_fetch_mrms.py left this list when the nowcast lane rewrote it
+    # onto gpuwm.obs.mrms_fetch: the rewrite wrote LF, so the debt is settled
+    # rather than waived.
     "tools/obs_fetch_stage4.py",
     "tools/obs_goes_grid_build.py",
     "tools/obs_radar_grid_build.py",
@@ -362,7 +364,7 @@ def test_no_authored_file_gains_a_carriage_return():
 @pytest.mark.skipif(not _is_checkout(),
                     reason="line-ending stability is a checkout property")
 def test_the_crlf_debt_does_not_rot():
-    """The debt list may only shrink, and only honestly.
+    """The debt list may only shrink, and only accurately.
 
     An entry that has been fixed or deleted has to be struck off in the
     same commit, otherwise the list slowly becomes a description of a

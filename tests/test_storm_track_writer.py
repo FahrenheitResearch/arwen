@@ -6,7 +6,7 @@ one -- WRF-ARW writes no track file; its moving nest prints a centre to
 tracker, a separate post-processing program.  So what these tests pin is
 not a transcription but a CONTRACT: the columns are where the header
 says, the units are what the header says, the clock is the valid time,
-and a row is either honest or absent.
+and a row is either accurate or absent.
 
 The properties that actually matter, each a section below:
 
@@ -670,7 +670,7 @@ def test_a_pressure_tracker_keeps_every_column_it_had():
 
 
 def test_the_grid_centre_is_the_projections_own_centre():
-    """THE LOAD-BEARING CLAIM, checked against the real projection rather
+    """THE ESSENTIAL CLAIM, checked against the real projection rather
     than against this file's own arithmetic.
 
     A ProjectedGrid built without known_x/known_y registers itself

@@ -129,7 +129,7 @@ def _at_rest(cfg):
     """The same zeroed base state every sub-domain buffer is built from.
 
     Using ``driver.make_tile_state`` for the monolithic reference as well is
-    what keeps the comparison honest: the arrays OUTSIDE the persisted
+    what keeps the comparison accurate: the arrays OUTSIDE the persisted
     inventory -- the acoustic and tendency bundles -- are then at rest on both
     sides, so a digest difference can only come from the carriers the seam is
     responsible for.

@@ -327,7 +327,7 @@ fn run(args: Args) -> Result<(), String> {
         let (values, title, units, scale) = match built {
             Ok(built) => built,
             Err(reason) => {
-                // An honest skip, not a failure: a single-radar file has
+                // An accurate skip, not a failure: a single-radar file has
                 // no overlap to draw and saying so is the answer.
                 println!("SKIPPED {product} {reason}");
                 continue;

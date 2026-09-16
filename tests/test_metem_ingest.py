@@ -7,15 +7,18 @@ import os
 import numpy as np
 import pytest
 
-from gpuwm import netcdf_bridge
 from gpuwm.ingest.metem import (
     MetgridRefusal, read_met_em, parse_met_em_name, met_em_series, check_met_em_series,
 )
 from gpuwm.static.lambert import LambertGrid
+from conftest import requires_netcdf_bridge
 
 nc = pytest.importorskip("netCDF4")
-pytestmark = pytest.mark.skipif(netcdf_bridge.find_netcdf_bin() is None,
-                              reason="rw_netcdf is not built")
+# The gate is the CAPABILITY, not the file: every case here reads a WRF
+# met_em through the bridge, and a bridge that is present and too old to
+# read a character array failed all 34 of them with a decode error rather
+# than skipping.  `find_netcdf_bin() is None` could not see that.
+pytestmark = requires_netcdf_bridge
 
 
 def write_case(path, *, time="2021-06-01_00:00:00", rh_units="%", rh=55.0,

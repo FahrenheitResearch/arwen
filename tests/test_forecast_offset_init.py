@@ -6,7 +6,7 @@ f174..f240 window had to integrate 240 hours to reach it.  There is no
 product reason for that -- a GFS f174 instantaneous record has the same
 shape as an f000 one, and WPS/real initializes from forecast leads
 routinely -- so ``start_time = cycle + K`` is admitted for any K the
-fetched series carries, with one warning line and honest receipts.
+fetched series carries, with one warning line and accurate receipts.
 
 Two hour vocabularies appear throughout and are never interchanged:
 SOURCE leads (f000, f018, f174) name NOAA products, and MODEL forcing

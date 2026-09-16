@@ -104,7 +104,7 @@ untouched and their suite is green.
   white-noise input: the coefficient-space projector is exact (1e-17),
   but realizing the parts through `irfft2` loses the anti-Hermitian `ky`
   content of the `kx = {0, Nyquist}` columns.  `damp_divergence`'s
-  receipt recomputes realized divergence, so receipts stay honest.
+  receipt recomputes realized divergence, so receipts stay accurate.
   Pin-owner item if tighter separation is ever needed.
 - A tapered nudge's outer-edge increment is the full relaxed raw
   mismatch (the taper preserves its operand at the edge); the receipt

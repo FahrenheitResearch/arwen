@@ -14,9 +14,9 @@ at all -- and two of the project's most-read pages point at it anyway:
 
 Both instructions worked from a git checkout and from nowhere else.  A
 reader who followed the documented install line got a refusal, and the
-refusal was the honest one -- ``gpuwm/verify/cases/_repo_config.py``
+refusal was the accurate one -- ``gpuwm/verify/cases/_repo_config.py``
 already said "``configs/`` is not a Python package and ships in no wheel"
-and offered ``--config``/``GPUWM_CONFIGS_ROOT``.  An honest refusal is
+and offered ``--config``/``GPUWM_CONFIGS_ROOT``.  An accurate refusal is
 still a headline claim nobody can reach.
 
 Where the files land is not incidental.  ``_repo_config`` resolves a

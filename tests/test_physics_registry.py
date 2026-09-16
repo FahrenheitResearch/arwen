@@ -1096,7 +1096,7 @@ def test_tree_route_admits_morrison_to_nssl_only_with_matrix_policy():
     }
 
 
-def test_registry_advertises_every_mixed_edge_honestly():
+def test_registry_advertises_every_mixed_edge_accurately():
     """Every ordered pair of transported-moment schemes, one row each.
 
     The count is n*(n-1) over the nine schemes whose mixed edges the
@@ -1904,7 +1904,7 @@ def test_mp28_publishes_its_measured_column_residuals_not_a_clean_claim():
     """The gate is not green, and the registry has to say so in numbers.
 
     ``implemented-unverified`` says "column-oracle-measured".  It does not say
-    "column-oracle-CLEAN", and the difference is the whole honesty of the
+    "column-oracle-CLEAN", and the difference is the whole accuracy of the
     label, so the measurement lives on the option where a user reads it
     rather than only in a test file.  The published partition must cover every
     committed fixture exactly once: a fixture that quietly leaves the residual
@@ -2734,7 +2734,7 @@ def test_mp28_published_residuals_still_equal_a_live_adapter_measurement():
     gate's declared bound, registry against the fixture deck on disk.  All of
     those stay green while the whole set drifts away from what the port
     actually computes, because a transcription is only as current as the last
-    person who retyped it -- and this row's entire honesty rests on the
+    person who retyped it -- and this row's entire accuracy rests on the
     numbers being the real ones.  So this runs the nineteen fixtures through
     the shipped adapter on the device and rebuilds the published partition
     from the result.
@@ -2802,7 +2802,7 @@ def test_mp28_published_residuals_still_equal_a_live_adapter_measurement():
         expected = published_residual.get(scenario) or published_carved.get(
             scenario)
         if expected is None:
-            # THE THIRD CLASS, and it became load-bearing at the 1.4.1 merge.
+            # THE THIRD CLASS, and it became essential at the 1.4.1 merge.
             # A fixture can also be published as clean-only-under-the-
             # near-cancellation-bound, which is a METRIC change at one level
             # rather than a relative carve-out and so has never lived in

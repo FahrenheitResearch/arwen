@@ -8,7 +8,7 @@ an ensemble MEAN is smooth because averaging is a spatial filter, not
 because its members are smooth, and reporting the mean's object count as
 the model's object count would be a measurement of the averaging.
 
-The load-bearing test here is therefore not a recovery test.  It is a
+The essential test here is therefore not a recovery test.  It is a
 matched pair:
 
 * members that disagree about where their cells are must produce a mean

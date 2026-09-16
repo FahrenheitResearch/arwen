@@ -111,7 +111,7 @@ def main() -> int:
             raise SystemExit(
                 f"leg {leg}: reduced fine grid {fine_max.shape} != 3 km grid "
                 f"{coarse.shape}; the runs do not share a footprint and no "
-                "honest FSS comparison is possible")
+                "accurate FSS comparison is possible")
         fine_mean = block_reduce(fine, factor, "mean")
 
         record: dict = {

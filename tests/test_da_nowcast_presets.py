@@ -70,9 +70,20 @@ class TestFullPreset:
             resolve_da_preset(args)
 
     def test_subtracting_an_explicitly_enabled_stream_is_refused(self):
-        args = parse("--da", "full", "--without", "dealias", "--dealias")
+        # Re-anchored off --dealias, which no longer exists as an opt-in:
+        # dealiasing is on for every run, so its being true states nothing
+        # and --without dealias simply drops it.  Reflectivity is still a
+        # stream a caller turns on, so it still contradicts.
+        args = parse("--da", "full", "--without", "reflectivity",
+                     "--reflectivity-analysis")
         with pytest.raises(FrontDoorError, match="state one intention"):
             resolve_da_preset(args)
+
+    def test_full_without_dealias_drops_it_without_contradicting(self):
+        args = parse("--da", "full", "--without", "surface",
+                     "--without", "cwp", "--without", "dealias")
+        resolve_da_preset(args)
+        assert args.dealias is False
 
 
 class TestVrPreset:
@@ -81,12 +92,20 @@ class TestVrPreset:
         resolve_da_preset(args)
         assert args.reflectivity_analysis is False
         assert args.clear_air_analysis is False
-        assert args.dealias is False
         assert args.hydrometeors is False
+        # Dealiasing is not a stream, it is how the velocity stream is
+        # prepared, and "radial velocity alone" must not quietly mean
+        # "radial velocity with a coherent fold left in it".
+        assert args.dealias is True
+
+    def test_vr_takes_the_off_switch_without_contradicting(self):
+        args = parse("--da", "vr", "--no-dealias")
+        resolve_da_preset(args)
+        assert args.dealias is False
 
     def test_vr_refuses_stream_flags(self):
-        args = parse("--da", "vr", "--dealias")
-        with pytest.raises(FrontDoorError, match="--dealias"):
+        args = parse("--da", "vr", "--reflectivity-analysis")
+        with pytest.raises(FrontDoorError, match="--reflectivity-analysis"):
             resolve_da_preset(args)
 
     def test_vr_refuses_without(self):
@@ -111,3 +130,33 @@ class TestCustomStaysLegacy:
 
 def test_vr_is_not_subtractable():
     assert "vr" not in DA_SUBTRACTABLE
+
+
+class TestTheOldSpellingStillParses:
+    """`--dealias` names the default instead of dying on it.
+
+    Unfolding is on for every run now, so the flag enables nothing.  It
+    stays because invocations that spell it out live outside this door
+    (evidence/da-demo/full-stack/run.sh passes it), and `unrecognized
+    arguments` is a worse answer than "you asked for what already
+    happens".  Only asking for it AND subtracting it is a contradiction.
+    """
+
+    def test_the_old_spelling_is_accepted_and_states_the_default(self):
+        assert parse("--dealias").dealias is True
+
+    def test_whichever_spelling_comes_last_wins(self):
+        assert parse("--dealias", "--no-dealias").dealias is False
+        assert parse("--no-dealias", "--dealias").dealias is True
+
+    def test_stating_it_and_subtracting_it_is_refused(self):
+        args = parse("--da", "full", "--without", "surface",
+                     "--without", "cwp", "--without", "dealias", "--dealias")
+        with pytest.raises(FrontDoorError, match="state one intention"):
+            resolve_da_preset(args)
+
+    def test_the_default_alone_never_contradicts_the_subtraction(self):
+        args = parse("--da", "full", "--without", "surface",
+                     "--without", "cwp", "--without", "dealias")
+        resolve_da_preset(args)
+        assert args.dealias is False

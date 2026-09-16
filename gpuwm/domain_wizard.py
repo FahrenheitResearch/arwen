@@ -15,7 +15,7 @@ and nest-registration math is the existing :mod:`gpuwm.static.projection`
 (lambert/mercator/polar, auto-selected from the point latitude), and the
 memory arithmetic is the existing preflight estimator called in-process.
 
-Honesty contract (terrain/static story): gpuwm builds static fields from a
+Accuracy contract (terrain/static story): gpuwm builds static fields from a
 locally staged NCAR WPS_GEOG tree (nine fixed dataset directories -- see
 ``GEOG_DATASETS``); ``gpuwm fetch-geog`` downloads and stages it.
 Forcing data for the
@@ -24,7 +24,7 @@ GRIB1 route, i.e. ERA5 today.  GFS/HRRR downloads (``gpuwm fetch``) feed
 the ``rw-wps``/``gpuwm-wrf-init`` native initialization front door, which
 consumes the same ``[experiment]``/``[[domain]]`` tables but not
 ``[case_data]``.  The wizard therefore emits ``[case_data]`` only for
-``--source era5`` and prints the exact honest next step for every source
+``--source era5`` and prints the exact accurate next step for every source
 instead of pretending a pipeline exists.
 
 Sizing conventions (all documented, none silent):
@@ -225,7 +225,7 @@ _LADDERS_DEEPEST_FIRST = ("12-3-1-0.5", "12-3-1", "12-3")
 #: opt-in: a deeper preset, ``auto``, or --root-dx/--chain.
 #:
 #: The argparse default is ``None``, not this value, and that is
-#: load-bearing: --root-dx/--chain are refused WITH --ladder, and a
+#: essential: --root-dx/--chain are refused WITH --ladder, and a
 #: reader who typed only the custom form must not be refused for
 #: "combining" it with a flag they never passed.  ``domain_main``
 #: resolves ``None`` to this constant (bare) or to the custom form's
@@ -510,7 +510,7 @@ POINT_FIT_SCOPES = (POINT_FIT_EXTENT_SCOPE, POINT_FIT_PROJECTION_SCOPE)
 #: edge sitting on the very singularity the README says is refused, with
 #: no comment.  `gpuwm fetch` accepted it and downloaded 89 MB.  The
 #: same 2-cell clearance the domain refusal enforces, expressed as
-#: degrees of meridian at the root dx, keeps the suggestion honest.
+#: degrees of meridian at the root dx, keeps the suggestion accurate.
 def pole_clearance_deg(root_dx_m: float = ROOT_DX_M) -> float:
     """The forcing box's pole clearance in degrees, at this root dx."""
 
@@ -2550,14 +2550,14 @@ GRAY_ZONE_DX_KM = 1.0
 
 
 def gray_zone_advisory(chain_km, shared: dict) -> list[str]:
-    """One honest sentence when a domain lands in the PBL gray zone.
+    """One accurate sentence when a domain lands in the PBL gray zone.
 
     Advisory, never a refusal: sub-kilometre nests are exactly what this
     product is for, and people will run them.  But a 1-D column PBL
     scheme assumes the whole boundary-layer eddy spectrum is
     subgrid-scale, and below about 1 km the largest eddies are partly
     resolved, so the scheme and the dynamics do the same transport
-    twice.  Saying so once, in the file and on stdout, is the honest
+    twice.  Saying so once, in the file and on stdout, is the accurate
     thing; refusing would be wrong, and silence would be worse.
 
     THE RECIPE CARRIES ``mix_isotropic = 1``, and that is a correctness
@@ -2639,7 +2639,7 @@ CUMULUS_CONVECTION_PERMITTING_DX_KM = 4.0
 #: convection is neither fully subgrid (the closure assumption every
 #: cumulus scheme makes) nor well resolved (the convection-permitting
 #: assumption) -- the genuine gray zone, where running the scheme is
-#: common operational practice and still worth one honest sentence.
+#: common operational practice and still worth one accurate sentence.
 CUMULUS_GRAY_ZONE_TOP_DX_KM = 10.0
 
 
@@ -2696,7 +2696,7 @@ def cumulus_retired_headline(profile: str | None, root_dx_km: float, *,
 
 def cumulus_gray_zone_advisory(chain_km, cu_physics_by_domain
                                ) -> list[str]:
-    """Honest sentences when an active cumulus scheme meets fine grids.
+    """Accurate sentences when an active cumulus scheme meets fine grids.
 
     Advisory, never a refusal -- the same contract, channel and tone as
     :func:`gray_zone_advisory`: the full sentence lives in the emitted
@@ -3616,7 +3616,7 @@ def render_config(*, name: str, start_time: datetime, hours: int,
         # emit a file that refuses to load -- and writing one that loads
         # would advertise a download this ArWen cannot make.  The
         # acquisition route is stated as a comment instead, which is the
-        # honest shape until the fetch door grows the route.
+        # accurate shape until the fetch door grows the route.
         parts.append(
             "# NO [fetch] TABLE: `gpuwm fetch` has no download route for\n"
             "# this source yet, so its bytes are staged by hand (see\n"
@@ -4195,7 +4195,7 @@ def fit_ladder(*, ladder: str | None = None, free_bytes: int, hours: int,
             f"{smallest_uncovered}")
     if envelope > budget:
         # Say WHY it does not fit.  "your card is too small" is what the
-        # bare number reads as, and at the minimum layout the honest
+        # bare number reads as, and at the minimum layout the accurate
         # answer is usually that the grid-independent terms dominate --
         # but ONLY when they actually do.  The old wording asserted
         # "so a smaller grid cannot help" beside a printed 0%, which is
@@ -4904,7 +4904,7 @@ def gray_zone_headline(chain_km, shared: dict) -> list[str]:
     """The gray-zone advisory's first clause: the finding, no mechanism.
 
     The full :func:`gray_zone_advisory` sentence is four printed lines
-    of correct and load-bearing science, and it is what the emitted
+    of correct and essential science, and it is what the emitted
     config carries in its header comment -- permanently, where it is
     read next to the settings it is about.  On stdout it was competing
     with the one line the reader needed, so stdout gets the finding and
@@ -4970,7 +4970,7 @@ def _profile_help_route_note() -> str:
     were refused unconditionally on ``--source gfs`` -- which is the
     DEFAULT source -- so a reader choosing from the list had a 1-in-4
     chance of picking something that could never work, and learned it
-    only from the refusal.  The refusal itself is honest and precise;
+    only from the refusal.  The refusal itself is accurate and precise;
     the advertisement was not.
 
     Empty when every listed profile is preparable on every source,
@@ -5358,7 +5358,7 @@ def domain_main(args, *, sizing_budget: SizingBudget | None = None) -> int:
             f"f{start_hour + args.hours:03d}, past {args.source}'s declared "
             f"f{horizon:03d} horizon; shorten the window, start earlier, or "
             "choose a source with a longer forecast")
-    from gpuwm.fetch import validate_fetch_hints
+    from gpuwm.fetch import era5_combined_name, validate_fetch_hints
     acquisition = {"source": args.source, "cycle": args.cycle,
                    "hours": args.hours, "forecast_start_hour": start_hour}
     for key in ("member", "cadence", "era5_product", "era5_provider"):
@@ -5751,7 +5751,7 @@ def domain_main(args, *, sizing_budget: SizingBudget | None = None) -> int:
     if emitted_fetch_hints is not None:
         validate_fetch_hints(emitted_fetch_hints, source=str(out))
 
-    # [case_data] only where the config-driven front door can honestly
+    # [case_data] only where the config-driven front door can accurately
     # consume the fetched data (the native GRIB1 = ERA5 route).
     case_data = None
     vtable_path = None
@@ -5762,10 +5762,18 @@ def domain_main(args, *, sizing_budget: SizingBudget | None = None) -> int:
         else:
             vtable_path = out.parent / _PACKAGED_VTABLE.name
             vtable_text = _PACKAGED_VTABLE.name
+        # The name the FETCH publishes, not a literal.  The CDS provider
+        # hands back GRIB1 and the keyless ARCO reader hands back NetCDF,
+        # so a config that spelled one name was a config the other
+        # provider's own printed step 1 could not satisfy: the download
+        # ran, wrote its file, and `gpuwm go` refused because
+        # [case_data].forcing named a file [fetch].out does not produce.
+        # Read from the emitted table so the two cannot drift.
+        combined = era5_combined_name(fetch_hints.get("era5_provider"))
         forcing = ([_posix(path) for path in supplied_forcing]
                    if supplied_forcing
                    else [_relative_or_absolute(
-                       data_dir / "era5-combined.grib", out.parent)])
+                       data_dir / combined, out.parent)])
         case_data = {
             "forcing": forcing,
             "vtable": vtable_text,
@@ -6088,7 +6096,7 @@ def domain_main(args, *, sizing_budget: SizingBudget | None = None) -> int:
         for note in cumulus_gray_zone_headline(chain_km, cu_by_domain):
             print(f"advisory: {note}")
 
-    # ---- gpuwm check, where it can honestly run ----------------------
+    # ---- gpuwm check, where it can accurately run ----------------------
     #
     # Run it BEFORE the next-steps block rather than after.  The block
     # is the last thing printed, on purpose: the field exhibit's whole
@@ -6404,15 +6412,16 @@ def register_cli(subparsers) -> None:
                         help="ensemble trajectory member; defaults to the route's control")
     parser.add_argument("--forecast-start-hour", type=int, default=None,
                         metavar="K",
-                        help="gfs/gdas/hrrr: initialize the run from the "
-                             "cycle's f{K} FORECAST lead instead of its "
-                             "analysis, so start_time = cycle + K h and "
-                             "the boundaries come from f{K+i}.  This is "
-                             "how a window deep in a forecast (say "
-                             "f174..f240) is reached without integrating "
-                             "from f000.  The initial condition is then "
-                             "itself a K-hour forecast, and every receipt "
-                             "says so")
+                        help="initialize the run from the cycle's f{K} "
+                             "FORECAST lead instead of its analysis, so "
+                             "start_time = cycle + K h and the boundaries "
+                             "come from f{K+i}.  This is how a window deep "
+                             "in a forecast (say f174..f240) is reached "
+                             "without integrating from f000.  Every source "
+                             "whose registry row publishes forecast leads "
+                             "takes it; a row that declares none refuses it "
+                             "by name.  The initial condition is then itself "
+                             "a K-hour forecast, and every receipt says so")
     parser.add_argument("--out", type=Path, required=True, metavar="TOML",
                         help="emitted experiment TOML path")
     parser.add_argument("--data-dir", default=None, metavar="DIR",

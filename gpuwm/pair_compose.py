@@ -56,7 +56,7 @@ def _layout_tokens(path: Path) -> tuple[str, str] | None:
 
     The nested layout puts a frame at ``<domain>/<product>/<valid-day>/``
     and nowhere else, so the leaf folder being a readable valid day (or
-    the honest ``undated`` bucket) is what identifies the tree.  A flat
+    the accurate ``undated`` bucket) is what identifies the tree.  A flat
     directory, or any other tree, answers ``None`` and the key is read
     from the filename alone, exactly as it always was.
 

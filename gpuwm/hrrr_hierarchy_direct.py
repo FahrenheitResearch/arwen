@@ -1298,7 +1298,7 @@ def main(argv=None) -> int:
     }, indent=2, sort_keys=True, allow_nan=False))
     corridor = payload.get("statics_corridor")
     if isinstance(corridor, dict):
-        # Size honesty at the door, in the GFS door's own words: the
+        # Size accuracy at the door, in the GFS door's own words: the
         # corridor is parent-extent at child resolution, and its cost is
         # stated where it is paid.
         for label, entry in sorted(corridor.get("domains", {}).items()):

@@ -192,7 +192,7 @@ python -c "import numpy; h=numpy.load('alps_static.npz')['HGT_M']; print(h.shape
 Every run writes a receipt under `cache_root/receipts/` naming the source,
 the vertical datum, the tiles fetched and the cell count replaced.
 
-## The honest limitation: land cover is United States only
+## The accurate limitation: land cover is United States only
 
 There is no global land-cover source wired, so **outside the United States a
 high-resolution run replaces terrain and nothing else**. Land use, soil,

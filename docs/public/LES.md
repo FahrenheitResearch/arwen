@@ -412,7 +412,7 @@ These are limits of the current build, not opinions about LES.
   idealized CBL case runs `mix_isotropic = 1`, where the two are the same
   number — the WRF oracle lane measured `XKMH == XKMV` at all 589,824
   points, maximum difference exactly 0 — so **every idealized result on
-  this page is unaffected by D8**. It was load-bearing on the nested
+  this page is unaffected by D8**. It was essential on the nested
   250 m child while that child ran `mix_isotropic = 0`: at dx 250 m
   against dz 17 m the pairing is roughly two orders of magnitude in the
   explicit diffusion number, and taking WRF's is unstable. **Since

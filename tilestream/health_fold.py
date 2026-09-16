@@ -79,7 +79,7 @@ class TileHealthFold:
 
     #: Deliberate breakages, for the negative controls.  Each disables
     #: exactly one of the three properties the module docstring calls
-    #: load-bearing, and each MUST make the fold differ from the resident
+    #: essential, and each MUST make the fold differ from the resident
     #: reduction -- a control that cannot fire proves nothing.
     #:
     #:   ``"halo"``       fold the whole compute window, halo included

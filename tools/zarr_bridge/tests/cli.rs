@@ -105,15 +105,127 @@ fn extraction_refuses_to_clobber_an_existing_output() {
     assert_eq!(fs::read(output).unwrap(), b"existing user data");
 }
 
+impl Fixture {
+    fn set_attr(&self, array: &str, name: &str, value: Value) {
+        let path = self.0.join(format!("store/{array}/.zattrs"));
+        let mut attrs: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        attrs[name] = value;
+        write_json(&path, attrs);
+    }
+
+    fn set_coverage(&self, attrs: Value) {
+        write_json(&self.0.join("store/.zattrs"), attrs);
+    }
+}
+
+/// THE ARCO DOOR'S FIRST BYTE.  Google's public ERA5 Zarr publishes its
+/// `level` coordinate as `Hectopascal(hPa)`: the unit's written-out name
+/// with its symbol in brackets.  Compared as a string against the declared
+/// `hPa` it disagreed, and `gpuwm fetch --source era5 --era5-provider arco
+/// --retrieve` downloaded nothing at all -- it refused before the first
+/// chunk read, on every request, for every date.
 #[test]
-fn inconsistent_units_refuse_before_creating_output() {
+fn a_name_bracket_symbol_unit_spelling_is_read_as_its_symbol() {
     let fixture = Fixture::new();
-    let path = fixture.0.join("store/temperature/.zattrs");
-    let mut attrs: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-    attrs["units"] = json!("Pa");
-    write_json(&path, attrs);
+    fixture.set_attr("level", "units", json!("Hectopascal(hPa)"));
+    fixture.set_attr("temperature", "units", json!("Kelvin(K)"));
+    let result = fixture.extract();
+    assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+}
+
+/// A unit that is ITSELF bracketed keeps being read whole: `(0-1)` is the
+/// spelling ERA5 gives fractional fields and the dimensionless row carries
+/// it verbatim, so reducing it to its interior must not be what admits it.
+#[test]
+fn a_wholly_bracketed_unit_is_still_matched_as_the_whole_string() {
+    let fixture = Fixture::new();
+    fixture.set_attr("temperature", "units", json!("(0-1)"));
     let result = fixture.extract();
     assert!(!result.status.success());
-    assert!(String::from_utf8_lossy(&result.stderr).contains("disagree with declared units"));
+    let stderr = String::from_utf8_lossy(&result.stderr);
+    assert!(stderr.contains("\"(0-1)\""), "{stderr}");
+    assert!(stderr.contains("\"K\""), "{stderr}");
+}
+
+/// The refusal that remains names BOTH strings and the way out.
+#[test]
+fn a_unit_no_spelling_matches_names_both_strings_and_the_way_out() {
+    let fixture = Fixture::new();
+    fixture.set_attr("temperature", "units", json!("Pa"));
+    let result = fixture.extract();
+    assert!(!result.status.success());
+    let stderr = String::from_utf8_lossy(&result.stderr);
+    for expected in ["\"Pa\"", "\"K\"", "kelvin", "Name(symbol)"] {
+        assert!(stderr.contains(expected), "{expected} missing from {stderr}");
+    }
     assert!(!fixture.0.join("forcing.nc").exists());
+}
+
+/// ONE AUTHORITY FOR BOTH BOUNDARIES.  The notice used to name the
+/// finalized stop while the refusal named coverage running to the
+/// preliminary one, so the same store answered "how far does this go" with
+/// two different dates and neither said what kind of boundary it was.
+#[test]
+fn the_preliminary_notice_names_the_finalized_and_the_accepted_boundary() {
+    let fixture = Fixture::new();
+    fixture.set_coverage(json!({
+        "valid_time_start": "2019-01-01",
+        "valid_time_stop": "2019-12-31",
+        "valid_time_stop_era5t": "2020-01-01"}));
+    let result = fixture.extract();
+    assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+    let stderr = String::from_utf8_lossy(&result.stderr);
+    for expected in [
+        "2 requested time(s)",
+        "2019-12-31",
+        "valid_time_stop)",
+        "2020-01-01",
+        "valid_time_stop_era5t",
+        "preliminary ERA5T",
+    ] {
+        assert!(stderr.contains(expected), "{expected} missing from {stderr}");
+    }
+}
+
+#[test]
+fn a_time_past_the_preliminary_boundary_is_refused_by_that_boundary_and_its_reason() {
+    let fixture = Fixture::new();
+    fixture.set_coverage(json!({
+        "valid_time_start": "2019-01-01",
+        "valid_time_stop": "2019-11-30",
+        "valid_time_stop_era5t": "2019-12-31"}));
+    let result = fixture.extract();
+    assert!(!result.status.success());
+    let stderr = String::from_utf8_lossy(&result.stderr);
+    for expected in [
+        "2020-01-01 00:00:00",
+        "2019-01-01 (valid_time_start)",
+        "2019-12-31 (valid_time_stop_era5t)",
+        "last hour of the preliminary ERA5T stream",
+        "2019-11-30 (valid_time_stop)",
+        "Request a time inside that window",
+    ] {
+        assert!(stderr.contains(expected), "{expected} missing from {stderr}");
+    }
+    assert!(!fixture.0.join("forcing.nc").exists());
+}
+
+/// A store with no preliminary stream refuses on the finalized boundary and
+/// says that is what it is, so the two cases are never read as one.
+#[test]
+fn a_store_without_an_era5t_stream_refuses_on_the_finalized_boundary() {
+    let fixture = Fixture::new();
+    fixture.set_coverage(json!({
+        "valid_time_start": "2019-01-01",
+        "valid_time_stop": "2019-12-31"}));
+    let result = fixture.extract();
+    assert!(!result.status.success());
+    let stderr = String::from_utf8_lossy(&result.stderr);
+    for expected in [
+        "2019-12-31 (valid_time_stop)",
+        "last hour of the finalized reanalysis",
+        "declares no preliminary ERA5T stream past it",
+    ] {
+        assert!(stderr.contains(expected), "{expected} missing from {stderr}");
+    }
 }

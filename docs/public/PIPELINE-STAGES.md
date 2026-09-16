@@ -101,7 +101,7 @@ an explicit field/level/cadence contract instead of a built-in one:
 `--descriptor`, `--mapping`, `--composition`, and
 `--author-input-manifest` to write the hash manifest that binds your
 files. `gpuwm prep --show-source mapped` prints what that route
-declares and, honestly, what it does not certify.
+declares and, accurately, what it does not certify.
 
 > **Known limit, stated plainly.** Preparing an arbitrary source with
 > your own mapping works. **Running the result does not yet.** The

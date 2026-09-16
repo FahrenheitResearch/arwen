@@ -113,7 +113,7 @@ def test_the_low_temperature_cnuc_hack_reads_the_raw_staggered_w():
     """``module_mp_nssl_2mom.F:10122`` reads ``w``, not ``wvel``.
 
     NUCOND uses vertical velocity in two different shapes and the
-    difference is load-bearing::
+    difference is essential::
 
         :10122   IF ( qx(mgs,lc) > 10.*qxmin(lc) .and.
                       w(igs(mgs),jgs,kgs(mgs)) > 2.0 ) THEN

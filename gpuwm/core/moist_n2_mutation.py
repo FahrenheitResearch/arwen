@@ -55,7 +55,7 @@ WHAT THE MUTATION DOES NOT TOUCH, DELIBERATELY
 The engagement diagnostic (``n2_moist_frac``, ``sat_frac``,
 ``cloud_frac``) is a HOST-side re-evaluation of WRF's predicate over the
 state, not a readback of the branch the kernel took.  It is not mutated
-and must not be: under the mutation it keeps reporting, honestly, what the
+and must not be: under the mutation it keeps reporting, accurately, what the
 state the mutant produced looks like.  So the mutation moves those numbers
 only through the trajectory -- a suppressed saturated branch gives a
 different BN2, hence different K, hence different mixing, hence a

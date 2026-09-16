@@ -536,7 +536,7 @@ def test_po_cup_is_zeroed_on_rejected_columns(shal):
     """The perturbed ``cup_env_clev``'s 13th actual is ``po_cup`` itself and
     the routine zeroes its outputs before the ierr guard, so a rejected
     column loses the pressure column it built at :345.  Nothing reads it
-    afterwards, so this is invisible in WRF and load-bearing in a capture."""
+    afterwards, so this is invisible in WRF and essential in a capture."""
     bad = _want_i(shal, "ierr_5") != 0
     assert np.all(_want_l(shal, "po_cupx")[bad] == 0.0)
     assert np.any(_want_l(shal, "po_cup0")[bad] != 0.0)
@@ -606,7 +606,7 @@ def test_cup_gf_sh_end_to_end_indices_exact(shal, field):
 
 
 def test_the_tgammaf_residual_reaches_the_shallow_tendencies(shal):
-    """The unpinned run is the honest statement of what a modelled
+    """The unpinned run is the accurate statement of what a modelled
     ``tgammaf`` costs the shallow arm, and the answer is not a rounding
     footnote either.
 

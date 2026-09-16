@@ -17,7 +17,7 @@ file, the same shape the rolling verifier uses.
 
 Style is the ArWen product map and is NOT reinvented here: the basemap
 class, the vendored Natural Earth and US Census county assets, the
-reflectivity scale, the credit-band geometry and the honesty banners all
+reflectivity scale, the credit-band geometry and the accuracy banners all
 come from :mod:`tools.da_nowcast_render`.  The one thing added is a
 diverging radial-velocity scale, because that module renders
 reflectivity and this one has to render velocity.
@@ -474,7 +474,51 @@ class Level2Gallery:
                   "gates are ABSENT from both panels.",
                   "wave1")
 
-    def wave1(self, single_path: Path, multi_path: Path):
+    def engine_products(self, obs_path: Path, *, engine: str) -> tuple[list, str]:
+        """Draw the five native observation products; ``(written, reason)``.
+
+        The product tier for these files, finally driven from a door.
+        ``rw_obsgrid`` renders column-max Z, coverage depth, distinct-radar
+        overlap, lowest-tilt radial velocity and per-radar contribution
+        from the same ``gpuwm-obs.radar-grid.v1`` file these figures read,
+        and nothing in this tree ever called it.
+
+        ``reason`` is empty when the engine drew; otherwise it is the
+        resolution failure, in the engine resolver's own words, and the
+        comparison sheets below are then the named fallback.
+        """
+
+        from gpuwm import rustwx_lanes
+
+        try:
+            resolved, why = rustwx_lanes.resolve_obsgrid_engine(engine)
+        except RuntimeError as refusal:
+            return [], str(refusal).split("[[explain]]")[0].strip()
+        if resolved != "rust":
+            return [], f"--engine {engine}: {why}"
+        binary = rustwx_lanes.find_obsgrid_bin()
+        written, failures, _skipped, _sites = rustwx_lanes.run_obsgrid_renderer(
+            binary, Path(obs_path), out_dir=self.out,
+            products=",".join(rustwx_lanes.OBSGRID_PRODUCTS))
+        for failure in failures:
+            print(f"da_level2_render: {failure}", flush=True)
+        # A DELIVERY, so it leaves a receipt.  These five PNGs are the
+        # product tier for this file, and without a render-summary.json
+        # beside them the desktop and remote surfaces that read that
+        # file see nothing for a run that drew them.  Flat layout: the
+        # gallery is one directory by construction, not a nested tree.
+        if written:
+            from gpuwm import render_layout, render_receipts
+
+            render_receipts.deliver(
+                root=self.out, engine="rust",
+                requested_spec=",".join(rustwx_lanes.OBSGRID_PRODUCTS),
+                written=written, failures=failures,
+                layout=render_layout.FLAT, inputs=(Path(obs_path),))
+        return written, ""
+
+    def wave1(self, single_path: Path, multi_path: Path,
+              *, engine: str = "auto"):
         # DEPRECATED FALLBACK, under the project render law (
         # 2026-08-06).  Every field these four figures show is drawn
         # natively by ``rw_obsgrid`` from the same
@@ -490,11 +534,20 @@ class Level2Gallery:
         # wave asks is inherently a comparison, so the sheet is the
         # product.  Render the panels with the binary and compose them
         # the day there is a compositor; do not add a fifth figure here.
-        print("da_level2_render: WARNING -- wave-1 panels are the render "
-              "law's DEPRECATED FALLBACK; the product tier for these same "
-              "files is  rw_obsgrid --obs FILE.nc --out-dir OUT  and this "
-              "module keeps them only because its figures are multi-panel "
-              "comparisons.", flush=True)
+        # The engine's own five products first, when it resolves.  The
+        # sheets below are COMPOSITIONS -- side-by-side and per-radar
+        # grids the single-panel engine cannot lay out -- so they stay;
+        # what changes is that the fallback sentence is printed only
+        # when the fallback is actually all there is.
+        drawn, reason = self.engine_products(multi_path, engine=engine)
+        if drawn:
+            print(f"da_level2_render: {len(drawn)} native observation "
+                  f"product(s) from rw_obsgrid in {self.out}", flush=True)
+        else:
+            print(f"da_level2_render: WARNING -- wave-1 panels are the "
+                  f"render law's DEPRECATED FALLBACK because the native "
+                  f"observation engine was not available: {reason}",
+                  flush=True)
         single = self.open_obs(single_path)
         multi = self.open_obs(multi_path)
         self.fig_coverage_pair(single, multi)
@@ -787,6 +840,13 @@ def main(argv=None) -> int:
                         help="the watcher exits once this arm has scored "
                              "(or the deadline passes)")
     parser.add_argument("--dpi", type=int, default=150)
+    parser.add_argument("--engine", default="auto",
+                        choices=("auto", "rust", "matplotlib"),
+                        help="which engine draws the single-panel "
+                             "observation products (default auto: "
+                             "rw_obsgrid, or a named refusal). The "
+                             "comparison sheets are compositions and are "
+                             "drawn here either way")
     parser.add_argument("--status", type=Path, default=None)
     args = parser.parse_args(argv)
 
@@ -795,7 +855,7 @@ def main(argv=None) -> int:
     status = args.status or (args.out / "_watcher-status.json")
 
     if args.single_obs and args.multi_obs:
-        gallery.wave1(args.single_obs, args.multi_obs)
+        gallery.wave1(args.single_obs, args.multi_obs, engine=args.engine)
 
     scores = (gallery.arm_scores(args.run_dir) if args.run_dir else {})
     if scores:

@@ -419,7 +419,7 @@ def test_the_committed_namelists_are_the_case_the_document_describes():
     assert "-fno-tree-vectorize" in novec
     assert vec != novec
 
-    # The sounding is unsheared, which is the design's load-bearing choice.
+    # The sounding is unsheared, which is the design's essential choice.
     rows = [line.split() for line in
             (RECEIPTS / "input_sounding").read_text(
                 encoding="utf-8").splitlines()[1:] if line.strip()]

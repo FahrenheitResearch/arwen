@@ -1,6 +1,6 @@
 """The European radar composite route: wrapper, descriptor, source class.
 
-Three layers, each tested where it can be tested honestly:
+Three layers, each tested where it can be tested accurately:
 
 * the front-door descriptor and the argument construction, against the
   wrapper alone -- no binary, no socket;

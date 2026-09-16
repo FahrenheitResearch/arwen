@@ -143,7 +143,7 @@ def test_the_per_thread_local_frame_is_small(unit, capsys):
     """``local_size_bytes`` per kernel, read from the loaded module.
 
     This is the driver's own number, not a guess off the PTX: NVRTC leaves the
-    decision to ptxas, so the only honest place to read it is the function
+    decision to ptxas, so the only accurate place to read it is the function
     attribute after the module is loaded.
     """
     try:

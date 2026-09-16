@@ -49,7 +49,7 @@ replays stale work does not crash: it produces a plausible forecast.
    negative control, where it is caught by 33 differing carriers at maxabs
    2.0e+04.  MEASURED, not assumed -- and note the consequence for the
    cadence key: under sweep keying the sweep index already separates every
-   step, so the cadence half of the key only becomes load-bearing under
+   step, so the cadence half of the key only becomes essential under
    ``reuse="run"``.
 
 3. **Stale HOST state.**  A replay executes device work only.  Every Python
@@ -717,7 +717,7 @@ class GraphStepper:
                                                           solar hour angle is
                                                           baked in)
 
-        So the honest rule is that ``reuse="run"`` is safe for exactly as
+        So the accurate rule is that ``reuse="run"`` is safe for exactly as
         long as no radiation-due step is inside the run, which is not a
         property a config can promise.  The default stays ``"sweep"``; a
         caller who knows the run is short and radiation is not due can take

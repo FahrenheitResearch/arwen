@@ -213,20 +213,31 @@ def _radar_sites(args) -> int:
 
 
 def _radar_grid(args) -> int:
-    from gpuwm.obs.dealias import SCIPY_REMEDY, DealiasParams, scipy_available
+    from gpuwm.obs.dealias import dealias_params_from_args
     from gpuwm.obs.radar_grid import write_radar_grid
     from gpuwm.obs.superob import (SuperobParams, merge_contributions,
                                    superob_volume)
     from gpuwm.obs.sweeps import read_sweep_pack
     from gpuwm.obs.target_grid import TargetGrid
 
-    if args.dealias and not scipy_available():
-        raise SystemExit(SCIPY_REMEDY)
-
+    # The scipy check that used to stand here tested the WRONG prerequisite:
+    # the default engine is the region-global one, which needs a shared
+    # library and not scipy, so this door refused installs that could
+    # dealias and cleared installs that could not.  The shared resolver is
+    # the only thing that answers that question now, and every other radar
+    # door asks it too.
+    #
+    # This door has no off switch of its own yet: its --dealias flag is
+    # rendered into a generated document that is out of this lane's bounds,
+    # so renaming it to --no-dealias is deferred with that page.  Until
+    # then dealiasing is on here whether or not the flag is passed, which
+    # is a wart and is recorded as one.
     params = SuperobParams(
         max_range_km=args.max_range_km,
         max_elevation_deg=args.max_elevation_deg,
-        dealias=DealiasParams() if args.dealias else None).validate()
+        dealias=dealias_params_from_args(
+            argparse.Namespace(dealias=True, dealias_engine=None,
+                               dealias_refinement=None))).validate()
 
     grid = TargetGrid.from_wrfout(args.grid_wrfout)
     volume = read_sweep_pack(args.pack)

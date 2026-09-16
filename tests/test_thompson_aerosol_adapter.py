@@ -1364,7 +1364,7 @@ _NEAR_CANCELLATION_ULPS = 32.0
 #:   the WRF justification)`` and
 #: :func:`test_every_g3_allowance_is_named_and_buys_exactly_one_fixture`
 #: proves the list is complete and that removing all of them costs exactly the
-#: fixtures :data:`_G3_ALLOWANCE_ONLY_CLEAN` names -- so the honest,
+#: fixtures :data:`_G3_ALLOWANCE_ONLY_CLEAN` names -- so the accurate,
 #: unexceptioned count can never again be inferred from prose.
 #:
 #: NOTHING HERE WAS WIDENED.  ``_END_TO_END_BOUNDS`` went 2.5e-03 -> 1.0e-04
@@ -1381,7 +1381,7 @@ _NEAR_CANCELLATION_ULPS = 32.0
 #: aero-reduces-to-classic on the merged tree puts level 5's nr_per_kg at
 #: 4.146e-07 against the 5.700e-06 the relative bound existed for.  The
 #: bound bought nothing and was deleted; the near-cancellation bound at
-#: level 6 is still load-bearing and is the only allowance left in the
+#: level 6 is still essential and is the only allowance left in the
 #: port.
 _G3_ALLOWANCES = (
     ("0-based level 6 held to 32 ulps of the entry value instead of a "
@@ -1823,7 +1823,7 @@ def test_g3_end_to_end_against_all_nineteen_oracle_fixtures():
     departure from the flat 2e-6 gate is enumerated in
     :data:`_G3_ALLOWANCES` with its WRF justification.
 
-    STILL RED, HONESTLY, AND THE COUNT IS STATED TWICE.
+    STILL RED, ACCURATELY, AND THE COUNT IS STATED TWICE.
     MEASURED ON THIS TREE (RTX 5090, cupy 14.1.1):
 
       * UNEXCEPTIONED -- a flat 2.0e-06 relative / 2.0e-04 dB gate on all
@@ -1893,7 +1893,7 @@ def test_g3_end_to_end_against_all_nineteen_oracle_fixtures():
         f"{name}: {', '.join(bad)}" for name, bad in failures.items())
 
 
-#: THE HONEST COUNT, PART 1: the fixtures that clear a FLAT gate.
+#: THE ACCURATE COUNT, PART 1: the fixtures that clear a FLAT gate.
 #:
 #: Fixtures whose worst residual, over all twenty-three compared quantities,
 #: is inside 2.0e-06 relative (2.0e-04 dB for reflectivity) with NO bounds
@@ -1927,7 +1927,7 @@ _G3_UNEXCEPTIONED_CLEAN = (
     "wp08-melt",
 )
 
-#: THE HONEST COUNT, PART 2: the fixtures that clear the gate AS GATED, i.e.
+#: THE ACCURATE COUNT, PART 2: the fixtures that clear the gate AS GATED, i.e.
 #: with the one allowance in :data:`_G3_ALLOWANCES` applied.  18 of 22.
 #: The difference between this and the tuple above is exactly
 #: :data:`_G3_ALLOWANCE_ONLY_CLEAN`, and that identity is asserted, so the two
@@ -2298,7 +2298,7 @@ def test_the_unexceptioned_g3_table_is_printed_and_its_count_pinned():
 # a level where no float32 implementation could report anything else.  Read
 # alone, that row is indistinguishable from a scheme that lost all its cloud
 # water.  In ulps it reads 1.000, and the same column's ``effc_m`` reads
-# 1.114e+07, which is the honest statement that ONE of those two rows is a
+# 1.114e+07, which is the accurate statement that ONE of those two rows is a
 # rounding artefact and the other is a branch that flipped.
 #
 # THE DENOMINATOR, STATED EXACTLY.  For each level the scale is
@@ -2853,8 +2853,7 @@ def test_the_g3_residual_ratchet_holds_in_both_directions():
 
     assert set(_G3_RESIDUALS) | set(_G3_GATED_CLEAN) == set(_FIXTURES), (
         "every fixture must be either gated-clean or carry a residual row: "
-        f"{sorted(set(_FIXTURES) - set(_G3_RESIDUALS)
-                  - set(_G3_GATED_CLEAN))}")
+        f"{sorted(set(_FIXTURES) - set(_G3_RESIDUALS) - set(_G3_GATED_CLEAN))}")
     assert not set(_G3_RESIDUALS) & set(_G3_GATED_CLEAN)
 
     for scenario, recorded in _G3_RESIDUALS.items():
@@ -4122,7 +4121,7 @@ def test_the_near_cancellation_level_is_bounded_in_ulps_not_excluded():
 #:                 ``scale`` is |got - want| in ULPS OF THE ENTRY VALUE, which
 #:                 is the resolution the difference is actually carried at.
 #:   "partial"  -- neither of the above; ``scale`` is again ulps of the entry
-#:                 value, and it is the honest statement that the residual is
+#:                 value, and it is the accurate statement that the residual is
 #:                 the accumulated rounding of a chain of processes rather
 #:                 than a threshold or a cancellation.
 #:   "derived"  -- the quantity is a diagnostic FUNCTION of other quantities

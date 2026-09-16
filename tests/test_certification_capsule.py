@@ -1,7 +1,7 @@
 """The capsule: one schema, one builder, one set of emitting routes.
 
 The tests hold the three things a receipt can quietly lose -- coverage of the
-published pin set, a shared builder behind every exit, and an honest account of
+published pin set, a shared builder behind every exit, and an accurate account of
 what was not measured -- and each is paired with the mutation that must break
 it.
 """
@@ -75,7 +75,7 @@ def _stub_capsule(**kwargs):
                          require_gpu=False, **kwargs)
 
 
-# --- F3-AC1: the pin set is covered, present, and honestly statused --------
+# --- F3-AC1: the pin set is covered, present, and accurately statused --------
 
 def test_the_published_pin_table_has_eleven_rows_two_of_them_compound():
     rows = _published_pin_rows()
@@ -144,7 +144,7 @@ def test_the_certification_path_refuses_an_unresolved_pin():
         validate_certification_capsule(capsule, certification_path=True)
 
 
-# --- 4090 stress finding: honest statuses on a no-git (pip install) tree ---
+# --- 4090 stress finding: accurate statuses on a no-git (pip install) tree ---
 
 _NO_GIT_SENTINEL = ("unavailable: fatal: not a git repository "
                     "(or any of the parent directories): .git")
@@ -163,7 +163,7 @@ def test_resolved_never_wraps_an_unavailable_payload(monkeypatch):
     status "resolved" wrapping the value "unavailable: fatal: not a git
     repository".  A resolved status is a claim that something measured
     the value; a payload that says unavailable refutes the claim in the
-    same breath.  On a no-git tree the pin is honestly unavailable, and
+    same breath.  On a no-git tree the pin is accurately unavailable, and
     the half that DOES exist -- the version, from package metadata -- is
     still bound in the entry."""
     _simulate_no_git(monkeypatch)
@@ -192,7 +192,7 @@ def test_a_git_tree_still_resolves_the_commit_pin(monkeypatch):
 
 
 def test_a_no_git_capsule_still_binds_config_and_input_bytes(monkeypatch):
-    """DETERMINISM.md lists config bytes and input bytes as load-bearing
+    """DETERMINISM.md lists config bytes and input bytes as essential
     pins, and both exist regardless of git; the stress capsule reported
     them unavailable because the pip route never handed them over."""
     _simulate_no_git(monkeypatch)

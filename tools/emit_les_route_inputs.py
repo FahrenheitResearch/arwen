@@ -148,7 +148,7 @@ def build(exp, *, stock: bool) -> str:
         "! the two differ only by ra_lw_physics 0->1, use_theta_m 0->1, "
         "stock-only ghg_input=0, which the HRRR hierarchy\n"
         "! route verifies key for key before it prepares anything.\n"
-        "! The per-domain turbulence columns are HONEST: this tree carries "
+        "! The per-domain turbulence columns are ACCURATE: this tree carries "
         f"{sum(1 for r in runs if r.bl_pbl_physics == 0)} PBL-off LES "
         "domain(s), which\n"
         "! is why no product path can emit this set and this generator "

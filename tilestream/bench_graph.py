@@ -177,7 +177,7 @@ def run_step_mode(rung: str, windows, steps: int, warmup: int, nz: int,
     step it ``steps`` times by replaying a captured graph, and compare.  The
     difference is launch and submission cost and nothing else.
 
-    That is also why this is the honest place to read the window dependence
+    That is also why this is the accurate place to read the window dependence
     from.  A tiled sweep pays this difference once per TILE; how much of the
     sweep that recovers depends on what else the sweep is doing, which is the
     other mode's business.

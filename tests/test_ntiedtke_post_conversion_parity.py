@@ -109,7 +109,7 @@ def test_the_false_arm_CARRIES_the_incoming_value():
     assert quiet > 0 and carried == quiet, (
         f"{quiet - carried} of {quiet} non-detraining levels did not carry "
         f"the incoming pqc")
-    # And the carry must be load-bearing: some of those incoming values
+    # And the carry must be essential: some of those incoming values
     # non-zero, or "carried" and "zeroed" are the same answer.
     nonzero = sum(int(np.count_nonzero(
         _COLS[k]["qcf"][_COLS[k]["pcte"] <= 0.0])) for k in _KEYS)

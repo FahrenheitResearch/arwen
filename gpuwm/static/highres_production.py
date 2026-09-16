@@ -92,7 +92,7 @@ US_COVERAGE_ENVELOPE = FootprintBBox(
 #: ``fields`` choices.  "all" replaces terrain + land use + soil (the
 #: original overlay); "terrain" replaces terrain alone and says so
 #: everywhere; "auto" picks "all" inside the full-stack envelope and
-#: "terrain" outside it, because that is the only honest thing available
+#: "terrain" outside it, because that is the only accurate thing available
 #: there.
 _FIELDS_CHOICES = ("auto", "all", "terrain")
 _TERRAIN_SOURCE_CHOICES = ("auto",) + tuple(sorted(TERRAIN_SOURCES))

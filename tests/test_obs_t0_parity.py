@@ -2,7 +2,7 @@
 
 The receipt composes the tree's full-state digest and changes one thing:
 across two engines the digest's bit-parity ceilings are recorded rather
-than applied.  These pins hold that change honest:
+than applied.  These pins hold that change accurate:
 
 * a large cross-engine gap is still a receipt, not a failure -- the gap is
   the finding;

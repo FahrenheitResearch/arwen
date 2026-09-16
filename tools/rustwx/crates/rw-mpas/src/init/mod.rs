@@ -7,7 +7,7 @@
 //!
 //! The vertical grid itself is **not** built here — see
 //! [`capsule`] for that deferral and the bit-identity assertion that keeps it
-//! honest.
+//! accurate.
 //!
 //! Indexed loops are used throughout rather than iterator chains: every loop
 //! here walks several parallel arrays at once against a Fortran original whose

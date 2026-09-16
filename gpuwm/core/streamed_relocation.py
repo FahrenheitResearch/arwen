@@ -12,15 +12,23 @@ import numpy as np
 
 
 def mark_reconstruction_nodes(nodes, exp):
-    """Give reporting and execution the same moving-subtree capacity scope."""
+    """Give reporting and execution the same moving-subtree capacity scope.
+
+    The moving-subtree ROOTS are not recomputed here.  They are the union
+    :func:`gpuwm.static.corridor.moving_grid_ids` already answers for the
+    corridor authority -- per-domain ``[[domain]].follow`` movers, the
+    tree-level ``[relocation]`` follower when it has a follow source, and
+    the ``[relocation.containment]`` ancestor that slides to keep the
+    mover inside.  ONE set: the capacity scope and the statics corridor
+    must agree about which children move, and two unions that happen to
+    match today are two unions that stop matching the first time one of
+    them learns about a new kind of mover.
+    """
     if exp is None:
         return
-    relocation = getattr(exp, "relocation", None)
-    roots = {int(dc.grid_id) for dc in exp.domains if getattr(dc, "follow", None) is not None}
-    if relocation is not None and relocation.enabled and (relocation.moves or relocation.follow is not None):
-        roots.add(int(relocation.grid_id))
-        if relocation.containment is not None:
-            roots.add(int(relocation.containment.grid_id))
+    from gpuwm.static.corridor import moving_grid_ids
+
+    roots = moving_grid_ids(exp)
     for node in nodes:
         ancestor = node
         while ancestor is not None:

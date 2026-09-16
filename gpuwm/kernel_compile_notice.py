@@ -1,4 +1,4 @@
-"""One honest sentence before the first run's invisible kernel compile.
+"""One accurate sentence before the first run's invisible kernel compile.
 
 The first GPU forecast on a machine pays on the order of two minutes of
 NVRTC compilation -- every physics module's ``cupy.RawModule`` and the

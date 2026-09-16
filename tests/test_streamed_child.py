@@ -230,7 +230,7 @@ def test_force_with_the_store_unpublished_couples_the_frozen_child(
 
 
 def test_feedback_reads_the_whole_child_field_not_the_frame(monkeypatch):
-    """The restriction reads the whole child interior; its pull is honest.
+    """The restriction reads the whole child interior; its pull is accurate.
 
     ``_coupled_child_field`` without ``frame=True`` must land the store's
     INTERIOR values on the state -- a frame pull here would restrict

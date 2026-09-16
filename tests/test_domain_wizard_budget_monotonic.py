@@ -136,6 +136,6 @@ def test_the_scale_ceiling_does_not_bind_at_any_real_card_size() -> None:
 
 
 def test_min_scale_still_bounds_the_search_from_below() -> None:
-    """Raising the ceiling must not disturb the floor, which is load-bearing."""
+    """Raising the ceiling must not disturb the floor, which is essential."""
     assert dw._MIN_SCALE == 0.55
     assert dw._dims_for_scale(dw._MIN_SCALE, ())[0] == (60, 48)

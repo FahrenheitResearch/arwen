@@ -1,6 +1,6 @@
 """``CumulusResult``'s momentum pair: inert when absent, applied when present.
 
-WHY THE FIRST HALF IS THE LOAD-BEARING ONE. The extension exists for New
+WHY THE FIRST HALF IS THE ESSENTIAL ONE. The extension exists for New
 Tiedtke, which is the first cumulus scheme in this tree with ``lmfdudv``
 (``cu_ntiedtke.F90:55``, a PARAMETER, so its momentum update is not a
 runtime option). Every scheme the owner runs today -- Grell-Freitas and

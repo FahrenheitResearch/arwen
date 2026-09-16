@@ -126,34 +126,62 @@ def test_check_does_not_report_a_retired_route_limitation(
         preflight._load_experiment_any(plain), plain) == []
 
 
-def test_resume_names_a_missing_checkpoint_without_denying_route_support(tmp_path):
-    """Supported routes still need a checkpoint that was actually written."""
+def test_resume_does_not_claim_a_route_cannot_checkpoint(tmp_path):
+    """RETIRED with the defect: the resume refusal named a dead route.
 
-    from gpuwm.resume import resolve_resume_checkpoint, route_note
+    ``resume.route_note`` appended ".  <config> does not declare a valid
+    forecast domain" to the no-checkpoint refusal.  The only input that
+    ever reached that sentence is the one built here: a TOML carrying an
+    ``[experiment]`` table and a top-level ``domain = []``, which parses,
+    satisfies ``is_experiment_toml`` and is refused by ``build_experiment``,
+    so the sentence could only ever be printed about a configuration no
+    run can load.  Every route this tree ships writes gpuwmrst_d*.npz
+    when restart_interval_s is positive, so what the operator needs is
+    the live remedy and nothing about routes.
+    """
 
-    config = _wizard_config(tmp_path)
+    import gpuwm.checkpoint_routes
+    import gpuwm.resume
+    from gpuwm.resume import resolve_resume_checkpoint
+
+    config = tmp_path / "no-domain.toml"
+    config.write_text("domain = []\n\n[experiment]\nname = \"x\"\n",
+                      encoding="utf-8")
+    # The premise, asserted rather than assumed: this file is experiment
+    # shaped to the sniffer and refused by the loader.
+    from gpuwm.experiment import is_experiment_toml
+    assert is_experiment_toml(config)
+    with pytest.raises(ValueError, match=r"\[\[domain\]\]"):
+        build_experiment(_raw(config), source=str(config))
+
     outdir = tmp_path / "run"
     outdir.mkdir()
-
     with pytest.raises(ValueError) as caught:
         resolve_resume_checkpoint(outdir, config=config)
     message = str(caught.value)
-    assert "writes no checkpoints" not in message
+    assert "does not declare a valid forecast domain" not in message
+    assert "complete valid set" in message
     assert "restart_interval_s" in message
-    assert route_note(config) == ""
 
-    # CONTROL: without the config the message is exactly what it was --
-    # the route sentence is added, never substituted for the old advice.
-    with pytest.raises(ValueError) as bare:
-        resolve_resume_checkpoint(outdir)
-    assert "writes no checkpoints" not in str(bare.value)
-    assert str(bare.value) in message
+    # The function and its export go with the sentence, and so does the
+    # remedy constant it was the last reader of: a caller that imports
+    # either would otherwise keep the dead advisory alive.
+    assert "route_note" not in gpuwm.resume.__all__
+    assert not hasattr(gpuwm.resume, "route_note")
+    assert not hasattr(gpuwm.checkpoint_routes, "CHECKPOINTLESS_ROUTE_REMEDY")
 
-    # CONTROL: a config whose route CAN checkpoint gets no route note,
-    # because for it the original advice is the true advice.
+    # CONTROL: a config whose route does checkpoint gets the same
+    # refusal, because the refusal was never about the route.
     tree = _wizard_config(tmp_path / "tree", ladder="12-3")
     assert len(_raw(tree)["domain"]) > 1
-    assert route_note(tree) == ""
+    with pytest.raises(ValueError) as supported:
+        resolve_resume_checkpoint(outdir, config=tree)
+    assert str(supported.value) == message
+
+    # CONTROL: no config at all, the same words again.
+    with pytest.raises(ValueError) as bare:
+        resolve_resume_checkpoint(outdir)
+    assert str(bare.value) == message
 
 
 # ---------------------------------------------------------------------------

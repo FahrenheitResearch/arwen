@@ -124,7 +124,7 @@ def relative_residual(residual: float, measure_start: float) -> float:
 def guard_entry(site: str, mechanism: str, *, counted: bool,
                 count: int | None = None,
                 why_not_counted: str | None = None) -> dict[str, Any]:
-    """One honest row of the guard inventory.
+    """One accurate row of the guard inventory.
 
     An uncounted guard is recorded WITH its reason rather than omitted,
     so the inventory enumerates the model's clamping surface instead of

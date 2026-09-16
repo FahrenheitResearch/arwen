@@ -371,7 +371,7 @@ def mode_cost(args) -> dict:
                 "ns_per_cell_step": med * 1e9 / cells,
                 # Under a contended card the MEDIAN measures the other
                 # tenants as much as this kernel.  The MINIMUM over reps is
-                # the least-contended sample and is the honest estimator of
+                # the least-contended sample and is the accurate estimator of
                 # the uncontended cost -- reported alongside, never instead.
                 "ms_per_step_min": fastest * 1e3,
                 "ns_per_cell_step_min": fastest * 1e9 / cells,

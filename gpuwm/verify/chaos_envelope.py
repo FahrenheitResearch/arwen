@@ -14,7 +14,7 @@ spectral pins are the one part of the registration a caller does not choose,
 since they are pre-registered in that module and hashed into this one's
 registration.
 
-Four properties this module exists to keep honest:
+Four properties this module exists to keep accurate:
 
 * **E95 is nearest-rank, not interpolated.**  ``sorted[ceil(p*n)-1]`` over the
   unordered member-pair distances, the definition the registered gate record

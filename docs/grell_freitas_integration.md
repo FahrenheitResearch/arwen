@@ -195,7 +195,7 @@ criterion written here — GF back *under* the four-domain base's footprint —
 is NOT met.** It is 0.65 GiB over, because GF's column workspace (0.47 GiB
 at this configuration) is a real allocation that the local frame's
 reservation used to hide. The 3.2 GiB obstruction is gone; a smaller,
-honest one is in its place.
+accurate one is in its place.
 
 These three rows are measured on the **current Windows host, an RTX 3080
 with 68 SMs**. The 32,607 MiB card the original table was measured on moved

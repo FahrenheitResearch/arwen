@@ -108,7 +108,7 @@ def this_process_can_witness_the_compile_platform() -> bool:
     fixture matches every other item to the live measurement so exactly
     one drifts, and on a witness-less process the capsule is born
     un-witnessed and every refusal collapses to the same
-    recorded-missing sentence (measured 2026-08-31, the first honest
+    recorded-missing sentence (measured 2026-08-31, the first accurate
     clean-venv run: conftest's CUDA_VISIBLE_DEVICES=-1 backstop leaves
     the fixture's compute-capability probe empty; the box of record only
     resolved it because a third-party plugin initialises CUDA before

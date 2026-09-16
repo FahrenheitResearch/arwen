@@ -93,6 +93,35 @@ def require_science_core():
     return wrf
 
 
+#: The stored reflectivity variable and the reduction taken over it.  One
+#: spelling, because the nowcast score and the free-forecast battery must
+#: read a forecast the same way or their numbers are not comparable.
+DEFAULT_REFLECTIVITY_VARIABLE = "REFL_10CM"
+COMPOSITE_REDUCTION = "column maximum over k"
+
+
+def frame_composite_reflectivity(
+        frame_path: str | Path, *,
+        reflectivity_variable: str = DEFAULT_REFLECTIVITY_VARIABLE
+        ) -> np.ndarray:
+    """Composite reflectivity of one history frame: the model's own operator.
+
+    The column maximum of the stored field, never a recomputation from the
+    microphysics.  Taking a maximum along k over a stored variable is a
+    reduction; recomputing reflectivity would substitute this module's
+    operator for the scheme's own, which is the one thing a cross-model or
+    cross-lead comparison must not do.
+
+    Exposed as a function because two scorers need exactly this reduction:
+    the free-forecast battery through :class:`WrfHistorySource`, and the
+    nowcast score a local DA window writes.  A second spelling of "composite"
+    is a second definition, and two definitions cannot be compared.
+    """
+    field = field_metrics.read_frame_field(
+        Path(frame_path), str(reflectivity_variable))
+    return np.asarray(field_metrics.composite(field), dtype=np.float64)
+
+
 def discover_frames(run_directory: str | Path, domain: str
                     ) -> dict[str, Path]:
     """Map each valid time this run wrote for ``domain`` to its history file."""
@@ -130,7 +159,7 @@ class WrfHistorySource:
     """A run directory, read as one model-agnostic forecast."""
 
     def __init__(self, run_directory: str | Path, *, domain: str = "d01",
-                 reflectivity_variable: str = "REFL_10CM",
+                 reflectivity_variable: str = DEFAULT_REFLECTIVITY_VARIABLE,
                  precipitation_variables: tuple[str, ...] = ("RAINNC",),
                  unit_conversions: Mapping[str, tuple[str, float, float]]
                  = DEFAULT_UNIT_CONVERSIONS,
@@ -200,9 +229,9 @@ class WrfHistorySource:
 
     def composite_reflectivity(self, valid_time: str) -> np.ndarray:
         """Column max of the stored reflectivity -- the model's own operator."""
-        field = field_metrics.read_frame_field(
-            self.frame_path(valid_time), self._reflectivity_variable)
-        return np.asarray(field_metrics.composite(field), dtype=np.float64)
+        return frame_composite_reflectivity(
+            self.frame_path(valid_time),
+            reflectivity_variable=self._reflectivity_variable)
 
     def core_maxdbz(self, valid_time: str) -> np.ndarray:
         """The core's independent column-max reflectivity, for the cross-check."""
@@ -281,7 +310,7 @@ class WrfHistorySource:
             "domain": self._domain,
             "frame_count": len(self._frames),
             "reflectivity_variable": self._reflectivity_variable,
-            "reflectivity_reduction": "column maximum over k",
+            "reflectivity_reduction": COMPOSITE_REDUCTION,
             "precipitation_variables": list(self._precipitation_variables),
             "science_core": "wrf-rust",
             # The version that ACTUALLY read this run, not the floor: with
@@ -302,7 +331,8 @@ class WrfHistorySource:
 
 
 __all__ = [
+    "COMPOSITE_REDUCTION", "DEFAULT_REFLECTIVITY_VARIABLE",
     "DEFAULT_UNIT_CONVERSIONS", "PINNED_WRF_RUST_VERSION",
     "ReflectivityOperatorPins", "WrfHistorySource", "discover_frames",
-    "require_science_core",
+    "frame_composite_reflectivity", "require_science_core",
 ]

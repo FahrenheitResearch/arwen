@@ -1,4 +1,4 @@
-"""The executable bit on the README's first command is load-bearing.
+"""The executable bit on the README's first command is essential.
 
 v1.0.0 shipped `install.sh` as mode 100644.  `./install.sh` -- README
 line 1 of the install section -- answered `Permission denied` on every

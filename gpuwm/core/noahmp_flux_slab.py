@@ -16,7 +16,7 @@ the same dtypes.  There is no arithmetic in this file at all: the only change
 is that ``inputs[row] = [...]`` over n columns becomes
 ``inputs[:, slot] = fields[name]`` over ~50 slots.
 
-Three things are load-bearing and are why this is not a two-line rewrite:
+Three things are essential and are why this is not a two-line rewrite:
 
 * **The slot order is imported, never re-spelled.**  Every loop below iterates
   the owning module's own ``INPUT_NAMES`` / ``PARAMETER_NAMES`` /

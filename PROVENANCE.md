@@ -85,7 +85,7 @@ not an arbitrary executable produced from the WRF v4.6.1 tree:
   (`sf_sfclay_physics=91`) as the matched-physics scheme selection.  The
   case itself explicitly sets `use_theta_m = 0` in `&dynamics` and
   `nwp_diagnostics = 0` in `&time_control`.  The first setting is
-  load-bearing: WRF's default is `use_theta_m=1`
+  essential: WRF's default is `use_theta_m=1`
   (`Registry.EM_COMMON:2860`), under which the dumped `t` table family is the
   moist-theta `thm` state (`Registry.EM_COMMON:211`), differing from gpuwm's
   dry-theta consumers by approximately the `(1 + 1.61*qv)` field factor.  The
@@ -688,7 +688,7 @@ bytes are outside the numerical oracle.
   the idealized CBL case runs `mix_isotropic = 1`, so **every idealized
   LES receipt is unaffected by D8**; the shipped nested configuration
   `configs/les_nest_250m_km3.toml` ran `mix_isotropic = 0` on its 250 m
-  child, which is where the deviation was load-bearing and where the
+  child, which is where the deviation was essential and where the
   failure it prevents was observed. **Since 2026-08-09 the only files
   under `configs/` that run `mix_isotropic = 0` on an LES child are the
   five archived records** — `configs/frozen/les_nest_250m_km3.toml`,
@@ -852,7 +852,7 @@ oversight, and each says what would close it.
   site, so those species never enter MYNN's scalar mixing.  WRF mixes them
   when `bl_mynn_mixscalars > 0` (`phys/module_bl_mynn.F:4735,:4777,:4957`), or
   outside MYNN through `scalar_pblmix` (`phys/module_pbl_driver.F:2251`).
-  Measured honestly: at gpuwm's pinned MYNN identity `bl_mynn_mixscalars = 0`,
+  Measured accurately: at gpuwm's pinned MYNN identity `bl_mynn_mixscalars = 0`,
   and WRF's own `check_a_mundo` raises `scalar_pblmix` to 1 ONLY when
   `use_aero_icbc` or `use_rap_aero_icbc` is set
   (`share/module_check_a_mundo.F:2477-2495`) -- both of which gpuwm refuses --
@@ -1167,7 +1167,7 @@ oversight, and each says what would close it.
   was real, not theoretical: with `aero-ice-koop` moved from the residual list
   to the clean list and its row deleted -- the exact shape of an overclaim --
   every one of the other 152 registry and builder assertions still passed and
-  only this gate went red.  It fired again this wave, in the honest direction:
+  only this gate went red.  It fired again this wave, in the accurate direction:
   it is what caught the registry publishing residuals up to four orders of
   magnitude LARGER than the tree produces.  Exact comparison at the published
   `%.3e` precision is legitimate here because the measurement was repeated
@@ -1416,7 +1416,7 @@ left standing beside its successor.  A promoted patch changes the ArWen
 default and its entry becomes a numbered D-entry above.
 
 **No verdict exists yet.**  The battery has not run.  Every promotion cell
-below reads UNDECIDED, and that is the honest state of the whole register on
+below reads UNDECIDED, and that is the accurate state of the whole register on
 the day it is created.
 
 ### Class A — already the shipped default (no toggle exists or should)
@@ -1432,7 +1432,7 @@ the day it is created.
 |---|---|---|---|---|
 | **L3** gray-zone PBL | `bl_pbl_physics` (existing selector; no new key) | 1 (YSU) -> 11 (Shin-Hong 2015 scale-aware) | 1.5.2 headline; CPU authority max-ULP-0 against the byte-frozen `module_bl_shinhong.F`; partition ladder inside registered Honnert-envelope bands (`docs/public/receipts/grayzone/PHASE1-SHINHONG-20260803.md`); maturity implemented-unverified.  At dx 3000 m the scheme sits above its gated ladder, which is stated in the arm's registration and is exactly what an obs referee is for.  **Route:** the composition an L3 arm resolves to is registered as `thompson-mp8-shinhong-mm5-noah-rrtmg-legacy-v1` (wrf-matched-run-candidate, template_only, HRRR-only), which is what makes the arm runnable: its three refusing gates — emission physics, root-preparation profile, certified hierarchy slice — now admit it, each by an enumerated admission keyed to that registration rather than a widened rail. | UNDECIDED |
 | **L4** 6th-order filter off the moist scalars | `moist_mix6_off` (WRF's own spelling) | `.false.` -> `.true.` | WRF v4.6.1 `Registry/Registry.EM_COMMON:2889` declares it verbatim: `rconfig   logical  moist_mix6_off   namelist,dynamics  max_domains  .false. rh  "moist_mix6_off"  "de-activate 6th-order horizontal filter for moisture"`.  It gates one call — `sixth_order_diffusion` on the moist array, `dyn_em/module_em.F:1421`, reached from `dyn_em/solve_em.F:2230` — so theta and the WRF `scalar`-package tracers keep their own filters.  This is therefore a **configuration-policy patch**: the WRF arm could be configured to match, and the battery tests it as an ArWen-DEFAULT candidate rather than as a capability.  Precedent: D-L4 ratified diff6 default-OFF in LES configs (`docs/superpowers/specs/P6-LES-DECISIONS-RATIFIED.md:35-39`).  The roadmap's "Sc-deck scales" framing has **no receipt in this tree** (verified: `diff_6th` and stratocumulus never co-occur; the Sc-deck finding is a SASE result, `gpuwm/verify/sase_ref.py:1280-1292`), so the entry is registered on WRF-community evidence plus D-L4 and is measured at 3 km. | UNDECIDED |
-| **L5** SASE closure | `bl_pbl_physics` -> 900 plus six mandatory companions (`docs/public/PHYSICS.md:718-723`) | 1 (YSU + `km_opt` 4) -> 900 | implemented-unverified PERMANENTLY (no WRF counterpart); met 2 of 7 frozen bars on its reference case; its first real-data forecast failed the health gate at 1 h. | **DID NOT QUALIFY.**  Registered entry gate: SASE earns battery arms only after one full 24 h battery-shape integration completes with `status: PASS`.  Until then it is scored on zero cases and reported as "did not qualify" — honest, and cheaper than crashed arms.  It is also not a bit-flip, so it enters as its own overlay and is deliberately not a member of patch-set v1. |
+| **L5** SASE closure | `bl_pbl_physics` -> 900 plus six mandatory companions (`docs/public/PHYSICS.md:718-723`) | 1 (YSU + `km_opt` 4) -> 900 | implemented-unverified PERMANENTLY (no WRF counterpart); met 2 of 7 frozen bars on its reference case; its first real-data forecast failed the health gate at 1 h. | **DID NOT QUALIFY.**  Registered entry gate: SASE earns battery arms only after one full 24 h battery-shape integration completes with `status: PASS`.  Until then it is scored on zero cases and reported as "did not qualify" -- accurate, and cheaper than crashed arms.  It is also not a bit-flip, so it enters as its own overlay and is deliberately not a member of patch-set v1. |
 
 ### Class C — knob exists, dormant (not in the battery suite)
 

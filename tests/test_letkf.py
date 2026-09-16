@@ -433,7 +433,7 @@ def test_horizontal_localisation_is_a_geodesic_when_geolocated():
     true_dy = float(_haversine_m(lat[0, 0], lon[0, 0], lat[1, 0], lon[1, 0],
                                  6370000.0))
     assert 1.6e3 < true_dx < 1.8e3, true_dx        # dx_m claims 1000
-    assert 0.95e3 < true_dy < 1.05e3, true_dy      # dy_m is honest
+    assert 0.95e3 < true_dy < 1.05e3, true_dy      # dy_m is accurate
 
     prior = {"theta": rng.standard_normal((members, nz, ny, nx)) + 3.0}
     mask = np.zeros((nz, ny, nx), dtype=bool)

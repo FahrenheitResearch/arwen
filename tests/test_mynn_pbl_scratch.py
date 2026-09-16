@@ -50,19 +50,26 @@ def test_the_declared_workspace_does_not_grow_with_the_domain():
     """A 600x600 nest must declare no more workspace than a 501x501 one.
 
     This is the property that lets a launch gate refuse a configuration.  A
-    workspace proportional to ``ny * nx`` would price honestly and still not
+    workspace proportional to ``ny * nx`` would price accurately and still not
     fit: at 360,000 columns the old working set was 18.3 GiB of churn on a
     card whose correctness rail is 29,500 MiB total.
 
-    ``MYNN_PBL_COLUMN_CHUNK`` is a ceiling, not a fixed width, so the claim
-    is a bound: identical for every domain at or above the chunk, and never
+    The column chunk is a ceiling, not a fixed width, so the claim is a
+    bound: identical for every domain at or above the chunk, and never
     larger below it.  A test that demanded equality with a 64x64 grid would
-    be demanding that a 4,096-column domain allocate a 16,384-column
-    workspace, which is not the property anyone wants.
+    be demanding that a 4,096-column domain allocate a full-width workspace,
+    which is not the property anyone wants.
+
+    The width is the shipped default rather than anything read off the
+    card, so this reads it through the resolver and requires that number:
+    the registry, the arena and the solver agree on ONE width, and it is
+    the one that was measured.
     """
     from gpuwm.config import RunConfig
     from gpuwm.core import preflight as pf
-    from gpuwm.core.mynn_pbl_scratch import MYNN_PBL_COLUMN_CHUNK
+    from gpuwm.core.mynn_pbl_scratch import (
+        MYNN_PBL_COLUMN_CHUNK_DEFAULT, mynn_pbl_scratch_bytes,
+        resolve_mynn_column_chunk)
 
     common = dict(nz=49, dx=750.0, dy=750.0, ztop=16000.0, dt=3.0,
                   run_seconds=60.0, moist=True, mp_physics=6,
@@ -77,17 +84,29 @@ def test_the_declared_workspace_does_not_grow_with_the_domain():
                 for name, shape in pf.mynn_pbl_scratch_slots(cfg).items()
                 if not name.startswith("mynn_pbl_out_")}
 
-    assert pf.mynn_pbl_column_chunk(d04) == MYNN_PBL_COLUMN_CHUNK
-    assert pf.mynn_pbl_column_chunk(d03) == MYNN_PBL_COLUMN_CHUNK
-    assert chunk_slots(d04) == chunk_slots(d03)
+    chunk = resolve_mynn_column_chunk(49)
+    # The resolver hands back the shipped width, not the derivation's
+    # floor: those were one number until the 2026-09-15 downward sweep put
+    # the measured optimum at 8,192 columns, and a guard that asked for the
+    # floor here would fail on a correct tree while claiming to be testing
+    # how the workspace scales.
+    assert chunk == MYNN_PBL_COLUMN_CHUNK_DEFAULT
+    assert pf.mynn_pbl_column_chunk(d04) == min(chunk, 600 * 600)
+    assert pf.mynn_pbl_column_chunk(d03) == min(chunk, 501 * 501)
+    if chunk <= 501 * 501:
+        assert chunk_slots(d04) == chunk_slots(d03)
     # Below the ceiling the workspace shrinks; it never grows.
     assert pf.mynn_pbl_column_chunk(tiny) == 64 * 64
     for name, shape in chunk_slots(tiny).items():
         assert shape <= chunk_slots(d04)[name], name
-    # And the whole thing is a bounded, reportable number rather than a
-    # fraction of the card.  The d04 total includes the six full-width
-    # returned tendency fields, which are the only term that scales.
-    assert pf.mynn_pbl_scratch_bytes_for(d04) < 2 * 1024 ** 3
+    # And the whole thing is a bounded, reportable number: exactly the
+    # chunk-bounded working set plus the six full-width returned tendency
+    # fields, which are the only term that scales with the domain.  An
+    # inequality against a round number would have gone on passing while
+    # an unpriced slot grew underneath it.
+    assert pf.mynn_pbl_scratch_bytes_for(d04) == (
+        mynn_pbl_scratch_bytes(min(chunk, 600 * 600), 49)
+        + 6 * 49 * 600 * 600 * 4)
 
 
 def test_the_predicate_reductions_match_the_spellings_they_replaced():
@@ -187,7 +206,8 @@ def _forecast(steps=6, chunk=None, poison=None, nx=24, ny=18):
     kernel does not fully overwrite shows up as a NaN in the forecast.
     """
     from gpuwm.core.dycore import step
-    from gpuwm.core.mynn_pbl_scratch import MynnPblScratch
+    from gpuwm.core.mynn_pbl_scratch import (
+        MynnPblScratch, resolve_mynn_column_chunk)
 
     from test_mynn_pbl_runtime import _build
 
@@ -204,7 +224,8 @@ def _forecast(steps=6, chunk=None, poison=None, nx=24, ny=18):
                 nz = atmosphere["theta"].shape[0]
                 ncol = (atmosphere["theta"].shape[1]
                         * atmosphere["theta"].shape[2])
-                width = min(chunk or 16384, ncol)
+                width = min(chunk or resolve_mynn_column_chunk(nz),
+                            ncol)
                 poison(MynnPblScratch.from_state(kwargs["state"], width, nz))
             return original(atmosphere, fields, **kwargs)
 

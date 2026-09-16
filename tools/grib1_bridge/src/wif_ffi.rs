@@ -214,7 +214,7 @@ pub unsafe extern "C" fn gpuwm_wps_intermediate_read(
 
 /// One target point of the global-capable bilinear operator.
 ///
-/// Statement order is deliberate and load-bearing: it mirrors the NumPy
+/// Statement order is deliberate and essential: it mirrors the NumPy
 /// expression the aerosol reference was oracled with, term by term, so the
 /// two agree to the last bit rather than "closely".
 #[inline]

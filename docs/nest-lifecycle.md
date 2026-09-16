@@ -8,8 +8,54 @@ A trigger-spawned child may additionally declare:
 ```toml
 retire = { trigger = "uh", threshold = 60.0, sustained_s = 900.0, min_lifetime_s = 1800.0 }
 rearm = { max_firings = 4, cooldown_s = 1800.0 }
-follow = { field = "uh", threshold = 100.0, fallback_threshold = 35.0, search_margin_cells = 12, min_shift_cells = 2, max_shift_cells = 10, cooldown_seconds = 600.0, cadence_seconds = 300.0, max_move_parent_cells = 8, min_overlap_fraction = 0.70 }
+follow = { field = "uh", threshold = 100.0, fallback_threshold = 35.0, search_margin_cells = 12, min_shift_cells = 2, max_shift_cells = 8, cooldown_seconds = 600.0, cadence_seconds = 300.0, max_move_parent_cells = 8, min_overlap_fraction = 0.70 }
 ```
+
+### The two movement bounds are one number and its consequence
+
+`min_overlap_fraction` states the physics: how much of the child a move
+keeps, so the rest is strip the child has to spin up.
+`max_move_parent_cells` and the follower's own `max_shift_cells` are
+DERIVED from it and are not free to disagree with it. Overlap is
+separable, so a shift of `(m, n)` parent cells keeps
+`(1 - m*r/nx) * (1 - n*r/ny)` of the child and the binding case is the
+DIAGONAL move: a floor `f` admits a per-axis magnitude of only
+`1 - sqrt(f)` of the nest's own width in parent cells.
+`gpuwm.core.nest_relocation.max_parent_cells_for_overlap` is that
+derivation, and the example above therefore needs a nest at least 49
+parent cells wide before its `max_shift_cells = 8` and
+`max_move_parent_cells = 8` are reachable at
+a floor of 0.70. Declaring a maximum above the implied bound does not
+widen anything: the move passes the per-axis check, the floor refuses
+it, and the largest move the configuration appears to offer is one no
+storm can ever be followed with. Every configuration under `configs/` is
+checked against its own bound by
+`tests/test_relocation_overlap_clamp.py`.
+
+The bound is a fraction of the NEST's width, so a door that authors a
+nest whose dimensions it chooses derives the maximums after it has
+chosen them, not before. `gpuwm cyclone-setup` proposes a smaller
+layout on a card that cannot hold the requested one, and grows the nest
+to `--nest-budget-gib` on a card that holds more, and
+`gpuwm.cyclone_setup.follow_table_for_nest` is where its `[domain.follow]`
+table and its `cyclone.json` receipt both get their two maximums, on the
+dimensions that proposal settled on, in either direction: a
+36-parent-cell reduction admits 5 where the preset's 40 admits 6, and a
+60-parent-cell nest grown to a budget admits 9. A fitted proposal
+therefore shows those two numbers among its reviewed changes.
+
+A scheduled follow source never fails on this: the runner clamps a
+proposal that would breach the floor to the largest move in the same
+direction that clears it, names `min_overlap_fraction` in the receipt's
+`clamped_by` beside the requested and executed shifts, and the nest
+makes up the rest at the next cadence. A containment slide is clamped
+and receipted the same way, on the sliding ancestor's own extent: its
+row carries `overlap_fraction`, and `clamped_by` names
+`containment.max_move_parent_cells`, `min_overlap_fraction`,
+`parent_edge` or `mover_compensated_placement` -- whichever bound moved
+the number. `tools/relocation_ledger_audit.py` reads `overlap_fraction`
+off every executed move and every slide and checks it against the
+declared floor, which the refusal used to make unnecessary.
 
 `retire` takes the same trigger vocabulary `spawn` does -- `"uh"`,
 `"reflectivity"`, `"pressure"`, `"time"`. A field trigger retires a nest

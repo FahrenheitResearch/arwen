@@ -1,4 +1,4 @@
-"""The radar site inventory, and the refusal that keeps it honest.
+"""The radar site inventory, and the refusal that keeps it accurate.
 
 The whole point of this module is one behaviour: a site with no antenna
 elevation is refused rather than assimilated. Most of this file is that

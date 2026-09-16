@@ -6,7 +6,7 @@ between the two calls, so cudlfsn's exit capture would have served -- but
 stitching one routine's exit into another's entry is the reconstruction
 this port keeps being burned by, so it is captured again.
 
-``paph[klev+1]`` is load-bearing here and captured. cuascn never reads it
+``paph[klev+1]`` is essential here and captured. cuascn never reads it
 and that fixture poisons the slot with NaN; cuddrafn reads it three times
 (:2618, :2648, :2649), which is why the two fixtures treat it oppositely.
 """
@@ -149,7 +149,7 @@ def test_the_surface_interface_is_load_bearing():
         pmfds=col["pmfds"], pmfdq=col["pmfdq"], pdmfdp=col["pdmfdp"],
         prfl=col["prfl"])
     assert not np.array_equal(other["pmfd"], _GOT[key]["pmfd"]), \
-        "perturbing paph[klev+1] changed nothing; it is not load-bearing"
+        "perturbing paph[klev+1] changed nothing; it is not essential"
 
 
 def test_pud_and_pvd_are_never_written():

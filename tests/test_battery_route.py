@@ -715,7 +715,7 @@ def test_emission_refuses_to_contradict_the_axis_it_rendered_from(tmp_path):
 
     # An applied patch on a key no WRF namelist carries.  moist_cq is a
     # real gpuwm key with no WRF counterpart (WRF derives calc_cq from
-    # the species that exist), so this is the honest shape of a future
+    # the species that exist), so this is the accurate shape of a future
     # ledger entry the mirrored arm could not express.
     absent = dataclasses.replace(
         faithful,
@@ -831,7 +831,7 @@ def test_node_plan_prices_the_arms_from_the_committed_speed_anchor(tmp_path):
                 * BATTERY_CELLS / entry["cells"])
     assert projection["projected_seconds_per_sim_minute"] == pytest.approx(
         expected, rel=1e-4)
-    # The anchor's honesty travels with every number derived from it.
+    # The anchor's accuracy travels with every number derived from it.
     assert projection["anchor_status"] == "unreceipted-controller-measurement"
     arms = {arm["arm"] for arm in plan["arms"]}
     assert arms == {"W", "W-twin"}

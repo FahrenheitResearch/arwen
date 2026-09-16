@@ -16,7 +16,7 @@ that means different bytes on different machines.  gpuwm needs eight
 such files: five GRIB decoders, the CPU preprocessing library, the
 `rw_fetch` backbone and the `rw_wrfbatch` renderer.  A single wheel
 cannot hold the Windows and Linux builds of all eight and still be
-honest about what it is, which is why the current wheel holds neither.
+accurate about what it is, which is why the current wheel holds neither.
 
 The packaging answer is a *platform wheel*: one artifact per platform,
 tagged so pip installs the right one and refuses the wrong one.  The
@@ -74,7 +74,7 @@ So a platform-wheel release publishes **three or more** artifacts: the
 platform wheels *and* the existing `py3-none-any` wheel.  pip prefers
 the most specific match, so a Windows user gets the platform wheel and
 everyone else gets the pure-Python one plus `gpuwm fetch-bridges` or a
-source build.  This also keeps the sdist honest: an sdist carries no
+source build.  This also keeps the sdist accurate: an sdist carries no
 compiled artifacts by definition, so `pip install --no-binary :all:`
 lands in exactly today's world and must keep working.
 
@@ -110,7 +110,7 @@ The proposed order, and the argument for each position:
 4. `<site-packages>/libexec/bridges` -- unchanged;
 5. `~/.gpuwm/bridges` -- unchanged, but now *below* the packaged copy.
 
-Position 3 above position 5 is the load-bearing choice.  The staged
+Position 3 above position 5 is the essential choice.  The staged
 directory is not versioned: a user who ran `gpuwm fetch-bridges` at
 1.1.3 and upgraded to 1.2.0 has 1.1.3 binaries sitting in it, and that
 skew is precisely the failure this project has already been bitten by
@@ -120,7 +120,7 @@ remains for anyone who means something else.
 
 `gpuwm doctor` needs no new concept: it probe-executes whatever the
 ladder resolved and checks the contract marker, wherever the file came
-from.  It should gain one honest line -- that the artifact came from
+from.  It should gain one accurate line -- that the artifact came from
 the wheel rather than from a staging directory -- because "where did
 this binary come from" is the first question when one misbehaves.  The
 packaged pins keep their value too: doctor could verify the

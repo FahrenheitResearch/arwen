@@ -705,7 +705,7 @@ class TransferMonitor:
         reused object does not report it as freshly moved, and a file
         that grows in place is counted for its growth only.
 
-        HONEST ABOUT ITS LIMIT: for a backbone that stages OUTSIDE the
+        ACCURATE ABOUT ITS LIMIT: for a backbone that stages OUTSIDE the
         destination, this still reads zero while a single object is in
         flight.  What it does recover is every file that has actually
         landed -- including one the backbone named differently from the

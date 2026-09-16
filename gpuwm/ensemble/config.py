@@ -12,6 +12,7 @@ carries only the ensemble's own knobs::
     n_members = 30
     base_seed = 20260730
     perturbation = "gpuwm.da.perturb"
+    render_products = "refl"   # optional; absent means no pictures
 
     [ensemble.perturbation_options]
     # free-form; hashed into the manifest, passed to the perturbation hook
@@ -33,7 +34,7 @@ ENSEMBLE_CONFIG_SCHEMA = "gpuwm-ensemble-config.v1"
 
 _KNOWN_KEYS = frozenset({
     "base_config", "n_members", "base_seed", "perturbation",
-    "perturbation_options", "ens_root",
+    "perturbation_options", "ens_root", "render_products",
 })
 _REQUIRED_KEYS = ("base_config", "n_members", "base_seed", "perturbation")
 
@@ -72,6 +73,24 @@ class EnsembleConfig:
     perturbation: str
     perturbation_options: Mapping[str, object] = field(default_factory=dict)
     ens_root: Path | None = None
+    #: Which products every member draws, in the spelling
+    #: ``gpuwm render --products`` takes, or ``None`` for no pictures.
+    #:
+    #: THE ONLY SWITCH.  There is no second "draw early" flag: naming
+    #: products here is what arms the early render in
+    #: :func:`gpuwm.ensemble.engine.run_ensemble`, exactly as
+    #: ``run_options.render_products`` arms it for ``run-plan`` and
+    #: ``--render-products`` arms it for the child runner.  Absent is
+    #: the default and is the behaviour this engine had before the
+    #: early render reached it: the members write frames and nobody
+    #: draws them.
+    #:
+    #: Adding it to an overlay a half-finished ensemble was started
+    #: from changes that overlay's sha256, which
+    #: :func:`gpuwm.ensemble.engine._check_compatible` refuses by name
+    #: on resume.  That is the existing hash binding and not a rule
+    #: this field adds: start the pictures with a new ``--ens-root``.
+    render_products: str | None = None
 
     @property
     def perturbation_options_sha256(self) -> str:
@@ -90,6 +109,7 @@ class EnsembleConfig:
             "perturbation": self.perturbation,
             "perturbation_options": dict(self.perturbation_options),
             "perturbation_options_sha256": self.perturbation_options_sha256,
+            "render_products": self.render_products,
         }
 
 
@@ -168,6 +188,16 @@ def load_ensemble_config(path: str | Path) -> EnsembleConfig:
             f"[ensemble.perturbation_options] of {source} must be a table, "
             f"got {options!r}")
 
+    render_products = entries.get("render_products")
+    if render_products is not None and (
+            not isinstance(render_products, str)
+            or not render_products.strip()):
+        raise ValueError(
+            f"render_products in [ensemble] of {source} must be a "
+            "non-empty product selector string in gpuwm render's own "
+            "spelling (for example \"all\", \"refl,t2\", or \"none\" "
+            f"for no pictures), got {render_products!r}")
+
     ens_root_raw = entries.get("ens_root")
     ens_root = None
     if ens_root_raw is not None:
@@ -189,4 +219,6 @@ def load_ensemble_config(path: str | Path) -> EnsembleConfig:
         perturbation=perturbation.strip(),
         perturbation_options=dict(options),
         ens_root=ens_root,
+        render_products=(None if render_products is None
+                         else render_products.strip()),
     )

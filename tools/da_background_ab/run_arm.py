@@ -127,7 +127,7 @@ def main(argv: list[str] | None = None) -> int:
     # validation time: the preparation arm that writes it has not run.
     # Placeholder digests then prove the GRAMMAR of an argument list
     # whose values cannot exist, which is the only thing a preflight can
-    # honestly claim about it.  They are unreachable without
+    # accurately claim about it.  They are unreachable without
     # --validate-only, and the resolved case is still preferred whenever
     # the file IS there.
     resolved = args.pins_from is not None and args.pins_from.is_file()

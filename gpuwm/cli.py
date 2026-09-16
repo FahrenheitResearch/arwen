@@ -342,7 +342,7 @@ def build_parser() -> argparse.ArgumentParser:
     Split out of :func:`main` so the parser can be inspected without
     running anything.  The layering convention needs that: `--explain`
     is swept onto every subcommand here, and the test that keeps the
-    sweep honest has to be able to enumerate the subcommands rather
+    sweep accurate has to be able to enumerate the subcommands rather
     than transcribe a list that goes stale the next time one is added.
     """
 
@@ -978,6 +978,11 @@ def _dispatch(args) -> int:
         for note in resolution.skipped:
             print(f"resume: skipped newer checkpoint {note}",
                   file=sys.stderr)
+        # Disclosures, never conditions: which memory mode this run
+        # resolves to and which road wrote the checkpoint.  Printed on
+        # the same stream as the continuation line they qualify.
+        for note in resolution.notes:
+            print(f"resume: {note}")
         print(f"resume: continuing from {resolution.checkpoint}")
         args.restart = resolution.checkpoint
         # Fall through to the run dispatch below.

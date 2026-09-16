@@ -114,7 +114,7 @@ class LatLonWindow:
         centre_lat = 0.5 * (float(latitude[0]) + float(latitude[-1]))
         centre_lon = 0.5 * (float(longitude[0]) + float(longitude[-1]))
         # WRF writes DX/DY in metres even for a lat-lon grid; the nominal
-        # spacing at the window centre is the honest number to publish.
+        # spacing at the window centre is the accurate number to publish.
         metres = self.spacing_degrees * _RAD * WRF_EARTH_RADIUS_M
         return {
             "MAP_PROJ": 6,

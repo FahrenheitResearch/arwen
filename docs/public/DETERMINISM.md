@@ -21,7 +21,7 @@ runs.
 > correctness, and it does not exclude common-mode, repeatable, latent,
 > or out-of-scope corruption.
 
-Every clause is load-bearing. "Independent executions" excludes
+Every clause is essential. "Independent executions" excludes
 comparing a run against itself or against a cached artifact.
 "Pinned numerical environment" is defined in section 3. "Declared
 sample instants" matters because state between samples is only observed

@@ -521,7 +521,7 @@ def control_auto_records_that_it_declined(exp) -> tuple[bool, str]:
 def broken_builder(model, options, *, what: str):
     """A builder with exactly one capability removed.  Each MUST differ."""
     node = model.root
-    honest = streaming.prepared_domain_builder(node)
+    accurate = streaming.prepared_domain_builder(node)
 
     def build(state, cfg, decision):
         from gpuwm.ingest.lateral_bc import LateralBoundaries
@@ -555,7 +555,7 @@ def broken_builder(model, options, *, what: str):
             geography=geography, boundary_tables=tables,
             scalars=scalars, check_geography=False)
 
-    return honest if what == "honest" else build
+    return accurate if what == "accurate" else build
 
 
 # --------------------------------------------------------------------------

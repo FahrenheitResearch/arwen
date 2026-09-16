@@ -609,7 +609,7 @@ Review a launch:
 gpuwm remote start --host NODE_ALIAS --python /path/to/venv/bin/python --workspace /path/to/workspace --config /path/to/workspace/case.toml --outdir /path/to/workspace/runs/new-case --products t2,refl --dry-run --json
 ```
 
-The workspace, configuration, and any supplied geography/preparation must already exist remotely. The output directory must be a **new absolute remote path**. Read the review, then remove `--dry-run` to start. `--expected-config-sha256` and the related expected-input flags can bind a scripted start to the reviewed bytes. Save the returned job ID.
+The workspace, configuration, and any supplied geography/preparation must already exist remotely. The output directory is an **absolute remote path** laid out the way a local run lays it: it is a case folder, the run claims its own stamped run folder inside it, a second run of the same configuration claims a stamped sibling beside the first, and `latest-run.txt` in the case folder names the newest. A directory that is itself a run folder is honoured as it is, and a run folder that already exists is refused by name; name the directory above it, or a run folder that does not exist yet. The review and every later status, log, and gallery reply name the run folder the job actually used. Read the review, then remove `--dry-run` to start. `--expected-config-sha256` and the related expected-input flags can bind a scripted start to the reviewed bytes. Save the returned job ID.
 
 List and inspect jobs:
 
@@ -627,7 +627,7 @@ To stop the identified job, run `gpuwm remote stop` with the same host, Python, 
 gpuwm remote resume --host NODE_ALIAS --python /path/to/venv/bin/python --workspace /path/to/workspace --job JOB_ID --outdir /path/to/workspace/runs/continued-case --from latest --dry-run --json
 ```
 
-The job survives local process exit and SSH disconnection. If a start is uncertain, refresh the job list before retrying. A connection failure is not confirmation of termination. Resume requires a complete valid checkpoint and supports expected-checkpoint hashes for reviewed automation.
+The job survives local process exit and SSH disconnection. If a start is uncertain, refresh the job list before retrying, or retry the same request with the `--request-id` a reply or timeout printed so the node answers with the job that attempt already created instead of a sibling run. Resume output may land anywhere outside the source job's own run folder; a sibling run folder beside it is fine, and a resume aimed inside it is refused naming that folder. A connection failure is not confirmation of termination. Resume requires a complete valid checkpoint and supports expected-checkpoint hashes for reviewed automation.
 
 `--identity` and `--ssh-config` identify files on the local computer. SSH uses existing keys/agent and strict known-host verification. Passwords and private-key contents are not put into node profiles.
 
@@ -701,6 +701,6 @@ Specialist surfaces such as ensembles, observations, verification campaigns, cyc
 | No valid restart found | Confirm restart writing was enabled and preserve a complete checkpoint set from the original run. History/log files are not checkpoints. |
 | Plot missing or a window blocked | List products against the actual compatible series; inspect fields, duration, cadence, and quantity-specific limitations. |
 | Direct supervised run failed without a long terminal traceback | Read the worker stderr/stdout logs and `run-progress.json` in its output directory. |
-| Remote start outcome uncertain | Refresh `remote list/status` before launching again. Retain the returned job ID. |
+| Remote start outcome uncertain | Refresh `remote list/status` before launching again, or retry with the printed `--request-id` so the node reconciles the attempt. Retain the returned job ID. |
 
 Use `--explain` for detailed reasons and `gpuwm report RUN_DIR --dry-run` to inspect a diagnostic collection. Keep the original files and reports available when comparing or reporting an outcome.

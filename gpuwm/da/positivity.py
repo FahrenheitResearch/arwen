@@ -11,7 +11,7 @@ making that choice silently for every caller forever.
 So the caller must choose, and this module makes the choice explicit,
 bounded, and *counted*.
 
-**What ``clip`` actually does, stated honestly.**  Where ``prior + increment``
+**What ``clip`` actually does, stated accurately.**  Where ``prior + increment``
 would be negative, the increment is replaced by ``-prior`` so the analysis is
 exactly ``0``.  That is a change of ``-analysis > 0``: **clipping at zero adds
 mass.**  It is not conservative and it is biased in one direction, always

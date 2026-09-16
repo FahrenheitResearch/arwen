@@ -39,7 +39,7 @@ What ships, and what this file holds:
   profiles by the estimator's PRICED envelope (the walk's refusal named
   legacy-RRTMG suites that measure 2.1x heavier), and ``gpuwm go``'s
   refusal stops pointing at a ``--vram-gib`` recursion that cannot
-  succeed while keeping its measured free-VRAM honesty.
+  succeed while keeping its measured free-VRAM accuracy.
 """
 
 from __future__ import annotations
@@ -322,7 +322,7 @@ def test_no_layout_refusal_ranks_profiles_by_priced_envelope(monkeypatch):
 
 
 def test_go_memory_refusal_names_reachable_remedies():
-    """``gpuwm go``'s refusal: no --vram-gib recursion, honesty kept.
+    """``gpuwm go``'s refusal: no --vram-gib recursion, accuracy kept.
 
     The walk followed the printed remedy (``gpuwm domain --vram-gib 8``)
     and was refused at every grid size -- the remedy pointed back into

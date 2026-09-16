@@ -154,7 +154,7 @@ cpu  tilestream.test_tile_hook_contract
 
 # THE OVERLAP ORDERING GATE.  numpy only, no card, and the one property
 # the consolidated gate structurally cannot certify: that the overlap
-# build's event chain is LOAD-BEARING.  The GPU gate proves the default
+# build's event chain is ESSENTIAL.  The GPU gate proves the default
 # chain bit-exact, but whether an unordered pair of stream operations
 # actually races is a property of the card (ring_ordering="submission"
 # was bit-exact idle and wrong by 3.7e+02 under contention), so the

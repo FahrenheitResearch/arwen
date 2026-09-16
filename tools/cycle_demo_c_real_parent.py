@@ -1,6 +1,6 @@
 """TIER B: the coupled cycle's parent leg driven by REAL MPAS x1.40962 output.
 
-HONESTY BANNER, printed on every run and stamped into every anchor:
+ACCURACY BANNER, printed on every run and stamped into every anchor:
   * the parent frames were produced by the REAL frozen v8.4.1 CUDA dycore
     integrating 8 x 120 s steps per cycle boundary on the RTX 5070 Ti
     (mesh bound to x1.40962 at runtime, six frozen sources verified);

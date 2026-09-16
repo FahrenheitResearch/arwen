@@ -51,7 +51,7 @@ receipt under ``<out>/receipts/`` and the run ends with a
 ``nowcast-receipt.json`` (schema ``gpuwm-da.nowcast.v1``) -- the seam a
 GUI drives later.
 
-HONESTY: this is a demo-grade nowcast.  UNSCORED, outside any registered
+ACCURACY: this is a demo-grade nowcast.  UNSCORED, outside any registered
 campaign, EXPERIMENTAL like every tool it drives.  No skill claim is
 made or implied; the gallery says so on every figure.
 
@@ -1020,7 +1020,10 @@ class DealiasChoice:
     #: track the shipped default when that moves.
     LEGACY_ENGINE = "vad-region"
 
-    on: bool = False
+    #: ON, like every radar door.  A receipt from a run that did NOT
+    #: dealias has to say so, or its verification composites re-run WITH
+    #: dealiasing and the A/B is graded against a differently-built truth.
+    on: bool = True
     engine: str = DEFAULT_DEALIAS_ENGINE
     refinement: bool = True
 
@@ -1032,12 +1035,28 @@ class DealiasChoice:
         # uses.  A receipt that said "refinement: null" would leave the
         # verification composites unable to state what they were built
         # with.
-        engine = str(getattr(args, "dealias_engine", DEFAULT_DEALIAS_ENGINE))
+        on = bool(getattr(args, "dealias", True))
+        named = getattr(args, "dealias_engine", None)
+        engine = None if named is None else str(named)
+        if on and engine is None:
+            # The receipt records what will RUN, not what the default was
+            # called: the argv this object builds names the engine
+            # explicitly, and a named engine is refused rather than
+            # resolved, so the resolution has to happen here instead of
+            # one process further down.
+            from gpuwm.obs.dealias import first_available_engine
+
+            engine = first_available_engine()
+            if engine is None:
+                # Neither engine can run on this install.  Masking only,
+                # and the receipt says so rather than promising an unfold
+                # its re-run cannot reproduce.
+                on = False
+        engine = str(engine or DEFAULT_DEALIAS_ENGINE)
         refinement = getattr(args, "dealias_refinement", None)
         if refinement is None:
             refinement = engine == DEFAULT_DEALIAS_ENGINE
-        return cls(on=bool(getattr(args, "dealias", False)), engine=engine,
-                   refinement=bool(refinement))
+        return cls(on=on, engine=engine, refinement=bool(refinement))
 
     @classmethod
     def from_payload(cls, payload) -> "DealiasChoice":
@@ -1065,13 +1084,17 @@ class DealiasChoice:
                 "dealias_refinement": bool(self.refinement)}
 
     def argv_tail(self) -> list[str]:
+        # "Off" is spelled out too, now that on is the default.  An empty
+        # tail would re-run a receipt's verification composites WITH
+        # dealiasing for a run that did not dealias, which is exactly the
+        # A/B break this object exists to prevent.
         if not self.on:
-            return []
+            return ["--no-dealias"]
         # Both switches are spelled out, always.  This argv builds the
         # verification composites as well as the assimilated observations,
         # and "whatever the default was on the day it re-ran" is not a
         # contract those two can share across a release.
-        return ["--dealias", "--dealias-engine", self.engine,
+        return ["--dealias-engine", self.engine,
                 "--dealias-refinement" if self.refinement
                 else "--no-dealias-refinement"]
 
@@ -1420,7 +1443,7 @@ def write_partial_receipt(out: Path, *, receipts: Path,
     reader can tell this apart from a front-door receipt.
 
     `partial: true` is already the marker `01-plan.json` uses.  Returns
-    the path written, or None when there is nothing honest to write.
+    the path written, or None when there is nothing accurate to write.
     """
 
     plan_path = receipts / "01-plan.json"
@@ -1463,7 +1486,8 @@ def write_partial_receipt(out: Path, *, receipts: Path,
                 "does not have to hand-synthesize them"),
         "verbatim_from_receipts_01_plan_json": verbatim,
         "stated_from_the_launch_command": {
-            "obs.dealias": "--dealias passed to da_nowcast run",
+            "obs.dealias": "whether da_nowcast run dealiased "
+                           "(--no-dealias turns it off)",
             "obs.dealias_engine": "--dealias-engine passed to da_nowcast run",
             "obs.dealias_refinement":
                 "--dealias-refinement passed to da_nowcast run"},
@@ -1838,6 +1862,20 @@ def survey_site(site: str, *, work_dir: Path, now: datetime,
 # ---------------------------------------------------------------------------
 # the two entry points
 # ---------------------------------------------------------------------------
+class _StateDealias(argparse.Action):
+    """``--dealias`` sets the flag AND records that a person stated it.
+
+    The value alone cannot answer "did this command line ask for
+    dealiasing?" now that the answer is true by default, and
+    :func:`resolve_da_preset` has to refuse `--dealias --without dealias`
+    rather than silently drop the thing the reader asked for.
+    """
+
+    def __call__(self, parser, namespace, values, option_string=None):
+        setattr(namespace, self.dest, True)
+        setattr(namespace, "dealias_stated", True)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="python -m tools.da_nowcast",
@@ -1988,19 +2026,35 @@ def build_parser() -> argparse.ArgumentParser:
                           "integral carried at one level, so this radius "
                           "decides whether the observation acts on the "
                           "column it integrated or on a slab")
-    run.add_argument("--dealias", action="store_true",
-                     help="unfold radial velocity per sweep instead of "
-                          "masking every gate that might be folded. "
-                          "Recovers the gates above 0.8 * Nyquist that "
+    run.add_argument("--no-dealias", dest="dealias",
+                     action="store_false", default=True,
+                     help="mask every gate that might be folded instead of "
+                          "unfolding radial velocity per sweep. Unfolding "
+                          "is the default because the masks find "
+                          "signatures of aliasing rather than aliasing, and "
+                          "it recovers the gates above 0.8 * Nyquist that "
                           "carry a mesocyclone's couplet; gates the "
                           "unfolder cannot resolve are still dropped and "
                           "counted. Applied to the assimilated obs AND to "
                           "the verification composites, so the run is "
                           "graded against a truth field built the same "
-                          "way it was fed. The default engine is "
+                          "way it was fed, and the receipt records which "
+                          "way that was. The default engine is "
                           "`region-global`, the Rust crate `gpuwm "
                           "fetch-bridges` stages; `--dealias-engine "
                           "vad-region` selects the scipy one instead")
+    # The old spelling of the default, still accepted.  It does not enable
+    # anything (unfolding is on for every run), it STATES the default, so
+    # an existing invocation that asks for it keeps running instead of
+    # dying on `unrecognized arguments`.  Registered after --no-dealias so
+    # the shared dest keeps that action's default; both write `dealias`,
+    # so whichever spelling comes last on the command line wins.
+    run.add_argument("--dealias", dest="dealias", action=_StateDealias,
+                     nargs=0, default=True,
+                     help="accepted and redundant: radial velocity is "
+                          "unfolded on every run already, so this names "
+                          "the default rather than turning it on. "
+                          "--no-dealias is the off switch")
     # The same two options tools.obs_radar_grid_build takes, defined by
     # that tool and added here rather than restated: this front door
     # BUILDS that tool's argv, so a second copy of the flag names is a
@@ -2242,10 +2296,14 @@ def resolve_da_preset(args) -> None:
                 "you want instead")
         return
     if args.da == "vr":
+        # Dealiasing is not on this list.  It is not a stream, it is how
+        # the velocity stream is prepared, and it is on for every run now:
+        # "radial velocity alone" must not quietly mean "radial velocity
+        # with a coherent fold left in it".  --no-dealias still turns it
+        # off beside any preset.
         stated = [flag for flag, on in (
             ("--reflectivity-analysis", args.reflectivity_analysis),
             ("--clear-air-analysis", args.clear_air_analysis),
-            ("--dealias", args.dealias),
             ("--hydrometeors", args.hydrometeors),
             ("--surface-obs", args.surface_obs is not None),
             ("--goes-cwp", bool(args.goes_cwp)),
@@ -2259,11 +2317,14 @@ def resolve_da_preset(args) -> None:
                   "or --da custom to state flags individually")
         return
     # --da full
+    # "dealias" being TRUE is not a statement anybody made -- it is the
+    # default -- so only an explicit --dealias contradicts
+    # `--without dealias`, which is what dealias_stated records.
     contradictions = sorted(
         w for w in without
         if (w == "reflectivity" and args.reflectivity_analysis)
         or (w == "clear-air" and args.clear_air_analysis)
-        or (w == "dealias" and args.dealias)
+        or (w == "dealias" and getattr(args, "dealias_stated", False))
         or (w == "surface" and args.surface_obs is not None)
         or (w == "cwp" and bool(args.goes_cwp)))
     if contradictions:
@@ -2278,8 +2339,7 @@ def resolve_da_preset(args) -> None:
         args.reflectivity_analysis = True
     if "clear-air" not in without:
         args.clear_air_analysis = True
-    if "dealias" not in without:
-        args.dealias = True
+    args.dealias = args.dealias and "dealias" not in without
     if "surface" not in without and args.surface_obs is None:
         raise FrontDoorError(
             "--da full includes the surface stream: pass --surface-obs "
@@ -2322,28 +2382,36 @@ def validate_analysis_flags(args) -> None:
             "--hydrometeors analyses physically non-negative fields and "
             "--positivity-policy is unstated; clip / reject / none are "
             "not equivalent (gpuwm.da.positivity documents the costs)")
-    if getattr(args, "dealias", False):
-        # The obs stage refuses this too, but only once per cycle and
+    if getattr(args, "dealias", True):
+        # The obs stage answers this too, but only once per cycle and
         # only after that cycle's volumes have been fetched.  A run that
         # is going to be unable to dealias should learn it now.  Which
         # prerequisite is missing depends on the engine -- scipy for one,
         # a built shared library for the other -- so the question is asked
         # of the engine rather than of scipy.
-        from gpuwm.obs.dealias import engine_unavailable_reason
-        engine = getattr(args, "dealias_engine", None)
-        if getattr(args, "dealias_refinement", None) \
-                and engine != DEFAULT_DEALIAS_ENGINE:
+        #
+        # A NAMED engine that cannot run is a refusal: the operator asked
+        # for one solver and would silently get another.  The unnamed
+        # default is not, because dealiasing is on for every run now and a
+        # missing optional library would otherwise be a dead front door.
+        # It resolves down the stated chain instead, warned once.
+        from gpuwm.obs.dealias import (DEFAULT_ENGINE_CHAIN,
+                                       engine_unavailable_reason)
+        named = getattr(args, "dealias_engine", None)
+        refinement = getattr(args, "dealias_refinement", None)
+        engine = DEFAULT_ENGINE_CHAIN[0] if named is None else str(named)
+        if refinement and engine != DEFAULT_DEALIAS_ENGINE:
             raise FrontDoorError(
                 f"--dealias-refinement with --dealias-engine {engine}: that "
                 f"engine has no refinement pass; only "
                 f"{DEFAULT_DEALIAS_ENGINE} does")
         reason = engine_unavailable_reason(engine)
-        if reason is not None:
+        if reason is not None and (named is not None or refinement):
             raise FrontDoorError(f"--dealias-engine {engine}: {reason}")
     elif getattr(args, "dealias_refinement", None) is not None:
         raise FrontDoorError(
             "--dealias-refinement/--no-dealias-refinement refines a "
-            "dealiased field; pass --dealias as well, or drop it")
+            "dealiased field; drop --no-dealias, or drop it")
     if run_reaches_render(args):
         # THE worst failure position in the product, met at the front
         # door.  `render` is the LAST stage -- after the survey, the
@@ -2354,9 +2422,9 @@ def validate_analysis_flags(args) -> None:
         # message at all: maximum work destroyed, minimum information
         # given, and nothing in `gpuwm doctor` to warn of it.
         #
-        # Same shape as the --dealias check above and for the same
-        # reason: the prerequisite is knowable in the second before the
-        # run starts, and a capability check belongs wherever it is
+        # Same shape as the dealiasing-engine check above and for the
+        # same reason: the prerequisite is knowable in the second before
+        # the run starts, and a capability check belongs wherever it is
         # cheapest to answer, not wherever it happens to be consumed.
         from gpuwm.rustwx import PYSHP_REMEDY, pyshp_available
         if not pyshp_available():

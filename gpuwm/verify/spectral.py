@@ -23,7 +23,7 @@ band and a linear difference would be a statement about the largest scales
 alone; an integral rather than a peak because a spectral defect is usually a
 tilt over a range of scales rather than one bad wavenumber.
 
-Three properties this module exists to keep honest:
+Three properties this module exists to keep accurate:
 
 * **Zero means identical, and nothing else does.**  The distance between a
   field and itself is exactly ``0.0``, and any bin-wise difference is strictly

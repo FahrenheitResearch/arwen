@@ -147,7 +147,7 @@ def test_a_plain_wheel_is_silent(tmp_path):
 
 
 def test_an_uninstalled_clone_is_silent(tmp_path):
-    """``git clone`` and run it: ``0+unknown`` is honest, not a conflict.
+    """``git clone`` and run it: ``0+unknown`` is accurate, not a conflict.
 
     This is the project's own development shape and the shape of anyone
     trying gpuwm without installing it.  Refusing it over "0+unknown is

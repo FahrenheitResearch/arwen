@@ -1,4 +1,4 @@
-"""The release battery's stage-1 curated list, kept honest in the repository.
+"""The release battery's stage-1 curated list, kept accurate in the repository.
 
 ``tools/battery/stage1_files.txt`` is the list the battery's stage-1 leg
 runs.  Until task #122 it existed only as a ``$stage1`` array inside the

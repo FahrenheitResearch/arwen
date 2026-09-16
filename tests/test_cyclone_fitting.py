@@ -18,6 +18,7 @@ import pytest
 from gpuwm import cyclone_setup as tc
 from gpuwm import domain_wizard as dw
 from gpuwm.configuration_recovery import MemoryAdmissionError
+from gpuwm.core.nest_relocation import max_parent_cells_for_overlap
 from gpuwm.core import streaming
 from gpuwm.experiment import validate_spawn_placement
 from gpuwm.starter_template import changes
@@ -125,10 +126,25 @@ def test_reduced_proposal_preserves_intent_and_uses_same_admission(monkeypatch, 
     result = tc.plan_cyclone(**intent, **hardware)
     fitted = tomllib.loads(result["config_text"])
     expected = tomllib.loads(original)
+    # The two movement maximums are on this list because they are a
+    # FUNCTION of the nest's width: a fitted child is narrower, so its
+    # overlap floor admits fewer parent cells per axis, and the reviewer
+    # of a proposal sees them move with the dimensions that moved them.
     allowed = {"domain[0].nx", "domain[0].ny", "domain[1].nx", "domain[1].ny",
-               "domain[1].i_parent_start", "domain[1].j_parent_start", "fetch.area"}
+               "domain[1].i_parent_start", "domain[1].j_parent_start", "fetch.area",
+               "domain[1].follow.max_shift_cells",
+               "domain[1].follow.max_move_parent_cells"}
     diff = changes(expected, fitted)
     assert diff and all(field in allowed for field, _, _ in diff)
+    follow = fitted["domain"][1]["follow"]
+    bound = max_parent_cells_for_overlap(
+        follow["min_overlap_fraction"], parent_grid_ratio=tc.RATIO,
+        child_nx=fitted["domain"][1]["nx"], child_ny=fitted["domain"][1]["ny"])
+    assert bound == 5      # 136 cells at ratio 4 is 34 parent cells wide
+    assert follow["max_shift_cells"] == follow["max_move_parent_cells"] == bound
+    # The receipt the desktop reads carries the same table as the toml.
+    assert result["follow"] == {key: value for key, value in follow.items()
+                                if key != "track"}
     assert result["fitting"]["changes"] == [
         {"field": f, "before": a, "after": b} for f, a, b in diff]
     assert result["kind"] == "proposal" and result["fitting"]["review_required"]
@@ -177,10 +193,34 @@ def test_identical_inputs_have_stable_proposals_hashes_and_search_order(monkeypa
 
 
 def test_every_rung_has_aligned_containment_and_search_plus_move_clearance():
+    """The ladder reaches two rungs further than it used to.
+
+    The clearance each rung must keep is the boundary and blend zones
+    plus the tracker's search margin plus its largest movement bound.
+    That last term dropped from 8 parent cells to 6 when the preset's
+    maximum was derived from its own overlap floor rather than written
+    beside it (1 - sqrt(0.7) of a 40-parent-cell-wide nest), and 36 cells
+    of clearance instead of 38 admitted the 0.6 rung, whose narrow axis
+    has exactly 36 to give.  It is now asked of each rung's OWN nest
+    rather than of the preset's, which is the same correction applied
+    once more: the 0.55 rung's 22-parent-cell nest admits a move of 3, so
+    it needs 33 cells and its narrow axis has exactly 33.  Reserving the
+    preset's 6 there reserved three cells no rung of this ladder can use.
+    The clearance check below is the real one and is unchanged: it
+    recomputes the clearance from the configuration each rung actually
+    carries and validates a placement at all four corners of it.
+
+    The rung's own maximums are checked the same way, because the floor
+    that implies them is a fraction of the NEST's width and every rung
+    has a narrower nest than the one the preset was written for.  Copying
+    the preset's 6 onto the 0.6 rung, whose 24-parent-cell nest admits 3,
+    wrote back the unreachable maximum this ladder's own margin was
+    corrected for.
+    """
     _, original = tc.configuration_text(**INTENT)
     scales = tc._fit_scales(original)
-    assert scales == (.95, .9, .85, .8, .75, .7, .65)
-    assert tc._fit_dimensions(scales[-1]) == [(130, 104), (104, 104)]
+    assert scales == (.95, .9, .85, .8, .75, .7, .65, .6, .55)
+    assert tc._fit_dimensions(scales[-1]) == [(110, 88), (88, 88)]
     for scale in scales:
         text, exp = tc.configuration_text(**INTENT, dimensions=tc._fit_dimensions(scale))
         parent, child = exp.domains
@@ -188,7 +228,22 @@ def test_every_rung_has_aligned_containment_and_search_plus_move_clearance():
         assert child.i_parent_start == 1 + (parent.run.nx - child.run.nx // 4) // 2
         assert child.j_parent_start == 1 + (parent.run.ny - child.run.ny // 4) // 2
         follow = child.follow
-        assert follow == original.domains[1].follow
+        # Everything but the two movement maximums is the preset; those
+        # two are re-derived on this rung's own nest, because the floor
+        # that implies them is a fraction of the nest's width.
+        bound = max_parent_cells_for_overlap(
+            follow.min_overlap_fraction, parent_grid_ratio=tc.RATIO,
+            child_nx=child.run.nx, child_ny=child.run.ny)
+        # The bound itself, not the smaller of it and the requested
+        # layout's: one derivation emits this table and it derives the
+        # maximum from the nest in hand, downward here and upward for a
+        # nest grown to --nest-budget-gib.
+        assert follow.max_move_parent_cells == bound
+        assert follow.tracker.max_shift_cells == bound
+        assert bound <= original.domains[1].follow.max_move_parent_cells
+        assert follow.min_overlap_fraction == original.domains[
+            1].follow.min_overlap_fraction
+        assert follow.tracker.min_shift_cells <= follow.tracker.max_shift_cells
         clearance = follow.tracker.search_margin_cells + max(
             follow.tracker.max_shift_cells, follow.max_move_parent_cells)
         for di in (-clearance, clearance):
@@ -312,11 +367,12 @@ def test_exhaustion_is_bounded_and_not_misreported_as_a_fixed_floor(monkeypatch,
     assert caught.value.memory["reason"] == "bounded-search"
     assert caught.value.memory["resource"] == resource
     assert "resizing cannot help" not in str(caught.value)
-    assert calls == [200, 190, 180, 170, 160, 150, 140, 130]
+    assert calls == [200, 190, 180, 170, 160, 150, 140, 130, 120, 110]
     # The unreduced-coverage probe, then the resident ladder the refusal
     # measures -- every rung of which is refused by this fixture too, so
     # the refusal names no alternative.
-    assert probes[0] == 200 and probes[1:] == [190, 180, 170, 160, 150, 140, 130]
+    assert probes[0] == 200 and probes[1:] == [190, 180, 170, 160, 150, 140,
+                                               130, 120, 110]
     assert caught.value.memory["resident_alternative"] is None
 
 

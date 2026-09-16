@@ -165,7 +165,7 @@ pub fn walk_hour_sizes(path: &Path) -> Result<HourSizes, Box<dyn std::error::Err
 /// measured [`Calibration::builtin_default`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Calibration {
-    /// Human-readable provenance for honest CLI reporting.
+    /// Human-readable provenance for accurate CLI reporting.
     pub source: String,
     pub nx: usize,
     pub ny: usize,
@@ -1226,7 +1226,7 @@ mod tests {
     // ─── GFS calibration tests ──────────────────────────────────────────────
 
     /// GFS estimate with an empty store uses the GFS builtin table, and the
-    /// provenance string honestly names the model and calibration date.
+    /// provenance string accurately names the model and calibration date.
     #[test]
     fn gfs_estimate_with_empty_store_uses_gfs_builtins_and_says_so() {
         let calibration = Calibration::builtin_for_model(ModelId::Gfs);
@@ -1287,7 +1287,7 @@ mod tests {
         );
     }
 
-    /// RRFS-A builtin pricing is honest about subsetting: the download
+    /// RRFS-A builtin pricing is accurate about subsetting: the download
     /// estimate for a full-profile hour must equal the measured prs+nat
     /// `.idx`-SUBSET bytes (the two-entry plan rule prices sfc always and
     /// prs when the profile needs isobaric data) — a tiny fraction of the

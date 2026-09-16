@@ -74,7 +74,7 @@ conversion are ``wrf.getvar`` calls, never local formulas.  When a file
 carries no earth-rotation fields (idealized/minimal wrfouts without
 SINALPHA/COSALPHA), the 10 m wind panel falls back to grid-relative raw
 ``U10``/``V10`` in the model's native m/s and labels both the barbs and
-the colorbar accordingly -- an honest degradation, not a hand-rolled
+the colorbar accordingly -- an accurate degradation, not a hand-rolled
 conversion.  The one composition performed here is WRF's own
 accumulation-bucket total (``RAINC + RAINNC``), which is bookkeeping
 over Registry accumulators rather than a diagnostic.  Composite reflectivity is the column maximum
@@ -167,7 +167,7 @@ def default_source_label() -> str:
 
     An install that genuinely cannot name its version contributes
     nothing rather than the ``0+unknown`` sentinel: a plot is not a
-    diagnostics channel, and a bare ``ArWen`` is the honest label there.
+    diagnostics channel, and a bare ``ArWen`` is the accurate label there.
     ``gpuwm version`` and the render receipt carry the full story.
     """
 
@@ -434,7 +434,7 @@ def _render_wind10(wf, timeidx, lat, lon, *, plt, wrf, context,
         # Idealized/minimal files carry no rotation fields; the fallback
         # is grid-relative raw U10/V10 in the model's native m/s, labeled
         # as such -- unit conversion is wrf.getvar's job, never a local
-        # formula, so the whole panel degrades to m/s honestly rather
+        # formula, so the whole panel degrades to m/s and says so rather
         # than converting by hand.
         u_barb = np.asarray(wrf.getvar(wf, "U10", timeidx=timeidx))
         v_barb = np.asarray(wrf.getvar(wf, "V10", timeidx=timeidx))
@@ -2194,7 +2194,7 @@ def matplotlib_workaround_notice(engine: str) -> str | None:
     this call site assembled its own string.  It goes through the same
     install-aware machinery now, in the one-line form: the one-liner
     where the crate exists, a pointer to ``gpuwm doctor`` where it does
-    not -- because the honest answer there is a whole bootstrap and this
+    not -- because the accurate answer there is a whole bootstrap and this
     notice gets exactly one physical line.
     """
 
@@ -2227,7 +2227,7 @@ def skip_notice(skipped: list[tuple[str, str]],
     engine, because paraphrasing "which field was missing" would leave
     the reader guessing which product lost which input.
 
-    The ``note:`` prefix is load-bearing rather than decorative.  It is
+    The ``note:`` prefix is essential rather than decorative.  It is
     this tree's word for "true and worth knowing, not a fault", and
     ``gpuwm go``'s stage runner surfaces a passing stage's ``warning:``
     and ``note:`` lines through its output capture -- so without it this

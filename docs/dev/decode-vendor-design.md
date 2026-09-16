@@ -490,7 +490,7 @@ a note on why the engine is deliberately NOT in `BRIDGE_ENV` — that
 map's consumers resolve through the grib1_bridge crate dir, and an entry
 would answer from a staged copy while a fresh checkout build sat unused).
 
-MEASURED seam cost, so the exe-versus-dll choice stays honest: a
+MEASURED seam cost, so the exe-versus-dll choice stays accurate: a
 two-frame 0.25-degree GDAS frameset is 3.55 GB; writing it takes 4.6 s
 and reading it back 6.0 s on Drew's box, on top of a 26 s decode.  The
 reader streams its hash and memory-maps the arrays rather than reading
@@ -610,7 +610,7 @@ three terrain clock rules, both cross-source shapes, and the one source
 whose staged pressure ladder makes it refuse, which refuses with the
 same sentence.
 
-Two properties keep the declaration honest rather than a silent
+Two properties keep the declaration accurate rather than a silent
 fallback, and both predate this port:
 
 - the engine declares what it implements (`gpuwm_mapped_engine

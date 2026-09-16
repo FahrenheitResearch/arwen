@@ -501,7 +501,7 @@ def test_a_src_layout_still_falls_back_to_the_editable_root(tmp_path):
 
     In a src/ layout the package's parent is not the repository root, so
     probing it yields nothing; the distribution's editable root is then
-    the only honest identity left and must still be reported.
+    the only accurate identity left and must still be reported.
     """
 
     project = tmp_path / "project"
@@ -799,7 +799,7 @@ def test_the_run_manifest_preserves_a_status_timeout_reason(monkeypatch):
     assert ("status", "--porcelain=v2", "--branch") in timed_out
 
 
-def test_no_git_and_no_dot_git_is_still_an_honest_absence(
+def test_no_git_and_no_dot_git_is_still_an_accurate_absence(
         tmp_path, no_git_binary):
     """The genuinely unbindable case keeps refusing."""
 

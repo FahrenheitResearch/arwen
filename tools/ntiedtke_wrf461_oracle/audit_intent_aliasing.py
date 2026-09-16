@@ -3,7 +3,7 @@
 WHY THIS EXISTS.  `cutypen` declares `cutu`/`cuqu`/`culu`/`culab`
 ``intent(out)`` and then reads all four in its very first loop
 (:1334-1337).  `cumastrn` passes cuinin's live `ptu`/`pqu`/`plu`/`ilab`
-into those slots, so the incoming values are load-bearing -- and a harness
+into those slots, so the incoming values are essential -- and a harness
 that hands the routine FRESH arrays instead produces a capture that is
 wrong on exactly the columns where the routine's own writeback leaves the
 incoming values in place.
@@ -29,7 +29,7 @@ reported separately -- the callee may write it, so those need a human.
 
 WHAT A FIRST-USE SCAN STRUCTURALLY CANNOT FIND
 ----------------------------------------------
-A dummy written ONLY inside a conditional is load-bearing in exactly the
+A dummy written ONLY inside a conditional is essential in exactly the
 same way -- a column that misses the branch keeps the caller's value -- but
 its first textual use is a WRITE, so the scan above calls it clean.
 
@@ -146,7 +146,7 @@ def classify_first_use(lines, lo, hi, name):
         if not use.search(text):
             continue
         if w.match(text):
-            # A THIRD LOAD-BEARING CLASS, and the audit missed it until a
+            # A THIRD ESSENTIAL CLASS, and the audit missed it until a
             # cuflxn parity test failed on plglac.  `x = f(x)` reads the
             # incoming value on the RHS, but "first use" sees a write, so
             # class 1 skips it; and class 2 filters to intent(out), so an
@@ -259,7 +259,7 @@ def main(path):
                 clean += 1
 
     print("=" * 74)
-    print("READ BEFORE WRITTEN -- the caller's incoming value is LOAD-BEARING")
+    print("READ BEFORE WRITTEN -- the caller's incoming value is ESSENTIAL")
     print("=" * 74)
     if not flagged:
         print("  (none)")
@@ -277,7 +277,7 @@ def main(path):
 
     print()
     print("=" * 74)
-    print("SELF-REFERENTIAL FIRST WRITE (x = f(x)) -- also load-bearing")
+    print("SELF-REFERENTIAL FIRST WRITE (x = f(x)) -- also essential")
     print("=" * 74)
     if not selfish:
         print("  (none)")
@@ -313,10 +313,10 @@ def main(path):
     # so a column that does not take that branch keeps the CALLER's value.
     # Its first textual use is a write, so the scan above calls it safe --
     # and it is not.  Any intent(out) dummy whose writes are all conditional
-    # is load-bearing in exactly the same way.
+    # is essential in exactly the same way.
     print()
     print("=" * 74)
-    print("intent(out) WITH ONLY CONDITIONAL WRITES -- also load-bearing")
+    print("intent(out) WITH ONLY CONDITIONAL WRITES -- also essential")
     print("=" * 74)
     cond = []
     for name, (a, b) in routines(lines).items():

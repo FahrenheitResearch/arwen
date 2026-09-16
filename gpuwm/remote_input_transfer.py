@@ -143,8 +143,7 @@ def receive(request, workspace, source):
 def receive_main():
     from gpuwm import remote_worker as rw
     try:
-        if sys.platform != "linux":
-            raise ValueError("Remote raw-input streams require Linux")
+        rw._ownership_provider()
         header = sys.stdin.buffer.readline(MAX_HEADER + 1)
         if len(header) > MAX_HEADER or not header.endswith(b"\n"):
             raise ValueError("Raw input stream header exceeds its bounded JSON line")
@@ -177,11 +176,19 @@ def upload(command, request, path, *, timeout=600):
                 while block := source.read(1024 * 1024):
                     copied += len(block)
                     if copied > request["size"]:
-                        raise ValueError("Selected raw input grew during transfer")
+                        raise ValueError(
+                            f"Selected raw input '{path.name}' grew past the {request['size']} bytes"
+                            " this transfer was reviewed for, so the node would store a file the"
+                            " review never approved. Review this plan again so the new size and"
+                            " digest are the approved ones.")
                     digest.update(block)
                     process.stdin.write(block)
             if copied != request["size"] or digest.hexdigest() != request["sha256"] or _stamp(path) != before:
-                raise ValueError("Selected raw input changed during transfer; review again")
+                raise ValueError(
+                    f"Selected raw input '{path.name}' changed under the transfer: it read"
+                    f" {copied} bytes with sha256 {digest.hexdigest()}, where the review approved"
+                    f" {request['size']} bytes with sha256 {request['sha256']}. Review this plan"
+                    " again so the new digest is the approved one.")
         except (BrokenPipeError, ConnectionResetError):
             pass  # The bounded server result owns its early-refusal diagnostic.
         except Exception as error:
@@ -212,12 +219,12 @@ def upload(command, request, path, *, timeout=600):
         deadline = time.monotonic() + timeout
         while process.poll() is None or any(worker.is_alive() for worker in workers):
             if failure:
-                raise ValueError(str(failure[0]))
+                raise failure[0] if isinstance(failure[0], ValueError) else ValueError(str(failure[0]))
             if time.monotonic() >= deadline:
                 raise ValueError("Raw input transfer timed out; verified node objects are retained for retry")
             time.sleep(.02)
         if failure:
-            raise ValueError(str(failure[0]))
+            raise failure[0] if isinstance(failure[0], ValueError) else ValueError(str(failure[0]))
         lines = bytes(chunks["stdout"]).decode("utf-8").splitlines()
         if len(lines) != 1:
             raise ValueError("SSH input transfer returned no complete bounded result: " + bytes(chunks["stderr"]).decode("utf-8", errors="replace")[:2000])

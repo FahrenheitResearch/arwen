@@ -37,6 +37,16 @@ ground. The runner checks corridor hashes and coordinate frames before
 initialization. A descendant of another moving domain uses a root-anchored
 corridor rather than treating its moving parent as stationary geography.
 
+Each sealed corridor also records the build contract its field bytes were
+produced under, and the runner requires it. The digest relay proves which
+bytes preparation wrote; it cannot prove which build wrote them, and that
+distinction decides whether a crop of the corridor equals the statics built
+directly for the same footprint. A corridor sealed by a build older than the
+contract it names is refused at load, because its bytes cannot be repaired at
+run time: the geography source is not on hand there. Prepare the tree again
+with `--statics-corridor`. Bundles prepared before 2.7.5 are in this position
+when their domain tree spans the antimeridian, and the refusal says so.
+
 Launch or continue through the ordinary prepared-data command:
 
 ```text

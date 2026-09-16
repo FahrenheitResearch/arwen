@@ -88,7 +88,7 @@ _PINNED_PHYSICS_REGISTRY_ENV = "GPUWM_PINNED_PHYSICS_REGISTRY"
 _PINNED_PHYSICS_REGISTRY_SHA256_ENV = \
     "GPUWM_PINNED_PHYSICS_REGISTRY_SHA256"
 # Capacity is reserved before future leads exist, so their byte sizes cannot
-# honestly be extrapolated from f000/f001.  This is an explicit enforced
+# accurately be extrapolated from f000/f001.  This is an explicit enforced
 # safety envelope for the sum of HRRR wrfnat + wrfprs full objects per hour.
 # A later observation above it refuses before fetch and requires a new
 # software contract rather than silently invalidating the initial reserve.
@@ -349,7 +349,7 @@ def load_stream_plan(path: str | Path) -> StreamPlan:
     # Raw bytes alone are insufficient when a copied plan retains relative
     # spellings but resolves them against a different directory.  Bind the
     # effective paths and immutable file bytes while keeping ``sha256`` as
-    # the honest digest of PLAN.toml itself.
+    # the accurate digest of PLAN.toml itself.
     physics_registry = Path(__file__).with_name("physics_registry_v2.json")
     geog_manifest = geog_root / "geog-fetch-manifest.json"
     geog_manifest_sha256 = (
@@ -996,6 +996,7 @@ class ProductionBackend:
         self._command_env = None
         self._gpu = None
         self._allow_shared_gpu = False
+        self._reservation_bytes = None
         self._pinned_physics_registry = None
         self._pinned_physics_registry_sha256 = None
 
@@ -1004,16 +1005,25 @@ class ProductionBackend:
         """Use the supervisor's UUID lock namespace and explicit CUDA mask."""
         from gpuwm.supervisor import (
             GPUFileLock, default_lock_path, preflight_exclusive_gpu,
-            select_gpu,
+            priced_reservation_bytes, select_gpu,
         )
 
         gpu = select_gpu(plan.gpu_uuid)
         lock_path = default_lock_path(gpu.uuid)
         run_id = f"stream-{plan.identity_sha256[:20]}"
+        # The SAME pricing function `gpuwm run` admits against
+        # (gpuwm.supervisor.priced_reservation_bytes), read off the plan's
+        # already-loaded experiment.  A stream door that passed no
+        # reservation was admitted unpriced and could never refuse, so one
+        # card answered `gpuwm run` and `gpuwm stream` differently for one
+        # configuration.
+        reservation_bytes = priced_reservation_bytes(plan.experiment)
         with GPUFileLock(gpu.uuid, path=lock_path, run_id=run_id):
+            # Decided ONCE, here, before the first stage command exists.
             preflight_exclusive_gpu(
                 gpu.uuid, approved_pids={os.getpid()},
-                allow_shared_gpu=plan.allow_shared_gpu)
+                allow_shared_gpu=plan.allow_shared_gpu,
+                reservation_bytes=reservation_bytes)
             env = os.environ.copy()
             env.update({
                 "CUDA_VISIBLE_DEVICES": gpu.uuid,
@@ -1024,6 +1034,7 @@ class ProductionBackend:
             self._command_env = env
             self._gpu = gpu
             self._allow_shared_gpu = plan.allow_shared_gpu
+            self._reservation_bytes = reservation_bytes
             try:
                 yield {
                     "schema": "gpuwm-stream-gpu-allocation-v1",
@@ -1041,6 +1052,7 @@ class ProductionBackend:
             finally:
                 self._command_env = None
                 self._gpu = None
+                self._reservation_bytes = None
 
     @staticmethod
     def _normalized_probe(value, url: str):
@@ -1227,9 +1239,19 @@ class ProductionBackend:
     def run_command(self, argv: list[str], *, stage: str) -> None:
         if self._gpu is not None:
             from gpuwm.supervisor import preflight_exclusive_gpu
+            # The stream has started by the time a stage command runs, so
+            # this re-measures the device and names what it found -- with
+            # the same priced reservation the allocation was admitted on
+            # -- but decides nothing: `decide=False` is what stops a
+            # co-tenant that appeared mid-stream from refusing a run that
+            # has already produced output, and the supervisor's warn-once
+            # keeps one shared card to one sentence instead of one per
+            # command.
             preflight_exclusive_gpu(
                 self._gpu.uuid, approved_pids={os.getpid()},
-                allow_shared_gpu=self._allow_shared_gpu)
+                allow_shared_gpu=self._allow_shared_gpu,
+                reservation_bytes=self._reservation_bytes,
+                decide=False)
         self.progress(f"stream {stage}: " + subprocess.list2cmdline(argv))
         env = (os.environ.copy() if self._command_env is None
                else dict(self._command_env))

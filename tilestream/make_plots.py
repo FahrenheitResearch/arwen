@@ -68,7 +68,7 @@ def plot_outofcore(outdir):
     """The one figure that makes the case.
 
     Three regimes on one axis: what fits, what happens 2.5% past what fits, and
-    what streaming does instead.  The paging points are the honest alternative
+    what streaming does instead.  The paging points are the accurate alternative
     to this work -- not "run a smaller domain" but "fall off a cliff".
     """
     fig, ax = plt.subplots(figsize=(7.4, 4.6))

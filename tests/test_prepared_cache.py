@@ -946,7 +946,7 @@ def test_a_v101_shape_header_still_binds_after_the_upgrade():
 
 
 def test_a_field_absent_from_the_header_but_IN_USE_still_refuses():
-    """The narrowness is what makes tolerating the absence honest."""
+    """The narrowness is what makes tolerating the absence accurate."""
 
     from gpuwm.ingest.prepared_cache import compare_prepared_domain_config
 

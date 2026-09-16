@@ -44,7 +44,7 @@ coupled-field pull is windowed to the boundary FRAME
 (:func:`child_frame_windows`), because ``bdy_interp1`` reads the child
 only inside its boundary zone.  The feedback pull deliberately stays
 whole-field -- the restriction reads the whole child interior, and that is
-the honest cost of two-way feedback, not a windowing miss.
+the accurate cost of two-way feedback, not a windowing miss.
 """
 
 from __future__ import annotations
@@ -136,7 +136,7 @@ def _copy_owned_sides(specs, source) -> int:
     the number of table pairs copied.  Module-level on purpose: the twin
     gate's stale-tables negative control monkeypatches this to a no-op and
     the child MUST diverge, which is what proves the launch-time reload is
-    load-bearing rather than decorative.
+    essential rather than decorative.
     """
     fields = source.intervals[0].fields
     copied = 0

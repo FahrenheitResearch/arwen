@@ -199,7 +199,7 @@ diagonalises the same matrix to a different rounding.  The ordering is
 therefore part of the kernel's contract rather than a tuning parameter, and
 changing it is a re-pin, not a refactor.
 
-One honest caveat that is **upstream of this kernel**: the *analysis* as a
+One accurate caveat that is **upstream of this kernel**: the *analysis* as a
 whole is not bitwise invariant to `LetkfConfig.chunk_points` on the device,
 because CuPy selects reduction and batched-GEMM kernels by array shape, so
 `s.mean(axis=0)` and `cmat @ yb` sum in a different order when the chunk
@@ -264,7 +264,7 @@ card.  Absolute numbers must not be compared across harnesses.**
 
 These have no quiet-card replacement yet.  Since contention is now known to
 have inflated the two sides unevenly at `k = 36`, treat these ratios as
-provisional too -- they sit below the boundary, where the honest expectation
+provisional too -- they sit below the boundary, where the accurate expectation
 is a modest win, but they have not been confirmed on a quiet card.
 
 ### The cost of an ensemble, as the sweep measured it
@@ -368,7 +368,7 @@ is cuSOLVER's own cyclic Jacobi.  This is therefore the same algorithm
 implemented two ways, not one algorithm against another, and that holds at
 every size in every table above.
 
-Below the boundary the honest margin is modest: roughly **1.5-2.0x** on sm_89
+Below the boundary the accurate margin is modest: roughly **1.5-2.0x** on sm_89
 across `k = 16..40`, and a provisional **1.7-2.0x** on sm_120 at `k = 10` and
 `k = 20` that still wants a quiet-card confirmation.  Above it, on sm_120,
 the quiet-card measurement is **12.3x** at `k = 36`.
@@ -448,7 +448,7 @@ where the factorisation cannot run.
 None of these is blocking: an install that never assimilates radar touches
 neither solver, and one that does has the bundled kernel.
 
-Two properties of the probe are load-bearing and are commented as such in
+Two properties of the probe are essential and are commented as such in
 `gpuwm/doctor.py`, with the measurement above as the reason:
 
 1. it runs in a **fresh process**, and

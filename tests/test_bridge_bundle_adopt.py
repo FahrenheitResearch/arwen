@@ -13,7 +13,7 @@ byte-identity gate derive from the bytes the release actually holds.
 
 These tests drive the real packer against a small monkeypatched asset
 tree (one integration test uses the repository's real tree), because the
-first run's ``pack`` is the only honest writer of the archives ``adopt``
+first run's ``pack`` is the only accurate writer of the archives ``adopt``
 must judge.
 """
 

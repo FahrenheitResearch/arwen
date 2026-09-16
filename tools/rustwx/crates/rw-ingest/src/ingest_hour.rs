@@ -185,9 +185,9 @@ const TRAILING_2D_NAMES: [&str; 3] = ["apcp_1h", "uh_2to5km_max_1h", "wind_speed
 /// (`MXUPHL`/`WIND ... hour max fcst`) and an HOURLY APCP accumulation. GFS
 /// `pgrb2` APCP is a BUCKETED accumulation that resets every 6 h (0-6, 6-12,
 /// ...), so the trailing-window re-select at `hour - 1` would NOT yield an
-/// honest 1 h precip increment — and GFS carries no native sub-hourly UH/
+/// accurate 1 h precip increment -- and GFS carries no native sub-hourly UH/
 /// wind-max messages at all. So GFS (and any future non-HRRR model) excludes
-/// the trailing set rather than claim a 1 h field it can't produce. Honest
+/// the trailing set rather than claim a 1 h field it can't produce. Accurate
 /// GFS windowed QPF (bucket-difference logic) is a separate, deferred feature.
 ///
 /// RRFS-A's `natlev.na` is genuinely HRRR-grade here — recon-verified messages
@@ -197,7 +197,7 @@ const TRAILING_2D_NAMES: [&str; 3] = ["apcp_1h", "uh_2to5km_max_1h", "wind_speed
 /// MXUPHL:5000-2000 m above ground:0-1 hour max fcst   (UH 2-5 km)
 /// WIND:10 m above ground:0-1 hour max fcst
 /// ```
-/// so `apcp_1h`/`uh_2to5km_max_1h`/`wind_speed_10m_max_1h` are honest for
+/// so `apcp_1h`/`uh_2to5km_max_1h`/`wind_speed_10m_max_1h` are accurate for
 /// RRFS-A. The RRFS fetch plan subsets exactly these messages from `nat-na`.
 fn model_has_trailing_1h_window(model: ModelId) -> bool {
     matches!(model, ModelId::Hrrr | ModelId::HrrrAk | ModelId::RrfsA)
@@ -529,7 +529,7 @@ pub struct VolumeSummary {
 }
 
 /// One ingested hour: per-stage walls, cache provenance, store stats, and
-/// realized/planned counts for honest reporting.
+/// realized/planned counts for accurate reporting.
 #[derive(Debug)]
 pub struct IngestedHour {
     pub hour: u16,
@@ -824,7 +824,7 @@ pub fn process_fetched_hour(
     let sfc_cache_hit = sfc.cache_hit;
     // Single-file models (GFS): the sfc slot is a clone of the prs file; the
     // download was one fetch, not two. Price the download once by zeroing sfc_mb
-    // so callers that sum prs_mb + sfc_mb get the honest single-file total.
+    // so callers that sum prs_mb + sfc_mb get the accurate single-file total.
     let single_file_model = fetch_plan(config.model)
         .map(|plan| plan.len() == 1)
         .unwrap_or(false);
@@ -1113,7 +1113,7 @@ pub fn process_fetched_hour(
     // becomes the 1 h window. A windowed-product sanity check (run_total >=
     // 1h sum for h > 1) is the cheap detector if this ever bites.
     // GFS (and any non-HRRR model) excludes the trailing 1 h window set: its
-    // bucketed APCP can't honestly produce a 1 h increment and it has no
+    // bucketed APCP can't accurately produce a 1 h increment and it has no
     // native sub-hourly UH/wind-max messages (see
     // `model_has_trailing_1h_window`).
     let include_trailing = include_full_2d && model_has_trailing_1h_window(config.model);
@@ -2573,9 +2573,9 @@ mod tests {
         assert!(plan.heavy.contains(&"sbecape"));
     }
 
-    /// APCP honesty: the GFS full 2D plan must NOT claim `apcp_1h` (nor the
+    /// APCP accuracy: the GFS full 2D plan must NOT claim `apcp_1h` (nor the
     /// other HRRR-trick trailing fields), because GFS `pgrb2` APCP is a
-    /// bucketed accumulation (0-6h resets) the re-select can't honestly turn
+    /// bucketed accumulation (0-6h resets) the re-select can't accurately turn
     /// into a 1 h increment. HRRR's plan keeps the trailing set unchanged.
     #[test]
     fn gfs_full_plan_excludes_apcp_1h_but_hrrr_keeps_it() {
@@ -2597,7 +2597,7 @@ mod tests {
                 "GFS plan must not claim the trailing 1 h field '{trailing}' (bucketed APCP)"
             );
         }
-        // The honest GFS run total is still planned (the plain accumulation).
+        // The accurate GFS run total is still planned (the plain accumulation).
         assert!(
             gfs.fields_2d.contains(&"apcp_run_total".to_string()),
             "GFS still stores the plain run-total accumulation"

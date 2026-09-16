@@ -452,7 +452,7 @@ pub struct MomentEntry {
     /// Key into `arrays` for the `|u1` censor plane, same shape as `array`.
     /// Present only in a [`SWEEPS_SCHEMA_CENSOR`] pack.
     ///
-    /// `skip_serializing_if` is load-bearing rather than tidy: it is what
+    /// `skip_serializing_if` is essential rather than tidy: it is what
     /// keeps a default-mode pack's metadata JSON byte-identical to the one
     /// this build's predecessor wrote, and therefore keeps every committed
     /// pack digest reproducible.
@@ -523,7 +523,7 @@ pub struct SweepEntry {
     /// scalar is `None` there too, and an array of nothing but `NaN` would
     /// assert that originals were kept when there were none to keep.  Its
     /// absence and an all-`NaN` array are different statements and are kept
-    /// different.  `skip_serializing_if` is load-bearing rather than tidy:
+    /// different.  `skip_serializing_if` is essential rather than tidy:
     /// it is what keeps such a pack's metadata JSON byte-identical to the
     /// one this build's predecessor wrote.
     ///
@@ -591,7 +591,7 @@ pub struct VolumeEntry {
     /// Archive-II framing, for a volume that had any.
     ///
     /// `Option` rather than required because ODIM_H5 is an HDF5 container
-    /// with no LDM block table and no `AR2V` token: there is no honest
+    /// with no LDM block table and no `AR2V` token: there is no accurate
     /// `Framing` to write for one, and inventing a placeholder would put a
     /// claim about Archive-II layout into a file that is not Archive-II.
     /// `skip_serializing_if` keeps every NEXRAD pack byte-identical, and the
@@ -601,7 +601,7 @@ pub struct VolumeEntry {
     /// The member files, for a volume that was assembled out of several.
     ///
     /// `Option` for the same reason `framing` is: a NEXRAD volume is one
-    /// file, so there is nothing honest to write, and `skip_serializing_if`
+    /// file, so there is nothing accurate to write, and `skip_serializing_if`
     /// keeps every NEXRAD pack byte-identical.  Some national ODIM feeds
     /// publish one file per elevation and quantity, and for those the
     /// `sha256` above is a manifest digest rather than a file digest -- this

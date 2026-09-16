@@ -95,7 +95,7 @@ opt_pedo=1 opt_crop=0 opt_irr=0 opt_irrm=0 opt_infdv=0 opt_tdrn=0
 soiltstep=0.0 noahmp_output=1 noahmp_acc_dt=0.0`, with `num_soil_layers=4` and
 `sf_urban_physics=0`.
 
-`opt_gla=1` is the honest awkward one. It is *declared only*, and it is not
+`opt_gla=1` is the accurate awkward one. It is *declared only*, and it is not
 evidence that any glacier physics runs: a column whose `VEGTYP` equals
 `ISICE_TABLE` **raises**. It exists so a plan asking for `opt_gla=2` is refused
 instead of silently ignored.

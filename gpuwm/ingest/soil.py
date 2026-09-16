@@ -13,6 +13,7 @@ from gpuwm.ingest.soil_contract import (
     MAPPED_SOIL_MOISTURE,
     MAPPED_SOIL_TEMPERATURE,
     conservative_overlap_weights,
+    linear_sample_plan,
     soil_layer_bounds,
     soil_node_depths,
     soil_source_sample_count,
@@ -291,27 +292,32 @@ def _remap_declared_soil(
         )
     source = soil_layer_bounds(contract, "source_layers")
     if remap["kind"] == "linear_point_samples":
-        # WRF places layer-form soil values at the INTEGER-centimetre layer
-        # midpoints (module_optional_input.F:char2int2, (top+bottom)/2 in
-        # whole cm), bracketed by TSK at 0 m and TMN at 3 m
-        # (module_soil_pre.F:1591-1595).
-        source_depths = np.asarray(
-            [0.0,
-             *(((int(round(top * 100.0)) + int(round(bottom * 100.0))) // 2)
-               / 100.0 for top, bottom in source),
-             3.0],
-            dtype=np.float64,
-        )
+        # Where the source's values sit is the contract's declaration, read
+        # through the ONE plan the validator checked ordering and coverage
+        # on (soil_contract.linear_sample_plan).  Its
+        # wrf_integer_cm_layer_midpoint row is WRF's own layer-form
+        # convention (module_optional_input.F:char2int2, (top+bottom)/2 in
+        # whole cm); the bracketing anchors are TSK at 0 m and TMN at 3 m
+        # (module_soil_pre.F:1591-1595).  The plan also says whether each
+        # anchor is a node at all: a source that states its own value at
+        # the anchor's depth supplies that boundary itself, and stacking
+        # the anchor beside it would be two values at one depth.
+        plan = linear_sample_plan(contract)
+        source_depths = np.asarray(plan.depths, dtype=np.float64)
         target_depths = np.asarray(
             [(top + bottom) / 2.0 for top, bottom in target],
             dtype=np.float64,
         )
-        temperature_nodes = np.concatenate(
-            (tsk[None, ...], temperature, deep[None, ...]), axis=0,
-        )
-        moisture_nodes = np.concatenate(
-            (moisture[:1], moisture, moisture[-1:]), axis=0,
-        )
+        temperature_parts = [temperature]
+        moisture_parts = [moisture]
+        if plan.top_anchor:
+            temperature_parts.insert(0, tsk[None, ...])
+            moisture_parts.insert(0, moisture[:1])
+        if plan.bottom_anchor:
+            temperature_parts.append(deep[None, ...])
+            moisture_parts.append(moisture[-1:])
+        temperature_nodes = np.concatenate(temperature_parts, axis=0)
+        moisture_nodes = np.concatenate(moisture_parts, axis=0)
         return (
             _interp_nodes(temperature_nodes, source_depths, target_depths),
             _interp_nodes(moisture_nodes, source_depths, target_depths),

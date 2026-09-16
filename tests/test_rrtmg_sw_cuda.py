@@ -377,7 +377,7 @@ def test_gpu_local_frames():
 
 @pytest.mark.parametrize('tall',[False,True])
 def test_batched_vram_estimate(tall):
-    """sw_batched_vram_bytes honesty: estimate >= pool-measured peak >=
+    """sw_batched_vram_bytes accuracy: estimate >= pool-measured peak >=
     0.5 * estimate, at two chunk sizes (single-chunk and multi-chunk)."""
     groups = _deck_groups()
     cs = max(groups.values(), key=(lambda cs: _flag_key(cs[0])[5]) if tall else len)
@@ -389,6 +389,10 @@ def test_batched_vram_estimate(tall):
         estimate = sw.sw_batched_vram_bytes(min(chunk, len(cs)), nlay,
                                             ncol_total=len(cs))
         for _ in range(DUAL_RUNS):
+            # The workspace slots persist across calls by design; the
+            # estimate prices them as part of the call, so each run
+            # starts from a released scratch.
+            cuda().release_scratch()
             pool.free_all_blocks()
             base = pool.used_bytes()
             peak = [0]
@@ -403,6 +407,45 @@ def test_batched_vram_estimate(tall):
             assert estimate >= measured >= 0.5 * estimate, (
                 f"chunk={chunk}: measured {measured} vs "
                 f"estimate {estimate}")
+
+
+def test_batched_scratch_allocates_once_and_zeroes_only_the_named_slots():
+    """The workspace hoist on the card: one allocation per slot for a
+    whole multi-chunk call, none on the next call at the same chunk, and
+    the bytes memset per call are exactly the read-before-write slots
+    sw_batched_memset_bytes prices (wkl and the abort flag per chunk).
+    Bit identity across the reuse is test_batched_vs_percolumn's job."""
+    groups = _deck_groups()
+    cs = max(groups.values(), key=len)
+    nlay = _flag_key(cs[0])[5]
+    ins = _group_inputs(cs)
+    c = cuda()
+    c.release_scratch()
+    chunk = max(1, len(cs) // 4)
+    nchunks = -(-len(cs) // chunk)
+    assert nchunks >= 3, "the deck must give a multi-chunk call"
+    scratch = c.scratch
+    allocs0, zeroed0 = scratch.allocations, scratch.zeroed_bytes
+    _run_batched(cs, ins, chunk=chunk)
+    held = set(scratch.slots())
+    expect = {k for k, cls, _ in sw.SW_SCRATCH_SLOTS if cls != "zeros"}
+    iceflg = _flag_key(cs[0])[2]
+    if iceflg == 5:
+        expect -= {"cswpmc0", "resnmc0"}   # real snow uploads instead
+    assert held == expect, (held ^ expect)
+    assert scratch.allocations - allocs0 == len(held), (
+        "one allocation per slot for the whole call, not per chunk")
+    zeroed = scratch.zeroed_bytes - zeroed0
+    priced = sw.sw_batched_memset_bytes(len(cs), nlay, chunk)
+    # The two clean-sky slabs are zeroed outside the scratch.
+    assert zeroed == priced - 2 * len(cs) * (nlay + 1) * 4
+    assert zeroed == nchunks * 4 + len(cs) * nlay * sw.MXMOL * 4
+    # Second call at the same chunk: the slots are reused, nothing new.
+    allocs1 = scratch.allocations
+    _run_batched(cs, ins, chunk=chunk)
+    assert scratch.allocations == allocs1
+    c.release_scratch()
+    assert scratch.held_bytes() == 0
 
 
 @pytest.mark.parametrize("chunk", [21, 11, 3, 1])

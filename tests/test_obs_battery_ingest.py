@@ -1,6 +1,6 @@
 """The observation battery's ingest lane: packs, front doors, sources.
 
-Three layers, tested at the level each can be tested honestly:
+Three layers, tested at the level each can be tested accurately:
 
 * the pack reader, against bytes this file builds, including the malformed
   ones a reader must refuse;

@@ -265,7 +265,7 @@ def main(argv: list[str] | None = None) -> int:
                         help="a gpuwm-obs.radar-heights.v1 document from "
                              "tools/harvest_radar_heights.py, whose antenna "
                              "heights fill elevation_m. Omitting it re-freezes "
-                             "with every row null, which is the honest state "
+                             "with every row null, which is the accurate state "
                              "of the locations feed alone and refuses every "
                              "site for polar assimilation")
     parser.add_argument("--from-table", type=Path, default=None,

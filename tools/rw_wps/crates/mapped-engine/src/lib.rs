@@ -36,10 +36,22 @@ pub mod refusal;
 pub mod threads;
 pub mod window;
 
-/// The ABI marker: the OUTPUT SCHEMA name, so it changes exactly when the
-/// frameset contract changes and a stale staged binary fails the static
-/// handshake instead of writing a shape the Python side no longer reads.
+/// The output schema name, which changes exactly when the frameset
+/// contract changes.  It rides inside :data:`ABI_CONTRACT` below.
 pub const FRAMESET_SCHEMA: &str = "gpuwm-mapped-frameset-v1";
+
+/// The ABI marker: ONE literal carrying BOTH contracts a stale staged
+/// binary can break, because `gpuwm.bridges.BRIDGE_ABI_MARKERS` holds one
+/// byte string per artifact and searches the binary for it.
+///
+/// The frameset schema is the OUTPUT contract: it changes when the shape
+/// the Python side reads back changes.  The template list is the DECODE
+/// contract: it changes when the set of Section-5 data representations
+/// this engine can read changes.  They are not the same contract, and a
+/// marker that moved only with the first let a pre-fix binary pass the
+/// handshake and then refuse conformant IEEE-packed (template 5.4) bytes
+/// with a message blaming the publisher of the file.
+pub const ABI_CONTRACT: &str = "gpuwm-mapped-engine-abi frameset=gpuwm-mapped-frameset-v1 grib2-drt=0,2,3,4,40,41,42,50,51,61,200";
 pub const REFUSAL_SCHEMA: &str = "gpuwm-mapped-refusal-v1";
 pub const PROGRESS_SCHEMA: &str = "gpuwm-mapped-engine-progress-v1";
 pub const INSPECTION_SCHEMA: &str = "gpuwm-mapped-source-inspection-v1";
@@ -56,11 +68,15 @@ pub const ENGINE_VERSION: &str = env!("CARGO_PKG_VERSION");
 #[cfg(test)]
 mod tests {
     #[test]
-    fn the_marker_is_the_output_schema_name() {
-        // Stated as a test because the two are the same string BY DESIGN:
-        // if a future change gives the marker its own literal, the reason
-        // the contract works — a frameset shape change forces a marker
-        // change — quietly stops holding.
+    fn the_marker_carries_both_contracts_it_stands_for() {
+        // Stated as a test because the marker is one literal and the two
+        // contracts inside it are defined elsewhere: if either drifts out
+        // of the marker, the reason the handshake works -- a change to the
+        // frameset shape OR to the readable template set forces a marker
+        // change -- quietly stops holding.
         assert_eq!(super::FRAMESET_SCHEMA, "gpuwm-mapped-frameset-v1");
+        assert!(super::ABI_CONTRACT.contains(super::FRAMESET_SCHEMA));
+        assert!(super::ABI_CONTRACT
+            .ends_with(grib_core::grib2::DECODE_TEMPLATES));
     }
 }

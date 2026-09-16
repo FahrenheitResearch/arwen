@@ -267,7 +267,7 @@ def make_physics_tile_state(tile_cfg, *, builder=None, seed: int = 4242,
     """A tile buffer with a ``PhysicsDriver`` attached, ready to be gathered into.
 
     Three things this does that :func:`make_tile_state` cannot, each of them
-    load-bearing:
+    essential:
 
     * it attaches a driver.  ``dycore.step`` raises ``physics is enabled but
       the state has no PhysicsDriver`` the moment ``physics_enabled(cfg)``,
@@ -1175,7 +1175,7 @@ class TiledRun:
     change the answer -- the gate checks that it does not; ``"off"`` is the
     single-stream loop, kept as the reference; ``"unchained"`` (WRONG ON
     PURPOSE) keeps the dedicated streams and drops every cross-stream wait,
-    the negative control that shows the chain is load-bearing.  A non-ring
+    the negative control that shows the chain is essential.  A non-ring
     ``write_mode`` degrades ``"on"`` to ``"off"``: the chain is derived from
     a RingPlan and the shadow already pays for its ordering with a second
     store.  ``ring_ordering="submission"`` also degrades to ``"off"`` -- it
@@ -1203,7 +1203,7 @@ class TiledRun:
         leading axis is not vertical (Noah's 4 soil levels, Noah-MP's 3 snow
         levels and 7-deep snow-soil coordinate).  Without it
         ``gather.domain_extents`` would have to infer nz, and for that
-        inventory the honest answer is that it cannot.
+        inventory the accurate answer is that it cannot.
 
     ``scalars``
         The DOMAIN's :func:`tilestream.physics_inventory.carrier_scalars`
@@ -1343,7 +1343,7 @@ class TiledRun:
         :func:`tilestream.harness.neutral_geography` runs with the Coriolis
         kernel and the msf-weighted paths switched off while holding the
         domain's real map factors.  It exists so the gate can show that the
-        imposition is load-bearing rather than decorative.
+        imposition is essential rather than decorative.
 
     ``use_graph`` captures each buffer's step as a CUDA graph and REPLAYS it
     for every other tile that buffer serves.  This is the one optimisation
@@ -1759,7 +1759,7 @@ class TiledRun:
         # plan-shaped hazard lists, and OVERLAP-ATTRIBUTION.md for the
         # measured exposure this exists to hide.  ``overlap='unchained'``
         # keeps the streams and drops every cross-stream wait: the negative
-        # control that shows the chain is load-bearing.
+        # control that shows the chain is essential.
         sched = None
         copy_in = copy_out = None
         ev_gather = ev_save = ev_ready = ev_stepped = ev_scatter = None
@@ -2167,7 +2167,7 @@ class TiledRun:
                         # reach ``sweep`` against a fake run, which is
                         # exactly one hop before the gap.
                         #
-                        # Load-bearing rather than tidy:
+                        # Essential rather than tidy:
                         # :class:`gpuwm.core.streaming.StreamedDomain` hands
                         # ArWen's own per-step keywords straight into
                         # ``sweep``, so dropping them here silently unsets
@@ -2413,7 +2413,7 @@ class TiledRun:
                     # The EFFECTIVE overlap mode ('on' degrades to 'off' for
                     # a non-ring write mode) and whether the sweep seam was
                     # deferred; with the seam deferred, ``sweep_seconds`` is
-                    # ISSUE time and the honest wall clock of a window is
+                    # ISSUE time and the accurate wall clock of a window is
                     # measured across drain().
                     overlap=overlap, overlap_deferred_seam=defer_seam,
                     tile_cfg=tile_cfg,
@@ -2821,7 +2821,7 @@ def _advance_clock(clock, tiles, last_b, _physics) -> dict:
     counters.  If they do not, the tiles integrated different physics and the
     run is not a forecast -- so that is an error here, not a shrug.
 
-    The one honest exception is ``ysu_nan_guard_fires``: it counts a
+    The one accurate exception is ``ysu_nan_guard_fires``: it counts a
     data-dependent guard, so a tile whose column blew up increments it and
     its neighbour does not.  It is a diagnostic counter that nothing in the
     step path reads, and the domain figure is the SUM over tiles -- which is

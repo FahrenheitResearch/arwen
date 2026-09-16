@@ -8,7 +8,7 @@ clauses hold on the frozen case set:
     against the direction registered *before* any data existed.  Exact, by
     enumerating the null distribution of the signed-rank sum over every sign
     assignment of the observed absolute ranks -- not a normal approximation,
-    which at seven cases would be a fiction.  The honest consequence is
+    which at seven cases would be a fiction.  The accurate consequence is
     printed with every verdict: at n = 7 the smallest attainable p is 1/128,
     so this battery can certify consistent effects and nothing else.
 
@@ -163,7 +163,7 @@ def twin_band(control: Mapping[str, float], twin: Mapping[str, float]
 
     One perturbed twin per case and the median across cases: with a case set
     this small a per-case twin *ensemble* is unaffordable, so this is the
-    honest estimator and the pair count travels with it in the receipt.
+    accurate estimator and the pair count travels with it in the receipt.
     """
     cases = sorted(set(control) & set(twin))
     if not cases:

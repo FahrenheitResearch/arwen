@@ -486,7 +486,7 @@ def spawn_reservation_advisories(exp) -> list[str]:
     The reservation contract, said where the numbers are: a declared
     spawn-triggered nest is priced by this preflight exactly as if it
     were live -- that is what makes VRAM deterministic and lets this
-    report refuse honestly -- so its residency is spent for the whole
+    report refuse accurately -- so its residency is spent for the whole
     run even if the trigger never fires, and it costs zero compute
     until it spawns.
     """
@@ -1154,7 +1154,7 @@ def observed_peak_envelope_bytes(
 #: 3% is the rounded-up bound over both, carried as the N0 reserve's
 #: retention term whenever the caller supplies the estimate it applies to.
 #: It is a fitted constant from two points and is documented as such; what
-#: keeps it honest is that it moves the gate in the refusing direction.
+#: keeps it accurate is that it moves the gate in the refusing direction.
 POOL_RESERVED_OVER_ESTIMATE_FRACTION = 0.03
 
 #: Device memory a fresh CUDA context holds before gpuwm allocates anything:
@@ -3874,14 +3874,26 @@ def lbc_intervals(run_seconds: float, forcing_interval_seconds: float, *,
 def mynn_pbl_column_chunk(cfg: RunConfig) -> int:
     """Columns per MYNN call for this domain.
 
-    The declared chunk, capped by the domain: a 50x20 verification grid has
-    1,000 columns and asks for one chunk of 1,000, while a 600x600 nest asks
-    for 22 chunks of 16,384.  The workspace is therefore the same size on
-    both, which is the property that lets a launch gate refuse a
-    configuration before it allocates.
+    The process's derived chunk, capped by the domain: a 50x20 verification
+    grid has 1,000 columns and asks for one chunk of 1,000, while a 600x600
+    nest asks for as many chunks as the derived width needs.  The workspace
+    is therefore the same size on every domain at or above that width, which
+    is the property that lets a launch gate refuse a configuration before it
+    allocates.
+
+    :func:`gpuwm.core.mynn_pbl_scratch.resolve_mynn_column_chunk` settles the
+    width once per process and memoises it, so THIS function, the shared
+    arena it sizes and the solver that walks the domain all name the same
+    number.  It is the shipped 8,192 columns -- the fastest arm of the
+    2026-09-15 sweeps, an interior minimum measured in both directions --
+    on a card and off one alike, unless an operator overrides it, so a
+    CPU-only ``gpuwm domain`` prices exactly what the card will run.  It is
+    NOT ``MYNN_PBL_COLUMN_CHUNK_FLOOR``, which bounds the derivation that
+    rides the receipt and is wider than the width that runs.
     """
-    from gpuwm.core.mynn_pbl_scratch import MYNN_PBL_COLUMN_CHUNK
-    return max(1, min(int(MYNN_PBL_COLUMN_CHUNK), int(cfg.ny) * int(cfg.nx)))
+    from gpuwm.core.mynn_pbl_scratch import resolve_mynn_column_chunk
+    return max(1, min(resolve_mynn_column_chunk(int(cfg.nz)),
+                      int(cfg.ny) * int(cfg.nx)))
 
 
 def mynn_pbl_scratch_slots(cfg: RunConfig) -> dict[str, tuple[int, ...]]:
@@ -4076,7 +4088,7 @@ def scratch_slot_registry(cfg: RunConfig, *,
         # vmi3d/di3d/rhopo3d are WRF grid STATE for mp=50
         # (Registry.EM_COMMON:3038) but nothing downstream of the scheme
         # reads them in gpuwm yet, so they are registered as scratch rather
-        # than promoted to DomainState fields -- the honest place for an
+        # than promoted to DomainState fields -- the accurate place for an
         # output the model computes and does not consume.  They are
         # registered rather than left unclassified so the allocation gate
         # sees their true size.
@@ -7612,7 +7624,7 @@ def _synthetic_root_boundaries(cfg: RunConfig, n_intervals: int):
 #: the row because :func:`rrtmgp_column_shapes` prices its
 #: ``effc``/``effi``/``effs`` pack off the same state arrays, so seeding
 #: the counter states the same steady state for it; there the seeding is
-#: faithful rather than load-bearing, because the ``wsm6`` coupling arm
+#: faithful rather than essential, because the ``wsm6`` coupling arm
 #: takes its radii unconditionally.
 ALLOC_COUNTER_ADVANCED_MICROPHYSICS = (6, 10)
 
@@ -9229,7 +9241,7 @@ def check_main(args) -> int:
     #: not have caught even in principle: a host OOM is delivered from
     #: outside the process, so a run that dies of it prints nothing at all.
     #:
-    #: ``None`` for both is the honest answer on a config whose forcing
+    #: ``None`` for both is the accurate answer on a config whose forcing
     #: this command cannot see, or a box whose RAM it cannot read; the
     #: comparison is then omitted rather than guessed.
     host_forcing_bytes = (phases.ingest.host_forcing_bytes

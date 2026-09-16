@@ -227,7 +227,7 @@ pub fn build_iso_volumes(
     // path inside the preflight's eight-component budget.  Either field's
     // failure degrades to a progress note: the sounding volumes and every
     // 2-D product still publish, and the chart recipes that needed the
-    // missing planes stay honestly "not stored".
+    // missing planes stay accurately "not stored".
     let mut recipe_volumes: Vec<IsoVolume> = Vec::new();
     for (var, stage, volume_name, units) in [
         ("rh", "chart-level relative humidity", "rh_chart_levels", "%"),

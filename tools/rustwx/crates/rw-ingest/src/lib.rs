@@ -209,7 +209,7 @@ pub fn fetch_plan(model: rustwx_core::ModelId) -> Result<Vec<ProductFetch>, Inge
 /// [`wx_core::download::find_entries`]; the level subset the profile stores is
 /// realized at decode.
 ///
-/// **Pattern format (load-bearing):** `find_entries` parses a pattern as
+/// **Pattern format (essential):** `find_entries` parses a pattern as
 /// `VARIABLE[:level-substring]`, matching the GRIB variable name EXACTLY and the
 /// level as a substring — it does NOT wrap the token in `.idx` field colons.
 /// A `:VAR:` form would split at the leading colon into an empty variable name
@@ -457,7 +457,7 @@ mod tests {
             "RRFS-A NA files (4.3+9.1 GB) must subset-fetch"
         );
         // The surface plan must reach the trailing 1 h window messages and the
-        // honest MSLET→mslp message.
+        // accurate MSLET→mslp message.
         let nat = plan[1].idx_patterns;
         assert!(nat.iter().any(|p| p.contains("APCP:surface")));
         assert!(nat.iter().any(|p| p.contains("MXUPHL:5000-2000 m")));
@@ -592,7 +592,7 @@ mod tests {
         ] {
             let plan = fetch_plan(model).expect("split pressure/surface plan");
             assert_eq!(plan.len(), 2, "{model} fetches pressure + surface");
-            // Order is load-bearing: pressure (prs) first, surface (sfc) second,
+            // Order is essential: pressure (prs) first, surface (sfc) second,
             // matching the historical fetch sequence.
             assert_eq!(plan[0].product, pressure);
             assert!(plan[0].pressure_source && !plan[0].surface_source);

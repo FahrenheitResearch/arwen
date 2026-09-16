@@ -59,7 +59,7 @@ This file therefore does two separate things and never mixes them:
    :func:`test_temperature_bin_is_a_documented_step_not_an_error_budget`
    rather than being absorbed into a loose global tolerance.
 
-FIXTURE SCOPE, stated honestly
+FIXTURE SCOPE, stated accurately
 ------------------------------
 ``aero-ccn-activate`` (103) and ``aero-ccn-sweep`` (104) are pure
 saturation-adjustment columns: their oracle runs produce exactly zero rain,

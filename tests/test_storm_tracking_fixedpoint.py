@@ -1,4 +1,4 @@
-"""The centre as a FIXED POINT: anchor-independent, and honest about
+"""The centre as a FIXED POINT: anchor-independent, and accurate about
 fields that have more than one centre.
 
 Roch's question was the right one -- *what happens with mesovortices, a
@@ -44,7 +44,7 @@ BOX = (slice(0, 200), slice(0, 200))
 def _vortex(ny, nx, cj, ci, depth=40.0, width=25.0, slope=0.10,
             floor=1500.0):
     """One vortex in an environmental gradient (see the radius suite for
-    why the gradient is load-bearing in a fixture)."""
+    why the gradient is essential in a fixture)."""
     j, i = np.mgrid[0:ny, 0:nx]
     r2 = (j - cj) ** 2 + (i - ci) ** 2
     return (floor - depth * np.exp(-r2 / (2.0 * width ** 2))
@@ -65,7 +65,7 @@ def _fix_from(plane, seed, radius_cells=40.0, threshold=30.0):
     """Force the iteration to START at ``seed``, by making that cell the
     field's minimum by one CENTIMETRE.
 
-    That is the honest way to move the seed: the field is otherwise
+    That is the accurate way to move the seed: the field is otherwise
     untouched, the relative ceiling moves by 0.01 m, and the only thing
     that changes is which cell the iteration begins from.  It is also
     exactly the mesovortex case -- a tiny perturbation that captures the

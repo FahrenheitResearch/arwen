@@ -135,10 +135,14 @@ def _download_members(value, request, stream_command, staging, destination, leas
 def sync(args, command, stream_command):
     from gpuwm.remote_cli import _transport
     products = getattr(args, "products", None)
-    products = products.split(",") if isinstance(products, str) else products
+    products = viewer.selectors(products) if isinstance(products, str) else products
     selection = viewer._selection(getattr(args, "profile", viewer.PROFILE), products)
+    # The selection travels exactly as it was decided. An empty one stays empty
+    # so the node resolves its own default set; rewriting it into a list here
+    # would make this desktop the authority for what the node draws.
     request = {"schema": "gpuwm.remote.request.v1", "action": "processed-frame-v2", "workspace": args.workspace,
-               "job": args.job, "domain": ra._domain(args.domain), "profile": selection["profile"], "products": selection["products"] or viewer.DEFAULT_PRODUCTS}
+               "job": args.job, "domain": ra._domain(args.domain), "profile": selection["profile"],
+               "products": selection["products"]}
     if args.sequence is not None:
         request["sequence"] = ra._sequence(args.sequence)
     prefetch = getattr(args, "prefetch_sequences", None)

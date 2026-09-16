@@ -213,7 +213,7 @@ def test_a_docstring_only_mention_is_not_a_candidate() -> None:
     ``isftcflx`` is no longer one of those two: the over-water branches are
     ported, so that file now reads it in executable code and is a legitimate
     candidate.  ``iz0tlnd`` is still land-only and still prose there, which is
-    what keeps this regression test honest -- it is asserting that the builder
+    what keeps this regression test accurate -- it is asserting that the builder
     can tell prose from code, not that this particular file is inert.
     """
 
@@ -389,5 +389,5 @@ def test_the_builder_refuses_a_remedy_label_that_promises_a_second_edit(
     silent = dict(rule, remedy_label="Choose another radiation arm.")
     with pytest.raises(RuntimeError, match="ra_rrtmg_variant"):
         _check_remedy_label_describes_its_edit(silent, registry, "a-scheme")
-    honest = dict(rule, remedy_label="Set ra_rrtmg_variant='rrtmg_legacy'.")
-    _check_remedy_label_describes_its_edit(honest, registry, "a-scheme")
+    accurate = dict(rule, remedy_label="Set ra_rrtmg_variant='rrtmg_legacy'.")
+    _check_remedy_label_describes_its_edit(accurate, registry, "a-scheme")

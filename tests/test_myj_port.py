@@ -864,7 +864,7 @@ def test_the_driver_routes_each_half_to_its_own_runner():
     assert resolve_physics_slot("sf_sfclay_physics", 2) == "_run_myj_sfclay"
 
 
-def test_the_registry_rows_are_honest_about_the_evidence():
+def test_the_registry_rows_are_accurate_about_the_evidence():
     registry = json.loads(
         (_ROOT / "gpuwm" / "physics_registry_v2.json").read_text("utf-8"))
     myj = registry["components"]["pbl"]["options"]["myj"]
@@ -1012,7 +1012,7 @@ def test_the_surface_kernels_pblh_accumulator_is_column_local():
 def test_physics_md_carries_the_pair_in_its_tables():
     text = (_ROOT / "docs" / "public" / "PHYSICS.md").read_text("utf-8")
     assert "| MYJ " in text and "Eta similarity" in text
-    # The doc row must repeat the honest tier, not just the label.
+    # The doc row must repeat the accurate tier, not just the label.
     myj_rows = [ln for ln in text.splitlines()
                 if ln.startswith("| MYJ ") or "Eta similarity |" in ln]
     assert myj_rows, "no MYJ row in PHYSICS.md"

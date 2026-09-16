@@ -812,7 +812,14 @@ class TestReExecArgvSurvival:
         # fell back to it fails here instead of preparing every later
         # epoch on a background nobody asked for.
         "source": ["--source", "hrrr"],
-        "dealias": ["--dealias"],
+        # Left at the default, which is ON: the engine and the refinement
+        # switch below only travel on that arm (a --no-dealias roll has no
+        # refinement to spell, and the door refuses one), so the probe
+        # exercises the arm that carries all three.  That OFF survives the
+        # roll as OFF is pinned separately, by
+        # tests/test_da_nowcast_daemon_argv.py::TestEpochReexec and
+        # tests/test_obs_dealias_default.py.
+        "dealias": None,
         "dealias_engine": ["--dealias-engine", "vad-region"],
         # A PAIR of flags, not a valued option, and refinement is
         # refused on this engine -- so the probe states the negative,
@@ -1211,7 +1218,7 @@ class TestOverlapHandoverEndToEnd:
         assert str(rig.daemon.view_dir()).endswith(
             str(Path("epoch0001") / "view"))
 
-    def test_the_switch_is_one_honest_line_on_the_gallery(
+    def test_the_switch_is_one_accurate_line_on_the_gallery(
             self, tmp_path, monkeypatch):
         rig = self.rig(tmp_path, monkeypatch)
         self.run_to_handover(rig)

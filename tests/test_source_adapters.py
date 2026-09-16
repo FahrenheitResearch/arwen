@@ -27,7 +27,7 @@ from gpuwm.source_adapters import (
     source_capability_manifest,
 )
 from gpuwm.mapped_engine_bridge import ENGINE_RUST as MAPPED_ENGINE_RUST
-from gpuwm.source_authorities import packaged_profile_ids
+from gpuwm.source_authorities import packaged_profile, packaged_profile_ids
 import gpuwm.source_cli
 from gpuwm.source_cli import EXIT_CONFIG, EXIT_USAGE, _parser, main
 from gpuwm.source_frame import (
@@ -47,6 +47,7 @@ EXPECTED_SOURCE_IDS = (
     "hrrr",
     "hrrr-prs",
     "gem-gdps",
+    "icon-global",
     "icon-eu",
     "hrrr-ak",
     "gfs",
@@ -114,11 +115,12 @@ def test_forecast_start_hour_is_absent_globally_and_defaults_only_in_hrrr():
 def test_registry_covers_bound_inventory_and_external_source_routes():
     adapters = source_adapters()
     assert tuple(adapter.source_id for adapter in adapters) == EXPECTED_SOURCE_IDS
-    assert len({adapter.source_id for adapter in adapters}) == 32
+    assert len({adapter.source_id for adapter in adapters}) == len(EXPECTED_SOURCE_IDS)
     assert [adapter.source_id for adapter in adapters if adapter.runnable] == [
         "hrrr",
         "hrrr-prs",
         "gem-gdps",
+        "icon-global",
         "icon-eu",
         "gfs",
         "gdas",
@@ -194,12 +196,18 @@ def test_manifest_binds_inventory_and_does_not_confuse_decode_with_readiness():
     assert manifest["runtime_forbidden"] == ["WPS", "real.exe"]
     assert manifest["rusty_weather_inventory"]["model_id_count"] == 23
     assert len(manifest["rusty_weather_inventory"]["head"]) == 40
-    assert manifest["source_count"] == 32
-    assert manifest["runnable_source_count"] == 18
+    assert manifest["source_count"] == len(EXPECTED_SOURCE_IDS)
+    assert manifest["runnable_source_count"] == sum(row.runnable for row in source_adapters())
     assert set(manifest["packaged_source_authorities"]) == set(
         packaged_profile_ids())
-    for pins in manifest["packaged_source_authorities"].values():
-        assert set(pins) == {"mapping", "composition", "provenance"}
+    for profile_id, pins in manifest["packaged_source_authorities"].items():
+        # The fourth pin appears only for a profile that declares an input
+        # normalizer: the document that makes an unreadable native grid
+        # reachable is sealed in the manifest like the other three.
+        extra = ({"normalization"}
+                 if packaged_profile(profile_id).get("input_normalizer")
+                 else set())
+        assert set(pins) == {"mapping", "composition", "provenance"} | extra
         assert all(len(digest) == 64 for digest in pins.values())
     assert all("stock_wrf_gate" in value for value in manifest["sources"])
     assert len(manifest["mapped_stock_wrf_evidence"]) == 2
@@ -436,7 +444,7 @@ def test_interval_time_semantics_are_explicit():
 def test_cli_lists_machine_readable_inventory(capsys):
     assert main(["--list-sources"]) == 0
     payload = json.loads(capsys.readouterr().out)
-    assert payload["source_count"] == 32
+    assert payload["source_count"] == len(EXPECTED_SOURCE_IDS)
     assert (
         payload["canonical_source_frame"]["schema"] == "gpuwm-canonical-source-frame-v1"
     )

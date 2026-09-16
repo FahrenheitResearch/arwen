@@ -29,7 +29,7 @@
 //!   directly with no transpose).
 //! - All data vars carry: `units` (from meta), `long_name` = variable name,
 //!   `coordinates = "lat lon"`, `_FillValue = f32::NAN`.
-//! - 3D vars additionally carry `rw_quantization` (scientific-honesty note).
+//! - 3D vars additionally carry `rw_quantization` (scientific-accuracy note).
 //!
 //! ### Global attributes
 //! `Conventions`, `title`, `model`, `run`, `grid_hash`, `source`, `comment`,

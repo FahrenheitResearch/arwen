@@ -18,7 +18,7 @@ service the NOMADS governor exists for).
 The GFS fetch route used to hardcode a 21-level pressure ladder topping
 out at 100 hPa, which silently capped the model top any ArWen GFS run
 could ask for at 10000 Pa.  Deciding which levels a requested `p_top`
-needs is only honest against what the product *actually publishes*, and
+needs is only accurate against what the product *actually publishes*, and
 "what it publishes" is a fact about NCEP's output, not a constant anyone
 should be inventing in a source file.
 

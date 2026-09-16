@@ -71,7 +71,7 @@ from __future__ import annotations
 import struct
 
 import numpy as np
-# numpy >= 2 is load-bearing for the FP32 max_ulp-0 discipline in this
+# numpy >= 2 is essential for the FP32 max_ulp-0 discipline in this
 # module: NEP-50 weak promotion keeps float32 op python-scalar in
 # float32, while numpy 1.x would silently widen those chains to float64
 # and break bitwise parity with the WRF oracle.  Fail closed at import.
@@ -4286,19 +4286,26 @@ def batch_column_chunk(threads_per_column, ceiling, *,
     occupancy.  Returns the smallest multiple of ``quantum`` whose
     launch covers ``resident_threads`` (the current device's capacity
     when not given), clamped to ``[quantum, ceiling]``.  With no usable
-    device the ceiling is returned unchanged.  Chunk width is workspace
-    shape only: per-column results are bitwise identical at any width
-    (both translation units' contract, proved over the fixture decks).
+    device the ceiling is returned unchanged.  ``ceiling=None`` means no
+    ceiling (the SW chain bounds its width by free VRAM instead, see
+    gpuwm.core.rrtmg_sw.sw_batch_column_chunk) and then requires a
+    usable ``resident_threads``.  Chunk width is workspace shape only:
+    per-column results are bitwise identical at any width (both
+    translation units' contract, proved over the fixture decks).
     """
-    ceiling = int(ceiling)
+    ceiling = None if ceiling is None else int(ceiling)
     if resident_threads is None:
         resident_threads = _device_resident_threads()
     if not resident_threads or int(resident_threads) <= 0:
+        if ceiling is None:
+            raise ValueError(
+                "batch_column_chunk without a ceiling needs a usable "
+                "resident_threads (no device to size the chunk against)")
         return ceiling
     quantum = int(quantum)
     need = -(-int(resident_threads) // int(threads_per_column))
     need = -(-need // quantum) * quantum
-    return max(quantum, min(ceiling, need))
+    return max(quantum, need if ceiling is None else min(ceiling, need))
 
 
 def __getattr__(name):
@@ -4366,7 +4373,7 @@ def lw_batched_vram_bytes(ncol_chunk, nlay, ncol_total=None):
     cldprmc; setcoef+band kernels; rtrn march), plus the batch-level
     output slabs (priced at ncol_total, default = ncol_chunk).  Every term
     is rounded to CuPy's 512-byte pool quantum, so the estimate tracks
-    mempool.used_bytes() tightly (the honesty test in
+    mempool.used_bytes() tightly (the accuracy test in
     tests/test_rrtmg_lw_cuda.py requires estimate >= measured >=
     0.5*estimate).  The per-call constant tables are NOT included: add
     lw_batched_const_bytes(C) (~2-3 MiB) for the full preflight term.

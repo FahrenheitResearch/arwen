@@ -126,7 +126,7 @@ def foreign_imports(repo_root: pathlib.Path,
 
     Pure, and takes its modules as an argument, so both directions can be
     tested without arranging a second checkout on disk.  Empty means the
-    run is honest: every watched module either came from ``repo_root`` or
+    run is accurate: every watched module either came from ``repo_root`` or
     came from something that is not a competing checkout.
     """
 

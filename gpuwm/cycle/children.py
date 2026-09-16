@@ -21,7 +21,7 @@ which is free, because a cycle boundary is already a process boundary.
                       died is RETIRED and its slot returns to the pool,
                       and a new storm claims a free slot
 
-The honest cost, stated here because it is the one thing a user must know
+The accurate cost, stated here because it is the one thing a user must know
 before choosing ``--child-slots N``: **N slots cost N nests' worth of VRAM
 for the whole run, filled or not.**  That is what buys determinism.
 

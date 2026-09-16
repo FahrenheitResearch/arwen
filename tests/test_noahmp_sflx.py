@@ -669,7 +669,7 @@ def test_error_accumulates_across_steps():
 def test_error_irrigation_terms_are_signed_into_the_residual():
     """IRFIRATE and IRMIRATE are m/timestep and enter ERRWAT scaled by 1000.
     They are identically zero under OPT_IRR = 0, so the only way to keep the
-    transcription honest is to exercise them directly."""
+    transcription accurate is to exercise them directly."""
     base = error(**_balanced())
     with_irr = error(**_balanced(irfirate=np.float32(1.0e-5)))
     assert float(base.errwat) == 0.0

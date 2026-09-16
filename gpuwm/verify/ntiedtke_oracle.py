@@ -3,7 +3,7 @@
 The CSVs under ``gpuwm/data/ntiedtke/oracle/`` are recorded from
 byte-unmodified WRF v4.6.1 by ``tools/ntiedtke_wrf461_oracle/build.sh``;
 that directory's README pins the three source digests and explains why
-``-DRWORDSIZE=4`` is load-bearing.
+``-DRWORDSIZE=4`` is essential.
 
 Every float in those files is a raw IEEE-754 word in hex, not a decimal
 rendering, because the bar is ``max_ulp == 0`` and a decimal rendering is a
@@ -174,7 +174,7 @@ def cuinin_surface():
 
 #: cutypen's per-level outputs.  cutu/cuqu/culu/culab are intent(out) in
 #: cutypen but READ before assignment (:1334-1337), and cumastrn passes
-#: cuinin's own ptu/pqu/plu/ilab -- so the aliasing is load-bearing and the
+#: cuinin's own ptu/pqu/plu/ilab -- so the aliasing is essential and the
 #: harness reproduces it.  Getting that wrong is what the NumPy mirror
 #: caught: a fixture built from fresh arrays disagreed with the mirror on
 #: every shallow column.

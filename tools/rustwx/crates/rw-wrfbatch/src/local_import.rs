@@ -1347,7 +1347,7 @@ pub(crate) struct SourceTimeAxis {
 /// A source record after the complete run timeline has been validated. For a
 /// legacy v1 run `storage_slot` is the true forecast hour and `exact_time` is
 /// `None`. For a v2 run the slot is only a stable ordinal identity; the exact
-/// lead and valid time are load-bearing metadata.
+/// lead and valid time are essential metadata.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PlannedSourceTime {
     pub(crate) time_index: usize,
@@ -3159,7 +3159,7 @@ fn push_canonical_surface_fields(
     // maximum pushed first would SHADOW the instantaneous field that
     // `10m_wind_speed_and_direction` renders.  A time maximum has no
     // canonical selector in this catalog; until one exists with its own
-    // honest label, the plane stays out of the canonical map rather than
+    // accurate label, the plane stays out of the canonical map rather than
     // borrowing a name that means something else.
 
     // WRF U10/V10 are grid-relative. Publish canonical vector components

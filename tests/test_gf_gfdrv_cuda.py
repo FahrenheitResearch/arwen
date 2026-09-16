@@ -291,7 +291,7 @@ def test_the_shipped_default_is_bitwise_at_the_wrf_boundary(module, fixture,
 
 # ==========================================================================
 # the gamma divergence, at the driver boundary -- the control that keeps the
-# pin above honest
+# pin above accurate
 # ==========================================================================
 @pytest.mark.gpu
 def test_the_unpinned_run_is_the_documented_divergence_not_a_regression(
@@ -303,7 +303,7 @@ def test_the_unpinned_run_is_the_documented_divergence_not_a_regression(
     uses.  Three things must hold and none is free.
 
     * The unpinned run DIFFERS somewhere.  That proves the pin is
-      load-bearing and that gamma has not quietly gone back to reproducing
+      essential and that gamma has not quietly gone back to reproducing
       glibc's tgammaf.  If this stops firing, read
       docs/gf_gamma_known_delta.md before believing anything else here.
     * A column with NO pinned fzu cannot move.  WRF captures 0 for a profile

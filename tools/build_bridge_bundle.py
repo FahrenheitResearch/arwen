@@ -565,7 +565,7 @@ def adopt(release: str, held: Path, bundles_dir: Path,
           source_rev: str) -> None:
     """Adopt a draft's already-uploaded assets, or refuse loudly.
 
-    Rust builds are not byte-reproducible, so this is the only honest
+    Rust builds are not byte-reproducible, so this is the only accurate
     way a re-dispatched run can coexist with assets a previous run
     already uploaded: prove the uploaded zips satisfy this commit's
     content contract, then make them THIS run's bundles, so the pins,

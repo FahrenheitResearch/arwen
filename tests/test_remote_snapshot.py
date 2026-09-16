@@ -100,14 +100,29 @@ def test_relocation_preserves_declared_case_data_paths(tmp_path):
     assert "declared-inputs/namelist.wps" in snapshots
 
 
-def test_existing_output_is_refused_without_modifying_it(tmp_path):
+def test_an_existing_case_folder_collects_this_run_without_modifying_what_it_holds(tmp_path):
+    """An existing output directory is a case folder; the run claims a folder inside it."""
+    from gpuwm import run_stamp
     source = config(tmp_path)
     output = tmp_path / "new output"
     output.mkdir()
     marker = output / "keep"
     marker.write_text("existing run", encoding="utf-8")
+    review = rw._launch({**request(tmp_path, source), "dry_run": True}, tmp_path)["review"]
+    assert Path(review["run_root"]).parent == output and run_stamp.is_run_folder(review["run_root"])
+    assert marker.read_text() == "existing run"
+    assert not (tmp_path / ".arwen-jobs").exists()
+    assert not Path(review["run_root"]).exists(), "a dry run claims nothing"
+
+
+def test_an_existing_run_folder_is_refused_without_modifying_it(tmp_path):
+    source = config(tmp_path)
+    output = tmp_path / "run-20260905-000000Z"
+    output.mkdir()
+    marker = output / "keep"
+    marker.write_text("existing run", encoding="utf-8")
     with pytest.raises(ValueError, match="already exists"):
-        rw._launch(request(tmp_path, source), tmp_path)
+        rw._launch(request(tmp_path, source, outdir=str(output)), tmp_path)
     assert marker.read_text() == "existing run"
     assert not (tmp_path / ".arwen-jobs").exists()
 
@@ -133,13 +148,15 @@ def test_invalid_scientific_schema_fails_in_read_only_review(tmp_path):
     assert not (tmp_path / ".arwen-jobs").exists()
 
 
-def _restart(path, *, grid_id=1, domain_ids=None, corrupt=False):
+def _restart(path, *, grid_id=1, domain_ids=None, corrupt=False, written_mode=None):
     import numpy as np
     array = np.arange(4, dtype=np.float32)
     header = {"format_version": 3, "grid_id": grid_id,
               "array_manifest": {"state/u": {"shape": [4], "dtype": "float32"}}}
     if domain_ids is not None:
         header["domain_ids"] = domain_ids
+    if written_mode is not None:
+        header["written_mode"] = written_mode
     arrays = {"state/u": array, "__gpuwm_restart_header__": np.frombuffer(json.dumps(header).encode(), dtype=np.uint8)}
     if corrupt:
         arrays["undeclared"] = array
@@ -197,6 +214,9 @@ def test_resume_review_resolves_exact_checkpoint_and_preserves_old_output(tmp_pa
     review = rw._launch(wanted, tmp_path)["review"]
     assert review["checkpoint"] == str(checkpoint)
     assert review["parent_job"] == "old-job" and review["products"] == "t2"
+    # A resume that does name one is asking for it, and gets it.
+    named = rw._launch({**wanted, "products": "none"}, tmp_path)["review"]
+    assert named["products"] == "none"
     assert review["argv"][-2:] == ["--restart", str(checkpoint)]
     assert not (tmp_path / "new output").exists()
     assert list(output.iterdir()) == [checkpoint]
@@ -205,12 +225,75 @@ def test_resume_review_resolves_exact_checkpoint_and_preserves_old_output(tmp_pa
         rw._launch({**wanted, "expected_checkpoint_set_sha256": review["checkpoint_set_sha256"]}, tmp_path)
 
 
-def test_checkpointless_resume_keeps_public_route_refusal(tmp_path):
+@pytest.mark.parametrize("explicit", [False, True])
+def test_a_resume_review_discloses_the_written_road_and_the_resolved_mode(tmp_path, monkeypatch, explicit):
+    """The review carries what ``gpuwm resume`` prints, through the same door.
+
+    The source job's configuration says which memory mode this resume
+    resolves [tiles] to; the checkpoint's own stamp says which road wrote
+    it.  Both are disclosures: the review binds the same checkpoint with
+    or without them and never refuses on them.
+    """
+    from gpuwm.toml_document import emit_experiment_toml
+    source = config(tmp_path)
+    # Declared inputs, so the review has nothing to bind but the checkpoint.
+    raw = tomllib.loads(source.read_text(encoding="utf-8"))
+    raw["case_data"] = {"geog_root": "geography", "forcing": ["forcing.nc"], "vtable": "Vtable",
+                        "wps_namelist": "inputs.wps", "sfcp_to_sfcp": True, "output_title": "fixture"}
+    (tmp_path / "geography").mkdir()
+    for name in ("forcing.nc", "Vtable", "inputs.wps"):
+        (tmp_path / name).write_text("fixture")
+    source.write_text(emit_experiment_toml(raw), encoding="utf-8")
+    output = tmp_path / "old output"
+    output.mkdir()
+    stamped = _restart(output / "gpuwmrst_d01_2026-09-05_01_00_00.npz",
+                       written_mode={"mode": "streamed", "shape": [4, 4], "store": "host"})
+    old = {"id": "old-job", "snapshot_config": str(source), "outdir": str(output), "cwd": str(tmp_path), "products": "t2"}
+    monkeypatch.setattr(rw, "_directory", lambda workspace, job: tmp_path)
+    monkeypatch.setattr(rw, "_record", lambda directory: old)
+    monkeypatch.setattr(rw, "_status", lambda directory: {"state": "stopped"})
+    wanted = request(tmp_path, source, action="resume", job="old-job", dry_run=True)
+    wanted.pop("products")
+    if explicit:
+        wanted["from_checkpoint"] = str(stamped)
+    review = rw._launch(wanted, tmp_path)["review"]
+    assert review["checkpoint"] == str(stamped)
+    notes = review["resume_notes"]
+    assert len(notes) == 2
+    assert "this run resolves [tiles] to resident" in notes[0]
+    assert "this checkpoint was WRITTEN streamed and this run resolves [tiles] to resident" in notes[1]
+    assert all("mode-independent" in note for note in notes)
+    # CONTROL: a file that names no road contributes nothing, and the same
+    # review otherwise: one note from the configuration, the same binding.
+    stamped.unlink()
+    unstamped = _restart(output / "gpuwmrst_d01_2026-09-05_01_00_00.npz")
+    if explicit:
+        wanted["from_checkpoint"] = str(unstamped)
+    plain = rw._launch(wanted, tmp_path)["review"]
+    assert plain["checkpoint"] == str(unstamped)
+    assert len(plain["resume_notes"]) == 1
+    assert "this run resolves [tiles] to resident" in plain["resume_notes"][0]
+    assert not (tmp_path / "new output").exists()
+
+
+def test_a_fresh_start_review_carries_no_resume_notes(tmp_path):
+    review = rw._launch(request(tmp_path, config(tmp_path), dry_run=True), tmp_path)["review"]
+    assert review["resume_notes"] == []
+
+
+def test_resume_without_a_written_checkpoint_keeps_its_public_refusal(tmp_path):
+    """Renamed with the defect: "checkpointless" named a route that never existed.
+
+    The refusal itself is unchanged and still correct, a source job that
+    wrote no checkpoint cannot be resumed, but it is about a RUN that
+    wrote nothing, not about a route that cannot write.
+    """
     source = config(tmp_path)
     output = tmp_path / "old output"
     output.mkdir()
-    with pytest.raises(ValueError, match="No manifest-valid checkpoint exists"):
+    with pytest.raises(ValueError, match="No manifest-valid checkpoint exists") as caught:
         rw._checkpoint({"outdir": str(output), "snapshot_config": str(source)}, "latest")
+    assert "does not declare a valid forecast domain" not in str(caught.value)
     assert list(output.iterdir()) == []
 
 

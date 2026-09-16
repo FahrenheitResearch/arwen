@@ -689,7 +689,7 @@ def _resolve_forcing(base_dir: Path, value, source: str, *,
                 # must not be refused because the cycle it does not read
                 # has not been downloaded.  The pattern still had to be
                 # declared and still had to parse; it simply expands to
-                # nothing here, and the empty tuple says so honestly
+                # nothing here, and the empty tuple says so accurately
                 # rather than inventing a path that does not exist.
                 if not require_match:
                     continue
@@ -724,7 +724,7 @@ def build_case_data(raw: dict, *, source: str, base_dir: Path,
     forecast that starts without its forcing is a forecast that fails
     an hour in instead of at the front door.
 
-    It exists for the one caller that is honestly asking a different
+    It exists for the one caller that is accurately asking a different
     question -- what WOULD this run be, before its data is fetched.
     A plan can be resolved and its VRAM estimated from the geometry and
     physics alone, and a front end showing that estimate must not have
@@ -733,7 +733,7 @@ def build_case_data(raw: dict, *, source: str, base_dir: Path,
     are still resolved, so the caller can report exactly which declared
     inputs are not there yet.
 
-    ``require_met_inputs`` is the narrower form of the same honesty, for
+    ``require_met_inputs`` is the narrower form of the same accuracy, for
     a caller that reads SOME inputs but provably not the meteorological
     ones.  ``gpuwm static`` is that caller: it builds geography from
     ``geog_root`` and the WPS namelist, and never opens the forcing GRIB
@@ -1092,13 +1092,21 @@ def load_experiment_case_bytes(
 
 
 def load_experiment_case(path: str | Path, *,
+                         require_inputs: bool = True,
                          require_met_inputs: bool = True
                          ) -> tuple[ExperimentConfig, CaseDataConfig]:
     """Load one TOML into its (experiment, case-data) config pair.
 
     ``require_met_inputs=False`` is for `gpuwm static`, which builds
     geography and provably never opens the forcing GRIB or the Vtable.
-    See :func:`build_case_data`.
+
+    ``require_inputs=False`` is the wider form, for a caller that asks
+    what this configuration WOULD be rather than running it: the schema,
+    type and policy rules all run and every path is still resolved, only
+    the existence check is skipped.  It was reachable on
+    :func:`load_experiment_case_bytes` and not here, so a caller holding
+    a PATH could not ask the question a caller holding BYTES could.  See
+    :func:`build_case_data`.
     """
 
     from gpuwm.config_authority import read_config_authority
@@ -1107,6 +1115,7 @@ def load_experiment_case(path: str | Path, *,
     path = authority.source
     return load_experiment_case_bytes(
         authority.payload, source=str(path), base_dir=path.parent,
+        require_inputs=require_inputs,
         require_met_inputs=require_met_inputs)
 
 

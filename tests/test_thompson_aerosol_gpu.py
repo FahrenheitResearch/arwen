@@ -77,7 +77,7 @@ G3_GATE = 2.0e-6
 #: These are UPPER BOUNDS, not expected values.  The assertion is
 #: ``measured <= published * 1.05``.  Nothing here is a tolerance in the
 #: sense of "how close is close enough"; the tolerance is G3_GATE and these
-#: are the honest, published distances from it.
+#: are the accurate, published distances from it.
 #:
 #: WHAT MOVED IN WP-13, ALL RE-MEASURED HERE:
 #:   * WP-13a restored WRF's LEVEL-WISE working rain density for sedimentation

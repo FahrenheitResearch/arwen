@@ -129,7 +129,7 @@ def clear_fields(state, cfg) -> None:
     """Zero the packed term buffer at the top of a step.
 
     Terms that are not produced by this configuration (``diffusion_6th``
-    without the filter) must read as an honest zero, not as last step's
+    without the filter) must read as an accurate zero, not as last step's
     value.
     """
     buf = term_buffer(state, cfg)

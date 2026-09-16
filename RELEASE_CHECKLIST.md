@@ -162,7 +162,7 @@ reproduce them, not because their proofs are optional:
 - [ ] The committed tag has `release: null` and `platforms: {}` in
       `gpuwm/data/bridges/bridge-pins.json`. Official wheel/sdist pins are
       generated later from the exact bundles; GitHub's automatic source
-      archives stay honestly unpinned and require a source build.
+      archives stay unpinned on purpose and require a source build.
       `tools/verify_source_bridge_pins.py` is a hard gate and stays one by
       owner ruling 2026-08-03: the failure mode is a source archive
       impersonating pinned release bytes.

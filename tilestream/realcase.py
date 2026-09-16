@@ -48,7 +48,7 @@ finite speed as right ones.
 ``time_step_sound=4`` and WRF's standard ``spec_zone=1, relax_zone=4`` it is
 ``16 + 4 = 20``.  Nothing here is tuned: both terms are read off the config.
 
-Two consequences, and both are load-bearing:
+Two consequences, and both are essential:
 
 *   THE PLAN MUST BE NON-PERIODIC.  ``spec.plan_tiles(periodic=False)``
     CLAMPS an edge tile's compute window into the domain instead of wrapping
@@ -85,7 +85,7 @@ the largest that can be STREAMED.  :mod:`tilestream.realdata` closes exactly
 this gap for the dynamics carriers by row slabs and is bit-exact doing it;
 what it does not yet do is the soil/landuse/physics-driver half of
 ``prepare_real_case``.  Until that lands, a streamed real forecast is capped
-by its own preparation, and the honest way to report a domain size is to say
+by its own preparation, and the accurate way to report a domain size is to say
 which of the two limits it was up against.
 """
 

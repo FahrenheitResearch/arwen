@@ -35,6 +35,10 @@ from gpuwm.native_wrf_distribution import (  # noqa: E402
 
 _TOP_LEVEL_EXCLUDES = {
     "cli.py",
+    # ``python -m gpuwm`` is the gpuwm console script by another name: its
+    # only import is gpuwm.cli, excluded on the line above, so it leaves
+    # with it.  The standalone project has no such door.
+    "__main__.py",
     # The spectral-numerics seam: the hook the MODEL LOOP calls once per
     # completed slow large step, plus receipt binding into the run
     # capsule.  Pure runtime -- a preprocessing wheel completes no model
@@ -205,6 +209,16 @@ _TOP_LEVEL_EXCLUDES = {
     "background_contract.py", "regional_preparation.py",
     "local_da.py", "local_da_fetch.py", "local_da_observations.py",
     "local_da_runtime.py", "cyclone_seed.py", "cyclone_sources.py",
+    # The rapid-cycling controller and the nowcast scorer belong to the same
+    # analysis-cycle surface as the doors above, and both are reached only
+    # from them (`gpuwm/local_da.py` and `gpuwm/local_da_runtime.py`, already
+    # excluded here).  Each is unstageable on its own terms as well: the
+    # controller reaches gpuwm.ensemble, gpuwm.mcp and gpuwm.supervisor, none
+    # of which this wheel stages, and the scorer reaches gpuwm.verify.obs
+    # nine times -- the verification package this wheel omits by design.
+    # Staging either put a module in the wheel that ImportErrors the moment
+    # it is reached, and this builder's own staging scans refused outright.
+    "local_da_controller.py", "local_da_score.py",
 }
 _CORE_MODULES = {
     "__init__.py",

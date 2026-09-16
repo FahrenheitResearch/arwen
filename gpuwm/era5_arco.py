@@ -17,7 +17,6 @@ from gpuwm.ingest.regular_netcdf import REGULAR_FIELD_UNITS
 
 ARCO_STORE = ("https://storage.googleapis.com/gcp-public-data-arco-era5/ar/"
               "full_37-1h-0p25deg-chunk-1.zarr-v3")
-ARCO_COMBINED_NAME = "era5-combined.nc"
 _RECEIPT = "era5-arco-acquisition.json"
 _SCHEMA = "arwen.era5-arco-acquisition.v1"
 _PRESSURE = {
@@ -107,7 +106,13 @@ def retrieve_era5_arco(*, cycle: datetime | str, hours: int, area,
     identity = {"source": "era5", "provider": "arco", "cycle": cycle.isoformat() + "Z",
                 "hours": hours, "cadence_hours": cadence, "area": area.as_manifest(), "native_request": request}
     out = Path(out).expanduser().resolve()
-    target = out / ARCO_COMBINED_NAME
+    # ASKED FOR, NOT SPELLED, and for the reason the emitters ask: the
+    # name of the published file is one fact, and this module publishing
+    # it is no licence to hold a second copy of that fact.  A literal
+    # here is the same two-authorities shape that made a configuration
+    # written for this provider name a file its own fetch never wrote.
+    combined_name = fetch.era5_combined_name("arco")
+    target = out / combined_name
     receipt_path = out / _RECEIPT
     with fetch_guard.hold("fetch-out", out, progress=progress):
         for path in (target, receipt_path):
@@ -131,7 +136,7 @@ def retrieve_era5_arco(*, cycle: datetime | str, hours: int, area,
         out.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(prefix=".era5-arco-", dir=out) as temporary:
             stage = Path(temporary)
-            combined = stage / ARCO_COMBINED_NAME
+            combined = stage / combined_name
             progress("fetch era5: reading Google ARCO source metadata and native Zarr chunks")
             native = extract_regular_zarr(request, request_path=stage / "request.json",
                                          output=combined, progress=progress)

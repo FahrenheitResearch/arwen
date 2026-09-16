@@ -12,6 +12,18 @@ from gpuwm import remote_artifacts as ra, remote_cli, remote_processed as legacy
 from gpuwm import remote_processed_v2 as viewer, remote_processed_cache_v2 as cache
 from test_remote_artifacts import case, encoded
 
+#: What this fixture node's own viewer profile resolves an empty selection to.
+#: The node owns this list; the desktop keeps no copy of it, so the fixture
+#: that stands in for the node is where it belongs.
+NODE_DEFAULT_PRODUCTS = [
+    "composite_reflectivity", "1km_reflectivity", "2m_temperature",
+    "2m_dewpoint", "2m_relative_humidity", "10m_wind_speed_and_direction",
+    "mslp_10m_winds", "total_qpf", "precipitable_water",
+    "850mb_temperature_height_winds", "850mb_height_winds",
+    "700mb_rh_height_winds", "500mb_height_winds", "300mb_height_winds",
+    "sbcape", "mlcape", "sbcin", "bulk_shear_0_6km", "srh_0_1km", "uh_2to5km",
+]
+
 
 @pytest.fixture
 def native(case, monkeypatch):
@@ -45,8 +57,10 @@ def native(case, monkeypatch):
         result = {"schema": "arwen.wrf-process-result.v2", "profile": viewer.PROFILE, "domain": request["domain"],
                   "frame": frame, "grid_path": str(paths[1]), "run_json_path": str(paths[2]), "receipt_path": str(paths[3]),
                   "initialization_unix": initial, "cache_hit": False, "notes": [], "files": rows, "members": rows,
+                  # The node resolves an empty selection to its OWN default set,
+                  # exactly as ViewerProfile::new does; it never echoes an empty list.
                   "products": [{"slug": slug, "available": True, "source_fields": ["temperature_2m"], "missing_reasons": []}
-                               for slug in request.get("products", viewer.DEFAULT_PRODUCTS)]}
+                               for slug in (request.get("products") or NODE_DEFAULT_PRODUCTS)]}
         if request["schema"] == "arwen.wrf-process-request.v1":
             result["schema"] = "arwen.wrf-process-result.v1"
             for key in ("profile", "initialization_unix", "products", "members"):

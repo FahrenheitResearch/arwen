@@ -101,7 +101,7 @@ Success creates, without overwriting:
 |---|---|
 | `adapter.mapping.json` | Executable `rw-wps.mapping.v1` |
 | `adapter.composition.json` | Executable soil and in-band-terrain composition |
-| `adapter.provenance.json` | Battery result; descriptor, Vtable, input, mapping, and composition SHA-256 bindings; honest status |
+| `adapter.provenance.json` | Battery result; descriptor, Vtable, input, mapping, and composition SHA-256 bindings; accurate status |
 | `adapter.inputs.json` | Runtime manifest binding inputs, the authority triple, and exact decoder binaries |
 
 The mapping, composition, and provenance JSON files are the authority triple.

@@ -955,7 +955,7 @@ def _require_source_physical_ranges(source: Mapping[str, np.ndarray]) -> None:
     read-only proxy, so the clamped copies decide the verdict here and
     the arrays are clamped again where they are consumed (the soil seam,
     and the mapped-output check below).  Clamping at the point of use is
-    the honest place for it -- nothing downstream inherits a value this
+    the accurate place for it -- nothing downstream inherits a value this
     function silently rewrote.
     """
 

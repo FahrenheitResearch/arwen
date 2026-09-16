@@ -136,7 +136,7 @@ pub static ABSENT_WRF_FIELDS: &[(&str, &str, &str)] = &[
 /// The named field sets. A global 0.25 degree window carries four million
 /// points per level, so the surface set keeps only what the surface,
 /// precipitation, MSLP and precipitable-water products read -- which is the
-/// honest content of a coarse overview anyway.
+/// accurate content of a coarse overview anyway.
 pub fn field_set_allows(field_set: &str, mapping: &FieldMapping) -> bool {
     match field_set {
         "full" => true,

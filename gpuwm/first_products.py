@@ -141,6 +141,78 @@ def early_render_requested(render_products: Any) -> bool:
     return bool(text) and text.lower() != "none"
 
 
+def arm(render_plan: Mapping[str, Any], *,
+        report: Callable[[dict], None],
+        warn: Callable[..., None],
+        runner: Callable[[Sequence[str]],
+                         subprocess.CompletedProcess] | None = None
+        ) -> FirstProducts | None:
+    """The early render for one run, or ``None`` when it asked for none.
+
+    ONE function for the whole decision, because the decision is what
+    the doors share: every route learns its render plan somewhere
+    different (a run-plan observer, a runner's own argv, a child's
+    ``--outdir``), so the construction site cannot be shared, but the
+    two steps behind it -- does this run draw at all, and what is the
+    trigger armed with -- are the same two steps everywhere.  Each door
+    that repeated them was a second place for the answer to
+    :func:`early_render_requested` to drift.
+
+    ``render_plan`` is the dict the finalize stage will hand
+    :func:`gpuwm.go_cli._render_stage`, so the early render and the late
+    one cannot differ in output directory or product spec.  ``report``
+    and ``warn`` are the caller's own event stream or, for a process
+    that has none, its stdout and stderr.
+    """
+
+    if not early_render_requested(render_plan.get("render_products")):
+        return None
+    return FirstProducts(render_plan, report=report, warn=warn,
+                         runner=runner)
+
+
+class FrameHook:
+    """A ``progress_callback`` whose only job is the early render.
+
+    The in-process integrator finds ``output_committed`` BY NAME on
+    whatever sits in its ``progress_callback`` slot
+    (``gpuwm/runtime.py:3831``) and CALLS that same object for every
+    step heartbeat (``gpuwm/runtime.py:4155``), so a door with no step
+    log of its own still has to hand it something callable to receive
+    the landing at all.  This is that object and nothing more: the
+    heartbeat is dropped, the landing is forwarded to the trigger
+    :func:`arm` returned.
+
+    A door that DOES own a step log already has an object in that slot
+    and adds this render as a second consumer of the landing with
+    :class:`gpuwm.progress_log.LandingFanout`; the fan-out and this
+    both exist because attaching twice silently unhooks the first
+    consumer.  Which of the two a door needs is decided by whether it
+    has a step log, never by what the early render wants, so they do
+    not disagree about anything.
+
+    The forward is guarded like every other landing consumer: the
+    picture of a frame must never take down the writer that committed
+    it, nor the forecast behind it.
+    """
+
+    def __init__(self, trigger: FirstProducts):
+        self._trigger = trigger
+
+    def __call__(self, **_heartbeat: Any) -> None:
+        """Per-step progress, which this door is not here to report."""
+
+        return None
+
+    def output_committed(self, **event: Any) -> None:
+        """One durable frame: hand it to the render, and get out of the way."""
+
+        try:
+            self._trigger.frame_committed(**event)
+        except Exception:  # noqa: BLE001 - telemetry never fails a run
+            pass
+
+
 def effective_products(render_products: Any) -> str:
     """The product spec a render will actually draw.
 
@@ -337,7 +409,7 @@ class FirstProducts:
                 # reflectivity legitimately has nothing to draw yet.  The
                 # frame is left unclaimed and finalize renders it with
                 # the rest, which is where it will be skipped for the
-                # same honest reason.
+                # same accurate reason.
                 self._warn(
                     "first_products_empty",
                     "the first committed frame produced no picture for "
@@ -602,6 +674,8 @@ __all__ = [
     "FIRST_PRODUCTS_RECEIPT",
     "FIRST_PRODUCTS_SCHEMA",
     "FirstProducts",
+    "FrameHook",
+    "arm",
     "early_render_requested",
     "effective_products",
     "published_frames",

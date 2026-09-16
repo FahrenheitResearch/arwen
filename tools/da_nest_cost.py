@@ -10,7 +10,7 @@ that gap for the nested route.
 
 Wall time is priced as a RATIO against the parent, because the per-point
 -step constant is a property of the card and the parent's own measured
-seconds-per-leg is the only honest anchor.  Supply it with
+seconds-per-leg is the only accurate anchor.  Supply it with
 ``--parent-leg-seconds`` (the summed per-trajectory wall of one leg from
 an existing cycle report) and the projection is arithmetic on top of a
 measurement rather than a guess.

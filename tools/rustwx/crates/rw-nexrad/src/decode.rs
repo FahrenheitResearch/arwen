@@ -31,7 +31,7 @@ pub fn volume_time(volume_date: u16, volume_time_ms: u32) -> Option<DateTime<Utc
     Some(Utc.from_utc_datetime(&naive))
 }
 
-/// Coordinates for a site, and the honest record of where they came from.
+/// Coordinates for a site, and the accurate record of where they came from.
 #[derive(Debug, Clone)]
 pub struct SiteFix {
     pub id: String,
@@ -508,7 +508,7 @@ pub fn build_pack(request: &DecodeRequest<'_>) -> Result<(PackMeta, Vec<u8>), Bo
             volume_time_ms: file.volume_time,
             framing: Some(request.framing.clone()),
             // An Archive-II volume is one file; there is nothing to assemble
-            // and nothing honest to write here.
+            // and nothing accurate to write here.
             assembled: None,
         },
         params: DecodeParams {

@@ -94,7 +94,7 @@ def test_land_surface_run_publishes_the_five_identity_rows():
 
 
 def test_a_run_without_a_land_surface_scheme_publishes_none_of_them():
-    """The HONEST half, and the control for the test above.
+    """The ACCURATE half, and the control for the test above.
 
     Without an LSM these arrays hold ``initialize_physics``'s scalar
     cold-start defaults -- soil category 6, vegetation fraction 50, 285 K --
@@ -164,7 +164,7 @@ def test_the_two_category_rows_survive_the_round_trip_as_integers(tmp_path):
     """A smoothed or widened category is not a valid surface identity.
 
     ``read_child_surface_state`` refuses a category field that is not
-    exactly integral, so the writer's dtype choice is load-bearing rather
+    exactly integral, so the writer's dtype choice is essential rather
     than cosmetic.
     """
 

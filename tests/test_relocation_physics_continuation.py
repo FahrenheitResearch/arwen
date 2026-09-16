@@ -317,7 +317,7 @@ def test_preparer_moves_physics_continuation_and_reports_it(monkeypatch):
     assert preparer.last_receipt["accumulators_reinitialized"] is False
 
 
-def test_preparer_still_honest_when_the_rebuilt_child_has_no_driver(
+def test_preparer_still_accurate_when_the_rebuilt_child_has_no_driver(
         monkeypatch):
     preparer, node, new_dc, initialized, _out, new_state = (
         _preparer_fixture(monkeypatch))

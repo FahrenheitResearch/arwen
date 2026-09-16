@@ -157,7 +157,7 @@ impl Guide {
     q("Streaming mode: auto or on", "--mode", "auto streams when needed; on forces streaming. Both ask the engine to plan GPU tile dimensions with the full domain in system RAM.", "auto", true),
    ],
    Kind::Render=>vec![
-    q("Forecast history file or folder", "@history", "An actual wrfout file, or a folder containing wrfout files. Compatible files form a timeline for windowed plots; separate runs, domains and lifecycle episodes stay separate. Discovery includes child folders, skips symbolic links, and is bounded. The exact files appear in the command review.", "", true),
+    q("Forecast history file or folder", "@history", "An actual wrfout file, or a folder of them. Compatible files form a timeline; runs, domains and lifecycle episodes stay separate. Windowed plots need --engine rust: matplotlib draws one file at a time and refuses --series; drop --series to use it. Discovery includes child folders, skips symbolic links, and is bounded. The exact files appear in the command review.", "", true),
     q("Requested plots", "--products", "Comma-separated canonical products. The task mode supplies a starting selection; all is also accepted. Missing fields/windows are reported by the native renderer.", DEFAULT_RENDER_PRODUCTS, true),
     q("Frame index or all", "--timeidx", "all plots every saved frame; a nonnegative index selects one record within each file.", "all", true),
     q("Image output folder", "--out", "An ordinary output root gets a fresh timestamped run folder. Choosing a folder already inside run-YYYY... reuses that run and may replace matching plots; review the path deliberately.", cwd.join("weather-plots").to_string_lossy(), true),
@@ -637,6 +637,76 @@ mod tests {
 
     fn output_path(guide: &Guide) -> PathBuf {
         PathBuf::from(&guide.questions.iter().find(|question| question.flag == "--out").unwrap().value)
+    }
+
+    /// Every word of a question's help has to reach the reader on the
+    /// smallest terminal the workspace will draw. `draw` refuses to render
+    /// below 65 x 20 and the guide's help pane carries no scroll offset, so a
+    /// wrapped line past the bottom of that pane is unreachable: the reader
+    /// cannot page to it, widen into it, or dismiss anything to make room.
+    /// Render the real dialog at exactly 65 x 20 and read the screen back.
+    fn plot_history_screen(root: &Path) -> String {
+        use ratatui::{backend::TestBackend, Terminal};
+        let mut app = crate::App::new().unwrap();
+        app.dialog = Some(crate::Dialog::Guide(Guide::new(
+            Kind::Render,
+            root,
+            &root.join("runs"),
+        )));
+        let mut terminal = Terminal::new(TestBackend::new(65, 20)).unwrap();
+        terminal.draw(|frame| crate::draw(frame, &mut app)).unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        let mut screen = String::new();
+        for row in 0..20u16 {
+            for column in 0..65u16 {
+                // Panel borders and decoration are drawn between the wrapped
+                // rows of the pane; only the text itself is being read here.
+                for symbol in buffer[(column, row)].symbol().chars() {
+                    screen.push(if symbol.is_ascii() { symbol } else { ' ' });
+                }
+            }
+            screen.push(' ');
+        }
+        // Wrapping and cell padding are layout, not content: compare the words.
+        screen.split_whitespace().collect::<Vec<_>>().join(" ")
+    }
+
+    #[test]
+    fn the_plot_history_help_reaches_the_reader_at_the_smallest_supported_terminal() {
+        let root = repeat_directory("render-help");
+        let screen = plot_history_screen(&root);
+        let help = Guide::new(Kind::Render, &root, &root.join("runs")).questions[0].help;
+        let expected = help.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(
+            screen.contains(&expected),
+            "the Plot history help is cut off at 65 x 20, where the pane cannot \
+             scroll. On screen:\n{screen}\nHelp:\n{expected}"
+        );
+        // The declaration this help exists to carry: the engine the guide
+        // pins, the breakage that pinning prevents, and the way out.
+        for phrase in [
+            "--engine rust",
+            "matplotlib draws one file at a time and refuses --series",
+            "drop --series to use it",
+        ] {
+            assert!(
+                screen.contains(phrase),
+                "the Plot history help never shows {phrase:?} at 65 x 20: {screen}"
+            );
+        }
+        // Guidance that fit before the engine declaration was added must
+        // still fit beside it.
+        for phrase in [
+            "Discovery includes child folders, skips symbolic links, and is bounded.",
+            "The exact files appear in the command review.",
+        ] {
+            assert!(
+                screen.contains(phrase),
+                "adding the engine declaration pushed {phrase:?} off the 65 x 20 \
+                 screen: {screen}"
+            );
+        }
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

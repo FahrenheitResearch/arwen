@@ -248,7 +248,7 @@ def test_new_fields_are_reviewed_defaults_appended_last():
     # move it to.  They exist so that a request for WRF's climo/first-guess
     # aerosol IC/BC or its WIF metgrid stream is refused BY NAME rather than
     # being unrepresentable and therefore silently ignored.  Matching WRF's
-    # defaults is load-bearing for a second reason: the prepared-forecast
+    # defaults is essential for a second reason: the prepared-forecast
     # runner compares physics_compat._SINGLE_DOMAIN_RUNTIME_SWITCHES rows
     # for exact equality, and a nonzero default would change every shipped
     # profile.
@@ -365,10 +365,14 @@ def test_new_fields_are_reviewed_defaults_appended_last():
     for name, admitted in MYNN_PBL_OPTION_IDENTITY.items():
         default = RunConfig.__dataclass_fields__[name].default
         assert default == admitted and type(default) is type(admitted), name
-    # Noah-MP option identity, on exactly the same terms: every default is
-    # the single admitted value, validate_run_config refuses any other, and
-    # none is read unless sf_surface_physics=4, which no frozen configuration
-    # selects -- real74_d01 is Noah (2).
+    # Noah-MP option identity, on almost the same terms: every default is
+    # the single admitted value, and none is read unless
+    # sf_surface_physics=4, which no frozen configuration selects --
+    # real74_d01 is Noah (2).  validate_run_config refuses any other value
+    # except on the three rows in NOAHMP_OPTIONS_WITHOUT_CONSUMER, which
+    # reach no gpuwm code at any value and are admitted with one warning
+    # (tests/test_noahmp_no_consumer_knobs.py).  Either way the DEFAULT is
+    # the pin, which is what freezes the trajectory here.
     from gpuwm.config import NOAHMP_OPTION_IDENTITY
     for name, admitted in NOAHMP_OPTION_IDENTITY.items():
         default = RunConfig.__dataclass_fields__[name].default

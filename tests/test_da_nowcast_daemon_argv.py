@@ -118,12 +118,22 @@ class TestArgvContract:
             return obs_cmd(**kwargs)
 
         # Both arms, because "the flag did nothing" and "the flag worked"
-        # are otherwise indistinguishable.  Off is the shipped default,
-        # matching the front door's own ``run`` with no --dealias.
-        assert "--dealias" not in build()
-        on = build("--dealias")
-        assert on[on.index("--dealias-engine") + 1] == DEFAULT_DEALIAS_ENGINE
-        assert "--dealias-refinement" in on
+        # are otherwise indistinguishable.  ON is the shipped default now,
+        # matching the front door's own ``run`` with no flag, and OFF is
+        # what has to be spelled all the way down.
+        on = build()
+        assert "--no-dealias" not in on
+        # The engine and the refinement switch are always spelled out,
+        # whichever way they resolved on this install.
+        assert "--dealias-engine" in on
+        assert ("--dealias-refinement" in on
+                or "--no-dealias-refinement" in on)
+        off = build("--no-dealias")
+        assert "--no-dealias" in off
+        assert "--dealias-engine" not in off
+        named = build("--dealias-engine", DEFAULT_DEALIAS_ENGINE)
+        assert named[named.index("--dealias-engine") + 1] \
+            == DEFAULT_DEALIAS_ENGINE
 
     def test_the_daemon_call_site_is_the_one_that_was_bound(self):
         """The kwargs builder is what the stage uses, not a parallel copy."""
@@ -151,7 +161,7 @@ class TestEpochReexec:
         the run was dealiased because the first one was.
         """
 
-        args = daemon_args("--dealias", "--dealias-engine", "vad-region",
+        args = daemon_args("--dealias-engine", "vad-region",
                            "--no-dealias-refinement")
         chosen = DealiasChoice.from_args(args)
         assert chosen == DealiasChoice(on=True, engine="vad-region",
@@ -167,15 +177,23 @@ class TestEpochReexec:
         rolled = build_parser().parse_args(loop_argv(args, tmp_path)[3:])
         assert DealiasChoice.from_args(rolled) == DealiasChoice.from_args(
             args)
-        assert DealiasChoice.from_args(rolled).engine == \
-            DEFAULT_DEALIAS_ENGINE
+        off = daemon_args("--no-dealias")
+        rolled_off = build_parser().parse_args(loop_argv(off, tmp_path)[3:])
+        assert DealiasChoice.from_args(rolled_off).on is False
 
     def test_bootstrap_argv_carries_the_choice(self, tmp_path):
         """The front door builds the georeference forecast's own obs."""
 
-        args = daemon_args("--dealias", "--dealias-engine", "vad-region",
+        args = daemon_args("--dealias-engine", "vad-region",
                            "--no-dealias-refinement")
         argv = bootstrap_cmd(site=SITE, out=tmp_path, args=args)
-        assert "--dealias" in argv
+        assert "--no-dealias" not in argv
         assert argv[argv.index("--dealias-engine") + 1] == "vad-region"
         assert "--no-dealias-refinement" in argv
+
+        # And a daemon that was told NOT to dealias carries that across
+        # the roll too, or its later galleries grade a run against a
+        # differently-built truth.
+        off = bootstrap_cmd(site=SITE, out=tmp_path,
+                            args=daemon_args("--no-dealias"))
+        assert "--no-dealias" in off

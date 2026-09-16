@@ -167,6 +167,165 @@ def test_a_box_spanning_just_over_the_threshold_still_tracks(monkeypatch):
     assert "levels_declined" not in fix.evidence
 
 
+def _slope(ny, nx, per_cell=0.7, along="j"):
+    """A synoptic gradient and nothing else: no minimum in the interior."""
+    j, i = np.mgrid[0:ny, 0:nx]
+    ramp = j if along == "j" else i
+    return (1500.0 + per_cell * ramp).astype(np.float64)
+
+
+def test_a_sloped_box_is_no_signal_not_a_maximum_jump(monkeypatch):
+    """A minimum is not a vortex, and the span test cannot tell them apart.
+
+    The flat box above is the case where the threshold cannot
+    discriminate.  This is the opposite one and it was the live defect: a
+    box under a plain synoptic gradient spans far MORE than the
+    threshold, so the span test passes, and the cells within the
+    threshold of the box minimum are a strip along the box's own lowest
+    edge.  The fixed point settles in that strip, the raw shift is the
+    distance from the nest to the box's corner, and the tracker proposes
+    the largest move its bounds allow on no storm at all.
+
+    MEASURED on the run this came from (GFS 2026-09-15T18, an open-ocean
+    point in the North Atlantic with no cyclone anywhere near it): the
+    search box spanned 57.65 m against a 25 m threshold, the centroid
+    settled at parent (63.18, 117.39) in a box running i 60..141 and
+    j 40..121 -- three cells from its west edge and four from its north,
+    inside the five-cell radius its own centroid draws from -- and the
+    raw shift was (-36.69, +37.52) parent cells, clamped to the preset's
+    maximum diagonal.  The 850 hPa minimum there was 1621 m, a ridge.
+    At all seven hourly instants of the six-hour run the centre sat
+    2.41 to 3.13 cells from an open box edge; on a 978.7 hPa cyclone the
+    same tracker sat 25.14 to 39.54 cells from one.
+
+    The criterion needs no tuning constant: the cells that produced the
+    centre either reach a box edge the plane continues past, or they do
+    not, and the radius is the configured one.
+    """
+    fp = _footprint()
+    _plane_patch(monkeypatch, _slope(200, 220))
+    fix = StormTracker(_config()).locate(SimpleNamespace(), fp, 600.0)
+    assert fix.found is None
+    declined = fix.evidence["levels_declined"]
+    assert len(declined) == 1
+    assert declined[0]["signal_span"] > 30.0
+    assert declined[0]["boundary_qualifying_cells"] > 0
+    assert declined[0]["closed"] is False
+    assert "position on the box rather than on a storm" in declined[0]["reason"]
+
+
+def test_a_closed_low_inside_the_box_still_tracks(monkeypatch):
+    """The other half of the same measurement.
+
+    A real cyclone sitting in the search box draws its centre from cells
+    nowhere near a box edge, which is what the gate asks for, so the gate
+    is not a refusal of following -- only of following a slope.
+    """
+    fp = _footprint()
+    ci, cj = fp.center_parent_ij
+    _plane_patch(monkeypatch, _bowl(200, 220, cj + 4.0, ci - 5.0, depth=80.0))
+    fix = StormTracker(_config()).locate(SimpleNamespace(), fp, 600.0)
+    assert fix.found is not None
+    closure = fix.evidence["search_box_signal_closure"]
+    assert closure["closed"] is True
+    assert closure["boundary_qualifying_cells"] == 0
+    assert closure["open_sides"] == 4
+    assert closure["centre_margin_cells"] > 30.0
+
+
+def test_a_trough_reaching_the_box_edge_does_not_hold_a_nest_on_its_storm(
+        monkeypatch):
+    """The gate judges the ANSWER, not every cell the threshold selects.
+
+    A real cyclone usually trails a trough, and under a threshold
+    measured from the box minimum that trough is part of the qualifying
+    region and can run off the box.  It did not move the centroid a
+    millimetre, though -- the centroid is drawn only from cells within
+    the configured radius of the settled centre -- so holding the nest on
+    it would be refusing a storm that is plainly there.
+
+    MEASURED on the 978.7 hPa cyclone: at its quarter-hour consultations
+    3 to 39 of ~1,100 qualifying cells touched a box edge while the
+    centre itself stayed 25 cells and more inside.
+    """
+    fp = NestFootprint(grid_id=2, i_parent_start=102, j_parent_start=31,
+                       child_nx=240, child_ny=240, parent_grid_ratio=3,
+                       parent_dx_m=12000.0)
+    ci, cj = fp.center_parent_ij
+    plane = _bowl(200, 220, cj, ci, depth=120.0, width=7.0)
+    # A narrow trough from the low out to the box's south edge, deep
+    # enough to qualify and far enough from the centre to be no part of
+    # the answer.
+    j, i = np.mgrid[0:200, 0:220]
+    trough = (np.abs(i - ci) <= 1.5) & (j < cj - 20)
+    plane = np.where(trough, plane.min() + 5.0, plane)
+    _plane_patch(monkeypatch, plane)
+    tracker = StormTracker(_config(radius_km=60.0))
+    fix = tracker.locate(SimpleNamespace(), fp, 600.0)
+    closure = fix.evidence["search_box_signal_closure"]
+    assert closure["boundary_cells_in_box"] > 0, "the trough must reach an edge"
+    assert closure["boundary_qualifying_cells"] == 0
+    assert closure["closed"] is True
+    assert fix.found is not None
+
+
+def test_a_closed_low_riding_a_gradient_still_tracks(monkeypatch):
+    """A storm embedded in a synoptic flow is the normal case.
+
+    The box then has both a slope and a vortex on it.  The gate must read
+    the vortex, because the region within the threshold of the box
+    minimum closes around the vortex whenever the vortex is deeper than
+    the slope across the box -- which is the case a nest exists for.
+    """
+    fp = _footprint()
+    ci, cj = fp.center_parent_ij
+    plane = _slope(200, 220, per_cell=0.4) + (
+        _bowl(200, 220, cj, ci, depth=120.0, width=8.0) - 1500.0)
+    _plane_patch(monkeypatch, plane)
+    fix = StormTracker(_config()).locate(SimpleNamespace(), fp, 600.0)
+    assert fix.found is not None
+    assert fix.evidence["search_box_signal_closure"]["closed"] is True
+
+
+def test_the_closure_ignores_a_box_side_the_plane_ends_at(monkeypatch):
+    """Contact at the edge of the field is a different question.
+
+    A box side that coincides with the plane's own edge is not a window
+    cut out of a larger field, so contact there says the signal is
+    leaving the grid, which ``boundary_reason`` and a refine grid's
+    ``edge_margin_cells`` already report in their own words.  Counting it
+    here would end a live track on the instrument that exists to keep it.
+    """
+    from gpuwm.core.storm_tracking import signal_closure
+
+    plane = _slope(40, 40)
+    whole = (slice(0, 40), slice(0, 40))
+    assert signal_closure(plane, whole, 25.0)["closed"] is True
+    assert signal_closure(plane, whole, 25.0)["open_sides"] == 0
+    inner = (slice(4, 36), slice(4, 36))
+    verdict = signal_closure(plane, inner, 25.0)
+    assert verdict["closed"] is False
+    assert verdict["open_sides"] == 4
+
+
+def test_every_verdict_has_the_same_keys_including_the_blank_one():
+    """The function is public, and a caller reading one key off the
+    blank verdict would raise KeyError on exactly the empty or all-NaN
+    box the blank verdict exists to report."""
+    from gpuwm.core.storm_tracking import signal_closure
+
+    plane = _slope(40, 40)
+    normal = signal_closure(plane, (slice(4, 36), slice(4, 36)), 25.0)
+    empty = signal_closure(plane, (slice(4, 4), slice(4, 4)), 25.0)
+    all_nan = signal_closure(np.full((40, 40), np.nan, dtype=np.float32),
+                             (slice(4, 36), slice(4, 36)), 25.0)
+    for blank in (empty, all_nan):
+        assert set(blank) == set(normal)
+        assert blank["closed"] is False
+        assert blank["boundary_cells_in_box"] == 0
+        assert blank["qualifying_cells"] == 0
+
+
 # ---------------------------------------------------------------------------
 # No side effects -- the property the track writer's interval rests on
 # ---------------------------------------------------------------------------

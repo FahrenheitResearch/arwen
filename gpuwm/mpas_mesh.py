@@ -517,7 +517,7 @@ class CardCapacity:
 
 @dataclass(frozen=True)
 class Smoothness:
-    """The mesh-roughness bound, and how honest it is about itself."""
+    """The mesh-roughness bound, and how accurate it is about itself."""
 
     metric: str
     published_reference_percent_per_cell: float

@@ -201,6 +201,7 @@ test refuses any drift between the two.
 | `hrrr` | -- |
 | `hrrr-prs` | `hrrr-pressure`, `hrrr-wrfprs` |
 | `gem-gdps` | `gem`, `gdps`, `gem-global` |
+| `icon-global` | `icon`, `icon-13km`, `dwd-icon`, `dwd-icon-global` |
 | `icon-eu` | `dwd-icon-eu`, `icon-eu-regular` |
 | `hrrr-ak` | `hrrrak`, `hrrr-alaska` |
 | `gfs` | `gfs-0p25`, `gfs-0.25` |
@@ -457,7 +458,7 @@ nine-depth RUC soil column.  Pass `--input` once per awip32 file and
 `--supplement` once per file again (in-band terrain, exactly as
 `hrrr-prs`).  Pressure-level humidity arrives as RH and is converted by
 the mapping's declared derivation -- the same one the GFS profile uses.
-Two honest limits: RAP's 13 km CONUS products are not reachable as
+Two accurate limits: RAP's 13 km CONUS products are not reachable as
 tables (`awp130pgrb` carries no soil state, and its `awp130bgrb`
 companion duplicates the surface records octet-for-octet so no selector
 separates the pair), and the native `wrfprs` grid is rotated lat-lon
@@ -481,7 +482,7 @@ localTablesVersion 1) selected by octets; nothing asks a table to name
 it.  The eight sub-hPa surfaces outside the declared ladder are
 admitted and ignored.
 
-Three honesty facts belong in the same breath as the command.  The
+Three accuracy facts belong in the same breath as the command.  The
 files this route reads are stamped FORECASTS in the bytes even at hour
 0 (`typeOfProcessedData` fc, generating process 81 at the analysis
 hour, 96 after) -- while the one product stamped an ANALYSIS
@@ -509,7 +510,7 @@ grid, the grid-relative wind rotation and the nine-node RUC soil column
 ride the packaged documents exactly as `hrrr-prs` does; SPFH is direct,
 so no humidity derivation is involved.
 
-Honest limits, in the same breath: the `natlev` native-level product, the
+Accurate limits, in the same breath: the `natlev` native-level product, the
 3 km North-America rotated grid, the thinned `subset` files and every
 per-member ensemble GRIB2 exist only in the frozen prototype bucket
 `noaa-rrfs-pds` (halted 2026-08-12 by design) and have no live front

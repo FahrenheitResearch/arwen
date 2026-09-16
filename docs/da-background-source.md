@@ -107,7 +107,7 @@ things:
 
 * **A perturbation that touches nothing.** Every amplitude zero and no
   species listed would hand the filter N bit-identical copies of the
-  control -- an honest member count over a fabricated ensemble. Refused
+  control -- an accurate member count over a fabricated ensemble. Refused
   by name.
 * **Two trajectories with identical construction records.** Compared as
   records, so the guarantee outlives any future construction.

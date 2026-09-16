@@ -7,7 +7,7 @@ pub mod unpack;
 pub use grid::{grid_latlon, rotated_to_geographic};
 pub use parser::{
     DataRepresentation, Grib2File, Grib2Message, GridDefinition,
-    Identification, ProductDefinition,
+    Identification, ProductDefinition, DECODE_TEMPLATES,
 };
 pub use search::search_messages;
 pub use tables::{level_name, parameter_name, parameter_units};

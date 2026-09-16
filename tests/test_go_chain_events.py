@@ -608,7 +608,7 @@ def test_a_rewritten_picture_stops_the_receipt_instant_being_quoted(
 
     The receipt says 46 s.  The picture it names carries 2m 45s, because
     something redrew it.  The receipt's instant now describes no file on
-    disk, so the tree's own earliest picture is the honest answer and the
+    disk, so the tree's own earliest picture is the accurate answer and the
     source says which measurement that was.
     """
 

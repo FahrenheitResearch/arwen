@@ -1307,7 +1307,7 @@ def test_the_restart_identity_check_can_fail(tmp_path):
 
     # And the floor is real, not decoration: an order of magnitude below it
     # the same carrier reaches GRDFLX and nothing else.  This is the half that
-    # keeps the docstring honest -- if RUC's soil coupling ever became
+    # keeps the docstring accurate -- if RUC's soil coupling ever became
     # sensitive enough that 0.005 K propagated, the comment above would be
     # stale and this would say so.
     _, small_others = _next_step_delta(tmp_path, "tslb", (0, 0, 0), add=0.005)
@@ -1430,7 +1430,7 @@ def test_the_inert_restart_carriers_are_the_measured_ones(tmp_path):
     -- the round-trip test above covers that -- but its restored value does
     not reach the next step, because LSMRUC recomputes it first.  This is the
     disclosure Noah-MP's lane had to publish after the fact; asserting it
-    keeps the published list honest, and it fails loudly if a future change
+    keeps the published list accurate, and it fails loudly if a future change
     makes one of them live (which would be good news, and should move the
     name rather than be absorbed silently).
 

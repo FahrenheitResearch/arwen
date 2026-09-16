@@ -337,7 +337,7 @@ fn build_sweep(
         // single-PRF estimate for one would be a factor of three small.  The
         // sweep still ships -- its reflectivity is perfectly good -- but it
         // carries no interval, and the dealiaser refuses velocity on it by
-        // name, which is the behaviour that is load-bearing.
+        // name, which is the behaviour that is essential.
         NyquistSource::Unavailable => {
             census.sweeps_without_nyquist += 1;
             None

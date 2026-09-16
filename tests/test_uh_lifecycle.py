@@ -5,7 +5,7 @@ WRF semantics under test (authorities cited in gpuwm/core/uh_diag.py):
 the accumulator exists exactly when nwp_diagnostics = 1, is folded every
 step, rides in every history frame, is zeroed after each frame ("reset at
 history interval"), is carried through restarts (Registry IO "rh02"), and
--- the load-bearing property -- is provably trajectory-inert: a run with
+-- the essential property -- is provably trajectory-inert: a run with
 the knob on is bitwise identical to the same run with it off in every
 model field, differing only by the UP_HELI_MAX plane itself.
 """
@@ -581,7 +581,7 @@ def test_every_history_publisher_resets_the_window():
 @pytest.mark.gpu
 @requires_gpu
 def test_trajectory_inertness_bitwise(tmp_path):
-    """THE load-bearing gate: knob on vs off over real dycore steps leaves
+    """THE essential gate: knob on vs off over real dycore steps leaves
     every model field bitwise identical, THROUGH to actual wrfout files --
     every variable common to both files is byte-identical and the on-file
     differs exactly by carrying UP_HELI_MAX."""

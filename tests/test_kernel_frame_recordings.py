@@ -27,7 +27,7 @@ platforms:
 Four rows move with the ARCHITECTURE at a fixed compiler, four move with
 the COMPILER BUILD at a fixed architecture, and one moves with both.  So
 the table is a joint property of (target architecture, NVRTC build), and
-the only honest form for it is a set of named recordings plus a ceiling
+the only accurate form for it is a set of named recordings plus a ceiling
 over them.
 
 These tests need no device: they check the shape of the recording and the

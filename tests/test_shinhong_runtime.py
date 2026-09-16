@@ -288,7 +288,7 @@ def test_driver_compute_dispatches_11_to_run_shinhong(monkeypatch):
 def test_shinhong_step_publishes_its_tke_into_e_sgs():
     """After scheme-11 steps, e_sgs is finite, floored, and MOVED.
 
-    Both halves are load-bearing: floor-respected-everywhere alone
+    Both halves are essential: floor-respected-everywhere alone
     would pass a buffer stuck at the cold-start fill, and
     changed-somewhere alone would pass a dead pointer aliased onto
     garbage -- together they prove the driver launched the scheme and

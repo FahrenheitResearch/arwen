@@ -122,7 +122,7 @@ def _checkpoint_elapsed(path):
         return float(data["meta/elapsed_seconds"])
 
 
-def clock_honest_runner(*, base_config, member_dir, index, seed,
+def clock_accurate_runner(*, base_config, member_dir, index, seed,
                         perturbation, perturbation_options,
                         run_seconds=None, restart=None, **_):
     """A member that obeys gpuwm.runtime's own ``run_seconds`` contract.
@@ -178,7 +178,7 @@ def test_the_second_leg_is_given_the_cumulative_horizon(tmp_path):
                 for index in member_states}
 
     result = run_cycles(cfg, root, n_cycles=3, cycle_seconds=60.0,
-                        assimilate=assimilate, runner=clock_honest_runner)
+                        assimilate=assimilate, runner=clock_accurate_runner)
     assert result.cycles_run == (0, 1, 2)
     manifest = read_manifest(result.manifest_path,
                              schema=CYCLE_MANIFEST_SCHEMA)
@@ -200,7 +200,7 @@ def test_a_forecast_only_cycle_still_runs_leg_length_horizons(tmp_path):
 
     cfg = load_ensemble_config(_write_overlay(tmp_path / "b", n_members=1))
     result = run_cycles(cfg, tmp_path / "b" / "ens", n_cycles=2,
-                        cycle_seconds=60.0, runner=clock_honest_runner,
+                        cycle_seconds=60.0, runner=clock_accurate_runner,
                         restart_from_analysis=False)
     manifest = read_manifest(result.manifest_path,
                              schema=CYCLE_MANIFEST_SCHEMA)
@@ -251,7 +251,7 @@ def test_a_refusal_on_a_later_member_publishes_no_analysis_at_all(tmp_path):
 
     with pytest.raises(ValueError, match="shape"):
         run_cycles(cfg, root, n_cycles=1, cycle_seconds=60.0,
-                   assimilate=assimilate, runner=clock_honest_runner)
+                   assimilate=assimilate, runner=clock_accurate_runner)
     for index in range(2):
         member = cycle_root(root, 0) / member_directory_name(index)
         assert not (member / ANALYSIS_NAME).exists(), (
@@ -273,7 +273,7 @@ def test_an_incomplete_roster_is_refused_before_anything_is_written(tmp_path):
                    assimilate=lambda _i, states: {
                        index: {names[0]: np.zeros((2, 3), np.float32)}
                        for index in (0, 1)},
-                   runner=clock_honest_runner)
+                   runner=clock_accurate_runner)
     assert not list(cycle_root(root, 0).rglob(ANALYSIS_NAME))
 
 
@@ -295,14 +295,14 @@ def test_a_crash_during_assimilation_leaves_one_resumable_cycle_record(
 
     with pytest.raises(RuntimeError, match="fell over"):
         run_cycles(cfg, root, n_cycles=1, cycle_seconds=60.0,
-                   assimilate=flaky, runner=clock_honest_runner)
+                   assimilate=flaky, runner=clock_accurate_runner)
     crashed = read_manifest(root / "da-cycle-manifest.json",
                             schema=CYCLE_MANIFEST_SCHEMA)
     assert [(entry["cycle"], entry["status"]) for entry in crashed["cycles"]] \
         == [(0, "FORECAST_COMPLETE")]
 
     result = run_cycles(cfg, root, n_cycles=1, cycle_seconds=60.0,
-                        assimilate=flaky, runner=clock_honest_runner)
+                        assimilate=flaky, runner=clock_accurate_runner)
     resumed = read_manifest(result.manifest_path,
                             schema=CYCLE_MANIFEST_SCHEMA)
     assert [(entry["cycle"], entry["status"]) for entry in resumed["cycles"]] \
@@ -346,7 +346,7 @@ def test_a_crash_on_the_second_rename_never_leaves_a_silent_mixed_roster(
                    assimilate=lambda _i, states: {
                        index: {names[0]: np.full((2, 3), 0.25, np.float32)}
                        for index in states},
-                   runner=clock_honest_runner)
+                   runner=clock_accurate_runner)
 
     leg = cycle_root(root, 0)
     # On disk the roster IS mixed; that is what a partial rename loop
@@ -404,13 +404,13 @@ def test_a_reader_of_an_interrupted_publication_gets_the_whole_roster(
                         flaky_publish)
     with pytest.raises(OSError):
         run_cycles(cfg, root, n_cycles=2, cycle_seconds=60.0,
-                   assimilate=assimilate, runner=clock_honest_runner)
+                   assimilate=assimilate, runner=clock_accurate_runner)
     assert publication_marker_path(cycle_root(root, 0)).is_file()
 
     monkeypatch.setattr(cycle_module, "publish_staged_analysis",
                         real_publish)
     result = run_cycles(cfg, root, n_cycles=2, cycle_seconds=60.0,
-                        assimilate=assimilate, runner=clock_honest_runner)
+                        assimilate=assimilate, runner=clock_accurate_runner)
     assert result.status == "COMPLETE"
     assert publication_marker_path(cycle_root(root, 0)).exists()
     for index in range(2):
@@ -452,7 +452,7 @@ def test_an_unrecoverable_publication_refuses_loudly_rather_than_guessing(
                    assimilate=lambda _i, states: {
                        index: {names[0]: np.full((2, 3), 0.25, np.float32)}
                        for index in states},
-                   runner=clock_honest_runner)
+                   runner=clock_accurate_runner)
 
     leg = cycle_root(root, 0)
     (leg / member_directory_name(1)
@@ -659,7 +659,7 @@ def _interrupted_leg(tmp_path, monkeypatch, *, nth, n_members=3,
                    assimilate=lambda _i, states: {
                        index: {names[0]: np.full((2, 3), 0.25, np.float32)}
                        for index in states},
-                   runner=clock_honest_runner)
+                   runner=clock_accurate_runner)
     return root
 
 
@@ -722,7 +722,7 @@ def test_the_supported_reader_reports_a_forecast_only_leg_as_empty(tmp_path):
     cfg = load_ensemble_config(_write_overlay(tmp_path / "ee", n_members=2))
     root = tmp_path / "ee" / "ens"
     run_cycles(cfg, root, n_cycles=1, cycle_seconds=60.0,
-               runner=clock_honest_runner)
+               runner=clock_accurate_runner)
     leg = cycle_root(root, 0)
     assert cycle_module.read_analysis_roster(leg, n_members=2) == {}
     with pytest.raises(TypeError, match="n_members"):
@@ -745,7 +745,7 @@ def test_the_supported_reader_refuses_a_partial_roster_with_no_transaction(
                assimilate=lambda _i, states: {
                    index: {names[0]: np.full((2, 3), 0.25, np.float32)}
                    for index in states},
-               runner=clock_honest_runner)
+               runner=clock_accurate_runner)
     leg = cycle_root(root, 0)
     from gpuwm.ensemble.analysis_commit import COMMIT_NAME
     publication_marker_path(leg).unlink()
@@ -769,7 +769,7 @@ def _fully_analysed_leg(tmp_path, directory, n_members):
                assimilate=lambda _i, states: {
                    index: {names[0]: np.full((2, 3), 0.25, np.float32)}
                    for index in states},
-               runner=clock_honest_runner)
+               runner=clock_accurate_runner)
     leg = cycle_root(root, 0)
     for index in range(n_members):
         assert (leg / member_directory_name(index) / ANALYSIS_NAME).is_file()
@@ -867,7 +867,7 @@ def test_a_forecast_only_leg_is_still_falsified_against_its_count(tmp_path):
                                               n_members=3))
     root = tmp_path / "rv5fo" / "ens"
     run_cycles(cfg, root, n_cycles=1, cycle_seconds=60.0,
-               runner=clock_honest_runner)
+               runner=clock_accurate_runner)
     leg = cycle_root(root, 0)
     assert cycle_module.read_analysis_roster(leg, n_members=3) == {}
     with pytest.raises(ValueError, match="n_members=2"):
@@ -1190,7 +1190,7 @@ def test_the_restart_reader_is_the_supported_reader(tmp_path, monkeypatch):
                             index: {names[0]: np.full((2, 3), 0.25,
                                                       np.float32)}
                             for index in states},
-                        runner=clock_honest_runner)
+                        runner=clock_accurate_runner)
     assert result.status == "COMPLETE"
     assert seen == [str(cycle_root(root, 0))], (
         "leg 1's restarts must come from the supported reader, once, "
@@ -1206,7 +1206,7 @@ def test_a_completed_publication_keeps_its_decision(tmp_path):
                             index: {names[0]: np.full((2, 3), 0.25,
                                                       np.float32)}
                             for index in states},
-                        runner=clock_honest_runner)
+                        runner=clock_accurate_runner)
     assert publication_marker_path(cycle_root(root, 0)).exists()
     receipt = read_manifest(result.manifest_path,
                             schema=CYCLE_MANIFEST_SCHEMA)[
@@ -1299,15 +1299,15 @@ def test_resume_refuses_a_different_forecast_length(tmp_path):
     def flaky(**kwargs):
         if kwargs["index"] == 1:
             raise RuntimeError("device fell over")
-        return clock_honest_runner(**kwargs)
+        return clock_accurate_runner(**kwargs)
 
     with pytest.raises(RuntimeError):
         run_ensemble(cfg, root, run_seconds=60.0, runner=flaky)
     with pytest.raises(ValueError, match="run_seconds"):
         run_ensemble(cfg, root, run_seconds=120.0,
-                     runner=clock_honest_runner)
+                     runner=clock_accurate_runner)
     result = run_ensemble(cfg, root, run_seconds=60.0,
-                          runner=clock_honest_runner)
+                          runner=clock_accurate_runner)
     assert result.status == "COMPLETE"
     manifest = read_manifest(result.manifest_path,
                              schema=ENSEMBLE_MANIFEST_SCHEMA)
@@ -1325,7 +1325,7 @@ def test_cycle_resume_refuses_a_reinterpreted_timeline(tmp_path, kwargs,
     cfg = load_ensemble_config(_write_overlay(tmp_path / "i", n_members=1))
     root = tmp_path / "i" / "ens"
     base = dict(n_cycles=2, cycle_seconds=60.0, positivity="clip",
-                restart_from_analysis=True, runner=clock_honest_runner)
+                restart_from_analysis=True, runner=clock_accurate_runner)
     run_cycles(cfg, root, **base)
     with pytest.raises(ValueError, match=needle):
         run_cycles(cfg, root, **{**base, **kwargs})
@@ -1363,7 +1363,7 @@ def test_a_whole_state_reports_a_complete_inventory():
 def test_the_manifest_records_each_member_state_inventory(tmp_path):
     cfg = load_ensemble_config(_write_overlay(tmp_path / "j", n_members=1))
     result = run_ensemble(cfg, tmp_path / "j" / "ens", run_seconds=60.0,
-                          runner=clock_honest_runner)
+                          runner=clock_accurate_runner)
     manifest = read_manifest(result.manifest_path,
                              schema=ENSEMBLE_MANIFEST_SCHEMA)
     assert "final_state_inventory" in manifest["members"][0]
@@ -1383,7 +1383,7 @@ def test_the_receipt_names_the_method_the_callable_declared(tmp_path):
 
     result = run_cycles(cfg, tmp_path / "k" / "ens", n_cycles=1,
                         cycle_seconds=60.0, assimilate=assimilate,
-                        runner=clock_honest_runner)
+                        runner=clock_accurate_runner)
     manifest = read_manifest(result.manifest_path,
                              schema=CYCLE_MANIFEST_SCHEMA)
     method = manifest["cycles"][0]["assimilation"]["method"]
@@ -1402,7 +1402,7 @@ def test_the_caller_can_declare_the_method_when_the_callable_does_not(
             index: {names[0]: np.zeros((2, 3), np.float32)}
             for index in states},
         assimilation_method={"resolved_from": "some.module:analyse"},
-        runner=clock_honest_runner)
+        runner=clock_accurate_runner)
     method = read_manifest(result.manifest_path,
                            schema=CYCLE_MANIFEST_SCHEMA)[
         "cycles"][0]["assimilation"]["method"]

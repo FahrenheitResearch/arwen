@@ -5,7 +5,7 @@ ring sweep's copies onto dedicated streams; what keeps it a forecast is the
 event chain :mod:`tilestream.overlap` derives from the ring plan.  The
 consolidated GPU gate (``tilestream.test_gate``) proves the DEFAULT chain
 bit-exact against a monolithic run -- but it cannot prove the chain is
-LOAD-BEARING, because whether an unordered pair of stream operations
+ESSENTIAL, because whether an unordered pair of stream operations
 actually races is a property of the card and of what else it is running.
 The lane already owns the measurement that makes this concrete:
 ``ring_ordering="submission"`` was bit-exact on an idle card and wrong by
@@ -489,7 +489,7 @@ def test_cut_gather_seam_waits_moves_the_digest():
     (the occupant wait only reaches the SAME buffer's copy-out stream), so
     cutting the seam list must surface as a moved digest -- and does, under
     the stream-starvation adversaries.  This is also the direct proof that
-    the per-sweep barrier the deferred seam removed was load-bearing and
+    the per-sweep barrier the deferred seam removed was essential and
     its event replacement is not decorative.
     """
     specs = next(s for label, s in _plans() if "2x2" in label)
@@ -523,7 +523,7 @@ def test_belt_and_braces_classes_are_transitively_implied():
         for k in range(plan.ntiles):
             assert set(plan.war_deps[k]) <= set(plan.patch_deps[k]), (
                 f"{label}: war_deps[{k}] not implied by patch chain; "
-                "scatter_waits is load-bearing on this plan and needs an "
+                "scatter_waits is essential on this plan and needs an "
                 "adversary case")
         for j in range(plan.ntiles):
             # save(j)@s+1 <- gather(j)@s+1 <- scatter(i)@s <- stepped(i)
@@ -532,7 +532,7 @@ def test_belt_and_braces_classes_are_transitively_implied():
             assert (set(sched.save_seam_waits[j])
                     <= set(sched.gather_seam_waits[j])), (
                 f"{label}: save_seam_waits[{j}] not implied by the seam "
-                "chain; it is load-bearing on this plan and needs an "
+                "chain; it is essential on this plan and needs an "
                 "adversary case")
 
 

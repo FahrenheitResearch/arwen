@@ -59,7 +59,7 @@ def run_leg(nx: int, ny: int, nsteps: int, rung: str,
 
     # ``--bind-clock`` (task #219): the arm every production real-data root
     # actually runs -- a DomainClock bound to the external LBC mirror, WRF's
-    # post-increment dtbc.  warmup=0 is load-bearing: a one-step warmup
+    # post-increment dtbc.  warmup=0 is essential: a one-step warmup
     # shifts the retired elapsed-based dtbc by exactly +dt and makes the two
     # semantics numerically coincide at dt-multiple times, so a bound leg
     # with warmup=1 would pass on a build that drops the binding.

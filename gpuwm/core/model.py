@@ -372,7 +372,7 @@ RESTART_TOLERATED_RUN_FIELDS = (
 #: fields can hold only their defaults and dropping them discards no
 #: information.  A field no path reads cannot move a trajectory, so
 #: binding it would buy no safety and would cost the thing that IS
-#: load-bearing: every experiment written before these schemes existed
+#: essential: every experiment written before these schemes existed
 #: keeps its exact fingerprint, and every checkpoint those runs wrote
 #: stays resumable.  Under their own scheme the fields bind, value for
 #: value, because there they ARE the trajectory.
@@ -1510,10 +1510,10 @@ def execute_experiment(
         # coupler arm it contradicted -- two lanes, one merged truth
         # missing -- and no gate drove this dispatch with a streamed parent,
         # so the contradiction sat unexercised.  The dispatch is now the
-        # same for both modes; what an edge genuinely cannot do is refused
-        # where the capability lives, by the coupler (cross-scheme edges
-        # off a streamed parent in ``_coupled_parent_field``, an edge with
-        # BOTH ends streamed in ``force``).
+        # same for both modes, and so is the coupler: either or both ends of
+        # a coupling edge may stream, and a cross-scheme edge off a streamed
+        # parent pulls the transition's declared planes through the child's
+        # footprint window like every other FORCE read.
         status.mutation_in_progress = True
         try:
             with allocation_scope(child_id):

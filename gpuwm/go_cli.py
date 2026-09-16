@@ -490,7 +490,7 @@ def plan_from_config(config: Path, *, outdir: Path | None = None,
 
     # No "is the runner on disk?" gate any more.  It used to be here
     # because the runner was a script under tools/ that a wheel install
-    # does not carry, and the honest answer was "go clone the
+    # does not carry, and the accurate answer was "go clone the
     # repository".  The runner is part of the package now, so if this
     # module imported, so did it.
 
@@ -563,7 +563,7 @@ def plan_from_config(config: Path, *, outdir: Path | None = None,
     # past the drive root and clamped there.
     #
     # The table declares itself "advisory ... validated, not executed",
-    # and the values that are load-bearing are the ones the domain was
+    # and the values that are essential are the ones the domain was
     # SIZED against -- cycle, hours, area -- which are absolute facts
     # and are honoured exactly.  Where the bytes land is this command's
     # own business, so they land under its own root unless `--data-dir`
@@ -609,12 +609,12 @@ def plan_from_config(config: Path, *, outdir: Path | None = None,
         "source": source,
         "cycle": str(fetch_table["cycle"]),
         "hours": int(fetch_table["hours"]),
-        # Load-bearing exactly like cycle/hours/area: the config's
+        # Essential exactly like cycle/hours/area: the config's
         # start_time IS cycle + this lead, so a fetch that ignored it
         # would download a window the front door then refuses for not
         # carrying the lead the experiment starts from.
         "forecast_start_hour": int(fetch_table.get("forecast_start_hour", 0)),
-        # Load-bearing for the same reason, and dropped until 1.4.1.  It
+        # Essential for the same reason, and dropped until 1.4.1.  It
         # sets the LATERAL BOUNDARY interval: a config asking for hourly
         # forcing whose fetch runs without --cadence downloads f000/f003
         # and the run gets 3-hourly boundaries -- three times coarser
@@ -1865,6 +1865,12 @@ class GoInterrupted(Exception):
     unobserved child pid is printed rather than acted on.
     """
 
+    #: The exit code this interrupt is worth, on the exception itself so
+    #: a front door that catches it as one of many ``BaseException``s
+    #: (``gpuwm.runplan.execute_plan``) can tell a stop from a failure
+    #: without importing this module to ask.
+    exit_code = INTERRUPT_EXIT_CODE
+
     def __init__(self, label: str, pid: int | None):
         super().__init__(f"interrupted during {label}")
         self.label = label
@@ -1872,7 +1878,7 @@ class GoInterrupted(Exception):
 
 
 def _physics_words(plan: dict) -> str:
-    """The banner's physics clause: profile id, or one honest sentence."""
+    """The banner's physics clause: profile id, or one accurate sentence."""
 
     experimental = _experimental_labels(plan)
     if experimental:
@@ -2174,7 +2180,7 @@ def geography_refusal(geog_root: Path) -> str | None:
     measured failing.  ``gpuwm doctor`` correctly exits 0 on the same
     gap, because a ~16 GB download nobody opted into is not a broken
     install; that is a statement about the INSTALL.  This is a
-    statement about a RUN, and the two answers differ honestly.
+    statement about a RUN, and the two answers differ accurately.
     """
 
     from gpuwm.doctor import geography_gaps

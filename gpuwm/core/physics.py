@@ -40,7 +40,9 @@ import numpy as np
 from gpuwm.config import (CUMULUS_ADVECTIVE_FORCING_SCHEMES,
                           CU_SCHEMES, MYJ_PBL_SCHEME, MYJ_SFCLAY_SCHEME,
                           MYNN_SFCLAY_SCHEME,
-                          NOAHMP_OPTION_IDENTITY, RUC_OPTION_IDENTITY,
+                          NOAHMP_OPTION_IDENTITY,
+                          NOAHMP_OPTIONS_WITHOUT_CONSUMER,
+                          RUC_OPTION_IDENTITY,
                           SASE_PBL_SCHEME, RunConfig,
                           radiation_enabled, radiation_scheme_ids,
                           soil_layer_count)
@@ -159,7 +161,7 @@ from gpuwm.ingest.soil import NOAH_LAYER_THICKNESS_M
 #: ``CONSTANT_DOWNWARD_LONGWAVE_ACK``, the token that declares it, and
 #: they have to be able to state the number without importing a CUDA
 #: engine to read it.  The standalone RW-WPS preprocessing wheel is where
-#: that became load-bearing: it stages ``gpuwm/physics_compat.py`` and
+#: that became essential: it stages ``gpuwm/physics_compat.py`` and
 #: forbids ``gpuwm/core/physics.py``, so a refusal that reached up here
 #: for the constant raised ImportError instead of refusing.  One number,
 #: one definition, owned by the layer that can ship on its own; the
@@ -566,7 +568,7 @@ def microphysics_cold_start(state: DomainState, cfg: RunConfig) -> dict:
     of thing -- not a tendency, not idempotent in general, run once before
     the first step where ``module_physics_init.F`` runs it.
 
-    The name is also load-bearing for ``tools/health_field_census.py``, which
+    The name is also essential for ``tools/health_field_census.py``, which
     replaces every ``*_cold_start`` in this module with a no-op so its
     host-array (NumPy-bound) sweep never executes a kernel.  That
     substitution is sound here for exactly the reason the census records for
@@ -2020,7 +2022,7 @@ class PhysicsDriver:
             # the writer creates a netCDF variable the first time a name
             # appears and Time is unlimited -- a lazily-created field
             # would leave frame 0 backfilled with the netCDF fill value
-            # instead of an honest zero (no SASE step has run at the t=0
+            # instead of an accurate zero (no SASE step has run at the t=0
             # frame).  Default None: no allocation, one attribute test
             # per step, and output_fields() keeps its historical key set.
             self.sase_flux_diag: dict[str, cp.ndarray] | None = (
@@ -2035,7 +2037,7 @@ class PhysicsDriver:
         # _HMIX_K_DIAG_NAMES.  Zeros at init, for the flux diagnostic's
         # reason: the writer creates a netCDF variable the first time a
         # name appears, so a lazily created field would leave frame 0
-        # backfilled with the fill value rather than an honest zero.
+        # backfilled with the fill value rather than an accurate zero.
         # None when the key is off OR when the run HAS no horizontal
         # mixing producer -- see hmix_k_diag_names for why the
         # no-producer case publishes nothing rather than zeros.
@@ -3272,9 +3274,14 @@ class PhysicsDriver:
             opt_soil=cfg.opt_soil)
         # The remaining knobs are read here so the registry's citation of
         # this file is true for every one of them, and so a future widening
-        # is a change in this call rather than in a solver default.  Each is
-        # already refused outside its admitted value by validate_run_config;
-        # this is the second line, at the seam that would consume it.
+        # is a change in this call rather than in a solver default.  The
+        # ones validate_run_config still refuses outside their admitted
+        # value get a second line here, at the seam that would consume
+        # them.  The knobs in NOAHMP_OPTIONS_WITHOUT_CONSUMER are read and
+        # then skipped: the run door admits them with one warning because
+        # they reach no gpuwm code at any value, so a raise here would be
+        # a second door disagreeing with the first, after the run has
+        # started and the first Noah-MP step has already been taken.
         for name, admitted in (
                 ("opt_crs", cfg.opt_crs), ("opt_btr", cfg.opt_btr),
                 ("opt_sfc", cfg.opt_sfc), ("opt_frz", cfg.opt_frz),
@@ -3285,12 +3292,16 @@ class PhysicsDriver:
                 ("opt_pedo", cfg.opt_pedo), ("opt_irrm", cfg.opt_irrm),
                 ("opt_infdv", cfg.opt_infdv),
                 ("noahmp_output", cfg.noahmp_output)):
+            if name in NOAHMP_OPTIONS_WITHOUT_CONSUMER:
+                continue
             if int(admitted) != int(NOAHMP_OPTION_IDENTITY[name]):
                 raise ValueError(
                     f"{name}={admitted} reached the Noah-MP runner outside "
                     "its admitted identity")
         for name, admitted in (("soiltstep", cfg.soiltstep),
                                ("noahmp_acc_dt", cfg.noahmp_acc_dt)):
+            if name in NOAHMP_OPTIONS_WITHOUT_CONSUMER:
+                continue
             if float(admitted) != float(NOAHMP_OPTION_IDENTITY[name]):
                 raise ValueError(
                     f"{name}={admitted} reached the Noah-MP runner outside "
@@ -4057,7 +4068,7 @@ class PhysicsDriver:
         # applies -- not a second field but the same field over the
         # step's own blended Prandtl number, recorded so a reader never
         # has to reconstruct pr_t to interpret the momentum row.  The
-        # CPU-shim seam (km_h is None) leaves an honest zero: it runs the
+        # CPU-shim seam (km_h is None) leaves an accurate zero: it runs the
         # legacy coefficient form and has no governed field to record.
         if self.hmix_k_diag is not None and km_h is not None:
             self.hmix_k_diag["SASE_KMH"][...] = km_h
@@ -4107,7 +4118,7 @@ class PhysicsDriver:
             # is where they are enforced): ONE per-column uniform
             # rescale of all three rows, computed before the scalar loop
             # because the factor couples them (authority
-            # vent_deposit_rescale).  Uniform is load-bearing: a
+            # vent_deposit_rescale).  Uniform is essential: a
             # per-level clip destroys the telescoping (measured
             # sum thick*dtheta = -3.74 against 0.0).
             vent_scale = launch_vent_deposit_scale(
@@ -4126,7 +4137,7 @@ class PhysicsDriver:
         # theta row -- and both stay POSITIVE UPWARD (the deposit's own
         # convention).  The kv-is-None legacy shim seam diagnoses NO
         # venting limb at all (the S4-5b Item 4c guard above), so its
-        # honest record is +0.0, not the previous step's residue -- and
+        # accurate record is +0.0, not the previous step's residue -- and
         # it runs no implicit vertical solve either, so the K_v half is
         # zeroed here too (the scalar loop's fill is unreachable there).
         flux_diag = self.sase_flux_diag
@@ -4731,7 +4742,7 @@ def _resolve_initial_glw(glw, *, ra_lw_physics: int, radiation_active: bool,
                          sf_surface_physics: int) -> tuple[object, str]:
     """Return ``(initial GLW, provenance)`` or refuse to invent one.
 
-    Downward longwave has exactly three honest origins, and this function
+    Downward longwave has exactly three accurate origins, and this function
     is where a run is made to name which one it has.
 
     * ``"scheme"`` -- a longwave scheme is attached (``ra_lw_physics >

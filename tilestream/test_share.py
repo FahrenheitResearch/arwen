@@ -349,7 +349,7 @@ CASES: tuple[tuple[str, dict, bool], ...] = (
      dict(), True),
     ("shared everything, RRTMGP column_chunk 1024",
      dict(rrtmgp_column_chunk=1024), True),
-    ("shared everything, MYNN column chunk 4096 (a quarter of the shipped "
+    ("shared everything, MYNN column chunk 4096 (half the shipped "
      "workspace)",
      dict(mynn_column_chunk=4096), True),
     ("shared everything, nbuffers=3",

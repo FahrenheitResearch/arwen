@@ -85,7 +85,7 @@ refuses a schedule with a missing edge.  The driver runs it at construction
 for ``overlap="on"``, so a hand-edited or regressed dependency list is a
 refusal at setup, not a plausible forecast.  ``overlap="unchained"`` skips
 the checker and the waits both: it is the negative control that shows the
-chain is load-bearing, exactly as ``ring_ordering="submission"`` and
+chain is essential, exactly as ``ring_ordering="submission"`` and
 ``write_mode="inplace"`` are kept to show for their own orderings.
 
 What is deliberately NOT here: ``_advance_clock`` and

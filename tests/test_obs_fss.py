@@ -1,6 +1,6 @@
 """The obs scorer's statistics: masked FSS, contingency scores, remapping.
 
-The load-bearing pin here is the first one.  The battery claims to score
+The essential pin here is the first one.  The battery claims to score
 against observations with *the existing FSS engine*, so the masked
 implementation must reduce, exactly, to ``1 - field_metrics.fss_distance``
 when nothing is masked and the boundary treatment is the engine's own.  If

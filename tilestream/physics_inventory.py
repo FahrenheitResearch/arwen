@@ -536,7 +536,7 @@ def merge_carrier_records(driver, stored, *, elapsed=None) -> dict:
     step's Python stamped this buffer at the current model second, the
     domain dict was published a cadence earlier, and re-imposing the older
     stamp would erase a producer run that really happened.  The
-    ``elapsed`` bound is what keeps a RESTART REWIND honest: a buffer that
+    ``elapsed`` bound is what keeps a RESTART REWIND accurate: a buffer that
     integrated past the checkpoint holds stamps AHEAD of the restored
     clock, and a stamp from the discarded future must not survive into the
     resumed run (the freshness law refuses negative ages, so it would

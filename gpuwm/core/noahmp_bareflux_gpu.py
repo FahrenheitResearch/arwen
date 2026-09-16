@@ -12,7 +12,7 @@ Two things this deliberately does not do:
 
 * It does not compile with any translation-unit-wide flag.  The kernel pins
   every FP32 operation with a rounding intrinsic and keeps every constant in
-  ``__constant__`` memory, so ``-fmad`` is not load-bearing and a global flag
+  ``__constant__`` memory, so ``-fmad`` is not essential and a global flag
   would silently move unrelated arithmetic if the source is composed later.
 * It does not touch ``glibc_powf``.  ``d_bare_flux`` never calls it -- only
   ``powi3``/``powi4`` (integer powers, written as multiplies) and

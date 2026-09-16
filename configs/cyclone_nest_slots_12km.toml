@@ -60,6 +60,21 @@
 #   rearm  cooldown_s           6 h of slot downtime before it may take
 #                               another storm, and two firings apiece.
 #
+# THE MOVEMENT BOUNDS.  `min_overlap_fraction` is the one that states the
+# physics: a move keeps 0.7 of the child, so at most 0.3 of it is strip
+# the child has to spin up.  `max_move_parent_cells` and the follower's
+# own `max_shift_cells` are DERIVED from it and are not free to disagree
+# with it: an overlap floor f admits a per-axis magnitude of 1 - sqrt(f)
+# of the nest's own width in parent cells on the binding DIAGONAL move,
+# and each slot below is 40 parent cells wide, so
+# 40 * (1 - sqrt(0.7)) = 6.53 -> 6.  A maximum declared above that number
+# is unreachable: the move passes the per-axis bound and the floor then
+# refuses it, which is exactly what ended a cyclone quick forecast at its
+# first relocation cadence.  The derivation is
+# gpuwm.core.nest_relocation.max_parent_cells_for_overlap and the pair is
+# checked for every shipped configuration by
+# tests/test_relocation_overlap_clamp.py.
+#
 # THE CADENCES.  With no tree-level `[relocation]` table the spawn-leg
 # length is the ROOT's history interval -- 3600 s here -- so every
 # spawn/retire/re-arm decision lands on an hourly mark.  Each follower
@@ -207,7 +222,7 @@ diff_6th_factor = 0.1
 spawn = { trigger = "pressure", threshold = 25.0, level_hpa = 850.0, radius_km = 60.0, earliest_s = 10800.0, latest_s = 151200.0 }
 retire = { trigger = "pressure", threshold = 10.0, level_hpa = 850.0, sustained_s = 7200.0, min_lifetime_s = 21600.0 }
 rearm = { max_firings = 2, cooldown_s = 21600.0 }
-follow = { field = "pressure", threshold = 25.0, level_hpa = 850.0, radius_km = 60.0, search_margin_cells = 20, min_shift_cells = 2, max_shift_cells = 8, cooldown_seconds = 3600.0, cadence_seconds = 900.0, max_move_parent_cells = 8, min_overlap_fraction = 0.7 }
+follow = { field = "pressure", threshold = 25.0, level_hpa = 850.0, radius_km = 60.0, search_margin_cells = 20, min_shift_cells = 2, max_shift_cells = 6, cooldown_seconds = 3600.0, cadence_seconds = 900.0, max_move_parent_cells = 6, min_overlap_fraction = 0.7 }
 
 # SLOT B -- the middle third.
 [[domain]]
@@ -229,7 +244,7 @@ diff_6th_factor = 0.1
 spawn = { trigger = "pressure", threshold = 25.0, level_hpa = 850.0, radius_km = 60.0, earliest_s = 10800.0, latest_s = 151200.0 }
 retire = { trigger = "pressure", threshold = 10.0, level_hpa = 850.0, sustained_s = 7200.0, min_lifetime_s = 21600.0 }
 rearm = { max_firings = 2, cooldown_s = 21600.0 }
-follow = { field = "pressure", threshold = 25.0, level_hpa = 850.0, radius_km = 60.0, search_margin_cells = 20, min_shift_cells = 2, max_shift_cells = 8, cooldown_seconds = 3600.0, cadence_seconds = 900.0, max_move_parent_cells = 8, min_overlap_fraction = 0.7 }
+follow = { field = "pressure", threshold = 25.0, level_hpa = 850.0, radius_km = 60.0, search_margin_cells = 20, min_shift_cells = 2, max_shift_cells = 6, cooldown_seconds = 3600.0, cadence_seconds = 900.0, max_move_parent_cells = 6, min_overlap_fraction = 0.7 }
 
 # SLOT C -- the eastern third, where a storm entering the basin is first
 # resolvable.  Its window opens with the others; the exclusion rule, not
@@ -253,7 +268,7 @@ diff_6th_factor = 0.1
 spawn = { trigger = "pressure", threshold = 25.0, level_hpa = 850.0, radius_km = 60.0, earliest_s = 10800.0, latest_s = 151200.0 }
 retire = { trigger = "pressure", threshold = 10.0, level_hpa = 850.0, sustained_s = 7200.0, min_lifetime_s = 21600.0 }
 rearm = { max_firings = 2, cooldown_s = 21600.0 }
-follow = { field = "pressure", threshold = 25.0, level_hpa = 850.0, radius_km = 60.0, search_margin_cells = 20, min_shift_cells = 2, max_shift_cells = 8, cooldown_seconds = 3600.0, cadence_seconds = 900.0, max_move_parent_cells = 8, min_overlap_fraction = 0.7 }
+follow = { field = "pressure", threshold = 25.0, level_hpa = 850.0, radius_km = 60.0, search_margin_cells = 20, min_shift_cells = 2, max_shift_cells = 6, cooldown_seconds = 3600.0, cadence_seconds = 900.0, max_move_parent_cells = 6, min_overlap_fraction = 0.7 }
 
 # Advisory data-acquisition hints (validated, not executed); keys mirror
 # `gpuwm fetch` flags.

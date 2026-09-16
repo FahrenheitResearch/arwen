@@ -113,7 +113,7 @@ fn direct_title_for_request(
         title = apply_native_stat_title_prefix(request.model, &stat_label, &title);
     }
     // Locally imported output first, and for every model: these frames were
-    // never fetched from a source catalog, so the only honest parenthetical
+    // never fetched from a source catalog, so the only accurate parenthetical
     // is the grid the importer read out of the file itself.  Deciding this
     // before the model check keeps the claim tied to the batch's declared
     // provenance rather than to which model identity the store happens to

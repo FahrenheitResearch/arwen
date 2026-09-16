@@ -95,6 +95,29 @@ def _declaring_before_first_domain(text: str, block: str) -> str:
     return text[:match.start()] + block + text[match.start():]
 
 
+#: `**` spreads whose contributed proof key is fixed and unconditional,
+#: keyed by the name that appears in the expression.  The moisture-floor
+#: receipt is built by one function for a single domain and read off the
+#: hierarchy export result for a tree; both spellings put exactly one
+#: known key into the document.
+_UNCONDITIONAL_SPREADS = {
+    "moisture_floor_proof_entry": "moisture_floors",
+    "moisture_floor_receipts": "moisture_floors_by_domain",
+}
+
+
+def _unconditional_spread_key(value):
+    """The proof key an unconditional `**` spread contributes, or None."""
+    import ast
+
+    for node in ast.walk(value):
+        name = (node.id if isinstance(node, ast.Name) else
+                node.attr if isinstance(node, ast.Attribute) else None)
+        if name in _UNCONDITIONAL_SPREADS:
+            return _UNCONDITIONAL_SPREADS[name]
+    return None
+
+
 def _mapped_proof_literals() -> tuple[dict[str, set[str]],
                                       dict[str, set[str]]]:
     """The top-level keys ``gpuwm/mapped_direct.py`` actually writes.
@@ -150,8 +173,21 @@ def _mapped_proof_literals() -> tuple[dict[str, set[str]],
             elif isinstance(key, ast.Name) and key.id == "forcing_key":
                 keys.add("forcing_hours")
             elif key is None:
-                # A `**` spread.  The writer uses it for one thing --
-                # `**({...} if <receipt> is not None else {})` -- so both
+                # A `**` spread.  The writer uses it for two things.
+                #
+                # (1) An UNCONDITIONAL receipt builder, spread in on every
+                # run -- the initialization moisture-floor block, which is
+                # stated even when no floor fired because an absent key
+                # would read as "prepared before the receipt existed".
+                # Its key is required, not opted-in, so it joins `keys`.
+                # Read by the name in the expression rather than by
+                # evaluating it: this gate reads syntax and never imports
+                # the writer.
+                unconditional = _unconditional_spread_key(value)
+                if unconditional is not None:
+                    keys.add(unconditional)
+                    continue
+                # (2) `**({...} if <receipt> is not None else {})` -- both
                 # branches are read and every key either can contribute
                 # is optional.  Anything else spread in here is a new
                 # shape that needs a decision, not a silent pass.
@@ -227,7 +263,8 @@ def test_prepared_runner_capability_query_is_side_effect_free_without_run_args(
     assert payload["supported_sources"] == [
         "20crv3", "20crv3-cf", "aifs", "aigefs", "aigfs",
         "ecmwf-open-data", "era5", "era5-l137", "gdas", "gefs",
-        "gem-gdps", "gfs", "hrrr", "hrrr-prs", "icon-eu", "mapped", "rap", "rrfs"]
+        "gem-gdps", "gfs", "hrrr", "hrrr-prs", "icon-eu", "icon-global",
+        "mapped", "rap", "rrfs"]
     assert payload["physics_profile_ids"] == list(runner.PHYSICS_PROFILES)
     assert payload["report_schema"] == runner.REPORT_SCHEMA
     assert payload["window"]["limit_policy"] \
@@ -899,7 +936,7 @@ def test_the_remedy_for_a_config_rooted_in_the_profile_is_omission(tmp_path):
     to the profile values" (which would switch a PBL parameterization
     back ON over an LES nest's resolved turbulence) and "name the
     profile you meant -- --physics-profile P", where P was the very flag
-    the caller had just passed.  The honest remedy on this path is the
+    the caller had just passed.  The accurate remedy on this path is the
     third one: omit the flag and the materializer publishes the config's
     own physics, every domain, unchanged.
     """

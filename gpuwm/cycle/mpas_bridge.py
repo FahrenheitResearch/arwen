@@ -302,7 +302,7 @@ def segment_arrays(manifest: Mapping[str, Any]) -> dict[str, Any]:
 # grading the evidence: what may this anchor be stamped?
 
 
-#: The honest label for a boundary whose state came out of the dycore but
+#: The accurate label for a boundary whose state came out of the dycore but
 #: whose analysis never went back INTO it.
 FRAMES_KIND = "mpas-cuda-frames"
 #: The label a boundary earns only when the analysis genuinely re-entered

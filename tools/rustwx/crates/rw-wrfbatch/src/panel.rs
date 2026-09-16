@@ -15,8 +15,8 @@
 //! finished panels, and `gpuwm/pair_compose.py` already does that with
 //! Pillow ("pixels are pasted, never recomputed").  Nor is there a footer
 //! BAND: `MapRenderRequest` has a title and three subtitle slots and no
-//! fourth text region, so a multi-paragraph honesty footer has nowhere
-//! honest to go and is not silently squeezed into a subtitle.
+//! fourth text region, so a multi-paragraph accuracy footer has nowhere
+//! accurate to go and is not silently squeezed into a subtitle.
 
 use std::path::{Path, PathBuf};
 

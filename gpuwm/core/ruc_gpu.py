@@ -34,6 +34,8 @@ from gpuwm.core.ruc import (
     _resolved_soil_levels,
 )
 from gpuwm.core.ruc_contract import NUM_SOIL_LAYERS
+from gpuwm.core.ruc_validation import (VALIDATION_SCAN_GROUP,
+                                       RucValidationBatch)
 # The tier lives in its own CuPy-free module so the identity of the
 # nine-level translation unit stays provable on a box with no card; see
 # gpuwm/core/ruc_tier.py.  ``_ruc_kernel`` is the ONE place a RUC launcher
@@ -243,43 +245,156 @@ def _integer_field(value, shape: tuple[int, ...], name: str) -> cp.ndarray:
     return cp.ascontiguousarray(raw, dtype=cp.int32)
 
 
-def _float_field(value, shape: tuple[int, ...], name: str) -> cp.ndarray:
+@lru_cache(maxsize=None)
+def _validation_scan_kernel(count: int):
+    """A read-only finiteness scan over ``count`` arrays, one flag word each.
+
+    Pointers and lengths travel as launch arguments, so every batch of the
+    same width shares one compiled kernel.  ``blockIdx.y`` selects the array
+    and indexes the flag block, so a refusal still knows which field tripped
+    -- a batched check that lost the field name would be a regression, not an
+    optimisation.  The shape is ``mynn_validate_batch``'s
+    (``gpuwm/core/mynn_pbl_gpu.py``), which is the same problem solved for
+    MYNN in 2.7.4; explicit FTZ matches the ``cp.isfinite`` reduction this
+    replaces, which flushes nothing but is never asked to.
+    """
+    arguments = ", ".join(f"const float* a{index}, unsigned long long n{index}"
+                          for index in range(count))
+    cases = "\n".join(
+        f"case {index}: data=a{index}; size=n{index}; break;"
+        for index in range(count))
+    source = f"""
+extern "C" __global__ void ruc_validate_finite({arguments}, int* flags) {{
+    const float* data = nullptr;
+    unsigned long long size = 0;
+    switch (blockIdx.y) {{ {cases} }}
+    unsigned int failed = 0;
+    for (unsigned long long i = blockIdx.x * blockDim.x + threadIdx.x;
+         i < size; i += (unsigned long long)gridDim.x * blockDim.x) {{
+        float value = data[i];
+        failed |= (isfinite(value) ? 0u : 1u);
+    }}
+    unsigned int any_failed = __ballot_sync(0xffffffffu, failed != 0);
+    if ((threadIdx.x & 31) == 0 && any_failed)
+        atomicOr(flags + blockIdx.y, 1);
+}}
+"""
+    return cp.RawKernel(source, "ruc_validate_finite",
+                        options=("-std=c++17", "--ftz=true"))
+
+
+def _validation_scan_blocks(longest: int, count: int) -> int:
+    """Blocks along x, enough to cover the card without oversubscribing it.
+
+    The scan is memory-bound and grid-stride, so the useful width is the
+    card's resident thread count divided across the arrays in the batch, and
+    never more blocks than the longest array has 128-wide tiles.
+    """
+    tiles = max(1, (longest + 127) // 128)
+    device = cp.cuda.Device(cp.cuda.runtime.getDevice())
+    resident = (device.attributes["MultiProcessorCount"]
+                * device.attributes["MaxThreadsPerMultiProcessor"])
+    return max(1, min(tiles, max(1, resident // (128 * max(1, count)))))
+
+
+def _ruc_validate_batch(arrays, flags) -> None:
+    """Scan ``arrays`` for non-finite values, one flag word per array.
+
+    This is what :class:`~gpuwm.core.ruc_validation.RucValidationBatch` finds
+    on :data:`RUC_DEVICE_ARRAYS` and calls instead of one reduction per
+    array; the batch reads ``flags`` once for the whole call.
+    """
+    group = tuple(arrays)
+    if not group or len(group) > VALIDATION_SCAN_GROUP:
+        raise ValueError(
+            f"a RUC validation scan takes 1..{VALIDATION_SCAN_GROUP} arrays, "
+            f"got {len(group)}; RucValidationBatch chunks a longer batch")
+    launch = tuple(value for array in group
+                   for value in (array, np.uint64(array.size)))
+    blocks = _validation_scan_blocks(max(array.size for array in group),
+                                     len(group))
+    _validation_scan_kernel(len(group))(
+        (blocks, len(group)), (128,), (*launch, flags))
+
+
+#: The four names :class:`RucValidationBatch` reaches on a device batch.
+#:
+#: A leaf's admission tests run on cupy whatever namespace its CALLER uses,
+#: because the leaf is the device implementation; this is that namespace,
+#: kept to the names the batch needs so a fifth one is an AttributeError at
+#: the batch rather than a silent host fallback.
+_VALIDATION_ARRAYS = SimpleNamespace(
+    zeros=cp.zeros, all=cp.all, any=cp.any, isfinite=cp.isfinite,
+    ruc_validate_batch=_ruc_validate_batch,
+)
+
+
+def _validation_batch() -> RucValidationBatch:
+    """A batch whose verdicts cost one host read for the whole call."""
+    return RucValidationBatch(_VALIDATION_ARRAYS)
+
+
+def _float_field(value, shape: tuple[int, ...], name: str, *,
+                 batch: RucValidationBatch | None = None) -> cp.ndarray:
     raw = cp.asarray(value, dtype=DTYPE)
     if raw.shape != shape:
         try:
             raw = cp.broadcast_to(raw, shape)
         except ValueError as exc:
+            if batch is not None:
+                batch.flush()
             raise ValueError(
                 f"{name} shape {raw.shape} is not broadcastable to {shape}"
             ) from exc
-    if not bool(cp.all(cp.isfinite(raw))):
-        raise ValueError(f"{name} must be finite")
-    return cp.ascontiguousarray(raw)
+    field = cp.ascontiguousarray(raw)
+    if batch is None:
+        if not bool(cp.all(cp.isfinite(field))):
+            raise ValueError(f"{name} must be finite")
+        return field
+    return batch.finite(field, name)
 
 
-def _float_profile(value, shape: tuple[int, ...], name: str) -> cp.ndarray:
+def _float_profile(value, shape: tuple[int, ...], name: str, *,
+                   batch: RucValidationBatch | None = None) -> cp.ndarray:
     raw = cp.asarray(value, dtype=DTYPE)
     if raw.shape != shape:
+        if batch is not None:
+            batch.flush()
         raise ValueError(f"{name} shape {raw.shape}; expected {shape}")
-    if not bool(cp.all(cp.isfinite(raw))):
-        raise ValueError(f"{name} must be finite")
-    return cp.ascontiguousarray(raw)
+    field = cp.ascontiguousarray(raw)
+    if batch is None:
+        if not bool(cp.all(cp.isfinite(field))):
+            raise ValueError(f"{name} must be finite")
+        return field
+    return batch.finite(field, name)
 
 
 def _root_count_field(value, shape: tuple[int, ...], *,
-                      nzs: int = NUM_SOIL_LAYERS) -> cp.ndarray:
+                      nzs: int = NUM_SOIL_LAYERS,
+                      batch: RucValidationBatch | None = None) -> cp.ndarray:
     raw = cp.asarray(value)
     if raw.dtype.kind not in "iu":
+        if batch is not None:
+            batch.flush()
         raise TypeError("nroot must contain integer root-zone level counts")
     if raw.shape != shape:
         try:
             raw = cp.broadcast_to(raw, shape)
         except ValueError as exc:
+            if batch is not None:
+                batch.flush()
             raise ValueError(
                 f"nroot shape {raw.shape} is not broadcastable to {shape}"
             ) from exc
     roots = cp.ascontiguousarray(raw, dtype=cp.int32)
     invalid = (roots < 1) | (roots >= nzs)
+    if batch is not None:
+        # The message still READS the offending count, and still only on the
+        # failing path: the batch calls it after its own single host read.
+        batch.refuse_if_any(
+            invalid,
+            lambda: f"RUC nroot {int(roots[invalid][0])} is outside 1..{nzs - 1}")
+        return roots
     if bool(cp.any(invalid)):
         bad = int(roots[invalid][0])
         # The BOUND was un-pinned with the geometry; this MESSAGE was not,
@@ -334,7 +449,8 @@ def _soil_phase_partition_cuda(
     return outputs
 
 
-def _device_constant_flux_depth(conflx, ncolumn: int, label: str):
+def _device_constant_flux_depth(conflx, ncolumn: int, label: str, *,
+                                batch: RucValidationBatch | None = None):
     """``conflx`` as a contiguous float32 device column field.
 
     The four kernels that read it -- ``ruc_soil_temperature_step``,
@@ -350,10 +466,13 @@ def _device_constant_flux_depth(conflx, ncolumn: int, label: str):
         raise ValueError(f"RUC CUDA {label} conflx must be scalar or 1-D")
     depth = cp.ascontiguousarray(
         cp.broadcast_to(cp.atleast_1d(depth), (ncolumn,)))
-    if not bool(cp.all(cp.isfinite(depth))) or bool(
+    message = f"RUC CUDA {label} conflx must be finite and nonnegative"
+    if batch is not None:
+        batch.finite_message(depth, message)
+        batch.refuse_if_any(depth < cp.float32(0.0), message)
+    elif not bool(cp.all(cp.isfinite(depth))) or bool(
             cp.any(depth < cp.float32(0.0))):
-        raise ValueError(
-            f"RUC CUDA {label} conflx must be finite and nonnegative")
+        raise ValueError(message)
     return depth
 
 
@@ -388,8 +507,9 @@ def ruc_surface_parameters_cuda(
     shape = soil_raw.shape
     soil_type = _integer_field(soil_raw, shape, "isltyp")
     vegetation_type = _integer_field(ivgtyp, shape, "ivgtyp")
+    batch = _validation_batch()
     inputs = tuple(
-        _float_field(value, shape, name)
+        _float_field(value, shape, name, batch=batch)
         for value, name in (
             (shdmin, "shdmin"),
             (shdmax, "shdmax"),
@@ -408,18 +528,23 @@ def ruc_surface_parameters_cuda(
         tables, nvegetation, nsoil, default_water = _upload_tables(
             parameters, mminlu
         )
-    soil_min = int(cp.min(soil_type))
-    soil_max = int(cp.max(soil_type))
-    vegetation_min = int(cp.min(vegetation_type))
-    vegetation_max = int(cp.max(vegetation_type))
-    if soil_min < 1 or soil_max > nsoil:
-        bad = soil_min if soil_min < 1 else soil_max
-        raise ValueError(f"RUC isltyp {bad} is outside 1..{nsoil}")
-    if vegetation_min < 1 or vegetation_max > nvegetation:
-        bad = vegetation_min if vegetation_min < 1 else vegetation_max
-        raise ValueError(
-            f"RUC ivgtyp {bad} is outside 1..{nvegetation} for {mminlu}"
-        )
+    # The bound is tested on the card and the offending CATEGORY is read
+    # only when one is out of range, so the common path costs no read of its
+    # own and the refusal still names the value it rejected.
+    def _out_of_range(field, ceiling, name, suffix=""):
+        def message():
+            low = int(cp.min(field))
+            bad = low if low < 1 else int(cp.max(field))
+            return f"RUC {name} {bad} is outside 1..{ceiling}{suffix}"
+        return message
+
+    batch.refuse_if_any((soil_type < 1) | (soil_type > nsoil),
+                        _out_of_range(soil_type, nsoil, "isltyp"))
+    batch.refuse_if_any(
+        (vegetation_type < 1) | (vegetation_type > nvegetation),
+        _out_of_range(vegetation_type, nvegetation, "ivgtyp",
+                      f" for {mminlu}"))
+    batch.flush()
     if iswater is None:
         water_category = default_water
     elif type(iswater) is int and 1 <= iswater <= nvegetation:
@@ -490,21 +615,23 @@ def ruc_soil_properties_cuda(
     first = cp.asarray(values[RUC_SOIL_PROPERTY_PROFILE_INPUTS[0]])
     nzs = _resolved_soil_levels(first, "RUC CUDA soil-property profiles")
     shape = first.shape
+    batch = _validation_batch()
     profiles = {
-        name: _float_profile(values[name], shape, name)
+        name: _float_profile(values[name], shape, name, batch=batch)
         for name in RUC_SOIL_PROPERTY_PROFILE_INPUTS
     }
     horizontal_shape = shape[1:]
     columns = {
-        name: _float_field(values[name], horizontal_shape, name)
+        name: _float_field(values[name], horizontal_shape, name, batch=batch)
         for name in RUC_SOIL_PROPERTY_COLUMN_INPUTS
     }
-    if bool(cp.any(columns["bclh"] <= cp.float32(0.0))):
-        raise ValueError("RUC bclh must be positive")
-    if bool(cp.any(columns["psis"] >= cp.float32(0.0))):
-        raise ValueError("RUC psis must be negative")
-    if bool(cp.any(columns["ksat"] < cp.float32(0.0))):
-        raise ValueError("RUC ksat must be nonnegative")
+    batch.refuse_if_any(columns["bclh"] <= cp.float32(0.0),
+                        "RUC bclh must be positive")
+    batch.refuse_if_any(columns["psis"] >= cp.float32(0.0),
+                        "RUC psis must be negative")
+    batch.refuse_if_any(columns["ksat"] < cp.float32(0.0),
+                        "RUC ksat must be nonnegative")
+    batch.flush()
 
     outputs = {
         name: cp.empty(shape, dtype=DTYPE)
@@ -552,13 +679,13 @@ def ruc_transpiration_cuda(
     """
     liquid = cp.asarray(soiliqw, dtype=DTYPE)
     nzs = _resolved_soil_levels(liquid, "RUC CUDA soiliqw")
-    if not bool(cp.all(cp.isfinite(liquid))):
-        raise ValueError("soiliqw must be finite")
+    batch = _validation_batch()
     liquid = cp.ascontiguousarray(liquid)
+    batch.finite_message(liquid, "soiliqw must be finite")
     horizontal_shape = liquid.shape[1:]
-    roots = _root_count_field(nroot, horizontal_shape, nzs=nzs)
+    roots = _root_count_field(nroot, horizontal_shape, nzs=nzs, batch=batch)
     columns = {
-        name: _float_field(value, horizontal_shape, name)
+        name: _float_field(value, horizontal_shape, name, batch=batch)
         for name, value in (
             ("tabs", tabs),
             ("lai", lai),
@@ -576,13 +703,15 @@ def ruc_transpiration_cuda(
         tables, nvegetation, _, _ = _default_device_tables(device_id, mminlu)
     else:
         tables, nvegetation, _, _ = _upload_tables(parameters, mminlu)
-    land_min = int(cp.min(land_type))
-    land_max = int(cp.max(land_type))
-    if land_min < 1 or land_max > nvegetation:
-        bad = land_min if land_min < 1 else land_max
-        raise ValueError(f"RUC iland {bad} is outside 1..{nvegetation} for {mminlu}")
-    if bool(cp.any(columns["ref"] <= columns["wilt"])):
-        raise ValueError("RUC ref must exceed wilt")
+    def _bad_land():
+        low = int(cp.min(land_type))
+        bad = low if low < 1 else int(cp.max(land_type))
+        return f"RUC iland {bad} is outside 1..{nvegetation} for {mminlu}"
+
+    batch.refuse_if_any((land_type < 1) | (land_type > nvegetation), _bad_land)
+    batch.refuse_if_any(columns["ref"] <= columns["wilt"],
+                        "RUC ref must exceed wilt")
+    batch.flush()
 
     zs, _ = ruc_soil_geometry(nzs)
     zshalf = cp.asarray(ruc_zshalf(zs))
@@ -631,21 +760,23 @@ def ruc_soil_moisture_step_cuda(
     first = cp.asarray(values[RUC_SOIL_MOISTURE_PROFILE_INPUTS[0]])
     nzs = _resolved_soil_levels(first, "RUC CUDA soilmoist profiles")
     shape = first.shape
+    batch = _validation_batch()
     profiles = {
-        name: _float_profile(values[name], shape, name)
+        name: _float_profile(values[name], shape, name, batch=batch)
         for name in RUC_SOIL_MOISTURE_PROFILE_INPUTS
     }
     horizontal_shape = shape[1:]
     columns = {
-        name: _float_field(values[name], horizontal_shape, name)
+        name: _float_field(values[name], horizontal_shape, name, batch=batch)
         for name in RUC_SOIL_MOISTURE_COLUMN_INPUTS
     }
-    if bool(cp.any(columns["dqm"] <= cp.float32(0.0))):
-        raise ValueError("RUC CUDA soilmoist dqm must be positive")
-    if bool(cp.any(columns["ref"] <= columns["qmin"])):
-        raise ValueError("RUC CUDA soilmoist ref must exceed qmin")
-    if bool(cp.any(columns["ksat"] < cp.float32(0.0))):
-        raise ValueError("RUC CUDA soilmoist ksat must be nonnegative")
+    batch.refuse_if_any(columns["dqm"] <= cp.float32(0.0),
+                        "RUC CUDA soilmoist dqm must be positive")
+    batch.refuse_if_any(columns["ref"] <= columns["qmin"],
+                        "RUC CUDA soilmoist ref must exceed qmin")
+    batch.refuse_if_any(columns["ksat"] < cp.float32(0.0),
+                        "RUC CUDA soilmoist ksat must be nonnegative")
+    batch.flush()
 
     profile_outputs = {
         name: cp.empty(shape, dtype=DTYPE) for name in ("soilmois", "soiliqw")
@@ -709,29 +840,31 @@ def ruc_soil_temperature_step_cuda(
     first = cp.asarray(values[RUC_SOIL_TEMPERATURE_PROFILE_INPUTS[0]])
     nzs = _resolved_soil_levels(first, "RUC CUDA soiltemp profiles")
     shape = first.shape
+    batch = _validation_batch()
     profiles = {
-        name: _float_profile(values[name], shape, name)
+        name: _float_profile(values[name], shape, name, batch=batch)
         for name in RUC_SOIL_TEMPERATURE_PROFILE_INPUTS
     }
     horizontal_shape = shape[1:]
-    roots = _root_count_field(nroot, horizontal_shape, nzs=nzs)
+    roots = _root_count_field(nroot, horizontal_shape, nzs=nzs, batch=batch)
     columns = {
-        name: _float_field(values[name], horizontal_shape, name)
+        name: _float_field(values[name], horizontal_shape, name, batch=batch)
         for name in RUC_SOIL_TEMPERATURE_COLUMN_INPUTS
     }
-    if bool(cp.any(profiles["thdif"][0] <= cp.float32(0.0))):
-        raise ValueError("RUC CUDA soiltemp top-level thdif must be positive")
-    if bool(cp.any(profiles["cap"][0] <= cp.float32(0.0))):
-        raise ValueError("RUC CUDA soiltemp top-level cap must be positive")
-    if bool(cp.any(columns["patm"] <= cp.float32(0.0))):
-        raise ValueError("RUC CUDA soiltemp patm must be positive")
-    if bool(cp.any(columns["rho"] <= cp.float32(0.0))):
-        raise ValueError("RUC CUDA soiltemp rho must be positive")
-    if bool(cp.any(
+    batch.refuse_if_any(
+        profiles["thdif"][0] <= cp.float32(0.0),
+        "RUC CUDA soiltemp top-level thdif must be positive")
+    batch.refuse_if_any(
+        profiles["cap"][0] <= cp.float32(0.0),
+        "RUC CUDA soiltemp top-level cap must be positive")
+    batch.refuse_if_any(columns["patm"] <= cp.float32(0.0),
+                        "RUC CUDA soiltemp patm must be positive")
+    batch.refuse_if_any(columns["rho"] <= cp.float32(0.0),
+                        "RUC CUDA soiltemp rho must be positive")
+    batch.refuse_if_any(
         (columns["mavail"] < cp.float32(0.0))
-        | (columns["mavail"] > cp.float32(1.0))
-    )):
-        raise ValueError("RUC CUDA soiltemp mavail must be within 0..1")
+        | (columns["mavail"] > cp.float32(1.0)),
+        "RUC CUDA soiltemp mavail must be within 0..1")
 
     tso = cp.empty(shape, dtype=DTYPE)
     outputs = {
@@ -742,7 +875,8 @@ def ruc_soil_temperature_step_cuda(
     tbq = _device_tbq(device_id)
     ncolumn = int(np.prod(horizontal_shape))
     constant_flux_depth = _device_constant_flux_depth(
-        raw_flux_depth, ncolumn, "soiltemp")
+        raw_flux_depth, ncolumn, "soiltemp", batch=batch)
+    batch.flush()
     threads = 128
     blocks = (ncolumn + threads - 1) // threads
     kernel = _ruc_kernel("ruc_soil_temperature_step", nzs)
@@ -800,34 +934,35 @@ def ruc_soil_step_cuda(
     first = cp.asarray(values[RUC_SOIL_STEP_PROFILE_INPUTS[0]])
     nzs = _resolved_soil_levels(first, "RUC CUDA soil profiles")
     shape = first.shape
+    batch = _validation_batch()
     profiles = {
-        name: _float_profile(values[name], shape, name)
+        name: _float_profile(values[name], shape, name, batch=batch)
         for name in RUC_SOIL_STEP_PROFILE_INPUTS
     }
     horizontal_shape = shape[1:]
-    roots = _root_count_field(nroot, horizontal_shape, nzs=nzs)
+    roots = _root_count_field(nroot, horizontal_shape, nzs=nzs, batch=batch)
     land_type = _integer_field(iland, horizontal_shape, "iland")
     columns = {
-        name: _float_field(values[name], horizontal_shape, name)
+        name: _float_field(values[name], horizontal_shape, name, batch=batch)
         for name in RUC_SOIL_STEP_COLUMN_INPUTS
     }
-    if bool(cp.any(columns["dqm"] <= cp.float32(0.0))):
-        raise ValueError("RUC CUDA soil dqm must be positive")
-    if bool(cp.any(columns["psis"] >= cp.float32(0.0))):
-        raise ValueError("RUC CUDA soil psis must be negative")
-    if bool(cp.any(columns["bclh"] <= cp.float32(0.0))):
-        raise ValueError("RUC CUDA soil bclh must be positive")
-    if bool(cp.any(columns["sat"] <= cp.float32(0.0))):
-        raise ValueError("RUC CUDA soil canopy saturation must be positive")
-    if bool(cp.any(columns["rho"] <= cp.float32(0.0))) or bool(
-        cp.any(columns["patm"] <= cp.float32(0.0))
-    ):
-        raise ValueError("RUC CUDA soil rho and patm must be positive")
-    if bool(cp.any(
+    batch.refuse_if_any(columns["dqm"] <= cp.float32(0.0),
+                        "RUC CUDA soil dqm must be positive")
+    batch.refuse_if_any(columns["psis"] >= cp.float32(0.0),
+                        "RUC CUDA soil psis must be negative")
+    batch.refuse_if_any(columns["bclh"] <= cp.float32(0.0),
+                        "RUC CUDA soil bclh must be positive")
+    batch.refuse_if_any(columns["sat"] <= cp.float32(0.0),
+                        "RUC CUDA soil canopy saturation must be positive")
+    batch.refuse_if_any(
+        (columns["rho"] <= cp.float32(0.0))
+        | (columns["patm"] <= cp.float32(0.0)),
+        "RUC CUDA soil rho and patm must be positive")
+    batch.refuse_if_any(
         (columns["mavail"] < cp.float32(0.0))
-        | (columns["mavail"] > cp.float32(1.0))
-    )):
-        raise ValueError("RUC CUDA soil mavail must be within 0..1")
+        | (columns["mavail"] > cp.float32(1.0)),
+        "RUC CUDA soil mavail must be within 0..1")
+    batch.flush()
 
     soilmois = profiles["soilmois"].copy()
     tso = profiles["tso"].copy()
@@ -1024,9 +1159,12 @@ def ruc_soil_step_cuda(
         infiltrp=moisture.infiltrp,
         smf=final["smf"],
     )
+    outcome = _validation_batch()
     for name in RucSoilStepCuda.__dataclass_fields__:
-        if not bool(cp.all(cp.isfinite(getattr(result, name)))):
-            raise ValueError(f"RUC CUDA soil produced non-finite {name}")
+        outcome.finite_message(
+            getattr(result, name),
+            f"RUC CUDA soil produced non-finite {name}")
+    outcome.flush()
     return result
 
 def _device_saturation_table(table: object | None) -> cp.ndarray:
@@ -1052,8 +1190,10 @@ def ruc_qsn_cuda(tn, table: object | None = None) -> cp.ndarray:
     """
 
     values = cp.asarray(tn, dtype=DTYPE)
-    if not bool(cp.all(cp.isfinite(values))):
-        raise ValueError("RUC qsn temperatures must be finite")
+    batch = _validation_batch()
+    batch.finite_message(cp.ascontiguousarray(values),
+                         "RUC qsn temperatures must be finite")
+    batch.flush()
     saturation = _device_saturation_table(table)
     # ascontiguousarray promotes a scalar to shape (1,); the original shape
     # is restored on the way out so callers keep the layout they passed in.
@@ -1109,23 +1249,26 @@ def ruc_sea_ice_step_cuda(
     first = cp.asarray(values[RUC_SEA_ICE_PROFILE_INPUTS[0]])
     nzs = _resolved_soil_levels(first, "RUC CUDA sice profiles")
     shape = first.shape
+    batch = _validation_batch()
     profiles = {
-        name: _float_profile(values[name], shape, name)
+        name: _float_profile(values[name], shape, name, batch=batch)
         for name in RUC_SEA_ICE_PROFILE_INPUTS
     }
     horizontal_shape = shape[1:]
     columns = {
-        name: _float_field(values[name], horizontal_shape, name)
+        name: _float_field(values[name], horizontal_shape, name, batch=batch)
         for name in RUC_SEA_ICE_COLUMN_INPUTS
     }
-    if bool(cp.any(profiles["thdifice"][0] <= cp.float32(0.0))):
-        raise ValueError("RUC CUDA sice top-level thdifice must be positive")
-    if bool(cp.any(profiles["capice"][0] <= cp.float32(0.0))):
-        raise ValueError("RUC CUDA sice top-level capice must be positive")
-    if bool(cp.any(columns["patm"] <= cp.float32(0.0))):
-        raise ValueError("RUC CUDA sice patm must be positive")
-    if bool(cp.any(columns["rho"] <= cp.float32(0.0))):
-        raise ValueError("RUC CUDA sice rho must be positive")
+    batch.refuse_if_any(
+        profiles["thdifice"][0] <= cp.float32(0.0),
+        "RUC CUDA sice top-level thdifice must be positive")
+    batch.refuse_if_any(
+        profiles["capice"][0] <= cp.float32(0.0),
+        "RUC CUDA sice top-level capice must be positive")
+    batch.refuse_if_any(columns["patm"] <= cp.float32(0.0),
+                        "RUC CUDA sice patm must be positive")
+    batch.refuse_if_any(columns["rho"] <= cp.float32(0.0),
+                        "RUC CUDA sice rho must be positive")
 
     scalar_names = (
         "dew", "soilt", "qvg", "qsg", "qcg", "eeta", "qfx", "hfx",
@@ -1139,7 +1282,8 @@ def ruc_sea_ice_step_cuda(
     tbq = _device_tbq(int(cp.cuda.runtime.getDevice()))
     ncolumn = int(np.prod(horizontal_shape))
     constant_flux_depth = _device_constant_flux_depth(
-        raw_flux_depth, ncolumn, "sice")
+        raw_flux_depth, ncolumn, "sice", batch=batch)
+    batch.flush()
     threads = 128
     blocks = (ncolumn + threads - 1) // threads
     kernel = _ruc_kernel("ruc_sea_ice_step", nzs)
@@ -1182,9 +1326,12 @@ def ruc_sea_ice_step_cuda(
         },
         **outputs,
     )
+    outcome = _validation_batch()
     for name in ("tso", *scalar_names):
-        if not bool(cp.all(cp.isfinite(getattr(result, name)))):
-            raise ValueError(f"RUC CUDA sice produced non-finite {name}")
+        outcome.finite_message(
+            getattr(result, name),
+            f"RUC CUDA sice produced non-finite {name}")
+    outcome.flush()
     return result
 
 
@@ -1368,9 +1515,10 @@ def ruc_snow_preparation_cuda(
     nzs = _resolved_soil_levels(profile, "RUC CUDA snow preparation ts1d")
     shape = profile.shape
     horizontal_shape = shape[1:]
-    ts1d = _float_profile(values["ts1d"], shape, "ts1d")
+    batch = _validation_batch()
+    ts1d = _float_profile(values["ts1d"], shape, "ts1d", batch=batch)
     columns = {
-        name: _float_field(values[name], horizontal_shape, name)
+        name: _float_field(values[name], horizontal_shape, name, batch=batch)
         for name in RUC_SNOW_PREP_COLUMN_INPUTS
     }
     vegetation_category = _integer_field(
@@ -1385,14 +1533,17 @@ def ruc_snow_preparation_cuda(
     for name, category in (
         ("ivgtyp", vegetation_category), ("iland", land_category)
     ):
-        if bool(cp.any((category < 1) | (category > ncategory))):
-            raise ValueError(f"RUC {name} is outside 1..{ncategory}")
+        batch.refuse_if_any((category < 1) | (category > ncategory),
+                            f"RUC {name} is outside 1..{ncategory}")
     if not 1 <= isice <= ncategory:
+        batch.flush()
         raise ValueError(f"RUC isice is outside 1..{ncategory}")
-    if bool(cp.any(columns["rhosn"] <= cp.float32(0.0))):
-        raise ValueError("RUC CUDA snow preparation rhosn must be positive")
-    if bool(cp.any(columns["alb"] >= cp.float32(1.0))):
-        raise ValueError("RUC CUDA snow preparation alb must be below 1")
+    batch.refuse_if_any(
+        columns["rhosn"] <= cp.float32(0.0),
+        "RUC CUDA snow preparation rhosn must be positive")
+    batch.refuse_if_any(columns["alb"] >= cp.float32(1.0),
+                        "RUC CUDA snow preparation alb must be below 1")
+    batch.flush()
 
     profiles = {
         name: cp.empty(shape, dtype=DTYPE)
@@ -1432,11 +1583,12 @@ def ruc_snow_preparation_cuda(
     )
 
     result = RucSnowPreparationCuda(**profiles, **outputs, iland=land_result)
+    outcome = _validation_batch()
     for name in RUC_SNOW_PREP_PROFILE_OUTPUTS + RUC_SNOW_PREP_COLUMN_OUTPUTS:
-        if not bool(cp.all(cp.isfinite(getattr(result, name)))):
-            raise ValueError(
-                f"RUC CUDA snow preparation produced non-finite {name}"
-            )
+        outcome.finite_message(
+            getattr(result, name),
+            f"RUC CUDA snow preparation produced non-finite {name}")
+    outcome.flush()
     return result
 
 
@@ -1543,35 +1695,34 @@ def ruc_snow_sea_ice_step_cuda(
     first = cp.asarray(values[RUC_SNOW_SEA_ICE_PROFILE_INPUTS[0]])
     nzs = _resolved_soil_levels(first, "RUC CUDA snowseaice profiles")
     shape = first.shape
+    batch = _validation_batch()
     profiles = {
-        name: _float_profile(values[name], shape, name)
+        name: _float_profile(values[name], shape, name, batch=batch)
         for name in RUC_SNOW_SEA_ICE_PROFILE_INPUTS
     }
     horizontal_shape = shape[1:]
     columns = {
-        name: _float_field(values[name], horizontal_shape, name)
+        name: _float_field(values[name], horizontal_shape, name, batch=batch)
         for name in RUC_SNOW_SEA_ICE_COLUMN_INPUTS
     }
     integers = {
         name: _integer_field(values[name], horizontal_shape, name)
         for name in RUC_SNOW_SEA_ICE_INTEGER_INPUTS
     }
-    if bool(cp.any(profiles["thdifice"][0] <= cp.float32(0.0))):
-        raise ValueError(
-            "RUC CUDA snowseaice top-level thdifice must be positive"
-        )
-    if bool(cp.any(profiles["capice"][0] <= cp.float32(0.0))):
-        raise ValueError(
-            "RUC CUDA snowseaice top-level capice must be positive"
-        )
-    if bool(cp.any(columns["patm"] <= cp.float32(0.0))):
-        raise ValueError("RUC CUDA snowseaice patm must be positive")
-    if bool(cp.any(columns["rho"] <= cp.float32(0.0))):
-        raise ValueError("RUC CUDA snowseaice rho must be positive")
-    if bool(cp.any(columns["rhosn"] <= cp.float32(0.0))):
-        raise ValueError("RUC CUDA snowseaice rhosn must be positive")
-    if bool(cp.any(columns["snwe"] < cp.float32(0.0))):
-        raise ValueError("RUC CUDA snowseaice snwe must be nonnegative")
+    batch.refuse_if_any(
+        profiles["thdifice"][0] <= cp.float32(0.0),
+        "RUC CUDA snowseaice top-level thdifice must be positive")
+    batch.refuse_if_any(
+        profiles["capice"][0] <= cp.float32(0.0),
+        "RUC CUDA snowseaice top-level capice must be positive")
+    batch.refuse_if_any(columns["patm"] <= cp.float32(0.0),
+                        "RUC CUDA snowseaice patm must be positive")
+    batch.refuse_if_any(columns["rho"] <= cp.float32(0.0),
+                        "RUC CUDA snowseaice rho must be positive")
+    batch.refuse_if_any(columns["rhosn"] <= cp.float32(0.0),
+                        "RUC CUDA snowseaice rhosn must be positive")
+    batch.refuse_if_any(columns["snwe"] < cp.float32(0.0),
+                        "RUC CUDA snowseaice snwe must be nonnegative")
 
     tso = cp.empty(shape, dtype=DTYPE)
     layer_count = cp.empty(horizontal_shape, dtype=cp.int32)
@@ -1582,7 +1733,8 @@ def ruc_snow_sea_ice_step_cuda(
     tbq = _device_tbq(int(cp.cuda.runtime.getDevice()))
     ncolumn = int(np.prod(horizontal_shape))
     constant_flux_depth = _device_constant_flux_depth(
-        raw_flux_depth, ncolumn, "snowseaice")
+        raw_flux_depth, ncolumn, "snowseaice", batch=batch)
+    batch.flush()
     threads = 128
     blocks = (ncolumn + threads - 1) // threads
     kernel = _ruc_kernel("ruc_snow_sea_ice_step", nzs)
@@ -1609,9 +1761,12 @@ def ruc_snow_sea_ice_step_cuda(
     )
 
     result = RucSnowSeaIceStepCuda(tso=tso, ilnb=layer_count, **outputs)
+    outcome = _validation_batch()
     for name in ("tso", *RUC_SNOW_SEA_ICE_COLUMN_OUTPUTS):
-        if not bool(cp.all(cp.isfinite(getattr(result, name)))):
-            raise ValueError(f"RUC CUDA snowseaice produced non-finite {name}")
+        outcome.finite_message(
+            getattr(result, name),
+            f"RUC CUDA snowseaice produced non-finite {name}")
+    outcome.flush()
     return result
 
 
@@ -1716,35 +1871,40 @@ def ruc_snow_temperature_step_cuda(
     first = cp.asarray(values[RUC_SNOW_TEMPERATURE_PROFILE_INPUTS[0]])
     nzs = _resolved_soil_levels(first, "RUC CUDA snowtemp profiles")
     shape = first.shape
+    batch = _validation_batch()
     profiles = {
-        name: _float_profile(values[name], shape, name)
+        name: _float_profile(values[name], shape, name, batch=batch)
         for name in RUC_SNOW_TEMPERATURE_PROFILE_INPUTS
     }
     horizontal_shape = shape[1:]
     columns = {
-        name: _float_field(values[name], horizontal_shape, name)
+        name: _float_field(values[name], horizontal_shape, name, batch=batch)
         for name in RUC_SNOW_TEMPERATURE_COLUMN_INPUTS
     }
-    roots = _root_count_field(nroot, horizontal_shape, nzs=nzs)
+    roots = _root_count_field(nroot, horizontal_shape, nzs=nzs, batch=batch)
     raw_layers = cp.asarray(ilnb)
     if raw_layers.dtype.kind not in "iu":
+        batch.flush()
         raise TypeError("RUC CUDA snowtemp ilnb must contain integer counts")
     try:
         layers = cp.ascontiguousarray(
             cp.broadcast_to(raw_layers, horizontal_shape), dtype=cp.int32
         )
     except ValueError as exc:
+        batch.flush()
         raise ValueError(
             f"ilnb shape {raw_layers.shape} is not broadcastable to "
             f"{horizontal_shape}"
         ) from exc
-    if bool(cp.any(profiles["thdif"][0] <= cp.float32(0.0))):
-        raise ValueError("RUC CUDA snowtemp top-level thdif must be positive")
-    if bool(cp.any(profiles["cap"][0] <= cp.float32(0.0))):
-        raise ValueError("RUC CUDA snowtemp top-level cap must be positive")
+    batch.refuse_if_any(
+        profiles["thdif"][0] <= cp.float32(0.0),
+        "RUC CUDA snowtemp top-level thdif must be positive")
+    batch.refuse_if_any(
+        profiles["cap"][0] <= cp.float32(0.0),
+        "RUC CUDA snowtemp top-level cap must be positive")
     for name in ("patm", "rho", "rhosn", "snhei", "snth", "deltsn"):
-        if bool(cp.any(columns[name] <= cp.float32(0.0))):
-            raise ValueError(f"RUC CUDA snowtemp {name} must be positive")
+        batch.refuse_if_any(columns[name] <= cp.float32(0.0),
+                            f"RUC CUDA snowtemp {name} must be positive")
 
     tso = cp.empty(shape, dtype=DTYPE)
     outputs = {
@@ -1755,7 +1915,8 @@ def ruc_snow_temperature_step_cuda(
     tbq = _device_tbq(int(cp.cuda.runtime.getDevice()))
     ncolumn = int(np.prod(horizontal_shape))
     constant_flux_depth = _device_constant_flux_depth(
-        raw_flux_depth, ncolumn, "snowtemp")
+        raw_flux_depth, ncolumn, "snowtemp", batch=batch)
+    batch.flush()
     threads = 128
     blocks = (ncolumn + threads - 1) // threads
     # ONE OF TWO launch sites for this symbol; the other is in
@@ -1790,9 +1951,12 @@ def ruc_snow_temperature_step_cuda(
     )
 
     result = RucSnowTemperatureCuda(tso=tso, ilnb=layer_out, **outputs)
+    outcome = _validation_batch()
     for name in ("tso", *_RUC_SNOW_TEMPERATURE_SCALAR_OUTPUTS):
-        if not bool(cp.all(cp.isfinite(getattr(result, name)))):
-            raise ValueError(f"RUC CUDA snowtemp produced non-finite {name}")
+        outcome.finite_message(
+            getattr(result, name),
+            f"RUC CUDA snowtemp produced non-finite {name}")
+    outcome.flush()
     return result
 
 
@@ -1897,54 +2061,57 @@ def ruc_snow_soil_step_cuda(
     first = cp.asarray(values[RUC_SNOW_SOIL_PROFILE_INPUTS[0]])
     nzs = _resolved_soil_levels(first, "RUC CUDA snowsoil profiles")
     shape = first.shape
+    batch = _validation_batch()
     profiles = {
-        name: _float_profile(values[name], shape, name)
+        name: _float_profile(values[name], shape, name, batch=batch)
         for name in RUC_SNOW_SOIL_PROFILE_INPUTS
     }
     horizontal_shape = shape[1:]
-    roots = _root_count_field(nroot, horizontal_shape, nzs=nzs)
+    roots = _root_count_field(nroot, horizontal_shape, nzs=nzs, batch=batch)
     land_type = _integer_field(iland, horizontal_shape, "iland")
     snow_layers = cp.asarray(ilnb)
     if snow_layers.dtype.kind not in "iu":
+        batch.flush()
         raise TypeError("RUC CUDA snowsoil ilnb must be an integer layer count")
     if snow_layers.shape != horizontal_shape:
         try:
             snow_layers = cp.broadcast_to(snow_layers, horizontal_shape)
         except ValueError as exc:
+            batch.flush()
             raise ValueError(
                 f"ilnb shape {snow_layers.shape} is not broadcastable to "
                 f"{horizontal_shape}"
             ) from exc
     snow_layers = cp.ascontiguousarray(snow_layers, dtype=cp.int32)
     columns = {
-        name: _float_field(values[name], horizontal_shape, name)
+        name: _float_field(values[name], horizontal_shape, name, batch=batch)
         for name in RUC_SNOW_SOIL_COLUMN_INPUTS
     }
-    if bool(cp.any(columns["dqm"] <= cp.float32(0.0))):
-        raise ValueError("RUC CUDA snowsoil dqm must be positive")
-    if bool(cp.any(columns["psis"] >= cp.float32(0.0))):
-        raise ValueError("RUC CUDA snowsoil psis must be negative")
-    if bool(cp.any(columns["bclh"] <= cp.float32(0.0))):
-        raise ValueError("RUC CUDA snowsoil bclh must be positive")
-    if bool(cp.any(columns["sat"] <= cp.float32(0.0))):
-        raise ValueError("RUC CUDA snowsoil canopy saturation must be positive")
-    if bool(cp.any(columns["rho"] <= cp.float32(0.0))) or bool(
-        cp.any(columns["patm"] <= cp.float32(0.0))
-    ):
-        raise ValueError("RUC CUDA snowsoil rho and patm must be positive")
-    if bool(cp.any(columns["rhosn"] <= cp.float32(0.0))) or bool(
-        cp.any(columns["rhonewsn"] <= cp.float32(0.0))
-    ):
-        raise ValueError("RUC CUDA snowsoil snow densities must be positive")
-    if bool(cp.any(columns["snwe"] < cp.float32(0.0))) or bool(
-        cp.any(columns["snhei"] < cp.float32(0.0))
-    ):
-        raise ValueError("RUC CUDA snowsoil snow depth must be nonnegative")
-    if bool(cp.any(
+    batch.refuse_if_any(columns["dqm"] <= cp.float32(0.0),
+                        "RUC CUDA snowsoil dqm must be positive")
+    batch.refuse_if_any(columns["psis"] >= cp.float32(0.0),
+                        "RUC CUDA snowsoil psis must be negative")
+    batch.refuse_if_any(columns["bclh"] <= cp.float32(0.0),
+                        "RUC CUDA snowsoil bclh must be positive")
+    batch.refuse_if_any(
+        columns["sat"] <= cp.float32(0.0),
+        "RUC CUDA snowsoil canopy saturation must be positive")
+    batch.refuse_if_any(
+        (columns["rho"] <= cp.float32(0.0))
+        | (columns["patm"] <= cp.float32(0.0)),
+        "RUC CUDA snowsoil rho and patm must be positive")
+    batch.refuse_if_any(
+        (columns["rhosn"] <= cp.float32(0.0))
+        | (columns["rhonewsn"] <= cp.float32(0.0)),
+        "RUC CUDA snowsoil snow densities must be positive")
+    batch.refuse_if_any(
+        (columns["snwe"] < cp.float32(0.0))
+        | (columns["snhei"] < cp.float32(0.0)),
+        "RUC CUDA snowsoil snow depth must be nonnegative")
+    batch.refuse_if_any(
         (columns["snowfrac"] < cp.float32(0.0))
-        | (columns["snowfrac"] > cp.float32(1.0))
-    )):
-        raise ValueError("RUC CUDA snowsoil snowfrac must be within 0..1")
+        | (columns["snowfrac"] > cp.float32(1.0)),
+        "RUC CUDA snowsoil snowfrac must be within 0..1")
 
     xlv = np.float32(2.5e6)
     xlmelt = np.float32(3.35e5)
@@ -1983,7 +2150,8 @@ def ruc_snow_soil_step_cuda(
     # conflx here too.  Missing this passed a host object straight into a
     # kernel parameter that is now a pointer.
     constant_flux_depth = _device_constant_flux_depth(
-        raw_flux_depth, ncolumn, "snowsoil")
+        raw_flux_depth, ncolumn, "snowsoil", batch=batch)
+    batch.flush()
     threads = 128
     blocks = (ncolumn + threads - 1) // threads
     canopy_names = ("beta", "wetcan", "drycan", "snwe", "ras")
@@ -2203,10 +2371,13 @@ def ruc_snow_soil_step_cuda(
         mavail=moisture.mavail,
         infiltrp=moisture.infiltrp,
     )
+    outcome = _validation_batch()
     for name in RucSnowSoilStepCuda.__dataclass_fields__:
         array = getattr(result, name)
-        if array.dtype == DTYPE and not bool(cp.all(cp.isfinite(array))):
-            raise ValueError(f"RUC CUDA snowsoil produced non-finite {name}")
+        if array.dtype == DTYPE:
+            outcome.finite_message(
+                array, f"RUC CUDA snowsoil produced non-finite {name}")
+    outcome.flush()
     return result
 
 
@@ -2469,10 +2640,12 @@ RUC_DEVICE_ARRAYS = SimpleNamespace(
     isfinite=cp.isfinite,
     maximum=cp.maximum,
     minimum=cp.minimum,
+    nonzero=cp.nonzero,
     stack=cp.stack,
     where=cp.where,
     zeros=_dtype_normalising(cp.zeros),
     ruc_tanhf_glibc=ruc_tanhf_glibc,
+    ruc_validate_batch=_ruc_validate_batch,
 )
 
 

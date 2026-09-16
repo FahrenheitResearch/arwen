@@ -835,7 +835,7 @@ def _refusal(path: Path, root: Path) -> str | None:
     RESOLVE FIRST, THEN TEST.  A symlink named ``worker-02.stderr.log``
     pointing at somebody's private key would otherwise pass every
     name-based rule there is: the name the collector wants is not a
-    passport, and the only honest question is what the path actually
+    passport, and the only accurate question is what the path actually
     IS.  Both the literal path and the resolved one are tested, so
     neither a friendly name nor a hostile target can carry the other
     past the check.

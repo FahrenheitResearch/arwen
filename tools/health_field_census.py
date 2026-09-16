@@ -591,7 +591,7 @@ def neighbourhood_sample_matrix(reference_cfg, anchor):
     92 combinations instead of 2,560, and it rediscovers the 632 peak
     rather than assuming it.
 
-    THE HONEST LIMIT, WHICH THE SLOW ARM COVERS
+    THE ACCURATE LIMIT, WHICH THE SLOW ARM COVERS
     -------------------------------------------
     This finds a peak that moves WITHIN the recorded peak's family.  It
     cannot find a brand-new peak in some far corner of the product -- a

@@ -22,7 +22,7 @@ The four contracts pinned here:
 * EXPLICIT OVERRIDE RESPECTED: written values survive, both of them, and
   the label never binds identity -- an auto-selected 1 and a written 1
   carry the same fingerprint.
-* RESTART HONESTY: both restart doors say plainly why a checkpoint
+* RESTART ACCURACY: both restart doors say plainly why a checkpoint
   written under the old anisotropic default will not bit-continue.
 
 CPU only, no card, no data.
@@ -296,7 +296,7 @@ def test_gpuwm_check_stays_silent_on_a_safe_auto_grid(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Restart honesty, both doors.
+# Restart accuracy, both doors.
 # ---------------------------------------------------------------------------
 
 def _run_config(**overrides) -> RunConfig:

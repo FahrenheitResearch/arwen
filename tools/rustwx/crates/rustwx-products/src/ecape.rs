@@ -530,7 +530,7 @@ pub fn compute_ecape_map_fields(
 }
 
 /// Per-kernel wall times inside [`compute_ecape_map_fields_with_prepared_volume`],
-/// for callers (the store-ingest lane) that need an honest breakdown of
+/// for callers (the store-ingest lane) that need an accurate breakdown of
 /// where the heavy stage's time goes. Pure observation: the timed variant
 /// runs the exact same kernels in the exact same order.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]

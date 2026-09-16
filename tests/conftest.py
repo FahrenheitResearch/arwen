@@ -287,12 +287,18 @@ def pytest_configure(config):
         "gpu: opens a CUDA device.  Applied automatically to every test whose "
         "module imports cupy -- do not rely on writing it by hand, and do not "
         "remove the automation to 'clean up' a redundant-looking marker.")
+    config.addinivalue_line(
+        "markers",
+        "requires_capability(name): reads a staged Rust artifact; skipped, "
+        "with the command that stages it, when the probe in tests/conftest.py "
+        "CAPABILITY_PROBES finds this box cannot do it.  Spelled through the "
+        "requires_* marks defined beside the probes.")
 
 
 def pytest_collection_modifyitems(config, items):
     """Mark every cupy-importing test ``gpu``, and skip them when banned.
 
-    Marking is unconditional so that ``-m "not gpu"`` is honest on any
+    Marking is unconditional so that ``-m "not gpu"`` is accurate on any
     machine, with or without a device.
 
     The ban-skip applies to every item CARRYING the marker, not only to the
@@ -321,6 +327,7 @@ def pytest_collection_modifyitems(config, items):
         if NO_LOCAL_GPU and (detected
                              or item.get_closest_marker("gpu") is not None):
             item.add_marker(skip_local)
+    _gate_on_capabilities(items)
 
 
 @pytest.fixture(autouse=True, scope="session")
@@ -423,3 +430,235 @@ def assert_gates(case: str, metrics: dict) -> None:
     bad = _failing_gate(case, metrics)
     assert bad is None, (bad, {k: v for k, v in metrics.items()
                                if not isinstance(v, list)})
+
+
+# ---------------------------------------------------------------------------
+# STAGED RUST ARTIFACTS: one probe per capability, and a skip that says how
+# to stage it.
+#
+# 110 cases in thirteen files read a staged Rust artifact and had no gate at
+# all, so on a box where the artifact is absent -- or, worse, STALE -- they
+# reported a red suite that says nothing about the tree.  Measured on the
+# Linux CPU box (2026-09-11): 54 cases died on `rw_netcdf: Times is a String
+# variable` from a bridge staged months ago, 25 on a CPU preprocessing
+# library too old to export the symbol the call needs, 11 on a grib1 bridge
+# that was never built, and 20 on the absent wrf-rust distribution.  A red
+# for a missing tool is indistinguishable from a red for a defect, which is
+# the whole reason to gate.
+#
+# The probes ask about the CAPABILITY, never merely about the file.  An
+# artifact that is present and too old is the case that actually happened,
+# and "the binary exists" answers it wrong.  Each reason names the command
+# that stages the artifact, because a skip a reader cannot act on is a
+# silence.
+# ---------------------------------------------------------------------------
+
+def _never_raises(probe):
+    """A capability probe answers, or says why it could not answer.
+
+    An exception out of a probe would take the session down with every
+    unrelated test in it.  That happened while the probes still ran at
+    import: ``GPUWM_RW_NETCDF`` naming a path that no longer exists makes
+    gpuwm.netcdf_bridge.find_netcdf_bin raise FileNotFoundError
+    deliberately, and a stale override then collected nothing at all.  A
+    probe that cannot reach its artifact has found a gap, which is an
+    answer; the text carries the error so the reader can act on it.
+    """
+
+    @functools.wraps(probe)
+    def answer(*args):
+        try:
+            return probe(*args)
+        except Exception as error:                      # noqa: BLE001
+            detail = " ".join(str(error).split())[:200]
+            named = f"{probe.__name__}{args!r}" if args else probe.__name__
+            return (f"this capability could not be resolved here "
+                    f"({named}: {detail}); fix or unset whatever names it "
+                    "-- GPUWM_RW_NETCDF and the staged estate under "
+                    "~/.gpuwm/bridges are the usual answers -- and stage "
+                    "it with `python tools/stage_wheel_bridges.py`")
+
+    return answer
+
+
+@functools.lru_cache(maxsize=1)
+@_never_raises
+def netcdf_bridge_gap() -> str | None:
+    """Why the staged ``rw_netcdf`` cannot read a WRF file, or None.
+
+    A real round trip, not a version string: a NETCDF3_CLASSIC file with a
+    WRF ``Times`` character array, written with netCDF4 and read back
+    through the bridge.  That is what every gated case does first, and an
+    older bridge reads the character array as a String variable and
+    refuses.
+    """
+
+    import tempfile
+
+    try:
+        import netCDF4  # noqa: F401
+    except Exception as error:                          # noqa: BLE001
+        return f"netCDF4 is not importable here ({error})"
+    from gpuwm import netcdf_bridge
+
+    if netcdf_bridge.find_netcdf_bin() is None:
+        return ("rw_netcdf is not staged; build it with `cd tools/rustwx && "
+                "cargo build --release -p rw-netcdf --offline` and stage it "
+                "with `python tools/stage_wheel_bridges.py`")
+    import numpy as _np
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "probe.nc")
+        stamp = "2021-06-01_00:00:00"
+        with netCDF4.Dataset(path, "w", format="NETCDF3_CLASSIC") as ds:
+            ds.createDimension("Time", 1)
+            ds.createDimension("DateStrLen", len(stamp))
+            times = ds.createVariable("Times", "S1",
+                                      ("Time", "DateStrLen"))
+            times[0, :] = _np.asarray(list(stamp), dtype="S1")
+        try:
+            with netcdf_bridge.open_dataset(path) as dataset:
+                _np.asarray(dataset.variables["Times"][...])
+        except Exception as error:                      # noqa: BLE001
+            return (f"the staged rw_netcdf cannot read a WRF Times array "
+                    f"({error}); restage it with `cd tools/rustwx && cargo "
+                    "build --release -p rw-netcdf --offline` followed by "
+                    "`python tools/stage_wheel_bridges.py`")
+    return None
+
+
+@functools.lru_cache(maxsize=None)
+@_never_raises
+def cpu_preprocess_gap(symbol: str) -> str | None:
+    """Why the staged CPU preprocessing library lacks ``symbol``, or None."""
+
+    try:
+        from gpuwm.ingest.cpu_backend import CpuPreprocessBackend
+        backend = CpuPreprocessBackend()
+    except Exception as error:                          # noqa: BLE001
+        return (f"the CPU preprocessing bridge is not usable here ({error}); "
+                "build it with `cd tools/grib1_bridge && cargo build "
+                "--release --locked --offline`")
+    try:
+        getattr(backend._library, symbol)
+    except AttributeError:
+        return (f"the staged CPU preprocessing bridge exports no {symbol}, "
+                "so it predates this capability; rebuild it with `cd "
+                "tools/grib1_bridge && cargo build --release --locked "
+                "--offline` and restage with `python "
+                "tools/stage_wheel_bridges.py`")
+    return None
+
+
+@functools.lru_cache(maxsize=1)
+@_never_raises
+def grib1_bridge_gap() -> str | None:
+    """Why no usable grib1 bridge can be found here, or None.
+
+    A probe FINDS; it never builds.  The module's own resolver,
+    gpuwm.ingest.grib.build_rust_bridge, runs ``cargo build`` inside any
+    checkout before it looks anywhere else, and the first shape of this
+    probe called it: every pytest collection on a box with cargo on PATH
+    then compiled a crate before a single test ran, and wrote
+    tools/grib1_bridge/target/ into trees that must not carry one (an
+    exported release tree read by tests/test_release_snapshot_machine_paths
+    .py went red with 316 machine paths from that directory alone).
+
+    gpuwm.bridges.find_bridge is the ladder without the build step, in
+    the order the resolver itself uses once it stops building: the
+    GPUWM_GRIB1_BRIDGE override (a missing file it names is a gap, not a
+    fall-through), the checkout's own target/release and target/debug,
+    libexec beside the package, the wheel bundle, ~/.gpuwm/bridges.  What
+    it finds is then RUN: ``--era5-member-capabilities`` is the bridge's
+    own no-input self-description, so a stale or broken executable
+    answers here rather than inside the first gated case.
+    """
+
+    import subprocess
+
+    from gpuwm import bridges
+
+    found = bridges.find_bridge("grib1_bridge")
+    remedy = (" -- build it with `cd tools/grib1_bridge && cargo build "
+              "--release --locked --offline` and stage it with `python "
+              "tools/stage_wheel_bridges.py`")
+    if found is None:
+        return "no grib1 bridge executable is staged or built here" + remedy
+    completed = subprocess.run(
+        [str(found), "--era5-member-capabilities"], capture_output=True,
+        text=True, timeout=60)
+    if completed.returncode != 0 or '"schema"' not in completed.stdout:
+        first = (completed.stderr or completed.stdout).strip().splitlines()
+        detail = first[0] if first else f"exit status {completed.returncode}"
+        return (f"the grib1 bridge at {found} does not answer its own "
+                f"capability query ({detail})" + remedy)
+    return None
+
+
+@functools.lru_cache(maxsize=1)
+@_never_raises
+def wrf_rust_gap() -> str | None:
+    """Why the mandated science core wrf-rust is unavailable, or None."""
+
+    try:
+        import wrf  # noqa: F401
+    except Exception as error:                          # noqa: BLE001
+        return (f"the mandated science core wrf-rust is not installed here "
+                f"({error}); `pip install wrf-rust` into this interpreter")
+    return None
+
+
+#: capability name -> the probe that answers for it.  Resolved LAZILY, in
+#: pytest_collection_modifyitems, and only for a capability some collected
+#: item actually carries: a skipif evaluated at import ran every probe on
+#: every collection, so `pytest tests/test_config.py` opened the NetCDF
+#: bridge, loaded the CPU library and (see grib1_bridge_gap) built a crate,
+#: for a file that reads none of them.
+CAPABILITY_PROBES = {
+    "netcdf_bridge": netcdf_bridge_gap,
+    "wrf_eta_bridge": functools.partial(cpu_preprocess_gap,
+                                       "gpuwm_wrf_eta_f32"),
+    "wrf_sfcprs_bridge": functools.partial(cpu_preprocess_gap,
+                                          "gpuwm_wrf_sfcprs3_from_f64"),
+    "wrf_rust": wrf_rust_gap,
+    "grib1_bridge": grib1_bridge_gap,
+}
+
+CAPABILITY_MARKER = "requires_capability"
+
+requires_netcdf_bridge = pytest.mark.requires_capability("netcdf_bridge")
+requires_wrf_eta_bridge = pytest.mark.requires_capability("wrf_eta_bridge")
+requires_wrf_sfcprs_bridge = pytest.mark.requires_capability(
+    "wrf_sfcprs_bridge")
+requires_wrf_rust = pytest.mark.requires_capability("wrf_rust")
+requires_grib1_bridge = pytest.mark.requires_capability("grib1_bridge")
+
+
+def capability_gap(name: str) -> str | None:
+    """The probe's verdict for ``name``, cached for the session."""
+
+    return CAPABILITY_PROBES[name]()
+
+
+def _gate_on_capabilities(items) -> None:
+    """Skip every item whose declared capability this box lacks.
+
+    Each probe runs at most once per process, and only if an item in
+    this collection carries its mark; an item already carrying a skip is
+    left alone, so the delegated copy of this hook that tilestream/
+    conftest.py runs over the same items adds nothing a second time.
+    """
+
+    for item in items:
+        for mark in item.iter_markers(name=CAPABILITY_MARKER):
+            if item.get_closest_marker("skip") is not None:
+                break
+            name = mark.args[0] if mark.args else mark.kwargs.get("name")
+            if name not in CAPABILITY_PROBES:
+                raise pytest.UsageError(
+                    f"{item.nodeid} requires an unknown capability "
+                    f"{name!r}; known: {sorted(CAPABILITY_PROBES)}")
+            gap = capability_gap(name)
+            if gap is not None:
+                item.add_marker(pytest.mark.skip(reason=gap))
+                break

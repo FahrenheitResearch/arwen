@@ -149,7 +149,7 @@ def aerosol_source_report_entry(receipt, *, mp_physics, when_unrecorded):
     empty, possibly restored from a prepared cache, possibly ``None``.
 
     ``when_unrecorded`` is REQUIRED and has no default.  It is the
-    sentence this route can honestly give for an aerosol-aware run it
+    sentence this route can accurately give for an aerosol-aware run it
     holds no ingest receipt for: what filled the fields, and why this
     writer cannot name a dataset.  There is no generic true answer -- an
     offline child inherits its parent's aerosol, a prepared forecast is

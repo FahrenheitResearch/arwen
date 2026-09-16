@@ -204,8 +204,67 @@ def test_transport_refuses_protocol_and_ssh_errors(tmp_path, body, match):
 
 
 def test_transport_timeout_does_not_claim_start_did_not_happen(tmp_path):
-    with pytest.raises(ValueError, match="start may already exist"):
+    with pytest.raises(ValueError) as failure:
         rc._transport(_program(tmp_path, "time.sleep(10)"), {"action": "start"}, timeout=.1)
+    message = str(failure.value)
+    assert "may exist" in message and "List this workspace's jobs" in message
+
+
+def test_transport_timeout_names_the_attempt_and_the_flag_that_retries_it(tmp_path):
+    """C-287: the reader is told the identity a retry must carry, not sent to a job list."""
+    with pytest.raises(ValueError) as failure:
+        rc._transport(_program(tmp_path, "time.sleep(10)"), {"action": "start", "request_id": "a1" * 16},
+                      timeout=.1)
+    message = str(failure.value)
+    assert "a1" * 16 in message and "--request-id" in message and "already created" in message
+
+
+def test_a_named_attempt_is_forwarded_verbatim_and_a_fresh_one_is_minted(monkeypatch, capsys):
+    from gpuwm.cli import build_parser
+    options = build_parser().parse_args(["remote", "start", "--host", "node", "--python", "/opt/python",
+        "--workspace", "/work", "--config", "/work/case.toml", "--outdir", "/work/out",
+        "--request-id", "a1" * 16, "--json"])
+    assert options.request_id == "a1" * 16
+    monkeypatch.setattr(rc, "ssh_command", lambda options: ["ssh-fixture"])
+    seen = []
+    monkeypatch.setattr(rc, "_transport", lambda command, request, **kwargs:
+                        seen.append(request) or rc.result(request["action"], dry_run=True))
+    assert rc.remote_main(options) == 0
+    assert seen[0]["request_id"] == "a1" * 16
+    reply = json.loads(capsys.readouterr().out)
+    assert reply["request_id"] == "a1" * 16, "the attempt rides on the reply so a retry can name it"
+    fresh = build_parser().parse_args(["remote", "start", "--host", "node", "--python", "/opt/python",
+        "--workspace", "/work", "--config", "/work/case.toml", "--outdir", "/work/out", "--json"])
+    assert rc.remote_main(fresh) == 0
+    assert len(seen[1]["request_id"]) == 32 and seen[1]["request_id"] != seen[0]["request_id"]
+    capsys.readouterr()
+    with pytest.raises(ValueError, match="32 hexadecimal characters"):
+        rc.attempt_identity("../escape")
+
+
+def test_a_node_that_keeps_saying_it_works_is_not_cut_off_at_the_deadline(tmp_path):
+    """C-287: the deadline measures silence, never how long the work takes."""
+    reply = json.dumps({"schema": rc.SCHEMA, "ok": True, "action": "start"})
+    keepalive = json.dumps({"schema": rc.KEEPALIVE_SCHEMA, "action": "start"})
+    program = _program(tmp_path, "import sys\n"
+        "for _ in range(6):\n"
+        f"    sys.stdout.write({keepalive!r} + chr(10)); sys.stdout.flush(); time.sleep(.3)\n"
+        f"sys.stdout.write({reply!r} + chr(10)); sys.stdout.flush()")
+    # The whole call outlasts the deadline; no single silence inside it does.
+    value = rc._transport(program, {"action": "start"}, timeout=1)
+    assert value["ok"] is True and value["action"] == "start"
+
+
+def test_the_slow_actions_ask_the_node_to_keep_saying_it_is_alive(monkeypatch):
+    seen = []
+    monkeypatch.setattr(rc, "ssh_command", lambda options: ["ssh-fixture"])
+    monkeypatch.setattr(rc, "_transport", lambda command, request, **kwargs:
+                        seen.append((request, kwargs)) or rc.result(request["action"], dry_run=True))
+    options = args(remote_action="resume", job="valid_123", outdir="/srv/new output", json=False)
+    assert rc.remote_main(options) == 0
+    request, kwargs = seen[0]
+    assert request["keepalive"] is True and kwargs["timeout"] == rc.REVIEW_SECONDS
+    assert rc.REVIEW_SECONDS > 120
 
 
 def test_refusal_is_one_json_line_with_exit_two(monkeypatch, capsys):
@@ -221,7 +280,7 @@ def test_refusal_is_one_json_line_with_exit_two(monkeypatch, capsys):
 def test_cli_forwards_binding_and_paths_only_as_request_data(monkeypatch, capsys):
     monkeypatch.setattr(rc, "ssh_command", lambda options: ["ssh-fixture"])
     seen = []
-    monkeypatch.setattr(rc, "_transport", lambda command, request: seen.append((command, request)) or rc.result("start", dry_run=True))
+    monkeypatch.setattr(rc, "_transport", lambda command, request, **kwargs: seen.append((command, request)) or rc.result("start", dry_run=True))
     options = args(remote_action="start", config="/srv/a path.toml", outdir="/srv/new output",
                    geog_root="/srv/geography", products="t2,wind10", dry_run=True,
                    expected_input_sha256="1" * 64)
@@ -230,6 +289,8 @@ def test_cli_forwards_binding_and_paths_only_as_request_data(monkeypatch, capsys
     assert seen[0][1]["expected_input_sha256"] == "1" * 64
     assert seen[0][1]["config"] == options.config
     assert seen[0][1]["products"] == options.products
+    # The client names its own launch attempt, so a retry can reconcile.
+    assert len(seen[0][1]["request_id"]) == 32
     assert len(capsys.readouterr().out.splitlines()) == 1
 
 
@@ -254,6 +315,38 @@ def test_resume_parser_keeps_explicit_input_and_product_overrides():
     assert options.prepared_root == "/new/prepared"
     assert options.wps_namelist == "/new/namelist.wps"
     assert options.products == "none"
+def test_resume_takes_the_same_inputs_a_start_takes():
+    """C-279: a resume that names an input reaches the node instead of argparse."""
+    from gpuwm.cli import build_parser
+    options = build_parser().parse_args(["remote", "resume", "--host", "node", "--python", "/opt/python",
+        "--workspace", "/work", "--job", "valid_123", "--outdir", "/new-output",
+        "--geog-root", "/srv/geography", "--prepared-root", "/srv/prepared",
+        "--wps-namelist", "/srv/prepared/namelist.wps", "--products", "t2,wind10"])
+    assert options.geog_root == "/srv/geography" and options.prepared_root == "/srv/prepared"
+    assert options.wps_namelist == "/srv/prepared/namelist.wps" and options.products == "t2,wind10"
+    # Every one of them is a key the node's own request door already allows, so
+    # the door and this parser agree about what a resume may carry.
+    from gpuwm import remote_worker as rw
+    with pytest.raises(ValueError) as failure:
+        rw.dispatch({"schema": "gpuwm.remote.request.v1", "action": "resume", "workspace": "/work",
+                     "job": "valid_123", "outdir": "/new-output", "geog_root": "/srv/geography",
+                     "prepared_root": "/srv/prepared", "wps_namelist": "/srv/p/namelist.wps",
+                     "products": "t2,wind10"})
+    assert "unsupported remote request fields" not in str(failure.value)
+
+
+def test_a_named_resume_input_reaches_the_node_request(monkeypatch, capsys):
+    seen = []
+    monkeypatch.setattr(rc.shutil, "which", lambda _, path=None: "ssh-fixture")
+    monkeypatch.setattr(rc, "_transport", lambda command, request, **kwargs:
+                        seen.append(request) or {"schema": rc.SCHEMA, "ok": True, "action": request["action"]})
+    options = args(remote_action="resume", job="valid_123", outdir="/srv/new output",
+                   geog_root="/srv/geography", prepared_root="/srv/prepared",
+                   wps_namelist="/srv/prepared/namelist.wps", products="t2,wind10")
+    assert rc.remote_main(options) == 0
+    assert seen[0]["geog_root"] == "/srv/geography" and seen[0]["prepared_root"] == "/srv/prepared"
+    assert seen[0]["wps_namelist"] == "/srv/prepared/namelist.wps" and seen[0]["products"] == "t2,wind10"
+    capsys.readouterr()
 
 
 def test_artifact_parser_and_fixed_binary_stream_keep_selectors_off_the_shell(monkeypatch):

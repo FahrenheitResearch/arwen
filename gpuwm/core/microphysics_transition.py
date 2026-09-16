@@ -23,7 +23,7 @@ constants below and recorded in every touching edge's receipt.
 from __future__ import annotations
 
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, replace as dataclasses_replace
 import hashlib
 import json
 from pathlib import Path
@@ -44,6 +44,14 @@ SAME_SCHEME_POLICY = "same-scheme-only"
 MP8_TO_MP18_POLICY = "mp8-to-mp18-mass-diagnosed-v1"
 EDGE_MATRIX_POLICY = "mp-edge-mass-diagnosed-v1"
 TRANSITION_ORDER = "diagnose-parent-then-spatially-interpolate"
+#: The FEEDBACK direction of the same matrix: the CHILD's scheme is the
+#: source and the parent's is the target.  A separate id because the order
+#: is separate -- the diagnosis runs on the child's own grid and the
+#: restriction that follows it is an average, not an interpolation -- and
+#: because a receipt that called both directions by one name could not say
+#: which way the mass went.
+REVERSE_EDGE_POLICY = "mp-edge-mass-diagnosed-reverse-v1"
+REVERSE_TRANSITION_ORDER = "diagnose-child-then-spatially-restrict"
 NSSL2_BACKGROUND_CCN_PER_KG = 408163264.0
 
 # ---------------------------------------------------------------------------
@@ -472,6 +480,12 @@ class MicrophysicsTransitionContract:
     #: seeds the reservoir from the DOMAIN's own value rather than from a
     #: constant restated in the kernel.  Inert unless the target is mp=16.
     target_wdm6_ccn_conc: float = 1.0e8
+    #: Which way this contract runs, in words, for the receipt.  A FORCE
+    #: edge diagnoses on the parent and interpolates; a FEEDBACK edge
+    #: diagnoses on the child and restricts.  The kernel is the same and is
+    #: column-local either way; what differs is whose grid it runs on and
+    #: what the spatial operator after it does.
+    translation_order: str = TRANSITION_ORDER
 
     def mass_source(self, target_field: str) -> str | None:
         """Source mass field for one target mass, or ``None`` for default."""
@@ -647,7 +661,7 @@ class MicrophysicsTransitionContract:
                 "WRF v4.6.1 normalizes all domains to the innermost "
                 "mp_physics selector"
             ),
-            "translation_order": TRANSITION_ORDER,
+            "translation_order": self.translation_order,
             "source_rimed_category": self.source_rimed_category,
             "target_rimed_category": self.target_rimed_category,
             "species_actions": [dict(row) for row in species],
@@ -1008,6 +1022,79 @@ def resolve_microphysics_transition(
     )
 
 
+def resolve_reverse_microphysics_transition(
+        parent_cfg, child_cfg, *,
+        policy: str | None = None) -> MicrophysicsTransitionContract:
+    """Resolve the FEEDBACK edge: the CHILD's scheme into the PARENT's.
+
+    Same matrix, opposite order.  The ordered pair is
+    ``(child.mp_physics -> parent.mp_physics)``, which is the reverse of the
+    edge :func:`resolve_microphysics_transition` resolves for the same two
+    domains, and every mixed pair drawn from :data:`PORTED_MP_PHYSICS`
+    resolves in both directions because the matrix is a matrix.
+
+    THE POLICY IS AN ARGUMENT, NOT A KEY READ OFF THE TARGET.  The forward
+    resolver reads ``nest_microphysics_transition`` off its target, which is
+    the child.  Reversed, the target is the PARENT, and a middle parent's
+    key is the policy of its OWN upward edge: d1(mp8) -> d2(mp18) puts
+    ``mp8-to-mp18-mass-diagnosed-v1`` on d2, so a reverse d3(mp6) -> d2(mp18)
+    edge that read the target's key would hit the "takes
+    nest_microphysics_transition=" mismatch for a pair whose closure is the
+    edge matrix.  So the caller states the policy or takes the matrix's.
+
+    ``policy`` is checked against the pair, never silently honoured: the two
+    spellings a reverse edge may carry are the forward matrix id the pair
+    takes and :data:`REVERSE_EDGE_POLICY` itself.  The contract that comes
+    back is stamped with :data:`REVERSE_EDGE_POLICY` and
+    :data:`REVERSE_TRANSITION_ORDER`, so a receipt says which way the mass
+    went rather than leaving a reader to infer it from the mp numbers.
+    """
+
+    source = int(getattr(child_cfg, "mp_physics", 0))
+    target = int(getattr(parent_cfg, "mp_physics", 0))
+    matrix_policy = (
+        SAME_SCHEME_POLICY if source == target
+        else MP8_TO_MP18_POLICY if (source, target) == (8, 18)
+        else EDGE_MATRIX_POLICY
+    )
+    if policy is not None and policy not in (
+            matrix_policy, REVERSE_EDGE_POLICY):
+        raise ValueError(
+            f"reverse nest microphysics edge MP{source}->MP{target} takes "
+            f"{REVERSE_EDGE_POLICY!r} (or the forward matrix id "
+            f"{matrix_policy!r}); {policy!r} is the closure of another edge. "
+            "Pass one of those, or leave policy out and the edge resolves "
+            "to the matrix.")
+    contract = resolve_microphysics_transition(
+        child_cfg, _WithPolicy(parent_cfg, matrix_policy))
+    if not contract.mixed:
+        return contract
+    return dataclasses_replace(
+        contract, policy_id=REVERSE_EDGE_POLICY,
+        translation_order=REVERSE_TRANSITION_ORDER)
+
+
+class _WithPolicy:
+    """``cfg`` with ``nest_microphysics_transition`` replaced, read-only.
+
+    The reverse resolver reuses the forward one rather than restating the
+    matrix, and the forward one reads that one key off the config object it
+    is handed.  This substitutes the key and forwards everything else --
+    ``mp_physics``, ``moist``, ``moist_cq``, ``morr_rimed_ice``,
+    ``wdm6_ccn_conc`` -- to the real config, so no second copy of the
+    resolver's input list exists to go stale.
+    """
+
+    __slots__ = ("_cfg", "nest_microphysics_transition")
+
+    def __init__(self, cfg, policy: str):
+        object.__setattr__(self, "_cfg", cfg)
+        object.__setattr__(self, "nest_microphysics_transition", policy)
+
+    def __getattr__(self, name):
+        return getattr(self._cfg, name)
+
+
 def transition_handles_field(
         contract: MicrophysicsTransitionContract, field_name: str) -> bool:
     return bool(
@@ -1016,7 +1103,24 @@ def transition_handles_field(
     )
 
 
-def transition_parent_field_shape(state, field_name: str) -> tuple[int, ...]:
+def transition_target_fields(
+        contract: MicrophysicsTransitionContract) -> tuple[str, ...]:
+    """Every field the edge kernel writes for ``contract``'s target scheme.
+
+    The target's transported masses followed by its moments, in the
+    order the field-code table declares them.  This is the inventory a
+    caller that has no ``DomainState`` to iterate (the offline downscale
+    lane converts a parent ARCHIVE) walks to run the same kernel the live
+    nest edge runs, so the two routes cannot disagree about which fields
+    a scheme boundary produces.  Empty for a same-scheme contract, which
+    converts nothing.
+    """
+    if not contract.mixed:
+        return ()
+    return tuple(_TARGET_FIELDS[contract.target_mp_physics])
+
+
+def transition_source_field_shape(state, field_name: str) -> tuple[int, ...]:
     if field_name not in _ALL_EDGE_FIELDS:
         raise ValueError(f"unsupported microphysics edge field {field_name!r}")
     shape = tuple(int(value) for value in state.qv.shape)
@@ -1025,7 +1129,7 @@ def transition_parent_field_shape(state, field_name: str) -> tuple[int, ...]:
     return shape
 
 
-#: The parent planes :func:`launch_microphysics_edge_parent_field` may read,
+#: The source planes :func:`launch_microphysics_edge_field` may read,
 #: horizontally windowed.  THE LIST IS THE KERNEL'S INPUT SET and must stay
 #: it: the windowed namespace is the whole parent as far as the launcher can
 #: see, so a plane an arm reads and this tuple omits is not a slow path, it
@@ -1041,7 +1145,20 @@ _WINDOWED_EDGE_PLANES = (
 )
 
 
-def transition_parent_window(state, window):
+def edge_parent_planes() -> tuple[str, ...]:
+    """The source planes an edge launcher may read, for every puller.
+
+    One list, two consumers: :func:`transition_source_window` cuts it for a
+    tile-streamed child, and :meth:`gpuwm.core.nest.NestCoupler.
+    _coupled_parent_field` pulls it out of a streamed parent's store before
+    the launcher reads the state.  Both go through this accessor so the
+    kernel's input set stays single-sourced -- a plane added to one arm and
+    not the other is the tile-streamed mp=9 defect again, in a second place.
+    """
+    return _WINDOWED_EDGE_PLANES
+
+
+def transition_source_window(state, window):
     """Bounded, contiguous inputs for the existing column-local edge kernel.
 
     The caller obtains ``window`` from the SINT registration's exact donor
@@ -1119,7 +1236,7 @@ def _validate_transition_arrays(contract, state, out, shape) -> None:
                 "the Milbrandt-Yau nest edge diagnoses the scheme's own "
                 "numbers from absolute temperature and needs the parent's "
                 "thb; the state it was handed carries none. A windowed "
-                "donor namespace comes from transition_parent_window, "
+                "donor namespace comes from transition_source_window, "
                 "whose plane list is the kernel's input set")
         checks.append(
             ("thb", thb, (shape[0],) if thb.ndim == 1 else shape))
@@ -1131,7 +1248,7 @@ def _validate_transition_arrays(contract, state, out, shape) -> None:
                     f"numbers from absolute temperature and needs the "
                     f"parent's {name}; the state it was handed carries "
                     "none. A windowed donor namespace comes from "
-                    "transition_parent_window, whose plane list is the "
+                    "transition_source_window, whose plane list is the "
                     "kernel's input set")
             checks.append((name, value, shape))
     for name, value, expected in checks:
@@ -1146,10 +1263,18 @@ def _validate_transition_arrays(contract, state, out, shape) -> None:
                 f"microphysics transition {name} must be contiguous")
 
 
-def launch_microphysics_edge_parent_field(
+def launch_microphysics_edge_field(
         contract: MicrophysicsTransitionContract, state, field_name: str,
         *, out, coupled: bool) -> object:
-    """Write one target field diagnosed on the parent before SINT."""
+    """Write one target field diagnosed on ``state``'s own grid.
+
+    SOURCE-NEUTRAL, and the name says so because the function always was.
+    The kernel is parameterized by ``(source_mp, target_mp)`` and is
+    column-local; nothing in it knows whether ``state`` is the parent of an
+    edge about to be interpolated down or the child of one about to be
+    restricted up.  The FORCE path passes the parent and ``coupled=True``;
+    the FEEDBACK path passes the child and ``coupled=False``.
+    """
 
     from gpuwm.core.kernels import get_kernel
 
@@ -1163,7 +1288,7 @@ def launch_microphysics_edge_parent_field(
         return launch_mp8_to_mp18_parent_field(
             state, field_name, out=out, coupled=coupled)
 
-    shape = transition_parent_field_shape(state, field_name)
+    shape = transition_source_field_shape(state, field_name)
     _validate_transition_arrays(contract, state, out, shape)
     placeholder = state.qv
     source_arrays = []
@@ -1180,7 +1305,7 @@ def launch_microphysics_edge_parent_field(
     # the scheme's constant vector.  The temperature is not built here: the
     # kernel forms it from thb/thp/p per cell, so the arm needs no array of
     # its own and reads the same three planes whether ``state`` is a
-    # resident DomainState or the bounded namespace transition_parent_window
+    # resident DomainState or the bounded namespace transition_source_window
     # hands a tile-streamed nest.  Every other target gets the same
     # placeholder plane the rime pair gets off a P3 edge.
     if contract.target_mp_physics == 9:
@@ -1244,7 +1369,7 @@ def launch_mp8_to_mp18_parent_field(
         raise ValueError(f"unsupported MP8->MP18 transition field {field_name!r}")
     if not isinstance(coupled, bool):
         raise TypeError("coupled must be bool")
-    shape = transition_parent_field_shape(state, field_name)
+    shape = transition_source_field_shape(state, field_name)
     arrays = {
         "alt": state.alt, "qv": state.qv, "qc": state.qc,
         "qr": state.qr, "qi": state.qi, "qs": state.qs, "qg": state.qg,
@@ -1283,6 +1408,17 @@ def launch_mp8_to_mp18_parent_field(
     return out
 
 
+# ---------------------------------------------------------------------------
+# RETIRED NAMES.  The three entry points above were called ``..._parent_...``
+# because the FORCE path was the only caller; the feedback path calls the
+# same code with the child as the source, so the names moved and these thin
+# aliases hold the existing call sites (gpuwm/ingest/nest_init.py and the
+# edge gates) while they follow.  No behaviour hangs off the spelling.
+launch_microphysics_edge_parent_field = launch_microphysics_edge_field
+transition_parent_window = transition_source_window
+transition_parent_field_shape = transition_source_field_shape
+
+
 __all__ = [
     "EDGE_MATRIX_POLICY", "MP8_TO_MP18_POLICY",
     "MicrophysicsTransitionContract", "NSSL2_BACKGROUND_CCN_PER_KG",
@@ -1292,12 +1428,18 @@ __all__ = [
     "P3_RIME_DENSITY_BOUNDS_KG_M3",
     "PORTED_MP_PHYSICS", "SAME_SCHEME_POLICY", "TRANSITION_ORDER",
     "UNVALIDATED_MIXED_EDGE_MOMENTS", "UNVALIDATED_MIXED_EDGE_SELECTORS",
+    "REVERSE_EDGE_POLICY", "REVERSE_TRANSITION_ORDER",
+    "edge_parent_planes",
+    "launch_microphysics_edge_field",
     "launch_microphysics_edge_parent_field",
     "launch_mp8_to_mp18_parent_field", "p3_edge_entry_reference",
     "MIXED_EDGE_ENTRY_NOTES", "mixed_edge_entry_note",
     "p3_edge_exit_reference", "resolve_microphysics_transition",
+    "resolve_reverse_microphysics_transition",
     "transition_handles_field", "transition_implementation_identity",
-    "transition_parent_field_shape",
+    "transition_parent_field_shape", "transition_parent_window",
+    "transition_source_field_shape", "transition_source_window",
+    "transition_target_fields",
 ]
 
 

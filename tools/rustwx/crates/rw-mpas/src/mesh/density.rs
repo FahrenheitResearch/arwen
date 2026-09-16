@@ -384,7 +384,7 @@ impl PreparedShape {
     /// when no cap under a quarter turn does.
     ///
     /// NOT [`PreparedShape::enclosing_cap`], and the difference is
-    /// load-bearing rather than stylistic. That one exists to underwrite the
+    /// essential rather than stylistic. That one exists to underwrite the
     /// evaluation-time saturation skip, which needs
     /// `arc(c, p) - radius <= signed_distance(p)` -- a statement about the
     /// FIELD -- and it declines for a cap and a box because "bounding them

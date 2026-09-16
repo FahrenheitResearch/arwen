@@ -9,7 +9,7 @@ these tests hold the two halves of it apart:
   usage error and exit 2, because a prompt nobody can see is a hang,
   and a hang is a worse answer than an error.
 
-The load-bearing test is the equivalence gate: a session that answers X
+The essential test is the equivalence gate: a session that answers X
 must produce the same TOML as the flag invocation spelling X, because
 the prompts are supposed to collect values and nothing else.
 """
@@ -146,7 +146,7 @@ def test_every_prompt_shows_its_default_and_enter_accepts_it(monkeypatch):
     assert "[latest]" in labels
     assert "[6]" in labels
     assert str(Path("configs") / "area_35p30n_97p50w.toml") in labels
-    # The point has no default -- there is nothing honest to guess.
+    # The point has no default -- there is nothing accurate to guess.
     assert re.search(r"center point, lat,lon: $", shown[0])
 
     # --ladder and --physics-profile are not prompted for: they are the

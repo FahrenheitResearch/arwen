@@ -11,7 +11,7 @@ bytes.  Its control,
 and asserts the same strings DO come through, so the headline assertion
 can never quietly become vacuous by collecting nothing.
 
-The rest is the honesty contract: a run directory with no receipts must
+The rest is the accuracy contract: a run directory with no receipts must
 produce a bundle that SAYS it has none rather than a thin one that looks
 complete; a full disk must relocate the bundle rather than lose it; and
 `gpuwm report` with no arguments inside a run directory must find the run
@@ -933,7 +933,7 @@ def test_environment_values_outside_the_allowlist_are_never_collected():
 
 
 # ---------------------------------------------------------------------------
-# Honesty about what was not there
+# Accuracy about what was not there
 # ---------------------------------------------------------------------------
 
 def test_a_directory_with_no_receipts_says_so_rather_than_looking_complete(
@@ -943,7 +943,7 @@ def test_a_directory_with_no_receipts_says_so_rather_than_looking_complete(
     This is the bundle the out-of-space defect produces -- a zero-byte
     decoder log and an empty producer message, with every receipt absent
     because the run died before writing one.  The requirement is not that
-    the bundle be full; it is that it be honest about being empty.
+    the bundle be full; it is that it be accurate about being empty.
     """
 
     run = tmp_path / "run"

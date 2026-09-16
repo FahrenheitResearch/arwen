@@ -13,7 +13,7 @@ These pins hold both halves:
 * it fails on a scratch tree where a case token is injected into a position
   the real baseline already names *somewhere else* in the same file.
 
-The second half is the load-bearing one.  A gate that only ever passes is not
+The second half is the essential one.  A gate that only ever passes is not
 evidence of anything.
 """
 
@@ -282,7 +282,7 @@ def test_the_unmutated_digest_path_reports_nothing(tmp_path: Path, rel: str):
 
 
 #: The published receipt.  The measurement path is only half the zone: a
-#: receipt is where a case name has an honest reason to appear (its input
+#: receipt is where a case name has an accurate reason to appear (its input
 #: inventory records what was staged), which is exactly why the file needs
 #: watching -- an inventory entry is data, and a case name anywhere else in
 #: the document would mean the scoring contract itself was written for one
@@ -363,7 +363,7 @@ def _import_tree(tmp_path: Path, importer_rel: str, body: str) -> Path:
 
 
 def test_the_case_data_module_itself_is_never_flagged(tmp_path: Path):
-    """The control that keeps the gate honest: the module that legitimately
+    """The control that keeps the gate accurate: the module that legitimately
     HOLDS the case data is not in a protected zone, so scanning the tree
     reports nothing about it.  If this failed, every finding below would
     just be the gate objecting to case data living in case data."""

@@ -113,7 +113,7 @@ def main() -> int:
 
     # -- does cost actually scale linearly in N? ------------------------
     # The claim under test is "near-linear, because members advance
-    # serially".  The honest form of that claim has an intercept: the
+    # serially".  The accurate form of that claim has an intercept: the
     # control trajectory and the LETKF solve are paid whatever N is.
     complete = [r for r in runs if r.get("total_wall_seconds")]
     if len(complete) >= 2:

@@ -2,7 +2,7 @@
 """Cut a smaller wrfout out of a big one, so the renderer can zoom.
 
 ``gpuwm render --engine rust`` draws a whole file; it has no crop switch, and
-a 1200x900 sheet at 3 km shows a supercell as four pixels.  The honest way to
+a 1200x900 sheet at 3 km shows a supercell as four pixels.  The accurate way to
 zoom is therefore not to resample the picture but to write a SMALLER FILE that
 covers the sub-rectangle -- same forecast, same valid time, same 3 km cells,
 fewer of them -- and render that.  Nothing is interpolated and nothing is

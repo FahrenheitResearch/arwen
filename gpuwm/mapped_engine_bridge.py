@@ -57,12 +57,23 @@ ENGINE_PATH_ENV = "GPUWM_MAPPED_ENGINE_BIN"
 #: Workspace directory of the engine crate, relative to a checkout root.
 ENGINE_CRATE_RELATIVE = "tools/rw_wps"
 
-#: The compiled-in contract handshake.  This is the frameset schema
-#: name: it changes exactly when the frameset contract changes, so a
-#: stale staged binary fails the static handshake instead of writing a
-#: shape the Python side no longer reads.  Lane 3 adds this literal to
-#: :data:`gpuwm.bridges.BRIDGE_ABI_MARKERS` when it wires the route.
-ABI_MARKER = b"gpuwm-mapped-frameset-v1"
+#: The compiled-in contract handshake, spelled once in
+#: ``mapped_engine::ABI_CONTRACT`` and registered in
+#: :data:`gpuwm.bridges.BRIDGE_ABI_MARKERS`.
+#:
+#: ONE literal carrying BOTH contracts a stale staged binary can break.
+#: The frameset schema is the OUTPUT contract: it moves when the shape
+#: this module reads back moves.  The template list is the DECODE
+#: contract: it moves when the set of GRIB2 Section-5 data
+#: representations the engine can read moves.  A marker that carried
+#: only the first let an engine built before the IEEE-packed (template
+#: 5.4) reader pass the handshake and then refuse conformant bytes with
+#: a message that blamed the publisher of the file and offered a re-fetch
+#: as the remedy -- a remedy that cannot work, because the bytes were
+#: never the problem.
+ABI_MARKER = (
+    b"gpuwm-mapped-engine-abi frameset=gpuwm-mapped-frameset-v1 "
+    b"grib2-drt=0,2,3,4,40,41,42,50,51,61,200")
 
 #: Output schemas the engine writes.
 FRAMESET_SCHEMA = "gpuwm-mapped-frameset-v1"

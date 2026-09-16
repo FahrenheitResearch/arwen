@@ -150,7 +150,7 @@ def expected_q2(provider: str, column: Mapping[str, float]) -> float:
     ``qfx = rho*mavail*chs*(qs-qv1)`` into the SFCDIAGS form gives
     ``qs + mavail*(chs/cqs2)*(qv1-qs)`` -- SFCLAY's expression with an extra
     ``mavail``.  Over water ``mavail == 1`` and they agree exactly; over land
-    they do not, which is why the provider column is load-bearing and not
+    they do not, which is why the provider column is essential and not
     decoration.
     """
     qsfc = float(column["qsfc"])

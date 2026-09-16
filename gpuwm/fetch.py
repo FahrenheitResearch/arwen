@@ -407,7 +407,74 @@ ERA5_REQUEST_NAME = "era5-cds-request.json"
 #: request just bound; a file is copied by running it.
 ERA5_RETRIEVE_NAME = "era5-cds-retrieve.py"
 ERA5_COMBINED_NAME = "era5-combined.grib"
+#: The file each ERA5 provider PUBLISHES.  The two providers hand back two
+#: containers -- the CDS a concatenated GRIB1 file, the keyless ARCO reader a
+#: regular NetCDF one -- so the name of the published object is a function of
+#: the provider and of nothing else.
 ERA5_COMBINED_NAMES = {"cds": ERA5_COMBINED_NAME, "arco": "era5-combined.nc"}
+
+
+def era5_combined_name(provider: str | None = None) -> str:
+    """The file name an ERA5 fetch publishes for ``provider``.
+
+    THE DEFECT THIS EXISTS TO END.  Every emitter of a ``[case_data]``
+    table spelled the CDS name as a literal, and the ARCO provider
+    publishes a different one.  A config written by ``gpuwm domain
+    --era5-provider arco`` therefore declared a forcing file its own
+    ``[fetch]`` table could never produce: the download succeeded, wrote
+    ``era5-combined.nc``, and the next command refused with "[fetch].out
+    does not produce the file named by [case_data].forcing".  The door was
+    dead by default and the only way through was to hand-edit the
+    generated TOML.
+
+    So the name is DERIVED here, once, from the same table the fetch
+    publishes through, and every emitter asks instead of spelling.  The
+    two publishers ask as well -- :mod:`gpuwm.era5_acquisition` for the
+    CDS container and :mod:`gpuwm.era5_arco` for the ARCO one -- so there
+    is no copy of the name to fall out of step with the table.  A third
+    provider added to :data:`ERA5_COMBINED_NAMES` is carried by all of
+    them with no further edit.
+    """
+
+    name = ERA5_COMBINED_NAMES.get(provider or "cds")
+    if name is None:
+        raise ValueError(
+            f"era5_provider = {provider!r} publishes no ERA5 combined file, "
+            "so no [case_data].forcing name can be derived for it. ArWen's "
+            f"ERA5 providers are {sorted(ERA5_COMBINED_NAMES)}; select one "
+            "of those with --era5-provider, or omit the flag for the CDS "
+            "default.")
+    return name
+
+
+def era5_forcing_name_disagreement(declared, *, provider: str | None) -> str | None:
+    """Why ``declared`` is not the file this provider's fetch will publish.
+
+    THE BREAKAGE IT NAMES, and the reason it is called at AUTHORING time
+    and not only at launch: a config whose declared forcing name and whose
+    fetch recipe disagree is accepted by every loader, passes every
+    ``[fetch]`` validator, downloads gigabytes, and only then refuses --
+    at which point the bytes are on disk and the config is still wrong.
+    The wizard already round-trips its ``[fetch]`` table through the real
+    fetch validators before writing, for exactly this reason; this is the
+    same guarantee for the one ``[case_data]`` key whose value the fetch
+    determines.
+
+    ``None`` when they agree, which includes a caller that declares no
+    forcing at all -- that is a different config shape, not this defect.
+    """
+
+    from pathlib import Path
+
+    expected = era5_combined_name(provider)
+    names = [Path(str(item)).name for item in (declared or ())]
+    if not names or all(name == expected for name in names):
+        return None
+    return (f"[case_data].forcing names {names[0]!r}, which an ERA5 fetch "
+            f"with era5_provider = {provider or 'cds'!r} does not publish: "
+            f"that provider writes {expected!r}. Keep both on the file the "
+            "fetch produces, or select the provider whose container you "
+            "declared.")
 
 # ERA5 GRIB1 parameter expectations, grounded in what ingest consumes
 # (gpuwm/ingest/grib.py _CANONICAL_SPECS; gpuwm/ingest/real.py requires
@@ -627,7 +694,7 @@ def fetch_front_door_sources() -> tuple[str, ...]:
 
     Named as a seam because another front door has to ask: `gpuwm domain`
     emits a ``[fetch]`` hint table only for a source whose bytes this
-    module can go and get, and prints the honest acquisition route for the
+    module can go and get, and prints the accurate acquisition route for the
     rest.  Before the seam existed the wizard had no way to ask, so it
     simply did not offer the other sources at all.
 
@@ -1754,7 +1821,7 @@ def fetch_throughput(out: Path) -> dict | None:
             timed += 1
         # A manifest that predates this key says nothing either way, so
         # it is not counted as a download; its bytes still show up in
-        # `bytes`, and `bytes_per_second` stays None, which is honest.
+        # `bytes`, and `bytes_per_second` stays None, which is accurate.
         if entry.get("downloaded") is True:
             downloaded += 1
             downloaded_bytes += size
@@ -1876,7 +1943,7 @@ def _engine_selection(engine: str, selection: str | None) -> str:
     A caller that resolved the engine through
     :func:`select_fetch_engine` passes the answer.  A caller that
     resolved it some other way -- a library, a test, an older script --
-    gets the honest default: rust was found, or python was named.  It
+    gets the accurate default: rust was found, or python was named.  It
     never guesses "python-fallback", because claiming a degrade that did
     not happen would make the field useless for the one thing it exists
     to answer.
@@ -3365,7 +3432,7 @@ def _force_quarantine_output(out: Path, progress, label: str) -> list[str]:
     receipt in :data:`FETCH_RECEIPT_NAMES` -- and the series -- *before*
     touching a single payload means an interrupted force leaves a
     directory with payloads and no receipt, which the front door already
-    refuses honestly.  The receipt class is the whole front door, not
+    refuses accurately.  The receipt class is the whole front door, not
     just the manifest and the checksum list: ``inputs.txt`` is a list of
     resolved payload paths and ``prep-command.txt`` binds the series, so
     sweeping either of them at payload rank could leave a readable file
@@ -3550,7 +3617,7 @@ def _cache_dedup_summary(reports) -> dict:
     shapes and used to land as two whole copies; the second is now a
     reference to the first, and the receipt says so in bytes.  A
     backbone built before the key existed reports nothing, so
-    ``transfers`` is 0 and the byte columns stay honest rather than
+    ``transfers`` is 0 and the byte columns stay accurate rather than
     claiming a saving that was never measured.
     """
 

@@ -84,7 +84,7 @@ the interpolation coordinates and the synthetic above-model cap. Capped at
 Measured as `full` minus a `full-norad` twin identical in every other
 selector.
 
-### Domain-sized -- the honest slope, 110.1 B/cell
+### Domain-sized -- the accurate slope, 110.1 B/cell
 
 Twenty-one (ncol,nz) column packs, six (ncol,nz+1) level packs, `emiss_bands`
 (ncol,16) and four (ncol,) surface vectors.

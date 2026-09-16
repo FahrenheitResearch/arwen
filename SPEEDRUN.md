@@ -2,7 +2,7 @@
 
 An internal bench surface. It is a leaderboard because a leaderboard makes
 people care about seconds, and every second on this clock is a real user's
-second. It is an instrument because the rules below make a dishonest record
+second. It is an instrument because the rules below make an inaccurate record
 impossible rather than merely against the rules.
 
 This page carries numbers on purpose. Release-facing pages do not: those carry
@@ -144,7 +144,7 @@ They are hashed into one `comparability.key`, and the key is inside the sealed
 body. `gpuwm speedrun --compare` checks the seals **first**, then the key, so
 the two guards close each other:
 
-- an honest capsule of a different course refuses the comparison **by name**,
+- an accurate capsule of a different course refuses the comparison **by name**,
   printing which of the four fields differ and what each says;
 - a capsule edited to make its key match fails the seal and never reaches the
   comparison at all.

@@ -39,7 +39,7 @@ with. It is not evidence about the pack. Treating it as evidence about the
 pack would be reading a 2 to 4 percent effect out of a 0.2 to 0.7 percent
 budget.
 
-The honest statement is that the packed and direct paths are
+The accurate statement is that the packed and direct paths are
 indistinguishable end to end at this domain size on this hardware, and that
 the microbenchmark is where the pack's advantage is visible.
 

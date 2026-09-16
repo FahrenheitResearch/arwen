@@ -16,7 +16,7 @@ A dormant nest is **pre-declared, not mid-run allocated**.  The
   (`estimate_experiment` iterates every declared domain, dormant
   included, and the shared scratch arena / dycore-state workspace are
   sized over the full domain set at startup);
-- preflight can **refuse honestly at planning time** — `gpuwm check`'s
+- preflight can **refuse accurately at planning time** -- `gpuwm check`'s
   envelope already contains the reservation, and prints one advisory
   line per dormant nest naming what its declaration costs
   (`gpuwm.core.preflight.spawn_reservation_advisories`);
@@ -185,7 +185,7 @@ surface type".
 
 ArWen keeps the half of `fine_input_stream = 2` it CAN have — the
 own-grid statics — which is strictly more than `input_from_file =
-.false.` gives, and is exactly why the mask is load-bearing: the child's
+.false.` gives, and is exactly why the mask is essential: the child's
 land-use categories are its OWN, resolved at the child's dx, so they
 disagree with the parent's wherever finer terrain resolves a coast, lake
 or island the parent smoothed away.

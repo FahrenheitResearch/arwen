@@ -435,7 +435,7 @@ fn marker_centroid(image: &RgbaImage, color: Color) -> Option<(f64, f64)> {
 ///   crop moved nothing and this test would be measuring nothing.
 ///
 /// A published-and-wrong georeference is worse than a withheld one; this
-/// is the gate that keeps the adjustment honest.
+/// is the gate that keeps the adjustment accurate.
 #[test]
 fn published_georeference_survives_the_crop_on_a_regional_lambert_panel() {
     let mut lat = Vec::new();

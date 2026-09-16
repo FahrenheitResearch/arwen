@@ -496,7 +496,8 @@ class RelocationRunner:
         """Bound the desired shift; every adjustment is named."""
         from dataclasses import replace as _replace
 
-        from gpuwm.core.nest_relocation import _prevalidate_placement
+        from gpuwm.core.nest_relocation import (_prevalidate_placement,
+                                                clamp_shift_to_overlap)
 
         di, dj = (int(shift[0]), int(shift[1]))
         clamps: list[str] = []
@@ -508,6 +509,23 @@ class RelocationRunner:
             if (bounded_i, bounded_j) != (di, dj):
                 clamps.append("max_move_parent_cells")
                 di, dj = bounded_i, bounded_j
+
+        # THE OVERLAP FLOOR IS A BOUND, NOT A VERDICT.  It used to be
+        # enforced only by check_admissible, which raises -- so a follow
+        # source proposing a move one cell too large ended the run rather
+        # than making the move it was allowed to make.  The two bounds
+        # are not independent (an overlap floor implies a per-axis bound
+        # of 1 - sqrt(floor) of the nest's width in parent cells), so a
+        # config whose max_move_parent_cells is the larger of the two
+        # could refuse on its own maximum.  Clamped here, on the same
+        # footing as the parent edge below, and named in the receipt.
+        overlap_i, overlap_j, overlap_clamped = clamp_shift_to_overlap(
+            di, dj, min_overlap_fraction=self.config.min_overlap_fraction,
+            parent_grid_ratio=int(node.cfg.parent_grid_ratio),
+            child_nx=int(node.cfg.run.nx), child_ny=int(node.cfg.run.ny))
+        if overlap_clamped:
+            clamps.append("min_overlap_fraction")
+            di, dj = overlap_i, overlap_j
 
         # Walk back toward the current placement until register_nest's
         # +-2 SINT stencil admits the target.  The current placement is
@@ -614,13 +632,26 @@ class RelocationRunner:
                           "mover keeps tracking inside a frame that "
                           "cannot slide"})
         ratio_p = int(parent_node.cfg.parent_grid_ratio)
+        # The slide the deviation ASKS for, before any bound.  Recorded
+        # as the requested shift for the same reason the mover records
+        # the provider's own proposal there: a row whose requested and
+        # executed shifts are equal because the request was rewritten in
+        # place cannot show which bound did the rewriting.
         want_i = int(round(dev_i / ratio_p))
         want_j = int(round(dev_j / ratio_p))
+        # Every bound that cuts this slide is NAMED, on the same footing
+        # as the mover's: the row a reader audits has to say which one
+        # moved the number, and a bare `clamped = True` says only that
+        # something did.
+        clamps: list[str] = []
+        capped_i, capped_j = want_i, want_j
         limit = cont.max_move_parent_cells
         if limit is not None:
             limit = int(limit)
-            want_i = max(-limit, min(limit, want_i))
-            want_j = max(-limit, min(limit, want_j))
+            capped_i = max(-limit, min(limit, want_i))
+            capped_j = max(-limit, min(limit, want_j))
+            if (capped_i, capped_j) != (want_i, want_j):
+                clamps.append("containment.max_move_parent_cells")
 
         # Admissible for BOTH: the slid parent inside its own parent, and
         # the earth-fixed mover's compensated placement inside the slid
@@ -629,36 +660,66 @@ class RelocationRunner:
 
         from gpuwm.core.nest_relocation import _prevalidate_placement
 
-        def admissible(di, dj) -> bool:
+        def refusal(di, dj) -> str | None:
+            """Which of the two bands refuses this slide, by name.
+
+            One walk answers to two owners -- the slid parent inside its
+            own parent, and the earth-fixed mover's compensated placement
+            inside the slid parent -- and a row that named neither left a
+            reader guessing which edge the slide met.
+            """
             cand = _replace(
                 parent_node.cfg,
                 i_parent_start=int(parent_node.cfg.i_parent_start) + di,
                 j_parent_start=int(parent_node.cfg.j_parent_start) + dj)
-            if cand.i_parent_start < 1 or cand.j_parent_start < 1:
-                return False
             comp = _replace(
                 mover.cfg,
                 i_parent_start=int(mover.cfg.i_parent_start)
                 - di * ratio_p,
                 j_parent_start=int(mover.cfg.j_parent_start)
                 - dj * ratio_p)
-            if comp.i_parent_start < 1 or comp.j_parent_start < 1:
-                return False
+            if cand.i_parent_start < 1 or cand.j_parent_start < 1:
+                return "parent_edge"
             try:
                 _prevalidate_placement(cand, parent_node.parent)
+            except ValueError:
+                return "parent_edge"
+            if comp.i_parent_start < 1 or comp.j_parent_start < 1:
+                return "mover_compensated_placement"
+            try:
                 _prevalidate_placement(comp, parent_node)
             except ValueError:
-                return False
-            return True
+                return "mover_compensated_placement"
+            return None
 
-        di, dj = want_i, want_j
-        clamped = False
-        while (di, dj) != (0, 0) and not admissible(di, dj):
-            clamped = True
+        di, dj = capped_i, capped_j
+        # The floor applies to the SLIDING ANCESTOR too: relocate_child
+        # below is handed this runner's own min_overlap_fraction re-aimed
+        # at the ancestor's grid_id, and the ancestor has its own extent
+        # and ratio, so its admissible band is its own.  Clamped on the
+        # same footing as the mover's, for the same reason: a slide one
+        # cell too large must make the slide it is allowed to make, not
+        # end the run.
+        from gpuwm.core.nest_relocation import clamp_shift_to_overlap
+
+        di, dj, overlap_clamped = clamp_shift_to_overlap(
+            di, dj, min_overlap_fraction=self.config.min_overlap_fraction,
+            parent_grid_ratio=int(parent_node.cfg.parent_grid_ratio),
+            child_nx=int(parent_node.cfg.run.nx),
+            child_ny=int(parent_node.cfg.run.ny))
+        if overlap_clamped:
+            clamps.append("min_overlap_fraction")
+        while (di, dj) != (0, 0):
+            met = refusal(di, dj)
+            if met is None:
+                break
+            if met not in clamps:
+                clamps.append(met)
             if abs(di) >= abs(dj) and di != 0:
                 di -= 1 if di > 0 else -1
             elif dj != 0:
                 dj -= 1 if dj > 0 else -1
+        clamped = bool(clamps)
         if (di, dj) == (0, 0):
             return self._record(model, {
                 "event": "containment_held",
@@ -666,9 +727,10 @@ class RelocationRunner:
                 "grid_id": int(cont.grid_id),
                 "mover_deviation_cells": [dev_i, dev_j],
                 "requested_shift_parent_cells": [want_i, want_j],
+                "clamped_by": clamps,
                 "reason": "the requested slide clamps to the null move at "
-                          "the admissible band (parent edge, or the "
-                          "mover's compensated placement)"})
+                          "the admissible band (parent edge, the mover's "
+                          "compensated placement, or the overlap floor)"})
         if self._containment_segment is None:
             self._containment_segment = base_segment(parent_node.cfg)
         # BEFORE the rebuild: relocate_child reassigns the node's grid, so
@@ -736,6 +798,7 @@ class RelocationRunner:
             placement_to=receipt["plan"]["placement_to"],
             requested_shift=[want_i, want_j],
             executed_shift=[di, dj], clamped=clamped,
+            clamped_by=clamps,
             mover_deviation_cells=[dev_i, dev_j],
             grid=getattr(parent_node, "grid", None),
             lat_from=slid_from[0], lon_from=slid_from[1])
@@ -748,6 +811,13 @@ class RelocationRunner:
             "requested_shift_parent_cells": [want_i, want_j],
             "executed_shift_parent_cells": [di, dj],
             "clamped": clamped,
+            # WHICH bound, and what the slide kept.  The floor reaches a
+            # slide as a clamp now rather than as a refusal, so the only
+            # thing that had kept an under-floor slide off a ledger is
+            # gone; the auditor's floor check reads this field, and
+            # skips any row that does not carry it.
+            "clamped_by": clamps,
+            "overlap_fraction": receipt["plan"]["overlap_fraction"],
             "placement_from": receipt["plan"]["placement_from"],
             "placement_to": receipt["plan"]["placement_to"],
             # The earth-fixed compensation rows: the tracked mover's

@@ -1788,7 +1788,7 @@ def _with_report_levels(relocation, source):
 
 def _refuse_unservable_track(relocation, domains, source, *, root_dt,
                              whole_root_steps) -> None:
-    """A track stream that cannot produce honest records refuses AT LOAD.
+    """A track stream that cannot produce accurate records refuses AT LOAD.
 
     Two ways to configure one that cannot, each refused by name here
     rather than discovered as an empty file after a twelve-hour run:
@@ -1828,7 +1828,7 @@ def _refuse_unservable_track(relocation, domains, source, *, root_dt,
     Note what this refusal is NOT: reading a stash does not perturb the
     forecast.  The reset belongs to the mover's consultation and stays
     there, so a track stream cannot move the nest however often it
-    looks.  This is about the honesty of the record, not its safety.
+    looks.  This is about the accuracy of the record, not its safety.
 
     A ``pressure`` tracker reduces from the live prognostic column, which
     is valid at every cycle boundary, so it is exempt -- the same line

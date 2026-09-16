@@ -770,7 +770,7 @@ def launch_smag2d_hd(f, xk, mut, c1, c2, dx, dy, tend, stagger="",
     levels get no tendency).  ``xk (nz,ny,nx)`` is the mass-point eddy
     viscosity, ``mut (ny,nx)`` the total dry mass.  ``open_x``/``open_y``
     (consumed by the ``"x"``/``"y"`` kernels only) switch the
-    boundary-normal face nx-1 / ny-1 to WRF's honest boundary-datum read
+    boundary-normal face nx-1 / ny-1 to WRF's accurate boundary-datum read
     (field(ide) / field(jde), the stored last column/row) instead of the
     periodic wrap; the caller still zeroes WRF's excluded width-1 strip
     afterwards (``_zero_open_strips``).  Mirror:
@@ -1487,7 +1487,7 @@ def prepare_fixed_tendencies(state: DomainState, cfg: RunConfig) -> None:
         # The prognostic-TKE forward tendency (tke_rhs + self-diffusion),
         # consumed by advance_tke_stage on every RK pass.
         state.scratch((nz, ny, nx), "smag_rtke")[...] = 0
-        # A term this configuration never produces must read as an honest
+        # A term this configuration never produces must read as an accurate
         # zero for the step, not as the previous step's value.
         tke_budget.clear_fields(state, cfg)
 
@@ -1522,7 +1522,7 @@ def prepare_fixed_tendencies(state: DomainState, cfg: RunConfig) -> None:
                          thresh=cfg.diff_6th_thresh,
                          dx=cfg.dx, dy=cfg.dy,
                          # Boundary-aware reads: the outermost computed
-                         # staggered face takes WRF's honest boundary
+                         # staggered face takes WRF's accurate boundary
                          # datum (u ide-3 / v jde-3); the width-3 mask
                          # below is then exactly WRF's loop exclusion.
                          bnd_x=_boundary_x(cfg), bnd_y=_boundary_y(cfg))
@@ -1823,7 +1823,7 @@ def launch_diff6(f, tend, mut, c1, c2, factor: float, dt: float, opt: int,
     post-pass for the staggered field on that axis: the outermost
     computed staggered face -- WRF's u(ide-3)/v(jde-3), which the
     specified/nested and open loop bounds INCLUDE -- is recomputed by
-    ``kernels/diff6_seam.cu`` with WRF's honest read of the stored true
+    ``kernels/diff6_seam.cu`` with WRF's accurate read of the stored true
     boundary datum ``field(ide)``/``field(jde)``
     (module_big_step_utilities_em.F:6354-6358/:6381-6385 bounds,
     :6465-6467/:6547-6549 reads), replacing the periodic-wrap kernel's
@@ -1880,7 +1880,7 @@ def _launch_diff6_seam(name, f, tend, mut, c1, c2, phb_arg, msfu_arg,
 
     The main periodic-wrap kernel's value on that face is corrupt (it
     wraps to the OPPOSITE boundary), so the face is zeroed here and the
-    seam kernel writes WRF's honest arithmetic over WRF's own index range
+    seam kernel writes WRF's accurate arithmetic over WRF's own index range
     -- the cross-axis range [3, n-4] when the cross axis is also forced
     (``bnd_cross``), the full periodic range otherwise, matching the
     caller's subsequent width-3 ``_zero_open_strips`` exactly.  Callers
@@ -2123,7 +2123,7 @@ def _zero_open_strips(buf: cp.ndarray, cfg: RunConfig, width: int,
     outermost computed face may pass ``stag_high_extra = 1`` to zero that
     face as well.  No production caller does any more: the diff6 kernel's
     ``bnd_x``/``bnd_y`` mode and the smag2d u/v kernels both make the
-    honest boundary-datum read themselves (WRF computes u face ide-3
+    accurate boundary-datum read themselves (WRF computes u face ide-3
     reading field(i+3) = u(ide); smag2d.cu ``open_x``/``open_y``,
     diff6.cu ``bndx``/``bndy``), so ``width = 3`` (diff6) and ``width =
     1`` (smag2d) are exactly WRF's exclusions for every stagger.  The

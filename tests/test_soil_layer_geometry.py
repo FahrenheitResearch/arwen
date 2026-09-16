@@ -157,7 +157,7 @@ def test_what_the_scheme_defines_and_what_gpuwm_validated_stay_separate():
     """RUC defines two geometries; gpuwm has validated one of them.
 
     Conflating those -- by reading the validated count off the schema tuple's
-    first element -- would make WRF's own table order load-bearing and would
+    first element -- would make WRF's own table order essential and would
     silently relabel the other geometry as validated if WRF reordered it.
     """
     assert validated_soil_layer_count(3) == ruc_contract.NUM_SOIL_LAYERS

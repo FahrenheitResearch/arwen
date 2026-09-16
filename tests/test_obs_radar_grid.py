@@ -82,7 +82,12 @@ def _volume(grid: TargetGrid, *, reflectivity, velocity, nyquist=32.0,
 
 
 def _gridded(grid, volume, params=None, z_reduce="max"):
-    params = params or SuperobParams()
+    # ``dealias=None`` is STATED here, not inherited.  Dealiasing is what a
+    # bare SuperobParams does now, and every assertion below this line is
+    # about the masking-only path: what the four risk masks drop, what they
+    # count, and the statement the file makes when nothing was unfolded.
+    # Leaving it to the default would silently measure a different pass.
+    params = params or SuperobParams(dealias=None)
     contribution = superob_volume(volume, grid, params=params)
     return merge_contributions([contribution], grid, params=params,
                                z_reduce=z_reduce), params
@@ -355,7 +360,7 @@ def test_a_relabelled_identity_cannot_reach_the_da_read_path(tmp_path):
 
     Two grids identical in every horizontal array and different only in
     ``z_w`` produce different identities, so the identity *string* catches
-    an honest mismatch.  What it cannot catch is a file whose
+    an accurate mismatch.  What it cannot catch is a file whose
     ``grid_identity_sha256`` attribute has been relabelled to name the other
     grid: the file is then internally consistent to every check a reader can
     make by itself, because ``z_w`` is not in it.
@@ -420,7 +425,7 @@ def test_a_relabelled_identity_cannot_reach_the_da_read_path(tmp_path):
         obs_radar.radar_grid_to_gridded_obs(
             relabelled, reflectivity_simulated=simulated)
 
-    # The honest file still goes through, on both shapes.
+    # The accurate file still goes through, on both shapes.
     good = np.zeros((3, grid.nz, grid.ny, grid.nx))
     batches, provenance = obs_radar.radar_grid_to_gridded_obs(
         source, reflectivity_simulated=good, expected_grid=grid)
@@ -557,7 +562,7 @@ def test_reflectivity_reduces_to_linear_mean_and_in_cell_maximum():
 
 def test_velocity_beyond_the_nyquist_fraction_is_masked_and_counted():
     grid = _grid(nx=5, ny=5, dx=100000.0, nz=4, top_m=8000.0)
-    params = SuperobParams(nyquist_reject_fraction=0.8)
+    params = SuperobParams(nyquist_reject_fraction=0.8, dealias=None)
     # 30 m/s against a 32 m/s Nyquist is 0.94 of it: aliasing risk.
     volume = _volume(grid, reflectivity=None, velocity=[30.0, 30.0],
                      nyquist=32.0)
@@ -601,7 +606,8 @@ def test_an_implausible_nyquist_is_disbelieved_and_masks_its_whole_sweep():
     """
 
     grid = _grid(nx=5, ny=5, dx=100000.0, nz=4, top_m=8000.0)
-    params = SuperobParams(nyquist_min_ms=4.0, nyquist_max_ms=100.0)
+    params = SuperobParams(nyquist_min_ms=4.0, nyquist_max_ms=100.0,
+                           dealias=None)
     for absurd in (620.72, 0.5):
         volume = _volume(grid, reflectivity=[30.0, 30.0],
                          velocity=[5.0, 5.0], nyquist=absurd)
@@ -630,7 +636,7 @@ def test_a_cell_whose_velocities_span_the_nyquist_interval_is_dropped_whole():
     # first; that path is tested separately below.
     params = SuperobParams(nyquist_reject_fraction=0.95,
                            nyquist_spread_fraction=0.5,
-                           shear_fold_fraction=1.0)
+                           shear_fold_fraction=1.0, dealias=None)
     # +28 and -28 in one cell against Nyquist 32: a fold, not a shear.
     volume = _volume(grid, reflectivity=None, velocity=[28.0, -28.0],
                      nyquist=32.0)
@@ -652,7 +658,7 @@ def test_the_gate_to_gate_scan_drops_the_gates_flanking_a_fold_boundary():
     """
 
     grid = _grid(nx=5, ny=5, dx=100000.0, nz=4, top_m=8000.0)
-    params = SuperobParams(nyquist_reject_fraction=0.9)
+    params = SuperobParams(nyquist_reject_fraction=0.9, dealias=None)
     volume = _volume(grid, reflectivity=None, velocity=[25.0, -25.0],
                      nyquist=32.0)
     observations, _ = _gridded(grid, volume, params=params)
@@ -678,7 +684,7 @@ def test_the_gate_to_gate_scan_drops_the_gates_flanking_a_fold_boundary():
 
 
 def test_a_coherent_fold_survives_every_mask_and_the_file_says_so(tmp_path):
-    """The honest half of RAD-H3, pinned so nobody re-reads the masks as proof.
+    """The accurate half of RAD-H3, pinned so nobody re-reads the masks as proof.
 
     At Nyquist 32 a true +69 m/s folds coherently to +5 m/s.  A patch of
     gates that all fold together has a present and plausible Nyquist, speeds
@@ -688,7 +694,10 @@ def test_a_coherent_fold_survives_every_mask_and_the_file_says_so(tmp_path):
     """
 
     grid = _grid(nx=5, ny=5, dx=100000.0, nz=4, top_m=8000.0)
-    params = SuperobParams()
+    # The masking-only path, STATED: this test is the record that four
+    # risk masks do not exclude a coherent fold, which is why dealiasing
+    # is now what a bare SuperobParams does.
+    params = SuperobParams(dealias=None)
     volume = _volume(grid, reflectivity=None, velocity=[5.0, 5.0, 5.0, 5.0],
                      nyquist=32.0)
     observations, _ = _gridded(grid, volume, params=params)
@@ -745,7 +754,10 @@ def test_the_beam_unit_vector_ships_with_the_velocity():
 def test_two_radars_keep_separate_velocities_and_one_merged_reflectivity(
         tmp_path):
     grid = _grid(nx=5, ny=5, dx=100000.0, nz=4, top_m=8000.0)
-    params = SuperobParams()
+    # The masking-only path, STATED: this test is the record that four
+    # risk masks do not exclude a coherent fold, which is why dealiasing
+    # is now what a bare SuperobParams does.
+    params = SuperobParams(dealias=None)
     first = superob_volume(
         _volume(grid, reflectivity=[30.0], velocity=[10.0], azimuths=(90.0,),
                 site_id="KTLX", nyquist=64.0), grid, params=params)
@@ -777,7 +789,8 @@ def test_two_radars_keep_separate_velocities_and_one_merged_reflectivity(
 
 def test_observation_error_is_floored_and_grows_with_in_cell_spread():
     grid = _grid(nx=5, ny=5, dx=100000.0, nz=4, top_m=8000.0)
-    params = SuperobParams(z_error_base_dbz=5.0, z_error_floor_dbz=2.0)
+    params = SuperobParams(z_error_base_dbz=5.0, z_error_floor_dbz=2.0,
+                           dealias=None)
     tight, _ = _gridded(grid, _volume(grid, reflectivity=[30.0] * 8,
                                       velocity=None), params=params)
     spread, _ = _gridded(grid, _volume(
@@ -878,7 +891,11 @@ def test_superob_params_normalize_the_real_numbers_they_accept():
     """
 
     params = SuperobParams(max_range_km=250, nyquist_min_ms=np.float32(4.0),
-                           z_error_base_dbz=np.float64(5.0))
+                           z_error_base_dbz=np.float64(5.0),
+                           # The payload's float-only claim is about the
+                           # numeric fields; the dealias block is a
+                           # parameter object and is stated away here.
+                           dealias=None)
     assert type(params.max_range_km) is float
     assert type(params.nyquist_min_ms) is float
     assert type(params.z_error_base_dbz) is float

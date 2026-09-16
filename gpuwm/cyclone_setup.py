@@ -17,9 +17,10 @@ any model in it.
 from __future__ import annotations
 
 import contextlib
-from datetime import datetime
+from datetime import datetime, timedelta
 import hashlib
 import json
+import math
 from pathlib import Path
 import sys
 import textwrap
@@ -53,6 +54,11 @@ ROOT_DIMS = (200, 160)
 CHILD_DIMS = (160, 160)
 ROOT_DX_M = 12000.0
 RATIO = 4
+#: The preset nest measured in the unit a nest is actually sized in: whole
+#: PARENT cells.  A following nest is square and registers on whole parent
+#: cells, so every size this door can choose is ``RATIO`` times an even
+#: number of them, and this is the floor a budget grows up from.
+PRESET_NEST_PARENT_CELLS = CHILD_DIMS[0] // RATIO
 # Five-percent, aspect-preserving rungs. Both child axes stay divisible by
 # 2*RATIO, so the shared author can center each nest on whole parent cells.
 FIT_SCALE_STEPS = 20
@@ -78,8 +84,23 @@ def _cycle(raw: str, *, latest: bool = False,
     return resolve_cycle(raw, source=forcing_source, latest=latest)
 
 
+def _start_hour(value, *, source: str, moment: datetime, hours: int = 0) -> int:
+    """The lead this setup begins at, checked by the SOURCE's own contract."""
+    from gpuwm.cyclone_sources import resolve_start_hour
+    return resolve_start_hour(value, source=source, moment=moment, hours=hours)
+
+
 def latest_map(cycle: str = "latest", *, source: str = DEFAULT_SOURCE,
-               member: str | None = None) -> dict:
+               member: str | None = None, start_hour: int = 0) -> dict:
+    """The selection map for the lead the run will START at.
+
+    THE MAP AND THE RUN SHOW THE SAME MOMENT.  The centre is clicked on
+    this picture and the configuration is initialised from the field the
+    picture was drawn from, so a preview pinned to f000 while the run
+    began at f186 asked the reader to place a storm using a map that does
+    not contain it.  ``forecast_hour`` was already on the request; what
+    was missing was a way to ask for anything but zero.
+    """
     from gpuwm.cyclone_sources import selected_member, source_adapter
     adapter = source_adapter(source)
     source = adapter.source_id
@@ -91,6 +112,7 @@ def latest_map(cycle: str = "latest", *, source: str = DEFAULT_SOURCE,
         if contract is not None:
             map_member = contract[1].member(selection).ordinal
     moment = _cycle(cycle, latest=True, forcing_source=source)
+    start_hour = _start_hour(start_hour, source=source, moment=moment)
     # A regional source's map is its own grid, clipped to the drawable
     # band: showing a global frame for a window that stops at 60 N invites
     # a click the configuration door then has to refuse.
@@ -101,14 +123,109 @@ def latest_map(cycle: str = "latest", *, source: str = DEFAULT_SOURCE,
     return {
         "schema": SCHEMA, "kind": "map", "cycle": moment.strftime("%Y%m%d%H"),
         "source": source, "member": selection,
+        "forecast_start_hour": start_hour,
+        "valid_time": (moment + timedelta(hours=start_hour)).isoformat(sep=" "),
         "map_request": {"source": source, "date": moment.strftime("%Y-%m-%d"),
-                        "hour": moment.hour, "forecast_hour": 0,
+                        "hour": moment.hour, "forecast_hour": start_hour,
                         "member": map_member,
                         "product": "mslp_10m_winds", "bounds": bounds},
         "forecast_started": False,
         "selection": ("Click the circulation center on this exact "
-                      f"{adapter.display_title} f000 pressure-and-wind map."),
+                      f"{adapter.display_title} f{start_hour:03d} "
+                      "pressure-and-wind map."),
     }
+
+
+def follow_table_for_nest(child_nx: int, child_ny: int) -> dict:
+    """The quick-start follow preset, re-derived for THIS nest.
+
+    ``VORTEX_PRESET``'s movement maximums are the ones its own overlap
+    floor admits on the nest it was written for, 40 parent cells wide.
+    THE FLOOR STATES THE PHYSICS -- keep this much of the child, so at
+    most the rest is strip the move exposes and the child has to spin up
+    -- and the maximums are the derived half, at whatever size the nest
+    ends up.  Overlap is separable, so the binding case is the DIAGONAL
+    move, where both factors shrink at once: with the nest ``N`` parent
+    cells wide, a floor ``f`` admits a per-axis magnitude ``m`` only
+    while ``(1 - m/N)**2 >= f``, that is ``m <= N * (1 - sqrt(f))``.
+    :func:`gpuwm.core.nest_relocation.max_parent_cells_for_overlap` is
+    that bound, and it is the same one ``check_admissible`` enforces at
+    run time, so the door cannot emit a maximum the run then refuses.
+
+    BOTH ROADS COME THROUGH HERE, which is the point of there being one
+    of these.  The reduction ladder proposes a nest SMALLER than the
+    preset's and the same floor admits fewer parent cells on it, so
+    copying the preset's numbers down writes back exactly the
+    contradiction the preset was corrected to remove: a maximum the move
+    can pass and the floor then refuses, which ends a forecast at its
+    first relocation cadence instead of moving it as far as it was
+    allowed.  A nest grown to ``--nest-budget-gib`` is WIDER, and the
+    same floor admits more there; holding it at the preset's number
+    would have a 240x240 nest move no further per cadence than a
+    160x160 one on a card that paid for the difference.  The bound
+    holds before it steps up, because the preset's own 6 is the floor
+    of a 40-cell nest: 42 cells still admit 6, 44 admit 7, 50 admit 8;
+    the first step up buys ground without buying reach.
+
+    The search margin is the preset's own PROPORTION of the nest -- half
+    its width in parent cells -- and never under the preset's 20, so the
+    tracker's box grows with a grown nest and the reduction ladder emits
+    the margin its configuration declares.
+
+    Both emitted tables (the configuration's ``[domain.follow]`` and the
+    cyclone.json receipt) come through here, so the file the run reads
+    and the document the desktop reads carry one number.  So does
+    :func:`_nest_clearance_cells`, which is why the ladder is priced with
+    the bounds each rung would actually carry.
+
+    The floor is never lowered to keep a maximum.
+    """
+    from gpuwm.companion_domains import VORTEX_PRESET
+    from gpuwm.core.nest_relocation import max_parent_cells_for_overlap
+
+    table = dict(VORTEX_PRESET)
+    bound = max_parent_cells_for_overlap(
+        table["min_overlap_fraction"], parent_grid_ratio=RATIO,
+        child_nx=int(child_nx), child_ny=int(child_ny))
+    if bound is None:
+        return table
+    if bound < 1:
+        # NAMED, because the alternative is the tracker's own
+        # "max_shift_cells is below min_shift_cells" reaching a reader
+        # who wrote neither number.  What breaks: this nest is narrow
+        # enough that its own overlap floor admits no move at all, so a
+        # following nest on it could never follow.  No rung of this
+        # door's ladder reaches it -- the smallest is 24 parent cells
+        # and admits 3 -- so this is the bound stated rather than a
+        # table emitted that the run door would reject.
+        raise ValueError(
+            f"A {child_nx}x{child_ny} nest at ratio {RATIO} is "
+            f"{min(int(child_nx), int(child_ny)) // RATIO} parent cells "
+            "wide, and min_overlap_fraction = "
+            f"{table['min_overlap_fraction']} admits no move at all on "
+            "it; run a wider nest, or lower min_overlap_fraction "
+            "deliberately")
+    for key in ("max_shift_cells", "max_move_parent_cells"):
+        table[key] = bound
+    table["min_shift_cells"] = min(int(table["min_shift_cells"]),
+                                   int(table["max_shift_cells"]))
+    margin = int(VORTEX_PRESET["search_margin_cells"])
+    table["search_margin_cells"] = max(
+        margin, (min(int(child_nx), int(child_ny)) // RATIO) * margin
+        // PRESET_NEST_PARENT_CELLS)
+    return table
+
+
+def _following_nest_dims(experiment) -> tuple[int, int]:
+    """(nx, ny) of the domain this door marks as following.
+
+    Grid 2 is the following nest on every document this door writes, and
+    the receipt's own ``domains`` rows say so with the same test, so the
+    dimensions the follow table is derived from and the dimensions the
+    reader sees beside it cannot come apart.
+    """
+    child = next(d for d in experiment.domains if int(d.grid_id) == 2)
+    return int(child.run.nx), int(child.run.ny)
 
 
 def configuration_text(*, cycle: str, point: tuple[float, float], hours: int = 6,
@@ -116,9 +233,10 @@ def configuration_text(*, cycle: str, point: tuple[float, float], hours: int = 6
                        source: str = "cyclone-setup.toml",
                        forcing_source: str = DEFAULT_SOURCE,
                        member: str | None = None,
+                       start_hour: int = 0,
                        dimensions=None) -> tuple[str, object]:
     from gpuwm import domain_wizard as dw
-    from gpuwm.companion_domains import VORTEX_PRESET, VORTEX_PRESET_SOURCE
+    from gpuwm.companion_domains import VORTEX_PRESET_SOURCE
     from gpuwm.cyclone_sources import (declared_case_data, fetch_hints,
                                        moving_nest_note, source_adapter,
                                        validate_center)
@@ -127,6 +245,15 @@ def configuration_text(*, cycle: str, point: tuple[float, float], hours: int = 6
     adapter = source_adapter(forcing_source)
     forcing_source = adapter.source_id
     moment = _cycle(cycle, forcing_source=forcing_source)
+    # THE MODEL'S TIME ZERO.  The cycle says which run of the source this
+    # comes from; the lead says where in that run the forecast begins.  A
+    # storm that exists only at f186 is initialised from f186 and forced
+    # from f186 onward, and every downstream stage reads the difference
+    # from the pair the emitted file already carries -- `[fetch]
+    # forecast_start_hour` and `start_time` -- rather than from a second
+    # convention of this door's own.
+    start_hour = _start_hour(start_hour, source=forcing_source, moment=moment)
+    start_time = moment + timedelta(hours=start_hour)
     if tiles not in ("off", "auto", "on"):
         raise ValueError("Tile mode must be off, auto or on")
     lat, lon = point
@@ -149,11 +276,11 @@ def configuration_text(*, cycle: str, point: tuple[float, float], hours: int = 6
     # than from one model's 384-hour ceiling written down here.
     hints = fetch_hints(source=forcing_source, moment=moment, hours=hours,
                         projection=projection, dims=tuple(dims[0]),
-                        dx_m=ROOT_DX_M, member=member)
+                        dx_m=ROOT_DX_M, member=member, start_hour=start_hour)
     profile = dw.resolved_physics_profile(forcing_source, None)
     text = dw.render_config(
         name=_config_name(adapter, name),
-        start_time=moment, hours=hours, projection=projection,
+        start_time=start_time, hours=hours, projection=projection,
         dims=dims, ratios=(RATIO,), root_dx_m=ROOT_DX_M,
         profile=profile, cumulus_requested=False, tiles=tiles,
         fetch_hints=hints,
@@ -161,7 +288,12 @@ def configuration_text(*, cycle: str, point: tuple[float, float], hours: int = 6
         history_interval_s=3600., nest_history_interval_s=900.)
     raw = tomllib.loads(text)
     child = next(row for row in raw["domain"] if row["grid_id"] == 2)
-    child["follow"] = {**VORTEX_PRESET, "track": {"path": "storm-track.d02.csv"}}
+    # The maximums come from the dimensions this document actually
+    # carries, not from the preset's own nest: a reduced child is
+    # narrower and its floor admits fewer parent cells, a child grown to
+    # a memory budget is wider and its floor admits more.
+    child["follow"] = {**follow_table_for_nest(*dims[1]),
+                       "track": {"path": "storm-track.d02.csv"}}
     # This is one immediate following nest. Spawn/retire decisions are not part
     # of this quick-start; the chosen center is its initial registration.
     # The run door's own verdict on the nest this file declares, written
@@ -178,11 +310,16 @@ def configuration_text(*, cycle: str, point: tuple[float, float], hours: int = 6
     limit = "" if moving["integrates_moving_nest"] else "".join(
         "# " + line + "\n" for line in textwrap.wrap(
             heading + moving["note"], 76))
+    began = (f"f{start_hour:03d} forecast (valid {start_time:%Y-%m-%d %H} UTC)"
+             if start_hour else "f000 analysis")
     text = (f"# {adapter.display_title} cyclone quick-start: 12 km parent and "
             "3 km following nest.\n"
             "# Center and cycle were selected explicitly on that source's "
-            "f000 analysis.\n"
-            f"# Existing vortex-lock preset: {VORTEX_PRESET_SOURCE}\n"
+            f"{began}.\n"
+            f"# Existing vortex-lock preset: {VORTEX_PRESET_SOURCE}"
+            + ("" if tuple(dims[1]) == CHILD_DIMS else
+               f" (movement bounds re-derived for a {dims[1][0]}x{dims[1][1]} nest)")
+            + "\n"
             "# Following uses the 850 hPa circulation; the selection map uses MSLP.\n"
             + limit
             + render_tables(raw))
@@ -204,24 +341,112 @@ def _forcing_interval(forcing_source: str) -> float:
     return float(source_adapter(forcing_source).forcing_interval_seconds)
 
 
-def _fit_dimensions(scale):
-    from gpuwm import domain_wizard as dw
-    return [tuple(dw._even(n * scale) for n in ROOT_DIMS),
-            tuple(RATIO * dw._even(n * scale / RATIO) for n in CHILD_DIMS)]
+def _nest_parent_cells(child_dims) -> int:
+    """The nest's own width in PARENT cells, on its narrow axis."""
+    return min(int(child_dims[0]), int(child_dims[1])) // RATIO
 
 
-def _fit_scales(experiment):
+def _nest_dimensions(parent_cells: int):
+    """A square nest of ``parent_cells`` whole parent cells, parent as is."""
+    side = RATIO * int(parent_cells)
+    return [tuple(ROOT_DIMS), (side, side)]
+
+
+def _nest_clearance_cells(experiment, child_dims) -> int:
+    """Rows the nest needs between itself and the parent's edge.
+
+    The boundary and blend zones, the tracker's search window and one
+    maximum move -- read from the follow table THIS nest will carry,
+    through the one derivation that emits it
+    (:func:`follow_table_for_nest`), so the clearance and the emitted
+    bounds cannot disagree.
+    """
+    follow = follow_table_for_nest(*child_dims)
+    return (experiment.spec_bdy_width + experiment.blend_width
+            + int(follow["search_margin_cells"])
+            + max(int(follow["max_shift_cells"]),
+                  int(follow["max_move_parent_cells"])))
+
+
+def _nest_moves_at_all(child_dims) -> bool:
+    """Whether this nest's OWN overlap floor admits any move.
+
+    The same bound :func:`follow_table_for_nest` derives its maximums
+    from, asked as a yes or no.  A ladder probes layouts far below
+    anything it would propose -- the reduction ladder walks down to a
+    twentieth of the requested nest -- and a nest that narrow admits no
+    move at all: 6 parent cells against a 0.7 floor admits zero.  Such a
+    rung is not a following-nest layout, so it is not a rung, and the
+    emit path's named refusal stays a refusal rather than being raised
+    out of a geometric probe.
+    """
     from gpuwm.companion_domains import VORTEX_PRESET
+    from gpuwm.core.nest_relocation import max_parent_cells_for_overlap
+
+    bound = max_parent_cells_for_overlap(
+        VORTEX_PRESET["min_overlap_fraction"], parent_grid_ratio=RATIO,
+        child_nx=int(child_dims[0]), child_ny=int(child_dims[1]))
+    return bound is None or bound >= 1
+
+
+def _nest_fits_parent(experiment, dims) -> bool:
+    parent, child = dims
+    if not _nest_moves_at_all(child):
+        return False
+    margin = _nest_clearance_cells(experiment, child)
+    return all((axis - child[index] // RATIO) // 2 >= margin
+               for index, axis in enumerate(parent))
+
+
+def _nest_ladder(experiment) -> tuple[int, ...]:
+    """Nest sizes a budget may choose, largest first, floor last.
+
+    Square, in whole parent cells, and EVEN in them so both child axes
+    stay divisible by ``2 * RATIO`` and the shared author can center the
+    nest on whole parent cells.  The parent is kept as it is, so the
+    ladder ends where the growing tracker window would reach the parent's
+    boundary and blend zone -- a geometric bound, asked of each rung with
+    the bounds that rung would carry.  Bounded at 64 rungs because that is
+    what ``fit_ladder`` accepts for a bounded largest-first search.
+    """
+    cells, rung = [], PRESET_NEST_PARENT_CELLS
+    while len(cells) < 64 and _nest_fits_parent(experiment, _nest_dimensions(rung)):
+        cells.append(rung)
+        rung += 2
+    return tuple(reversed(cells))
+
+
+def _fit_dimensions(scale, base=None):
+    from gpuwm import domain_wizard as dw
+    root, child = ((ROOT_DIMS, CHILD_DIMS) if base is None
+                   else (tuple(base[0]), tuple(base[1])))
+    return [tuple(dw._even(n * scale) for n in root),
+            tuple(RATIO * dw._even(n * scale / RATIO) for n in child)]
+
+
+def _reduction_dimensions(base=None):
+    """The reduction ladder's dimension builder for ``base``.
+
+    A base that IS the preset layout -- which is every proposal on this
+    door until a budget sizes the nest -- reduces from the preset, and is
+    built by the module function with one argument, exactly as it was
+    before a base could be anything else.  Anything else is a layout this
+    door chose, and the ladder scales that one instead of the preset it
+    was never asked for.
+    """
+    if base is None or [list(pair) for pair in base] == [list(ROOT_DIMS),
+                                                         list(CHILD_DIMS)]:
+        return _fit_dimensions
+    return lambda scale: _fit_dimensions(scale, base)
+
+
+def _fit_scales(experiment, base=None):
     # Keep the whole tracker search window clear of the boundary/blend zone
     # even after one maximum requested move. Runtime still enforces overlap,
     # movement bounds and containment on EVERY actual relocation.
-    margin = (experiment.spec_bdy_width + experiment.blend_width
-              + VORTEX_PRESET["search_margin_cells"]
-              + max(VORTEX_PRESET["max_shift_cells"],
-                    VORTEX_PRESET["max_move_parent_cells"]))
+    dims_at = _reduction_dimensions(base)
     scales = tuple(step / FIT_SCALE_STEPS for step in range(FIT_SCALE_STEPS - 1, 0, -1)
-                   if all((parent - child // RATIO) // 2 >= margin
-                          for parent, child in zip(*_fit_dimensions(step / FIT_SCALE_STEPS))))
+                   if _nest_fits_parent(experiment, dims_at(step / FIT_SCALE_STEPS)))
     if not scales:
         # NAMED, because the alternative is fit_ladder's internal contract
         # message ("candidate_scales must be a tuple of 1..64 decreasing
@@ -232,9 +457,10 @@ def _fit_scales(experiment):
         # not integrate.  The way out is the requested domain itself.
         raise ValueError(
             "No smaller cyclone layout keeps the following nest's tracker "
-            f"search window {margin} cells clear of the 12 km parent's "
-            "boundary and blend zone, so there is nothing to propose; run "
-            "the requested domain with --tiles off, or use a larger card")
+            f"search window {_nest_clearance_cells(experiment, CHILD_DIMS)} "
+            "cells clear of the 12 km parent's boundary and blend zone, so "
+            "there is nothing to propose; run the requested domain with "
+            "--tiles off, or use a larger card")
     return scales
 
 
@@ -342,7 +568,7 @@ def _unreduced_resident_admission(intent, budget_of, price_mode):
         return None
     if mode == "auto" and not _admits_resident(phases):
         return None
-    return {"tiles": mode, "dimensions": [list(ROOT_DIMS), list(CHILD_DIMS)],
+    return {"tiles": mode, "dimensions": _requested_dimensions(intent),
             "peak_envelope_bytes": phases.peak_envelope_bytes,
             "budget_bytes": _admitting_budget_bytes(phases, mode, budget)}
 
@@ -411,7 +637,8 @@ def _resident_alternative(intent, sizing, dims_of, scales_of):
             ratios=(RATIO,), free_bytes=sizing.free_bytes,
             vram_gib=sizing.vram_gib, device_profile=sizing.device_profile,
             target_machine=None, hours=intent["hours"],
-            start_time=_cycle(intent["cycle"], forcing_source=forcing_source),
+            start_time=(_cycle(intent["cycle"], forcing_source=forcing_source)
+                        + timedelta(hours=intent["start_hour"])),
             projection=tomllib.loads(_text)["projection"],
             source=forcing_source,
             name=intent["name"], root_dx_m=ROOT_DX_M,
@@ -419,7 +646,7 @@ def _resident_alternative(intent, sizing, dims_of, scales_of):
             tiles="off",
             forcing_interval_seconds=_forcing_interval(forcing_source),
             candidate_builder=lambda proposed: configuration_text(
-                **resident, dimensions=proposed)[1],
+                **{**resident, "dimensions": proposed})[1],
             dimensions_builder=dims_of, candidate_scales=scales_of(exp),
             layout_label="cyclone 12/3 km resident")
     except dw.DomainFitError as error:
@@ -577,13 +804,316 @@ def _streaming_entry(phases, tiles: str, budget: int) -> dict:
             "domains": []}
 
 
+def _requested_dimensions(intent) -> list:
+    """The layout this plan is ABOUT, preset or budget-sized.
+
+    Every probe on this door re-prices the requested layout, and once a
+    budget can choose the nest there is no longer a module constant that
+    names it.  One reader, so a probe cannot price the preset while the
+    proposal is a different size.
+    """
+    dims = intent.get("dimensions")
+    return ([list(ROOT_DIMS), list(CHILD_DIMS)] if dims is None
+            else [list(pair) for pair in dims])
+
+
+def _budget_sizing(sizing, budget_gib: float | None):
+    """The card allowance this plan is priced against, narrowed to a budget.
+
+    A nest budget is a statement about how much of the card this run may
+    occupy, so it is applied where the card's own availability is applied
+    and NOT as a second comparison further down: every phase estimate, the
+    tile planner's tree road and the final admission then see one number,
+    and the budget cannot admit a layout the tree road would refuse.
+    ``sizing_budget_bytes`` is free bytes minus the external margin, so the
+    free bytes that express a budget of B are B plus that margin.
+
+    A budget larger than the card is not a refusal and not a promise: the
+    card is still the card, the smaller of the two is what sizes the nest,
+    and the document says which one bound it.
+    """
+    import dataclasses
+    from gpuwm.core.preflight import EXTERNAL_MARGIN_BYTES
+    from gpuwm.domain_wizard import GIB
+
+    if budget_gib is None:
+        return sizing, None
+    wanted = int(float(budget_gib) * GIB) + EXTERNAL_MARGIN_BYTES
+    if wanted >= int(sizing.free_bytes):
+        return sizing, "card"
+    return dataclasses.replace(sizing, free_bytes=wanted), "request"
+
+
+def _floor_price(intent, price, floor_dims):
+    """What the preset nest costs here, measured, or ``None`` if the floor
+    could not be priced at all.  A refusal states a number it took from the
+    same estimator that refused it, or it states none.
+
+    A REFUSED FLOOR IS STILL A PRICED FLOOR.  Under the default `--tiles
+    auto` the estimator raises on the preset nest rather than returning
+    phases -- the tile planner's tree road refuses before it answers --
+    and the refusal then named no price at all on exactly the tile mode
+    every user meets, while `--tiles off` named one.  The envelope the
+    fitter measured travels on the error, so it is read from there.
+    """
+    from gpuwm import domain_wizard as dw
+
+    try:
+        _text, exp = configuration_text(**{**intent, "dimensions": floor_dims})
+        return price(exp).peak_envelope_bytes
+    except dw.DomainFitError as error:
+        phases = getattr(error, "phases", None)
+        return None if phases is None else phases.peak_envelope_bytes
+    except (ValueError, OSError):
+        return None
+
+
+def _unbudgeted_alternative(intent, *, sizing, operands):
+    """What dropping ``--nest-budget-gib`` actually authors on this card.
+
+    Asked only where the CARD is what refused the preset nest, which is
+    the one case in which raising the flag moves nothing at all: the
+    budget named is already larger than the card's own free memory, so
+    the way through is to stop naming a budget and let this door's own
+    reduction road propose a smaller layout.  That way through is
+    MEASURED here -- the same bounded ladder, the same estimator, the
+    same card as the run that refused -- because a refusal naming a
+    remedy nobody priced is a suggestion and not an answer.  ``None``
+    means the ladder was not walked or admitted nothing, and the sentence
+    then claims no layout.
+    """
+    from gpuwm import domain_wizard as dw
+    from gpuwm.cyclone_sources import source_adapter
+
+    plain = {**intent, "dimensions": None}
+    forcing_source = plain["forcing_source"]
+    requested = [list(ROOT_DIMS), list(CHILD_DIMS)]
+    machine = None
+    if plain["tiles"] != "off":
+        from gpuwm.core.streaming import planner_machine
+        machine = planner_machine(vram_bytes=sizing.free_bytes,
+                                  name="gpuwm cyclone budget",
+                                  device_profile=sizing.device_profile)
+        if machine is None:
+            return None
+    try:
+        text, exp = configuration_text(**plain)
+        dims, _fitted = dw.fit_ladder(
+            ratios=(RATIO,), free_bytes=sizing.free_bytes,
+            vram_gib=sizing.vram_gib, device_profile=sizing.device_profile,
+            target_machine=machine, hours=plain["hours"],
+            start_time=(_cycle(plain["cycle"], forcing_source=forcing_source)
+                        + timedelta(hours=plain["start_hour"])),
+            projection=tomllib.loads(text)["projection"],
+            source=forcing_source,
+            name=_config_name(source_adapter(forcing_source), plain["name"]),
+            root_dx_m=ROOT_DX_M,
+            profile=dw.resolved_physics_profile(forcing_source, None),
+            tiles=plain["tiles"],
+            forcing_interval_seconds=operands["forcing_interval_seconds"],
+            candidate_builder=lambda proposed: configuration_text(
+                **{**plain, "dimensions": proposed})[1],
+            dimensions_builder=_reduction_dimensions(requested),
+            candidate_scales=_fit_scales(exp, requested),
+            layout_label="cyclone 12/3 km")
+    except (dw.DomainFitError, ValueError, OSError):
+        return None
+    return [list(pair) for pair in dims]
+
+
+def _tile_road_bound(error):
+    """The number the TILE ROAD actually weighed the floor against.
+
+    A refusal states the budget it compared against, and on the default
+    ``--tiles auto`` that budget is NOT the flat sizing budget this door
+    computes: the tree walk withholds the following nest's rebuild
+    transient first, so its admission budget is smaller, and a refusal
+    quoting the flat number printed a target ABOVE the price beside a
+    sentence saying the price did not fit.  Measured on the 16 GiB
+    fixture card at a 5.06 GiB nest budget: the floor prices
+    5,141,378,237 bytes, the flat fit target is 5,161,476,948, and the
+    tile road refused it against 5,139,501,921 with 293,631,708 bytes
+    withheld for the nest's rebuild.  The walk carries all of that on
+    its plan (:class:`gpuwm.core.streaming.TreeRoadPlan`), so it is read
+    from there rather than recomputed or parsed back out of the
+    sentence.  ``None`` on the flat road, where no such budget exists
+    and the fit target IS what bound the floor.
+    """
+    road = getattr(getattr(error, "phases", None), "tree_road", None)
+    budget = getattr(road, "admission_budget_bytes", None)
+    if budget is None:
+        return None
+    return {"budget_bytes": int(budget),
+            "withheld_bytes": int(getattr(road, "admission_withheld_bytes", 0) or 0),
+            "withheld_for": getattr(road, "admission_withheld_for", None),
+            "remedy": getattr(road, "admission_remedy", None)}
+
+
+def _nest_budget_floor_refusal(floor_dims, *, budget: int, cost,
+                               budget_bound, requested_bytes,
+                               alternative=None, fit_bound=None) -> str:
+    """Why the preset nest cannot be had here, naming what actually bound it.
+
+    TWO DIFFERENT BREAKAGES REACH THIS SENTENCE and they do not have the
+    same way out.  ``budget_bound`` is the answer :func:`_budget_sizing`
+    already computed a hundred lines above: ``request`` means the named
+    budget is the smaller of the two numbers and raising it moves the
+    wall; ``card`` means the card's own free memory is, the named budget
+    is larger than anything this machine could offer, and raising it
+    moves nothing.  Saying "raise --nest-budget-gib" to a caller who
+    asked for 24 GiB on a 6 GB card names a remedy that cannot work and
+    blames a number that did not refuse, and a form reading ``bound_by``
+    is told the caller's own budget refused a run the card refused.  The
+    card-bound reader's way through is to drop the flag, and that is a
+    layout this door measures rather than a mode it suggests.
+
+    The floor is the shipped quick-start's own nest, so the sentence
+    names it in both units a reader has -- cells and the parent cells it
+    registers on -- and what it actually costs on this card, measured by
+    the same estimator that refused it rather than asserted.
+
+    WHAT THE FLOOR IS COMPARED AGAINST IS THE FIT TARGET, not the raw
+    budget: the admission stops short of the budget by
+    ``fit_headroom_bytes`` so nothing lands on the wall, and printing the
+    raw budget printed a number LARGER than the price beside a sentence
+    saying that price did not fit.  At a 5.0 GiB budget that read "prices
+    5141378237 bytes here, against a 5368709120 byte budget", 227 MB the
+    wrong way round, and a reader who raised the flag to just over the
+    printed price was refused again.
+
+    AND THE FIT TARGET IS ONLY THE FLAT ROAD'S BOUND.  Fixing the above
+    fixed ``--tiles off`` alone: on the DEFAULT ``--tiles auto`` the tree
+    walk withholds the following nest's rebuild transient before it
+    compares anything, so it refuses against a SMALLER budget than the
+    fit target, and the same contradiction survived one road over -- at a
+    5.06 GiB budget the sentence printed a 5,161,476,948 byte target
+    above the 5,141,378,237 byte price and refused anyway, because the
+    number that bound was 5,139,501,921.  ``fit_bound``
+    (:func:`_tile_road_bound`) is that number where the tile road is what
+    refused, and it is quoted in place of the fit target whenever the two
+    differ, with the withholding that produced it and the walk's own way
+    out beside it.  The way out is re-aimed with it: "raise
+    --nest-budget-gib until its fit target clears what the floor prices"
+    is false advice on that road, where the target already cleared the
+    price and the run was refused anyway.
+
+    ``requested_bytes`` is what the caller asked for and is required on
+    the card-bound branch, which states it.  It once had a ``None`` arm
+    that left that clause out and started the next one lowercase ("...
+    against {target}. the card is the bound"); no call site ever took it,
+    so the arm is gone rather than being given a sentence of its own.
+    """
+    from gpuwm import domain_wizard as dw
+
+    priced = "" if cost is None else f", which prices {cost} bytes here"
+    floor = (f"the floor is {floor_dims[1][0]}x{floor_dims[1][1]} "
+             f"({_nest_parent_cells(floor_dims[1])} parent cells at ratio "
+             f"{RATIO}){priced}")
+    headroom = dw.fit_headroom_bytes(budget)
+    whose = ("the {0} byte sizing budget this card's free memory leaves,"
+             if budget_bound == "card" else "a {0} byte budget")
+    target = (f"a {budget - headroom} byte fit target, which is "
+              f"{whose.format(budget)} less the {headroom} bytes of headroom "
+              "the admission leaves unspent so nothing lands on the wall")
+    aim = ("raise --nest-budget-gib until its fit target clears what the "
+           "floor prices")
+    road_remedy = ""
+    if (fit_bound is not None
+            and int(fit_bound["budget_bytes"]) != budget - headroom):
+        withheld = int(fit_bound.get("withheld_bytes") or 0)
+        for_whom = fit_bound.get("withheld_for")
+        held = ("" if not (withheld and for_whom) else
+                f", which withholds {withheld} bytes for {for_whom}'s rebuild")
+        target = (f"the {int(fit_bound['budget_bytes'])} byte admission "
+                  "budget the tile road this run takes weighed it "
+                  f"against{held}")
+        # AIMED AT THE NUMBER THAT BINDS, and the fit target is no
+        # longer printed beside it, so there is no second figure for a
+        # reader to raise the flag against.  No derivation of the road's
+        # budget from the flag is claimed: measured, it is this budget
+        # less the withholding and not less the headroom, which is a
+        # coincidence of one configuration.  What is claimed is that it
+        # MOVES with the flag, which it does -- 5.045 GiB gives
+        # 5,123,395,794 bytes and 5.06 GiB gives 5,139,501,921.
+        aim = ("raise --nest-budget-gib until THAT budget clears what the "
+               "floor prices, which it does as the flag moves")
+        if fit_bound.get("remedy"):
+            road_remedy = (". The walk's own way out on that road: "
+                           + fit_bound["remedy"])
+    if budget_bound == "card":
+        if alternative:
+            way_out = (f"drop --nest-budget-gib: this door's own reduction "
+                       f"road then authors {alternative[0][0]}x"
+                       f"{alternative[0][1]} / {alternative[1][0]}x"
+                       f"{alternative[1][1]} on this computer, which is "
+                       "smaller ground than the preset nest, so review it as "
+                       "a reduction")
+        else:
+            way_out = ("drop --nest-budget-gib and let this door's own "
+                       "reduction road propose the largest layout this "
+                       "computer does admit")
+        return ("This computer's free memory cannot hold the cyclone "
+                f"preset's own nest: {floor}, against {target}. The "
+                f"{requested_bytes} byte --nest-budget-gib asked for is "
+                "larger than that, so it is not what refused this run and "
+                "raising it cannot move it: the card is the bound. The nest "
+                "is sized UP from that floor and never below it, so "
+                f"{way_out}")
+    return (f"--nest-budget-gib is under the cyclone preset's own nest: "
+            f"{floor}, against {target}. The nest is sized UP from that "
+            f"floor and never below it; {aim}, or drop it and let the "
+            f"card's own available memory size the run{road_remedy}")
+
+
+def _size_nest_to_budget(intent, *, sizing, target_machine, operands,
+                         cancelled=None):
+    """The largest square nest this budget holds, parent kept as it is.
+
+    THE SAME ADMISSION THE PROPOSAL IS JUDGED BY, and deliberately not a
+    second one: ``fit_ladder``'s bounded largest-first search prices every
+    rung through the same estimator, against the same budget, and stops
+    short of it by the same ``fit_headroom_bytes`` the reduction road
+    leaves, so the nest this returns is admitted on the terms the document
+    then reports.  The rungs are nest sizes rather than scale factors --
+    square, whole even parent cells, the parent untouched -- and the
+    largest that fits wins because the ladder is walked from the top.
+    """
+    from gpuwm import domain_wizard as dw
+    from gpuwm.cyclone_sources import source_adapter
+
+    floor_dims = _nest_dimensions(PRESET_NEST_PARENT_CELLS)
+    floor_text, floor_exp = configuration_text(
+        **{**intent, "dimensions": floor_dims})
+    projection = tomllib.loads(floor_text)["projection"]
+    forcing_source = intent["forcing_source"]
+    dims, _exp = dw.fit_ladder(
+        ratios=(RATIO,), free_bytes=sizing.free_bytes,
+        vram_gib=sizing.vram_gib, device_profile=sizing.device_profile,
+        target_machine=target_machine, hours=intent["hours"],
+        start_time=(_cycle(intent["cycle"], forcing_source=forcing_source)
+                    + timedelta(hours=intent["start_hour"])),
+        projection=projection, source=forcing_source,
+        name=_config_name(source_adapter(forcing_source), intent["name"]),
+        root_dx_m=ROOT_DX_M,
+        profile=dw.resolved_physics_profile(forcing_source, None),
+        tiles=intent["tiles"],
+        forcing_interval_seconds=operands["forcing_interval_seconds"],
+        candidate_builder=lambda proposed: configuration_text(
+            **{**intent, "dimensions": proposed})[1],
+        dimensions_builder=lambda rung: _nest_dimensions(int(rung)),
+        candidate_scales=tuple(float(rung) for rung in _nest_ladder(floor_exp)),
+        layout_label="cyclone following nest", cancelled=cancelled)
+    return [list(pair) for pair in dims]
+
+
 def plan_cyclone(*, cycle: str, point: tuple[float, float], sizing, target_machine=None,
                  hours: int = 6, name: str | None = None,
                  tiles: str = "auto", source: str = "cyclone-setup.toml",
                  forcing_source: str = DEFAULT_SOURCE, member: str | None = None,
+                 start_hour: int = 0, nest_budget_gib: float | None = None,
                  cancelled=None) -> dict:
     from gpuwm import domain_wizard as dw
-    from gpuwm.companion_domains import VORTEX_PRESET, VORTEX_PRESET_SOURCE
+    from gpuwm.companion_domains import VORTEX_PRESET_SOURCE
     from gpuwm.configuration_recovery import MemoryAdmissionError
     from gpuwm.cyclone_sources import (moving_nest_note, selected_member,
                                        source_adapter)
@@ -599,9 +1129,20 @@ def plan_cyclone(*, cycle: str, point: tuple[float, float], sizing, target_machi
     # reason the point and the hours do: a probe that dropped them would
     # be pricing a different configuration from the one being proposed.
     intent = dict(cycle=cycle, point=point, hours=hours, name=name, tiles=tiles,
-                  source=source, forcing_source=forcing_source, member=member)
-    original_text, experiment = configuration_text(**intent)
-    text = original_text
+                  source=source, forcing_source=forcing_source, member=member,
+                  start_hour=start_hour)
+    if nest_budget_gib is not None and (
+            not isinstance(nest_budget_gib, (int, float))
+            or isinstance(nest_budget_gib, bool)
+            or not math.isfinite(float(nest_budget_gib))
+            or float(nest_budget_gib) <= 0):
+        raise ValueError(
+            "--nest-budget-gib is the memory the sized tree may occupy and "
+            "must be a finite positive size in GiB; omit it to size against "
+            "the card's own available memory")
+    # BEFORE anything is priced, because the budget is the allowance every
+    # later number is measured against -- including the tile planner's.
+    sizing, budget_bound = _budget_sizing(sizing, nest_budget_gib)
     # One hardware snapshot for the whole search. Never redetect/inflate VRAM
     # or force a different streaming mode to make a candidate appear to fit.
     if tiles != "off" and target_machine is None:
@@ -656,7 +1197,6 @@ def plan_cyclone(*, cycle: str, point: tuple[float, float], sizing, target_machi
     operands = dict(free_bytes=sizing.free_bytes, vram_gib=sizing.vram_gib,
                     profile=sizing.device_profile,
                     forcing_interval_seconds=interval_s)
-    budget = dw.sizing_budget_bytes(experiment, **operands)
 
     def price(exp):
         dw.check_fit_cancelled(cancelled)
@@ -664,6 +1204,60 @@ def plan_cyclone(*, cycle: str, point: tuple[float, float], sizing, target_machi
                                    machine=target_machine, **operands)
         dw.check_fit_cancelled(cancelled)
         return phases
+
+    if nest_budget_gib is not None:
+        # The nest is chosen FIRST and the chosen layout is then the
+        # requested one: everything downstream -- the admission, the
+        # reduction road, the probes, the document -- reads one layout out
+        # of the intent, so nothing here has a second idea of what was
+        # asked for.
+        try:
+            chosen = _size_nest_to_budget(
+                intent, sizing=sizing, target_machine=target_machine,
+                operands=operands, cancelled=cancelled)
+        except dw.DomainFitError as error:
+            if error.resource not in {"vram", "host", "memory"}:
+                raise
+            floor_dims = _nest_dimensions(PRESET_NEST_PARENT_CELLS)
+            _floor_text, floor_exp = configuration_text(
+                **{**intent, "dimensions": floor_dims})
+            floor_budget = dw.sizing_budget_bytes(floor_exp, **operands)
+            # WHOSE refusal this is, read off the answer _budget_sizing
+            # already gave rather than assumed.  A budget larger than the
+            # card never bound anything: naming it as the bound sends the
+            # reader to raise a flag that cannot move, and reports to a
+            # form reading `bound_by` that the caller's own number refused
+            # a run the hardware refused.
+            card_bound = budget_bound == "card"
+            alternative = (_unbudgeted_alternative(intent, sizing=sizing,
+                                                   operands=operands)
+                           if card_bound else None)
+            raise MemoryAdmissionError(
+                _nest_budget_floor_refusal(
+                    floor_dims, budget=floor_budget,
+                    cost=_floor_price(intent, price, floor_dims),
+                    budget_bound=budget_bound,
+                    requested_bytes=int(float(nest_budget_gib) * dw.GIB),
+                    alternative=alternative,
+                    fit_bound=_tile_road_bound(error)),
+                reason="nest-floor-card" if card_bound else "nest-budget-floor",
+                bound_by="card" if card_bound else "nest-budget",
+                resource=error.resource, budget_bytes=floor_budget,
+                keeps_coverage=None, resident_alternative=None,
+                resident_fixed_floor_bytes=None,
+                streaming_fixed_floor_bytes=None,
+                unbudgeted_alternative=alternative) from error
+        intent["dimensions"] = chosen
+    original_text, experiment = configuration_text(**intent)
+    text = original_text
+    requested_dims = _requested_dimensions(intent)
+
+    dims_of = _reduction_dimensions(requested_dims)
+
+    def scales_of(exp):
+        return _fit_scales(exp, requested_dims)
+
+    budget = dw.sizing_budget_bytes(experiment, **operands)
 
     # What stopped the SEARCH, carried out of the fitter rather than
     # re-derived from the emitted grid.  A cyclone fit is a POINT fit on
@@ -757,8 +1351,7 @@ def plan_cyclone(*, cycle: str, point: tuple[float, float], sizing, target_machi
             if not probed:
                 probed.append(
                     (False, None) if keeps_coverage or exhausted else
-                    _resident_alternative(intent, sizing,
-                                          _fit_dimensions, _fit_scales))
+                    _resident_alternative(intent, sizing, dims_of, scales_of))
             return probed[0]
 
         def _alternative(exhausted: bool):
@@ -791,7 +1384,7 @@ def plan_cyclone(*, cycle: str, point: tuple[float, float], sizing, target_machi
         candidates = {}
 
         def build(dims):
-            proposed_text, exp = configuration_text(**intent, dimensions=dims)
+            proposed_text, exp = configuration_text(**{**intent, "dimensions": dims})
             candidates[tuple(dims)] = proposed_text
             return exp
 
@@ -799,14 +1392,16 @@ def plan_cyclone(*, cycle: str, point: tuple[float, float], sizing, target_machi
             dims, experiment = dw.fit_ladder(
                 ratios=(RATIO,), free_bytes=sizing.free_bytes, vram_gib=sizing.vram_gib,
                 device_profile=sizing.device_profile, target_machine=target_machine,
-                hours=hours, start_time=_cycle(cycle, forcing_source=forcing_source),
+                hours=hours,
+                start_time=(_cycle(cycle, forcing_source=forcing_source)
+                            + timedelta(hours=start_hour)),
                 projection=tomllib.loads(original_text)["projection"],
                 source=forcing_source, name=_config_name(adapter, name),
                 root_dx_m=ROOT_DX_M,
                 profile=dw.resolved_physics_profile(forcing_source, None),
                 tiles=tiles, forcing_interval_seconds=interval_s,
-                candidate_builder=build, dimensions_builder=_fit_dimensions,
-                candidate_scales=_fit_scales(experiment),
+                candidate_builder=build, dimensions_builder=dims_of,
+                candidate_scales=scales_of(experiment),
                 layout_label="cyclone 12/3 km", cancelled=cancelled,
                 stop_out=fit_stop)
             text = candidates[tuple(dims)]
@@ -899,12 +1494,47 @@ def plan_cyclone(*, cycle: str, point: tuple[float, float], sizing, target_machi
         "cycle": _cycle(cycle, forcing_source=forcing_source).strftime("%Y%m%d%H"),
         "source": forcing_source, "member": selected_member(forcing_source, member),
         "forcing_interval_seconds": interval_s,
+        # WHEN THE RUN BEGINS, in the two forms a reader needs: the lead
+        # within the named cycle, and the wall-clock moment that lead is
+        # valid at.  `cycle` alone stopped being the start time the moment
+        # a run could begin at a lead, and a document that carried only
+        # the cycle would have every downstream consumer re-deriving the
+        # start from a flag it never saw.
+        "forecast_start_hour": start_hour,
+        "start_time": (_cycle(cycle, forcing_source=forcing_source)
+                       + timedelta(hours=start_hour)).isoformat(sep=" "),
         "hours": hours, "point": list(point), "tiles": tiles,
         "domains": [{"grid_id": d.grid_id, "parent_id": d.parent_id,
                      "nx": d.run.nx, "ny": d.run.ny, "nz": d.run.nz,
                      "dx_m": d.run.dx, "dy_m": d.run.dy,
                      "following": d.grid_id == 2} for d in experiment.domains],
-        "follow": dict(VORTEX_PRESET), "follow_preset_source": VORTEX_PRESET_SOURCE,
+        # The table the emitted configuration carries, read off the
+        # dimensions this proposal settled on, so the desktop reads the
+        # numbers the toml beside it holds rather than the preset's
+        # unfitted ones.
+        "follow": follow_table_for_nest(*_following_nest_dims(experiment)),
+        "follow_preset_source": VORTEX_PRESET_SOURCE,
+        # THE NEST AS A DECISION, not just as two numbers in `domains`.
+        # A reader sizing a card asks three questions of a following nest
+        # -- how big it ended up, what that costs, and what stopped it
+        # growing -- and all three are answers this door already computed.
+        # Additive: every existing key means exactly what it meant, which
+        # is why the schema version does not move for it.
+        "nest": {
+            "dimensions": [experiment.domains[1].run.nx,
+                           experiment.domains[1].run.ny],
+            "parent_cells": _nest_parent_cells(
+                (experiment.domains[1].run.nx, experiment.domains[1].run.ny)),
+            "floor_dimensions": list(CHILD_DIMS),
+            "floor_parent_cells": PRESET_NEST_PARENT_CELLS,
+            "ratio": RATIO,
+            "budget_gib": nest_budget_gib,
+            "budget_bytes": budget if nest_budget_gib is not None else None,
+            "budget_bound_by": budget_bound,
+            "headroom_bytes": dw.fit_headroom_bytes(budget),
+            "peak_envelope_bytes": phases.peak_envelope_bytes,
+            "sized_to_budget": nest_budget_gib is not None,
+        },
         # Asked of the same table the run door resolves against, so this
         # document and the launch cannot disagree about whether the nest
         # this setup authors can be integrated on the selected chain.
@@ -917,7 +1547,7 @@ def plan_cyclone(*, cycle: str, point: tuple[float, float], sizing, target_machi
                    "sizing_basis": "measured-available" if sizing.measured else "declared-capacity"},
         "fitting": {"changed": reduced, "review_required": reduced,
                     "fit_id": hashlib.sha256(text.encode()).hexdigest(),
-                    "original_dimensions": [list(ROOT_DIMS), list(CHILD_DIMS)],
+                    "original_dimensions": requested_dims,
                     "proposed_dimensions": [[d.run.nx, d.run.ny] for d in experiment.domains],
                     "changes": changed_fields,
                     "reason": str(refusal) if reduced else None,
@@ -953,6 +1583,7 @@ def main(args) -> int:
         with contextlib.redirect_stdout(sys.stderr):
             forcing_source = getattr(args, "source", None) or DEFAULT_SOURCE
             member = getattr(args, "member", None)
+            start_hour = int(getattr(args, "start_hour", 0) or 0)
             if getattr(args, "list_sources", False):
                 # A THIRD KIND, not a third schema.  `kind` already tells a
                 # reader which document this is; a menu is one more value of
@@ -962,9 +1593,21 @@ def main(args) -> int:
                 from gpuwm.cyclone_sources import source_options
                 result = {"schema": SCHEMA, "kind": "sources",
                           "sources": source_options(),
+                          # The sizing floor belongs on the menu because the
+                          # menu is what a picker builds its form from: the
+                          # nest a budget grows UP from, in both units, so a
+                          # --nest-budget-gib field can be bounded before
+                          # anything is priced.  The per-source lead ceiling
+                          # rides on each row for the same reason.
+                          "nest_floor": {
+                              "dimensions": list(CHILD_DIMS),
+                              "parent_cells": PRESET_NEST_PARENT_CELLS,
+                              "parent_dimensions": list(ROOT_DIMS),
+                              "ratio": RATIO},
                           "created": False, "forecast_started": False}
             elif args.latest_map:
-                result = latest_map(args.cycle, source=forcing_source, member=member)
+                result = latest_map(args.cycle, source=forcing_source, member=member,
+                                    start_hour=start_hour)
             else:
                 from gpuwm import domain_wizard as dw
                 from gpuwm.companion_query import inspect_configuration
@@ -996,8 +1639,23 @@ def main(args) -> int:
                 result = plan_cyclone(cycle=args.cycle, point=seed.point,
                     hours=args.hours, name=args.name, tiles=args.tiles, sizing=sizing,
                     target_machine=machine, source=str(out or "cyclone-setup.toml"),
-                    forcing_source=forcing_source, member=member)
+                    forcing_source=forcing_source, member=member,
+                    start_hour=start_hour,
+                    nest_budget_gib=getattr(args, "nest_budget_gib", None))
                 result["seed"] = seed.to_dict()
+                # THE PLAN, on the human channel, in one line: where the run
+                # begins, how big the following nest ended up and what the
+                # priced tree costs against the budget that admitted it.
+                # The document carries the same numbers for a machine; this
+                # is the reader who is about to decide whether to save it.
+                nest = result["nest"]
+                print(f"plan: start f{result['forecast_start_hour']:03d} "
+                      f"({result['start_time']} UTC), "
+                      f"following nest {nest['dimensions'][0]}x"
+                      f"{nest['dimensions'][1]} "
+                      f"({nest['parent_cells']} parent cells), priced "
+                      f"{nest['peak_envelope_bytes']} bytes against a "
+                      f"{result['memory']['budget_bytes']} byte budget")
                 # ONCE, on the human channel, where the reader who chose
                 # the source can still change it.  The document carries
                 # the same sentence for a machine, and the run door
@@ -1066,7 +1724,7 @@ def main(args) -> int:
 
 def register_cli(subparsers):
     from gpuwm.domain_wizard import CARD_VRAM_GIB
-    parser = subparsers.add_parser("cyclone-setup", help="select a cyclone on any planable source's f000 analysis and author a 12/3 km following nest")
+    parser = subparsers.add_parser("cyclone-setup", help="select a cyclone on any planable source's chosen cycle and lead and author a 12/3 km following nest")
     # NO `choices=`, deliberately, and for the same reason the domain
     # wizard's --source carries none: the admissible set is the registry
     # intersected with the fetch routes, it grows by a table row, and an
@@ -1091,12 +1749,22 @@ def register_cli(subparsers):
                         help="advisory center; bounds the field search and is the last fallback")
     parser.add_argument("--seed-radius-km", type=float, default=500.,
                         help="how far from the advisory position the field search may look")
+    parser.add_argument("--start-hour", type=int, default=0, metavar="N",
+                        help="forecast lead of the selected cycle to begin at "
+                             "(default 0, the analysis); the run initialises "
+                             "from fN and is forced from fN onward at the "
+                             "source's own cadence")
     parser.add_argument("--hours", type=int, default=6)
     parser.add_argument("--name", help="configuration name (default: the selected source's own title)")
     parser.add_argument("--tiles", choices=("off", "auto", "on"), default="auto")
     parser.add_argument("--hardware-json", type=Path)
     parser.add_argument("--target-host-memory-json", type=Path)
     parser.add_argument("--vram-gib", type=float)
+    parser.add_argument("--nest-budget-gib", type=float, metavar="GIB",
+                        help="grow the following nest, square and in whole "
+                             "parent cells, to the largest the priced tree "
+                             "holds inside this much memory; the parent is "
+                             "unchanged and the preset nest is the floor")
     parser.add_argument("--card", help="a tier (12gb/16gb/24gb/32gb), a size "
                         "('10gb') or a model with a recorded size ('RTX 3080')")
     parser.add_argument("--out", type=Path)

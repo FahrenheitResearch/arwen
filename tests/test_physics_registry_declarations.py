@@ -1,4 +1,4 @@
-"""The registry declares every knob GPUWM implements, and only honest ones.
+"""The registry declares every knob GPUWM implements, and only accurate ones.
 
 These pins guard the declaration contract itself rather than plan resolution
 (``tests/test_physics_registry.py`` owns that):

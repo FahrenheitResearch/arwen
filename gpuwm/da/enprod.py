@@ -56,12 +56,17 @@ a deterministic ``gpuwm render --engine rust`` panel comes off.
 
 The matplotlib suite below (:func:`run_suite` and everything it calls) is
 therefore the render law's DEPRECATED FALLBACK: reachable, documented,
-reported by name whenever ``auto`` degrades to it, and NOT the product
-tier.  Two things still bring a caller here on purpose and are not a
-silent second tier -- ``--domain`` (the Rust engine takes one wrfout per
-member and refuses a member directory holding several nests) and
-``--dpi`` (the Rust engine sizes panels in pixels) -- and both are
-refused or warned about by name on the Rust route rather than ignored.
+and NOT the product tier.  ``auto`` does not arrive here at all: it
+answers rust or a refusal naming the engine, the build line and the
+workaround (:func:`gpuwm.rustwx_lanes.resolve_lane_engine`).  The one
+way in is ``--engine matplotlib``, by name, and taking it prints
+:func:`gpuwm.rustwx_lanes.ensemble_workaround_notice` on stderr every
+run, because an opt-in route is a workaround and says so.  Nothing is
+kept here that the Rust route cannot do: ``--domain dNN`` is passed to
+the engine as the nest choice and a member directory holding several
+nests is refused once, in the same sentence whichever engine was asked
+for, and ``--dpi`` is the same picture on both routes, scaled from the
+engine's 1200x900 at the default ``--dpi 150`` (:func:`panel_pixels`).
 MEASURED 2026-08-17: five real tile-streamed members, all five products
 through the real executable at the default engine.
 """
@@ -150,7 +155,7 @@ def experimental_stamp() -> str:
     the release the suite was written for and stamped onto every panel
     every release since -- so a 1.8.7 plot claimed to come from a 1.2
     ensemble.  A version on a product is a provenance claim; the only
-    honest source for it is the engine that produced the product, which
+    accurate source for it is the engine that produced the product, which
     is :data:`gpuwm.__version__` (read from the installed
     distribution's metadata, so an editable checkout and a wheel both
     answer for themselves).  Read at CALL time rather than at import
@@ -417,7 +422,7 @@ def missingness_report(stack, *, member_numbers=None,
     Computed once per field per valid time and carried into the caption
     and the provenance.  A masked reduction that does not publish its
     denominator is exactly the thing the original propagate-NaN policy
-    was right to refuse; publishing it is what makes masking honest.
+    was right to refuse; publishing it is what makes masking accurate.
     """
 
     array = _as_stack(stack, nan_policy=nan_policy,
@@ -864,6 +869,75 @@ def ensemble_token(product: str, *, threshold: float | None = None,
     if product == "paintball":
         return f"ens-paintball{marker}"
     raise ValueError(f"unknown ensemble product {product!r}")
+
+
+#: The pixel size the rust ensemble engine draws at by default, and the
+#: ``--dpi`` that is the same picture on the matplotlib route.  The pair
+#: is the anchor :func:`panel_pixels` scales from, so at the default the
+#: two routes agree byte for byte with every earlier release.
+_ENGINE_PANEL_PIXELS = (1200, 900)
+_REFERENCE_DPI = 150.0
+
+#: The smallest panel worth drawing, the same floor
+#: ``gpuwm.render.parse_size`` applies to a pixel request.
+_MIN_PANEL_PIXELS = (320, 240)
+
+
+def panel_pixels(dpi: float) -> tuple[int, int]:
+    """``--dpi`` as the pixel size both engines draw, one meaning.
+
+    ``--dpi`` used to mean a figure resolution on one route and nothing
+    at all on the other, where it was accepted and dropped with a
+    warning.  A user's request had an implementation and no door.
+
+    The mapping is anchored on the pair the two defaults already assert
+    are the same picture: ``--dpi 150`` and the engine's 1200x900.  At
+    that dpi the output is byte-identical to every earlier release;
+    above and below it scales linearly, and the floor is named when it
+    bites rather than silently applied.
+    """
+
+    scale = float(dpi) / _REFERENCE_DPI
+    width = max(_MIN_PANEL_PIXELS[0], round(_ENGINE_PANEL_PIXELS[0] * scale))
+    height = max(_MIN_PANEL_PIXELS[1], round(_ENGINE_PANEL_PIXELS[1] * scale))
+    if (width, height) == _MIN_PANEL_PIXELS and scale * _ENGINE_PANEL_PIXELS[0] < _MIN_PANEL_PIXELS[0]:
+        warn(f"--dpi {float(dpi):g} asks for a panel smaller than "
+             f"{_MIN_PANEL_PIXELS[0]}x{_MIN_PANEL_PIXELS[1]} px, which is "
+             "the floor this tree draws at; the panels are that size.")
+    return width, height
+
+
+def delivered_segments(field_name: str, token: str, domain: str,
+                       stamp: str) -> tuple[str, str, str]:
+    """``(domain, product, valid day)`` for one ensemble panel.
+
+    The 2026-08-06 folder ruling's three segments, spelled once for both
+    ensemble engines.  The product segment is the same
+    ``<field>-<ensemble token>`` the filename carries, so a reader sees
+    one name in the folder and in the file rather than two spellings of
+    one product.
+
+    An unreadable stamp files under :data:`gpuwm.render_layout.UNDATED`
+    rather than under a guess, exactly as the deterministic route does.
+    """
+
+    from gpuwm import render_layout
+
+    return (domain or render_layout.NATIVE_GRID, f"{field_name}-{token}",
+            render_layout.valid_day(stamp) or render_layout.UNDATED)
+
+
+def delivered_path(outdir, field_name: str, token: str, domain: str,
+                   stamp: str):
+    """Where one ensemble panel belongs under ``outdir``."""
+
+    from gpuwm import render_layout
+
+    domain_segment, product, day = delivered_segments(
+        field_name, token, domain, stamp)
+    return render_layout.place(
+        outdir, domain=domain_segment, product=product, day=day,
+        filename=product_filename(field_name, token, domain, stamp))
 
 
 def product_filename(field_name: str, token: str, domain: str,
@@ -1351,7 +1425,7 @@ def verify_override_inventory(manifest: EnsembleManifest,
     A missing inventory used to be reported as "unverifiable" and rendered
     anyway; an explicitly empty inventory later passed vacuously because
     every binding loop had zero iterations.  Both put bytes with no checked
-    identity behind a verification-shaped decision.  There is no honest
+    identity behind a verification-shaped decision.  There is no accurate
     reading of "the roster was widened to include a member whose files
     nothing can identify"; if that member is wanted, the operator can say
     so by producing an inventory that binds at least one indexed frame.
@@ -1889,8 +1963,8 @@ def run_suite(root, *, fields, products, thresholds, radii, domain,
             except ValueError as exc:
                 failures.append(f"{stamp} {request.field}: {exc}")
                 continue
-            out_png = outdir / product_filename(
-                request.field, ensemble_key, token, stamp)
+            out_png = delivered_path(
+                outdir, request.field, ensemble_key, token, stamp)
             # v1.0.1's claims map: two requests that resolve to one
             # filename are two forecasts and one file, and the second
             # write would report success while destroying the first.
@@ -2112,19 +2186,74 @@ def write_synthetic_ensemble(root, *, n_members: int = 5, nx: int = 24,
 # ---------------------------------------------------------------------------
 
 
-def parse_fields(spec: str) -> tuple[str, ...]:
+def engine_field_specs(engine_path) -> dict:
+    """The field registry the rust route draws with: the ENGINE's values.
+
+    Title, units, default threshold and unit slug come off
+    ``--list-fields``; everything the engine cannot supply (the
+    extractor the matplotlib fallback needs, the colour ladder) stays
+    local.  A field the engine knows and this module does not gets a row
+    with no extractor, which is exactly what the rust route needs and
+    exactly what the fallback must refuse by name.
+
+    Empty when the engine cannot be asked; the caller then keeps the
+    local registry and says which one it used.
+    """
+
+    from dataclasses import replace
+
+    from gpuwm import rustwx_lanes
+
+    rows = rustwx_lanes.list_ensemble_fields(engine_path)
+    if not rows:
+        return {}
+    resolved: dict = {}
+    for name, row in rows.items():
+        local = FIELDS.get(name)
+        if local is not None:
+            resolved[name] = replace(
+                local, title=row.get("title", local.title),
+                units=row.get("units", local.units),
+                unit_slug=row.get("unit_slug", local.unit_slug),
+                default_threshold=float(row.get("default_threshold",
+                                                local.default_threshold)))
+            continue
+        resolved[name] = FieldSpec(
+            name=name, title=row.get("title", name),
+            units=row.get("units", ""),
+            unit_slug=row.get("unit_slug", ""),
+            default_threshold=float(row.get("default_threshold", 0.0)),
+            # No local drawing code: the engine draws this one, and the
+            # matplotlib fallback refuses it by name rather than
+            # pretending it can.
+            extract=None)
+    return resolved
+
+
+def parse_fields(spec: str, vocabulary=None) -> tuple[str, ...]:
+    """The requested fields, checked against the vocabulary that will draw.
+
+    ``vocabulary`` is the ENGINE's own field list when the rust route is
+    resolved, and the local registry otherwise.  A field the engine
+    carries and this module has no drawing code for used to be refused
+    at argument check with a list of five names, even though the engine
+    it was about to be handed to knew it perfectly well.
+    """
+
+    vocabulary = FIELDS if vocabulary is None else vocabulary
     names: list[str] = []
     for token in spec.split(","):
         token = token.strip()
         if not token:
             continue
         if token == "all":
-            names.extend(name for name in FIELDS if name not in names)
+            names.extend(name for name in vocabulary if name not in names)
             continue
-        if token not in FIELDS:
+        if token not in vocabulary:
             raise ValueError(
                 f"unknown field {token!r}; choose from "
-                f"{', '.join(FIELDS)} or 'all'")
+                f"{', '.join(vocabulary)} or 'all'; rw_ensbatch "
+                f"--list-fields prints the engine's own vocabulary")
         if token not in names:
             names.append(token)
     if not names:
@@ -2224,8 +2353,25 @@ def enprod_main(args: argparse.Namespace) -> int:
               "--make-fixture DIR to write a synthetic one)",
               file=sys.stderr)
         return 2
+    # The ENGINE is resolved before the field is checked, because the
+    # engine owns the vocabulary the field is checked against.  Both
+    # refusals still fire here, at argument check, before a member is
+    # read.
+    print(f"enprod: {experimental_stamp()}")
     try:
-        fields = parse_fields(args.field)
+        engine, why = resolve_enprod_engine(args.engine)
+    except RuntimeError as refusal:
+        print(f"enprod: refused: {str(refusal).split('[[explain]]')[0].strip()}",
+              file=sys.stderr)
+        return 2
+    print(f"enprod: engine {engine} ({why})")
+    vocabulary = None
+    if engine == "rust":
+        from gpuwm import rustwx_lanes
+
+        vocabulary = engine_field_specs(rustwx_lanes.find_ensemble_bin()) or None
+    try:
+        fields = parse_fields(args.field, vocabulary)
         products, pmm_explicit = parse_products(args.products)
         thresholds = (parse_floats(args.threshold, what="--threshold")
                       if args.threshold else ())
@@ -2241,9 +2387,22 @@ def enprod_main(args: argparse.Namespace) -> int:
         warn("--accept-status resolved to nothing; using the default "
              f"({','.join(DEFAULT_ACCEPT_STATUS)})")
         accept_status = tuple(DEFAULT_ACCEPT_STATUS)
+    specs = FIELDS if vocabulary is None else vocabulary
+    if engine == "matplotlib":
+        # The fallback draws with local code, so a field the engine
+        # knows and this module cannot draw is refused BY NAME with the
+        # route that can draw it.
+        undrawable = [name for name in fields
+                      if getattr(specs.get(name), "extract", None) is None]
+        if undrawable:
+            print(f"enprod: --engine matplotlib cannot draw "
+                  f"{', '.join(undrawable)}: the fallback has no extractor "
+                  f"for those fields and only the rust engine does.  Draw "
+                  f"them with --engine rust.", file=sys.stderr)
+            return 2
     if "pmm" in products and pmm_explicit:
         for name in fields:
-            if not FIELDS[name].pmm_in_all:
+            if not getattr(specs.get(name), "pmm_in_all", False):
                 print(f"enprod: note: pmm on {name} is computable but not "
                       f"meaningful; the probability-matched mean assumes a "
                       f"reflectivity-like intensity distribution",
@@ -2254,33 +2413,41 @@ def enprod_main(args: argparse.Namespace) -> int:
              why="Every admitted member's frame inventory is checked "
                  "against the manifest before anything renders, and "
                  "the override is stamped on every panel.")
-    print(f"enprod: {experimental_stamp()}")
-    engine, why = resolve_enprod_engine(args.engine)
-    print(f"enprod: engine {engine} ({why})")
+    if engine == "matplotlib":
+        # An opt-in route is a workaround and says so every run, not
+        # once in a manual page.
+        from gpuwm import rustwx_lanes
+
+        print(f"enprod: {rustwx_lanes.ensemble_workaround_notice()}",
+              file=sys.stderr)
+    # The nest choice is about the REQUEST, so it is answered once for
+    # both engines and before either opens anything.  A manifest this
+    # cannot read is not refused here: the route that reads it properly
+    # refuses it with its own sentence a moment later.
+    if args.ens_root is not None:
+        try:
+            roster = load_manifest(args.ens_root, accept_status=accept_status)
+        except EnsembleRefusal:
+            roster = None
+        if roster is not None:
+            problem = domain_choice_problem(roster, args.domain)
+            if problem is not None:
+                print(f"enprod: {problem}", file=sys.stderr)
+                return 2
     if engine == "rust":
-        # Two flags the rust route does not implement, refused by name
-        # rather than accepted and ignored.  A silently dropped --domain
-        # would average whichever nest each member's directory listing
-        # happened to put last, which is the kind of wrong answer that
-        # looks right.
-        if args.domain:
-            print(f"enprod: --domain {args.domain} is not implemented on "
-                  "--engine rust; the engine takes ONE wrfout per member "
-                  "and refuses a member directory holding more than one "
-                  "domain.  Use --engine matplotlib, or point the "
-                  "manifest's member_dir at the domain you mean",
-                  file=sys.stderr)
-            return 2
-        if args.dpi != 150:
-            warn(f"--dpi {args.dpi} has no effect on --engine rust; the "
-                 "rust engine sizes panels in pixels, not dots per inch "
-                 "(1200x900 here)")
+        width, height = panel_pixels(args.dpi)
+        if (width, height) != _ENGINE_PANEL_PIXELS:
+            print(f"enprod: --dpi {args.dpi:g} renders {width}x{height} px, "
+                  f"scaled from the engine's "
+                  f"{_ENGINE_PANEL_PIXELS[0]}x{_ENGINE_PANEL_PIXELS[1]} at "
+                  f"the default --dpi {_REFERENCE_DPI:g}")
         return run_suite_rust(
             args.ens_root, fields=fields, products=products,
             thresholds=thresholds, radii=radii, timeidx=timeidx,
             outdir=args.out, source_label=args.source_label,
             accept_status=accept_status, nan_policy=args.nan_policy,
-            tie_rule=args.pmm_tie_rule)
+            tie_rule=args.pmm_tie_rule, domain=args.domain,
+            width=width, height=height, specs=specs)
     provenance: dict = {}
     try:
         written, failures = run_suite(
@@ -2298,6 +2465,10 @@ def enprod_main(args: argparse.Namespace) -> int:
         return 2
     for failure in failures:
         print(f"enprod FAIL: {failure}", file=sys.stderr)
+    _publish_receipt(args.out, engine="matplotlib",
+                     requested_spec=_requested_spec(fields, products),
+                     written=written, failures=failures, skipped=(),
+                     families=None)
     print(f"enprod: {len(written)} file(s) -> {args.out}")
     return 0 if written and not failures else 1
 
@@ -2317,43 +2488,107 @@ def enprod_main(args: argparse.Namespace) -> int:
 
 
 def resolve_enprod_engine(request: str) -> tuple[str, str]:
-    """``(engine, why)`` for ``--engine`` -- the same three-way contract
-    ``gpuwm render`` applies.
+    """``(engine, why)`` for ``--engine``, through the shared contract.
 
-    An EXPLICIT ``rust`` that cannot be honoured raises rather than
-    silently drawing with the other engine: a caller who names an engine
-    is making a statement about which one must draw.  ``auto`` degrades
-    and names the reason.  ``matplotlib`` is the documented fallback and
-    is never probed.
+    The contract itself lives in
+    :func:`gpuwm.rustwx_lanes.resolve_lane_engine`, because the
+    observation-grid lane asks the identical question and two lanes
+    answering one question differently is the drift this delegation
+    ends.  ``matplotlib`` by name only, ``rust`` raises, and ``auto`` is
+    rust or a named refusal -- it does NOT degrade, which is what
+    ``gpuwm render``'s own door was changed to when the render law's
+    one-fallback clause was enforced.
     """
 
-    if request == "matplotlib":
-        return "matplotlib", "requested"
     from gpuwm import rustwx_lanes
 
-    try:
-        engine_path = rustwx_lanes.find_ensemble_bin()
-    except FileNotFoundError as error:
-        if request == "rust":
-            raise RuntimeError(str(error)) from error
-        return "matplotlib", str(error)
-    if engine_path is None:
-        reason = (f"{rustwx_lanes.ENSEMBLE_NAME} is not built "
-                  f"({rustwx_lanes.CARGO_BUILD_HINT})")
-        if request == "rust":
-            raise RuntimeError(reason)
-        return "matplotlib", reason
-    usable, evidence = rustwx_lanes.probe_ensemble_bin(engine_path)
-    if not usable:
-        if request == "rust":
-            raise RuntimeError(f"{engine_path}: {evidence}")
-        return "matplotlib", f"{engine_path}: {evidence}"
-    return "rust", str(engine_path)
+    return rustwx_lanes.resolve_ensemble_engine(request)
+
+
+def domain_choice_problem(manifest, domain: str | None = None) -> str | None:
+    """One refusal for an ensemble whose members hold more than one nest.
+
+    ONE function, both engines, asked at the front door before anything
+    is opened.  An ensemble product of mixed nests is not an ensemble
+    product -- averaging one member's d01 against another's d02 is a
+    picture of nothing -- so this is a refusal about the REQUEST, not
+    about either engine, and it names the way out.
+
+    It fired in two places with two different sentences before: the
+    matplotlib route refused per member deep inside frame indexing, and
+    the rust route refused the ``--domain`` flag itself as unimplemented.
+    """
+
+    from gpuwm.ensemble import wrfout_inventory
+
+    by_member: dict[int, list[str]] = {}
+    for member in manifest.members:
+        found = sorted({
+            token for token in (
+                wrfout_inventory.domain_token(path)
+                for path in _wrfout_candidates(Path(member.directory)))
+            if token})
+        by_member[member.number] = found
+    present = sorted({token for found in by_member.values() for token in found})
+    if domain is not None:
+        without = sorted(number for number, found in by_member.items()
+                         if found and domain not in found)
+        if without:
+            return (f"--domain {domain} names a nest member(s) "
+                    f"{', '.join(str(number) for number in without)} do not "
+                    f"carry (these members hold "
+                    f"{', '.join(present) or 'no wrfout_dNN file'}).  Every "
+                    f"member of an ensemble must contribute the same nest; "
+                    f"name one they all hold, or fix the member roster.")
+        return None
+    if len(present) <= 1:
+        return None
+    return (f"the members hold more than one domain "
+            f"({', '.join(present)}); an ensemble product of mixed nests "
+            f"is not an ensemble product.  Name the one to plot with "
+            f"--domain dNN.")
+
+
+def _rust_delivery_facts(manifest, *, domain: str | None,
+                         frames: int | None) -> tuple[str, str]:
+    """``(domain token, valid day)`` for the rust route's delivered tree.
+
+    Read in PYTHON, from the member wrfout, with netCDF4 only: this
+    route exists so ensemble panels can be drawn without the wrf
+    package, and reading the facts through it would give that back.
+
+    Neither fact is worth failing over.  An unreadable member files
+    under the same two degradations the deterministic route uses --
+    ``native_grid`` and ``undated`` -- because a picture filed under a
+    stated unknown is findable and a picture refused is not.
+    """
+
+    from gpuwm import render, render_layout
+    from gpuwm.ensemble import wrfout_inventory
+
+    token = render_layout.NATIVE_GRID
+    day = render_layout.UNDATED
+    for member in manifest.members:
+        for path in _wrfout_candidates(Path(member.directory)):
+            found = wrfout_inventory.domain_token(path)
+            if domain is not None and found != domain:
+                continue
+            token = render.domain_token(found, _grid_spacing_m(path))
+            try:
+                stamps = wrfout_inventory.wrfout_valid_times(path)
+            except Exception:
+                stamps = ()
+            if stamps:
+                index = 0 if frames is None else min(int(frames), len(stamps) - 1)
+                day = render_layout.valid_day(stamps[index]) or render_layout.UNDATED
+            return token, day
+    return token, day
 
 
 def run_suite_rust(ens_root, *, fields, products, thresholds, radii,
                    timeidx, outdir, source_label, accept_status,
-                   nan_policy, tie_rule) -> int:
+                   nan_policy, tie_rule, domain: str | None = None,
+                   width: int = 1200, height: int = 900, specs=None) -> int:
     """Drive ``rw_ensbatch`` once per (field, threshold, radius).
 
     The roster gate stays in the engine, which reads the same manifest
@@ -2362,7 +2597,7 @@ def run_suite_rust(ens_root, *, fields, products, thresholds, radii,
     thresholds and radii and one engine invocation renders one of each.
     """
 
-    from gpuwm import render, rustwx_lanes
+    from gpuwm import render, render_layout, rustwx_lanes
 
     engine_path = rustwx_lanes.find_ensemble_bin()
     manifest = Path(ens_root) / MANIFEST_FILENAME
@@ -2372,30 +2607,84 @@ def run_suite_rust(ens_root, *, fields, products, thresholds, radii,
     outdir = Path(outdir)
     written: list[Path] = []
     failures: list[str] = []
+    skipped_rows: list[tuple[str, str]] = []
+    families: dict[str, str] = {}
     frames = None if timeidx is None else int(timeidx)
+    try:
+        roster = load_manifest(ens_root, accept_status=accept_status)
+        domain_token_value, valid_day = _rust_delivery_facts(
+            roster, domain=domain, frames=frames)
+    except EnsembleRefusal:
+        # The engine reads the same manifest and refuses the same roster
+        # with its own sentence; this read is only for the delivered
+        # path, so it must not become a second refusal.
+        domain_token_value, valid_day = (render_layout.NATIVE_GRID,
+                                         render_layout.UNDATED)
     # The engine's member store is WORKING SCRATCH, so it lives beside
     # the delivered panels, not in them: a delivered product tree holds
     # products only (gpuwm.render.scratch_store names the breakage).
     # It used to be `outdir / "_ens_store"`, which was never removed at
     # all.
     with render.scratch_store(outdir, prefix="ensstore-") as store_root:
+        # The engine draws into the SCRATCH store and Python files the
+        # results, exactly as `gpuwm render` does: the engine's own
+        # segments are a member count and the literal word "ensemble",
+        # so two nests of one ensemble under one --out shared a folder,
+        # and the vendored crate stays byte-identical either way.
+        engine_out = store_root / "png"
+        engine_out.mkdir(parents=True, exist_ok=True)
         for name in fields:
-            spec = FIELDS[name]
+            # The ENGINE's own row when it could be asked: a threshold
+            # and a unit slug kept in two places meant one panel's
+            # threshold read 30 degrees Celsius here and 303 kelvin
+            # there.
+            spec = (specs or FIELDS)[name]
             field_thresholds = thresholds or (spec.default_threshold,)
             for threshold in field_thresholds:
                 for radius_km in (radii or (0.0,)):
                     paths, problems, skipped, report = (
                         rustwx_lanes.run_ensemble_renderer(
                             engine_path, manifest, store_root=store_root,
-                            out_dir=outdir, field=name,
+                            out_dir=engine_out, field=name,
                             products=",".join(products),
                             threshold=threshold,
                             neighborhood_km=radius_km, frames=frames,
                             nan_policy=nan_policy, pmm_tie_rule=tie_rule,
                             accept_status=",".join(accept_status),
-                            source_label=source_label))
-                    written.extend(paths)
+                            source_label=source_label, domain=domain,
+                            width=width, height=height))
+                    for product, path in _rendered_pairs(report, paths):
+                        try:
+                            ensemble_key = ensemble_token(
+                                product, threshold=threshold,
+                                unit_slug=spec.unit_slug, radius_km=radius_km)
+                        except ValueError:
+                            ensemble_key = f"ens-{product}"
+                        filename = product_filename(
+                            name, ensemble_key, domain_token_value, valid_day)
+                        target = render_layout.place(
+                            outdir, domain=domain_token_value,
+                            product=f"{name}-{ensemble_key}", day=valid_day,
+                            filename=filename)
+                        if target.exists():
+                            # Two panels resolving to one delivered name
+                            # would be two forecasts and one file, and
+                            # the second write would report success while
+                            # destroying the first.  The engine's own
+                            # name is what tells them apart, so it stays.
+                            filename = f"{target.stem}_{Path(path).stem}.png"
+                        delivered, note = render_layout.deliver(
+                            outdir, path,
+                            domain=domain_token_value,
+                            product=f"{name}-{ensemble_key}",
+                            day=valid_day, filename=filename)
+                        if note:
+                            print(f"enprod: {note}", file=sys.stderr)
+                        families[str(Path(delivered).resolve())] = \
+                            f"{name}-{ensemble_key}"
+                        written.append(delivered)
                     failures.extend(problems)
+                    skipped_rows.extend(skipped)
                     for slug, reason in skipped:
                         print(f"enprod: skipped {slug}: {reason}")
                     for key in ("members", "coverage", "pmm_ties",
@@ -2404,6 +2693,10 @@ def run_suite_rust(ens_root, *, fields, products, thresholds, radii,
                             print(f"enprod: {key} {report[key]}")
     for path in written:
         print(f"enprod: {path}")
+    _publish_receipt(outdir, engine="rust",
+                     requested_spec=_requested_spec(fields, products),
+                     written=written, failures=failures,
+                     skipped=skipped_rows, families=families)
     if failures:
         for failure in failures:
             print(f"enprod: {failure}", file=sys.stderr)
@@ -2413,6 +2706,52 @@ def run_suite_rust(ens_root, *, fields, products, thresholds, radii,
         return 1
     print(f"enprod: {len(written)} panel(s) -> {outdir}")
     return 0
+
+
+def _rendered_pairs(report: dict, paths) -> list[tuple[str, object]]:
+    """``(product, path)`` for each RENDERED event, in engine order."""
+
+    rows = report.get("rendered") or []
+    if len(rows) == len(paths):
+        return list(rows)
+    # A build that answered no product names: the paths are still
+    # delivered, under the product the engine's own folder spells.
+    return [(Path(path).parent.parent.name or "product", path)
+            for path in paths]
+
+
+def _requested_spec(fields, products) -> str:
+    """The request, spelled for the receipt."""
+
+    return ",".join(f"{field}:{product}"
+                    for field in fields for product in products)
+
+
+def _publish_receipt(outdir, *, engine, requested_spec, written, failures,
+                     skipped, families) -> None:
+    """Record this delivery the way every other render delivery is.
+
+    A render receipt is a property of a DELIVERY, not of one door: the
+    desktop and remote surfaces read ``render-summary.json`` and saw
+    nothing at all for an ensemble suite, on either engine, with the
+    absence itself unannounced.  It is a record, so a failure to write
+    one is reported and never turned into a failed render.
+    """
+
+    from gpuwm import render_layout, render_receipts
+
+    if not written:
+        return
+    try:
+        render_receipts.deliver(
+            root=Path(outdir), engine=engine, requested_spec=requested_spec,
+            written=[Path(path) for path in written],
+            failures=[str(reason) for reason in failures],
+            skipped=[(str(slug), str(reason)) for slug, reason in skipped],
+            layout=render_layout.NESTED, families=families)
+    except Exception as error:
+        print(f"enprod: warning: no render receipt was published ({error})",
+              file=sys.stderr)
 
 def register_cli(subparsers) -> None:
     parser = subparsers.add_parser(

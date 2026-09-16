@@ -209,7 +209,7 @@ def test_pin_takes_a_vendored_artifact_on_its_contract_marker(tmp_path):
     The vendored payload here carries the marker and no
     GPUWM_BRIDGE_SOURCE_REV at all.  If the cut ever started demanding a
     stamp from it, every release would fail on the one artifact that
-    cannot honestly carry one -- its source is upstream's, frozen at a
+    cannot accurately carry one -- its source is upstream's, frozen at a
     recorded commit, and stamping it would mean editing a tree whose
     whole claim is that it is unmodified.
     """
@@ -309,6 +309,12 @@ _STAMP_SOURCES = {
     # file rather than exempting it: the artifact was provable and simply
     # unmapped here.
     "rw_mpas_lbc": "crates/rw-mpas/src/bin/rw_mpas_lbc.rs",
+    # The GDT-101 remapper, added to BUNDLED_ARTIFACTS by the icon-global
+    # lane.  It lives in the bridge crate, so `tools/grib1_bridge/build.rs`
+    # stamps it with its five siblings, and its `main` black_boxes the
+    # crate's own SOURCE_REV_STAMP; the row below makes this test READ that
+    # file rather than exempting it.
+    "gdt101_remap": "src/bin/gdt101_remap.rs",
     "rw_nexrad": "crates/rw-nexrad/src/main.rs",
     "rw_odim": "crates/rw-odim/src/bin/rw_odim.rs",
     "rw_mrms": "crates/rw-obs/src/bin/mrms.rs",

@@ -52,7 +52,7 @@ from gpuwm.ensemble.wrfout_inventory import member_inventory
 
 #: The state attributes ``gpuwm.core.diagnostics.update_diagnostics``
 #: rewrites.  Hashed before and after the refresh so the manifest can
-#: show that the post-condition was load-bearing rather than ceremonial.
+#: show that the post-condition was essential rather than ceremonial.
 DIAGNOSED_ATTRS = ("p", "al", "alt")
 
 
@@ -305,6 +305,7 @@ def run_member(*, base_config, member_dir, index: int, seed: int,
         run_seconds=length, history_interval_s=dc.history_interval_s,
         restart_interval_s=exp.restart_interval_s, restart_path=restart,
         write_final_output=True,
+        preserved_forcing_prefix=bool(getattr(prepared, 'preserved_forcing_prefix', False)),
         progress_callback=progress_callback)
     wall_seconds = time.perf_counter() - started
 
@@ -365,7 +366,7 @@ def _elapsed_seconds(state):
 
     An exact steady state advanced through a valid integration can leave
     every hashed array untouched -- ``perturbation="none"`` over a state
-    at rest is the honest example -- and rejecting that as "the runner did
+    at rest is the accurate example -- and rejecting that as "the runner did
     not advance this object" was a false refusal.  The clock is the
     independent witness, and it is not in the hashed inventory.
     """

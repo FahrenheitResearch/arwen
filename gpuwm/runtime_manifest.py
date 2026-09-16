@@ -247,7 +247,7 @@ def git_checkout_root(root: Path) -> Path | None:
     importantly, for a venv created inside somebody else's repository:
     that repository's history is not this code's provenance, and binding
     it would be a receipt that names the wrong tree rather than an
-    honest absence.  Never raises: "is this a checkout" is a question,
+    accurate absence.  Never raises: "is this a checkout" is a question,
     not a failure.
     """
 

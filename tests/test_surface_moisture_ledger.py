@@ -110,10 +110,10 @@ def test_injected_wrong_provider_lights_up_q2_residual():
     col["qfx"] = _qfx_from_sfclay(col)
     published = _sfclay_q2(col)                    # SFCLAY really wrote it
 
-    honest = published - sml.expected_q2(sml.PROVIDER_SFCLAY, col)
+    accurate = published - sml.expected_q2(sml.PROVIDER_SFCLAY, col)
     lied = published - sml.expected_q2(sml.PROVIDER_NOAH_SFCDIAGS, col)
 
-    assert abs(honest) <= sml.q2_residual_budget(published)
+    assert abs(accurate) <= sml.q2_residual_budget(published)
     assert abs(lied) > sml.q2_residual_budget(published)
 
 
@@ -134,7 +134,7 @@ def test_injected_td_conversion_error_lights_up_td2_residual_only():
     col["qfx"] = _qfx_from_sfclay(col)
     published = _sfclay_q2(col)
 
-    honest_td = sml.dewpoint_k(published, col["psfc"])
+    accurate_td = sml.dewpoint_k(published, col["psfc"])
     # The classic transcription error: EPS in the numerator instead of the
     # denominator's additive term (e = p*q/EPS rather than p*q/(EPS+q)).
     e_bad = (col["psfc"] / 100.0) * published / 0.622
@@ -149,7 +149,7 @@ def test_injected_td_conversion_error_lights_up_td2_residual_only():
                        sf_sfclay_physics=1, sf_surface_physics=0)
         return ledger.rows[0]
 
-    clean = residual_for(honest_td)
+    clean = residual_for(accurate_td)
     injected = residual_for(broken_td)
 
     # BOTH directions against the same column.  The clean chain's residual
@@ -168,9 +168,9 @@ def test_injected_td_conversion_error_lights_up_td2_residual_only():
     # investigation is ~6.5 g/kg, tens of kelvin of dewpoint, so a TD
     # conversion error could not hide inside it unnoticed.
     assert abs(injected.td2_residual) > 1.0e5 * abs(clean.td2_residual)
-    # Same 3e-7 K floor: honest_td is computed from the FP64 published
+    # Same 3e-7 K floor: accurate_td is computed from the FP64 published
     # value, the ledger's from its FP32 round trip through the field.
-    assert abs(clean.td2_from_q2 - honest_td) < 1e-6
+    assert abs(clean.td2_from_q2 - accurate_td) < 1e-6
 
 
 def test_injected_stale_carrier_lights_up_carrier_age():

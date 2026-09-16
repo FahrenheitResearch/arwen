@@ -8,6 +8,7 @@ use rw_mpas::convert::{
     convert_frame, convert_frame_composite, CompositeGather, CompositeLayer, ConvertOptions,
 };
 use rw_mpas::history::{assert_mesh_agrees, read_history, MpasFrame, Timestamp};
+use rw_mpas::sha256_file;
 use rw_mpas::weights::{
     build_weights, read_mesh_cell_spacing, read_mesh_coordinates, ON_MESH_SPACING_FACTOR,
 };
@@ -635,10 +636,15 @@ fn run() -> Result<(), String> {
             emitted.written.len(),
             emitted.absent.len()
         );
+        // The receipt's output digest is the OUTPUT's.  It was the history's
+        // digest written a second time under this name, so a consumer that
+        // verified the frame it was handed against the receipt refused
+        // every frame the converter had just written.
+        let output_sha256 = sha256_file(&emitted.path).map_err(|e| e.to_string())?;
         records.push(format!(
             "{{\"output\": \"{}\", \"output_sha256\": \"{}\", \"output_bytes\": {}, \"valid_time\": \"{}\", \"simulation_start\": \"{}\", \"lead_seconds\": {}, \"convert_seconds\": {}, \"history_sha256\": \"{}\", \"init_sha256\": \"{}\", \"max_latitude_error_degrees\": {:e}, \"max_longitude_error_degrees\": {:e}, \"written_variables\": [{}], \"absent_wrf_fields\": [{}]}}",
             json_escape(&emitted.path.display().to_string()),
-            frame.history_sha256,
+            output_sha256,
             emitted.bytes,
             emitted.valid_time.iso(),
             emitted.simulation_start.iso(),

@@ -10,15 +10,17 @@ import pytest
 from gpuwm.boundary_fields import external_scalar_fields, potential_external_scalar_fields
 from gpuwm.config import RunConfig
 from gpuwm.ingest import wrfinput as wi
-from gpuwm.netcdf_bridge import find_netcdf_bin
 from wrf_input_fixtures import _small_wrfinput
+from conftest import requires_netcdf_bridge
 
 #: Reading a wrfinput needs the Rust decoder this project decodes NetCDF
-#: with; where it is not built, a refusal raised past the read cannot be
-#: exercised at all.
-_requires_netcdf_decoder = pytest.mark.skipif(
-    find_netcdf_bin() is None,
-    reason='the Rust NetCDF decoder is not built in this environment')
+#: with; where it cannot read one, a refusal raised past the read cannot
+#: be exercised at all.  The gate is the CAPABILITY probe in conftest,
+#: not `find_netcdf_bin() is None`: a staged decoder too old to read the
+#: file failed these rather than skipping, and a GPUWM_RW_NETCDF override
+#: naming a missing file raised out of this module at import and took the
+#: whole collection down with it.
+_requires_netcdf_decoder = requires_netcdf_bridge
 
 
 def _cfg(**changes):
@@ -198,6 +200,7 @@ def test_added_aerosol_geometry_and_values_are_validated(tmp_path,poison):
         _read(path,cfg)
 
 
+@requires_netcdf_bridge
 def test_aerosol_boundary_values_tendencies_and_identity_survive(tmp_path):
     cfg=_cfg(); initial=_read(_input(tmp_path/'input',cfg),cfg)
     path=_boundary(tmp_path/'boundary',initial,cfg)
@@ -216,7 +219,14 @@ def test_aerosol_boundary_values_tendencies_and_identity_survive(tmp_path):
     assert before!=after
 
 
-@pytest.mark.parametrize('poison',['missing','late_nan','pair','identity'])
+# PER CASE, not per function: the identity poison is caught on the header
+# the reader checks before it opens a single band, so it passes with no
+# staged bridge; the other three are found in the band data itself.
+@pytest.mark.parametrize('poison',[
+    pytest.param('missing',marks=requires_netcdf_bridge),
+    pytest.param('late_nan',marks=requires_netcdf_bridge),
+    pytest.param('pair',marks=requires_netcdf_bridge),
+    'identity'])
 def test_supplied_aerosol_boundary_failures_are_not_dropped(tmp_path,poison):
     cfg=_cfg(); initial=_read(_input(tmp_path/'input',cfg),cfg)
     path=_boundary(tmp_path/'boundary',initial,cfg)

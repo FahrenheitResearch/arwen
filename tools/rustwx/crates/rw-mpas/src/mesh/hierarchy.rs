@@ -135,7 +135,7 @@ fn delivered_spacing_m(points: &[V3], rings: &Rings) -> Vec<f64> {
 
 /// What one level's insertion pass did.
 ///
-/// `front_spacing_m` is the load-bearing addition: the COARSEST level-field
+/// `front_spacing_m` is the essential addition: the COARSEST level-field
 /// spacing at any midpoint this level actually inserted at. It is the
 /// ladder's own measurement of how far outward its refinement reached, and
 /// G4 below classifies dislocations against it instead of against a
@@ -729,7 +729,7 @@ pub fn generate_graded(
         // anything the ladder inserted at, so insertion produced nothing
         // either. The published quasi-uniform x1.40962 reads 0.394 in such
         // crystal; a reading under 0.10 there has no mechanism behind it,
-        // and localization -- the ladder's one load-bearing claim -- would
+        // and localization -- the ladder's one essential claim -- would
         // be false. Refuse, never repair: repairing it would mask a
         // systemic ladder defect.
         let rings_check = outcome.rings.clone();
@@ -750,7 +750,7 @@ pub fn generate_graded(
         if let Some(off) = first_off_band_dislocation(&points, &rings_check, &prepared, front_m) {
             let (lat, lon) = crate::mesh::geom::lat_lon(off.mid);
             return Err(MpasError::Refusal(format!(
-                "level {l} carries a dislocation in undisturbed crystal: dv/dc = {:.3e} at lat/lon ({:.3}, {:.3}) deg, where the spec asks for {:.4} km. NEITHER mechanism that makes irregularity here operates at that site. Grading did not: the field's spread over the {} cells within {SURGERY_LOCALITY_CELLS:.0} of it is {:.6} km, so the relaxation ran the same arithmetic there that it runs on a uniform sphere. Insertion did not: the ladder's front reached {:.4} km, finer than the {:.4} km asked for here, so no level ever split an edge at this spacing. Localization is the ladder's one load-bearing claim -- irregularity is confined to where a mechanism put it -- so a dislocation with no mechanism means the ladder itself is wrong, and repairing it would mask that. Refused, never repaired",
+                "level {l} carries a dislocation in undisturbed crystal: dv/dc = {:.3e} at lat/lon ({:.3}, {:.3}) deg, where the spec asks for {:.4} km. NEITHER mechanism that makes irregularity here operates at that site. Grading did not: the field's spread over the {} cells within {SURGERY_LOCALITY_CELLS:.0} of it is {:.6} km, so the relaxation ran the same arithmetic there that it runs on a uniform sphere. Insertion did not: the ladder's front reached {:.4} km, finer than the {:.4} km asked for here, so no level ever split an edge at this spacing. Localization is the ladder's one essential claim -- irregularity is confined to where a mechanism put it -- so a dislocation with no mechanism means the ladder itself is wrong, and repairing it would mask that. Refused, never repaired",
                 off.q,
                 lat.to_degrees(),
                 lon.to_degrees(),
@@ -1462,7 +1462,7 @@ mod tests {
 
     #[test]
     fn the_graded_ladder_generates_a_small_two_level_mesh_end_to_end() {
-        // The smallest honest end-to-end: one doubling with a real band.
+        // The smallest accurate end-to-end: one doubling with a real band.
         let spec = small_graded_spec();
         let (points, rings, outcome, choice, reports) = generate_graded(
             &spec,

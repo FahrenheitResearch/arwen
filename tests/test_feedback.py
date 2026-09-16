@@ -51,8 +51,21 @@ def test_feedback_parent_bounds_exclude_child_specified_zone():
     assert feedback_parent_bounds(xface, spec_zone=1) == (4, 5, 4, 4)
 
 
-def test_feedback_refuses_one_way_only_microphysics_transition():
-    from gpuwm.core.microphysics_transition import MP8_TO_MP18_POLICY
+def test_feedback_refuses_only_the_mismatched_vertical_ladder():
+    """One of the three construction refusals survives, and it is the nz one.
+
+    The other two -- "no ratified reverse mass/moment mapping" and
+    "requires identical active parent/child prognostic field inventories"
+    -- are retired: the reverse edge resolves through the same matrix as
+    the forward one and the feedback path diagnoses the parent's species
+    from the child's.  Their replacement contracts are CPU-only and live in
+    tests/test_nest_feedback_reverse_edge.py, because this module imports
+    cupy in a module-level helper and is therefore marked ``gpu`` whole.
+    The vertical one is a different item and a genuinely missing
+    capability: the reverse operator has no vertical mapping.
+    """
+    from gpuwm.core.microphysics_transition import (
+        MP8_TO_MP18_POLICY, REVERSE_EDGE_POLICY)
     from gpuwm.core.nest import NestCoupler
 
     parent_cfg = _domain(1, 0, nx=14, ny=14)
@@ -69,10 +82,10 @@ def test_feedback_refuses_one_way_only_microphysics_transition():
     child = SimpleNamespace(cfg=child_cfg, parent=parent)
 
     NestCoupler(child, feedback=0)
-    with pytest.raises(
-            ValueError,
-            match="cross-scheme-feedback-reverse-mapping-unimplemented-v1"):
-        NestCoupler(child, feedback=1)
+    coupler = NestCoupler(child, feedback=1)
+    assert coupler.microphysics_reverse_transition.mixed is True
+    assert coupler.microphysics_reverse_transition.policy_id == \
+        REVERSE_EDGE_POLICY
 
     same_scheme = replace(
         child_cfg,
@@ -384,7 +397,7 @@ def test_feedback_restricts_uncoupled_fields_under_a_child_mass_gradient(
         0.002, abs=1.0e-8)
 
     # copy_fcn now writes into the parent's live prognostic rather than a
-    # scratch buffer, so "only the feedback rectangle" is load-bearing.
+    # scratch buffer, so "only the feedback rectangle" is essential.
     for kind in nest_field_kinds(parent_cfg.run):
         name = {"t": "thp", "ph": "php"}.get(kind, kind)
         value = parent_state.mup if kind == "mu" else getattr(

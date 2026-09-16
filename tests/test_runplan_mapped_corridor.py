@@ -31,9 +31,14 @@ def _mapped_source():
 
 def _authored(tmp_path, source=None):
     source = source or _mapped_source()
+    # A nest this fixture can actually follow.  16x16 at ratio 4 is four
+    # parent cells wide, and a 0.7 overlap floor admits no move at all on
+    # it, so the door refuses to author a follow table for it by name.  28
+    # parent cells of parent around a seven-parent-cell nest is the same
+    # cheap two-domain tree and admits a move of one.
     text, exp = cyclone_setup.configuration_text(
         cycle="2026090900", point=(35., -97.), forcing_source=source,
-        tiles="off", dimensions=((40, 40), (16, 16)))
+        tiles="off", dimensions=((40, 40), (28, 28)))
     config = tmp_path / "storm.toml"
     config.write_text(text, encoding="utf-8")
     config.with_suffix(".namelist.wps").write_text(

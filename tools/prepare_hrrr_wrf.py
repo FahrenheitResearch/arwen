@@ -519,7 +519,7 @@ def _stock_wrf_export(command: list[str], env: dict[str, str], *,
     scrolled past, the preparation PASS-logged, and the WRF arm had no
     inputs and no manifest
     (out/node19-shakedown/b04/B04-EXPORT-REFUSAL.txt).  The subprocess
-    boundary flattens honest typed refusals and environmental deaths
+    boundary flattens accurate typed refusals and environmental deaths
     into one returncode, so no middle posture can tell them apart.
 
     Fail-closed, ruled: a REQUESTED export either PASSes with its
@@ -552,7 +552,7 @@ def _stock_wrf_export(command: list[str], env: dict[str, str], *,
     # representability gap -- and the old warn-and-continue posture
     # PASS-logged a preparation that had produced no WRF-arm inputs and
     # no manifest (out/node19-shakedown/b04/B04-EXPORT-REFUSAL.txt).
-    # The subprocess boundary flattens the converter's honest typed
+    # The subprocess boundary flattens the converter's accurate typed
     # refusals and environmental deaths into one returncode, so the only
     # fail-closed reading of a nonzero exit is refusal.  The explicit
     # opt-outs remain: --skip-stock-wrf-export skips the attempt up

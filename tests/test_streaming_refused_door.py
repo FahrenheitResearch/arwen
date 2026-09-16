@@ -20,7 +20,7 @@ def _nested_tiles_on_config(tmp_path):
         [fetch]
         source = "gfs"
         cycle = "2024-05-03T12"
-        hours = 1
+        hours = 6
 
         [shared]
         nz = 49

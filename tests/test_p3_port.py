@@ -122,7 +122,7 @@ def test_microphysics_apply_rejects_50_only_when_the_state_is_dry():
 
 
 # ---------------------------------------------------------------------------
-# 2.  The registry row is honest.
+# 2.  The registry row is accurate.
 # ---------------------------------------------------------------------------
 
 def test_the_registry_row_claims_no_more_than_was_measured():

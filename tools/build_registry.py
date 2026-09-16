@@ -203,7 +203,7 @@ TIGHTEN: dict[str, dict] = {
     # selector already lives: components.turbulence.selector_keys, whose
     # four option rows carry km_opt 1/2/3/4 with their own maturity,
     # reachability and evidence.  Per the les-completion spec's
-    # registry-honesty item (8.1.5) and AC-P6.4.
+    # registry-accuracy item (8.1.5) and AC-P6.4.
     "diff_6th_opt": {"type": "integer", "enum": [0, 1, 2], "default": 0},
     "diff_6th_slopeopt": {"type": "integer", "enum": [0, 1], "default": 0},
     # AN ENUM, not minimum 1.  ``minimum: 1`` advertised 1, 2, 3, 5, 6,
@@ -1396,7 +1396,7 @@ MP28_G3_CLEAN = (
 #: Fixtures that do NOT clear 2e-6 on every field, with every field that
 #: misses and its measured maximum relative difference.  FOUR of twenty-two.
 #:
-#: ``aero-cold-overlap``'s 1.000e+00 rows are the honest publication of a
+#: ``aero-cold-overlap``'s 1.000e+00 rows are the accurate publication of a
 #: sub-ulp disagreement and are recorded rather than allowanced.  MEASURED
 #: at 0-based level 4: the level enters with qc = 2.3252160e-04 kg/kg and
 #: nc = 9.1306704e+07 per kg; WRF ends the step with qc =
@@ -2510,7 +2510,7 @@ _MATURITY_RUNGS = (
 )
 
 #: The independent-science axis (D-26: options only).  ``none`` is the
-#: honest default and the only value this pass assigns: the value set above
+#: accurate default and the only value this pass assigns: the value set above
 #: it is the ratified catalogue's, and an option is promoted off ``none``
 #: only by an entry in ``scientific_evidence_catalogue``.  Assigning a
 #: category here without that entry would be exactly the unbacked claim the
@@ -3499,10 +3499,10 @@ _OFFLINE_CHILD_ROWS: dict[int, dict] = {
     # gpuwm's own history writer publishes QNHAIL -> nh for mp=9.
     9: {"same_scheme": True, "refusal": None},
     10: {"same_scheme": True, "refusal": None},
-    16: {"same_scheme": False, "refusal": (
-        "the lane's wrfout field map has no row for WDM6's CCN reservoir: "
-        "nn and NSSL's qnn both publish under QNCCN, so a WDM6 child would "
-        "silently start with a zero-filled reservoir")},
+    # WDM6: the lane carries a fourth scheme-qualified wrfout map
+    # (_WDM6_WRF_TO_STATE) with the QNCCN -> nn row, so the CCN reservoir
+    # is read rather than zero-filled.
+    16: {"same_scheme": True, "refusal": None},
     18: {"same_scheme": True, "refusal": None},
     28: {"same_scheme": True, "refusal": None},
     50: {"same_scheme": True, "refusal": None},
@@ -4988,6 +4988,26 @@ def build(registry: dict) -> dict:
         constraints.setdefault(
             "admitted_setting_values_reasons",
             {})["num_soil_layers"] = _soil_geometry_reason
+    # THE KNOBS THAT REACH NO CODE ARE DECLARED, NOT REQUIRED.  Noah-MP's
+    # option identity carried a ``required_settings`` row per knob, so plan
+    # review refused a value outside the pin with "Set opt_pedo=1 for it, or
+    # select another land_surface option."  Three of those knobs reach no
+    # gpuwm code at ANY value -- opt_soil=1 makes the pedotransfer branch
+    # unreachable, and gpuwm has no counterpart to WRF's output-accumulator
+    # block -- so the refusal named no breakage, and the run door
+    # (gpuwm.config.validate_run_config) admits them with one warning.
+    # A plan-review door that still refused them would be a second door
+    # disagreeing with the first about one configuration, so the rows come
+    # out here.  The option's own ``parameters`` block still publishes the
+    # pin, which is what a reader needs: the value gpuwm behaves as.
+    #
+    # WHICH knobs is READ from the config table, not listed here, so a row
+    # whose evidence changes moves both doors in one edit.
+    from gpuwm.config import NOAHMP_OPTIONS_WITHOUT_CONSUMER
+    _noahmp_required = land_options["noah-mp"].setdefault(
+        "constraints", {}).setdefault("required_settings", {})
+    for _name in sorted(NOAHMP_OPTIONS_WITHOUT_CONSUMER):
+        _noahmp_required.pop(_name, None)
     # The enum is assigned after the parameter tables are merged below,
     # which deep-copies this module's spec over whatever stands here.
 
@@ -5853,7 +5873,7 @@ def _no_radiation_name_warnings(registry: dict) -> None:
     (``warning_policy.meaning``) and it is emitted for every template
     regardless of maturity
     (``gpuwm/physics_registry.py`` template-warning pass), so it is the
-    honest lever and it is the one used here.
+    accurate lever and it is the one used here.
 
     Appended last and appended (not inserted at 0) on purpose: this
     builder composes ``mynn_ruc`` and ``mynn_noahmp`` by copying another

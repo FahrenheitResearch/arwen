@@ -5,7 +5,7 @@ not, and this page is the shortest path a GPU-less machine can walk end
 to end: install, size a domain, fetch real bytes, and preprocess them
 into a prepared bundle a card can pick up.
 
-It exists because the honest answer to "what can I evaluate on this
+It exists because the accurate answer to "what can I evaluate on this
 laptop?" used to be undocumented, so the first refusal a GPU-less
 reader met was also the first news that a card was required.
 

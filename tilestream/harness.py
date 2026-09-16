@@ -299,7 +299,7 @@ class Geography:
     exactly the duplicate ``gpuwm/verify/npref.py`` already enforces on
     seeded ``u``/``v``.  :func:`make_geography` enforces it by default;
     ``periodic_faces=False`` leaves the raw Lambert values, which is the
-    negative control that shows the rule is load-bearing.
+    negative control that shows the rule is essential.
 
     IT IS A PER-AXIS RULE, because periodicity is (``dycore._boundary_x`` and
     ``_boundary_y`` are independent, and so are ``plan_tiles``'s
@@ -424,7 +424,7 @@ def neutral_geography(cfg, *, latitude_deg: float = 35.0,
     * ``has_msf`` and ``rotational`` come out FALSE (state.py:799-803), so
       the buffer's Coriolis+curvature kernel (dycore.py:539) and every
       msf-weighted path are OFF until ``run_tiled`` imposes the DOMAIN's
-      flags.  That makes the imposition load-bearing and therefore testable:
+      flags.  That makes the imposition essential and therefore testable:
       ``run_tiled(impose_geography_flags=False)`` is a negative control that
       MUST fail, and it does.
 
@@ -554,7 +554,7 @@ def declared_glw_kwargs(cfg) -> dict:
     Declaring the same constant is therefore a statement of what these
     rungs were always doing, not a change to what they do: every digest
     the gate compares is unchanged, and the run now says out loud which of
-    the three honest origins its longwave has.
+    the three accurate origins its longwave has.
 
     THE CLASSIFICATION IS NOT RESTATED HERE.  It comes from
     ``physics_compat.downward_longwave_disposition``, the same function the

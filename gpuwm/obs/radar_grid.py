@@ -114,7 +114,7 @@ RADAR_GRID_SCHEMA = RADAR_GRID_SCHEMA_V2
 #: Every schema this module can read.  Ordered oldest first.
 READABLE_SCHEMAS = (RADAR_GRID_SCHEMA_V1, RADAR_GRID_SCHEMA_V2)
 
-#: Status of a product this lane can honestly claim: the geometry and the
+#: Status of a product this lane can accurately claim: the geometry and the
 #: schema are proven by tests, and the observation-error model is a
 #: documented parameterization rather than a tuned one.  Real cycling
 #: assimilations HAVE consumed this schema (four 2026-07-30 analyses, the
@@ -147,7 +147,7 @@ _WINDOW = ("radar", "level", "window_j", "window_i")
 #: Every variable this schema defines, with the **dimension tuple** it must
 #: carry, its storage type, and its units.
 #:
-#: The dimension tuple is the load-bearing part, and it is here rather than
+#: The dimension tuple is the essential part, and it is here rather than
 #: implied by the writer because a reader that checks only array *shape* is
 #: not checking anything.  A file whose ``z_obs`` is declared
 #: ``('level', 'west_east', 'south_north_stag')`` on a square grid has the
@@ -321,7 +321,7 @@ _DEALIASED_STATEMENT = (
 #:
 #: A third statement rather than a footnote on the second, for the reason
 #: the second is not a footnote on the first: the claim that separates them
-#: is load-bearing.  ``_DEALIASED_STATEMENT`` promises that every gate is
+#: is essential.  ``_DEALIASED_STATEMENT`` promises that every gate is
 #: confidently unfolded, confidently unchanged, or REJECTED, and that where
 #: the evidence is ambiguous the gate is rejected rather than guessed.
 #: This engine makes no such promise -- it has no environmental reference
@@ -359,7 +359,7 @@ _DEALIASED_STATEMENT_REGION_GLOBAL = (
 def dealiasing_statement(params: SuperobParams) -> str:
     """The ``dealiasing`` attribute these parameters entail.
 
-    A function rather than a constant because the file's honest description
+    A function rather than a constant because the file's accurate description
     of itself depends on what ran, and the only thing that knows what ran is
     the parameter set the velocities were made with -- now including *which
     engine* the parameter set selected.

@@ -12,7 +12,7 @@
 # The answerable question is whether the -fno-tree-vectorize build lands
 # inside the realisation spread already measured for the vectorised build.
 # If it does, the flag effect on the reported statistics is smaller than the
-# noise those statistics already carry, which is the honest and sufficient
+# noise those statistics already carry, which is the accurate and sufficient
 # result for a chaotic LES.
 B=${LES_ORACLE_ROOT:-$HOME/weather/les-oracle-wpl7}
 

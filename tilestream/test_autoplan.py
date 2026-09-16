@@ -412,12 +412,12 @@ def test_a_spent_allowance_refuses_with_every_term_named_and_no_negative():
         raise AssertionError("a 62 MiB allowance planned a full-physics run")
 
 
-def test_the_same_cards_honest_free_figure_plans_the_same_domain():
+def test_the_same_cards_accurate_free_figure_plans_the_same_domain():
     """CONTROL for the spent-allowance refusal: the card had room.
 
     The run behind the refusal above died on a 10 GiB card with 8.38 GiB
     free (NVML) at the moment of the refusal -- only the FROZEN number was
-    tiny.  Handed the honest figure, the same domain must simply plan, and
+    tiny.  Handed the accurate figure, the same domain must simply plan, and
     the budget arithmetic must come out positive at every rung: a negative
     budget from a card with headroom means a reservation was charged to a
     base it exceeds, never a full card.

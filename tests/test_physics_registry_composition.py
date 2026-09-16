@@ -34,6 +34,37 @@ def test_ground_truth_receipt_regenerates_byte_for_byte() -> None:
         "tools/report_registry_ground_truth.py and land both together")
 
 
+def test_the_ground_truth_receipt_regenerates_on_a_machine_with_no_case_data(
+        tmp_path, monkeypatch) -> None:
+    """The same bytes on a machine that has never fetched the run of record.
+
+    The receipt resolves PHYSICS: the registry's view of the default
+    template, and the selector integers the run of record's four domains
+    emit.  None of that reads a GRIB.  But the tool loaded the run of
+    record with the existence check on, so regenerating it required the
+    1974 reference bundle staged under ``$GPUWM_CASE_DATA_ROOT``
+    (``~/.local/share/gpuwm`` by default) and died with "forcing file ...
+    does not exist" everywhere else -- a fresh HOME, a clean-venv replay,
+    a reviewer's checkout.
+
+    The roots are pointed at an empty directory rather than merely
+    unset, so this is the test's decision on a developer machine that
+    HAS staged the bundle.
+    """
+
+    empty = tmp_path / "no-case-data"
+    empty.mkdir()
+    monkeypatch.setenv("GPUWM_CASE_DATA_ROOT", str(empty))
+    monkeypatch.setenv("HOME", str(empty))
+    monkeypatch.setenv("USERPROFILE", str(empty))
+    monkeypatch.setenv("XDG_DATA_HOME", str(empty))
+
+    from gpuwm.physics_registry import physics_registry
+
+    regenerated = ground_truth.render(ground_truth.build(physics_registry()))
+    assert regenerated == GROUND_TRUTH.read_bytes()
+
+
 def test_blast_radius_receipt_regenerates_byte_for_byte() -> None:
     from gpuwm.physics_registry import physics_registry
 

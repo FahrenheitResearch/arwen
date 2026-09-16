@@ -3,7 +3,7 @@
 The track writer is a diagnostic and must never fail a forecast -- so
 everything that CAN be caught before the run starts is caught here, at
 load, with the key named.  Three ways to configure a file that cannot
-produce honest rows, each refused rather than discovered as an empty
+produce accurate rows, each refused rather than discovered as an empty
 file after twelve hours:
 
 * an ``interval_seconds`` that is not a whole number of root steps (the

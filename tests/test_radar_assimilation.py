@@ -1092,7 +1092,7 @@ def _hydro_center():
     Deliberately zero outside the blob.  A multiplicative perturbation
     leaves clear air exactly clear, so this is also the fixture that
     proves the filter cannot create echo where no member has any -- the
-    honest limitation the milestone has to state.
+    accurate limitation the milestone has to state.
     """
     base_theta = np.linspace(300.0, 340.0, HZ)
     column = np.linspace(9.2e4, 3.0e4, HZ)
@@ -1438,7 +1438,7 @@ def test_the_receipt_names_the_eigensolver_that_produced_it(analysis):
     does not name its solver cannot be reproduced on purpose.
 
     This fixture solves on the host, where the kernel does not apply, so
-    the honest answer here is the library solver and no sweeps.
+    the accurate answer here is the library solver and no sweeps.
     """
     _, provenance = analysis
     filt = provenance["filter"]

@@ -60,16 +60,19 @@ relaxed by this implementation.
 from __future__ import annotations
 
 import math
+import warnings
 from types import MappingProxyType
 
 import numpy as np
 
 from gpuwm.core.model import FeedbackScratch
 from gpuwm.core.microphysics_transition import (
-    launch_microphysics_edge_parent_field,
+    edge_parent_planes,
+    launch_microphysics_edge_field,
     resolve_microphysics_transition,
+    resolve_reverse_microphysics_transition,
     transition_handles_field,
-    transition_parent_field_shape,
+    transition_source_field_shape,
 )
 from gpuwm.core.inflow_perturbation import build_inflow_perturbation
 from gpuwm.core.nest_interp import (bdy_interp1, copy_fcn,
@@ -134,9 +137,6 @@ def _clip_nonnegative(window) -> None:
 _SIDES = (("west", "xs"), ("east", "xe"),
           ("south", "ys"), ("north", "ye"))
 _GEOMETRY_NAMES = ("ci", "ip", "cj", "jp", "xig", "xjg")
-MISMATCHED_MICROPHYSICS_FEEDBACK_BLOCKER = (
-    "cross-scheme-feedback-reverse-mapping-unimplemented-v1"
-)
 
 
 def _state_attr(kind: str) -> str:
@@ -215,6 +215,22 @@ def _is_streamed(state) -> bool:
     return domain_store(state) is not None
 
 
+def _transition_field_shape(state, kind: str) -> tuple[int, int, int]:
+    """:func:`transition_source_field_shape` off the LIVE moisture array.
+
+    ``_field_shape``'s streamed branch, applied to the transition arm.  A
+    canonical streamed parent's ``DomainState`` arrays are the ones
+    ``attach`` copied out of, frozen at that instant; the shape the edge
+    kernel writes has to come from the store the way every other windowed
+    read does, or a resized domain maps into an attach-time rectangle.
+    """
+    if getattr(state, "_streamed_domain", None) is not None:
+        from types import SimpleNamespace
+        from gpuwm.core.nest_operands import NestWindowSource
+        state = SimpleNamespace(qv=NestWindowSource(state).array("qv"))
+    return transition_source_field_shape(state, kind)
+
+
 def _field_shape(state, kind: str) -> tuple[int, int, int]:
     if getattr(state, "_streamed_domain", None) is not None:
         from gpuwm.core.nest_operands import NestWindowSource
@@ -276,28 +292,32 @@ class NestCoupler:
                 "vertical ladder is available on the OFFLINE downscale "
                 "route (`gpuwm downscale --child-levels`), which is one-way "
                 "by construction and takes no feedback.")
-        if self.feedback == 1 and self.microphysics_transition.mixed:
-            raise ValueError(
-                f"{MISMATCHED_MICROPHYSICS_FEEDBACK_BLOCKER}: experimental "
-                "two-way feedback has no ratified reverse mass/moment "
-                f"mapping for MP{parent.run.mp_physics}->"
-                f"MP{child.run.mp_physics}")
-        if (self.feedback == 1
-                and nest_field_kinds(parent.run)
-                != nest_field_kinds(child.run)):
-            raise ValueError(
-                "experimental two-way feedback requires identical active "
-                "parent/child prognostic field inventories; the configured "
-                f"one-way transition {self.microphysics_transition.policy_id!r} "
-                "has no reverse restriction contract")
+        #: The FEEDBACK edge, child scheme -> parent scheme, resolved
+        #: through the same matrix as the forward one with the policy
+        #: passed EXPLICITLY (the parent's own key is the policy of its
+        #: upward edge, not of this one).  ``None`` at feedback = 0, where
+        #: nothing restricts and nothing needs a reverse closure.
+        #:
+        #: Two refusals stood here and are retired with it: "two-way
+        #: feedback has no ratified reverse mass/moment mapping", and
+        #: "requires identical active parent/child prognostic field
+        #: inventories", which was the same predicate restated -- a mixed
+        #: pair is exactly a pair whose inventories differ.  The mapping
+        #: was never missing; only the wiring was.
+        self.microphysics_reverse_transition = (
+            resolve_reverse_microphysics_transition(parent.run, child.run)
+            if self.feedback == 1 else None)
         # LES-nest inflow seeding (P3): None unless the child config
         # turns it on, and the force path executes nothing of it when
         # None -- the OFF trajectory is gated byte-identical to a build
         # without the mechanism (INFLOW-GENERATOR-ACCEPTANCE-V2 G1).
         self.inflow_perturbation = build_inflow_perturbation(child_node)
+        #: Warn once per coupler, not once per parent step, when a parent
+        #: species has nothing to restrict into it.
+        self._feedback_drop_warned = False
         self.force_count = 0
         #: H2D bytes the FORCE corridor has pulled through the store seam,
-        #: cumulative.  A receipt, not a control: the honest cost of
+        #: cumulative.  A receipt, not a control: the accurate cost of
         #: forcing a nest off a streamed parent is a number the run should
         #: be able to print, and the windowed corridor's whole claim is
         #: that this grows with the CHILD's footprint, not the parent.
@@ -446,17 +466,20 @@ class NestCoupler:
         """
         parent_state = self.child_node.parent.state
         if transition_handles_field(self.microphysics_transition, kind):
-            if _is_streamed(parent_state):
-                raise RuntimeError(
-                    "a cross-scheme microphysics nest edge "
-                    f"({self.microphysics_transition.policy_id!r}) off a "
-                    "STREAMED parent is unimplemented: "
-                    "launch_microphysics_edge_parent_field reads parent "
-                    "species this coupler cannot enumerate, so it would "
-                    "silently map the parent's air at attach time.  Refused "
-                    "rather than run, because the wrong answer here is "
-                    "finite and plausible.")
-            shape = transition_parent_field_shape(parent_state, kind)
+            # WINDOWED, exactly like the non-transition arm below and for
+            # the same reason -- the only difference is WHICH planes the
+            # reader touches.  A cross-scheme edge reads the transition's
+            # whole declared species set rather than one field plus ``mup``,
+            # because the diagnosis mixes them, so the pull is that list:
+            # ``edge_parent_planes()``, the kernel's own input set, so the
+            # coupler and ``transition_source_window`` cannot drift apart.
+            # A plane the store does not carry (an mp8 parent has no
+            # qh/qir/qib) is skipped by ``refresh_from_store`` itself, so no
+            # second membership table is written down here.
+            self.force_sync_bytes += _sync_in(
+                parent_state, edge_parent_planes(),
+                window=parent_footprint_window(self.child_node.cfg))
+            shape = _transition_field_shape(parent_state, kind)
         else:
             # WINDOWED, and this is the FORCE corridor's traffic bound:
             # ``bdy_interp1`` only ever reads the parent inside the child's
@@ -480,7 +503,7 @@ class NestCoupler:
             raise RuntimeError("parent field exceeds F16 arena capacity")
         out = backing.reshape(-1)[:count].reshape(shape)
         if transition_handles_field(self.microphysics_transition, kind):
-            launch_microphysics_edge_parent_field(
+            launch_microphysics_edge_field(
                 self.microphysics_transition, parent_state, kind,
                 out=out, coupled=True)
         else:
@@ -581,7 +604,7 @@ class NestCoupler:
         large by definition.  The coupled values OUTSIDE the strips are
         computed from whatever the state held and are never read.  The
         FEEDBACK path deliberately does not window: the restriction reads
-        the whole child interior, so its whole-field pull is the honest
+        the whole child interior, so its whole-field pull is the accurate
         cost of two-way feedback, not a miss.
         """
         state = self.child_node.state
@@ -634,6 +657,75 @@ class NestCoupler:
         out -= _WRF_T0
         return out
 
+    def _feedback_child_is_bounded(self) -> bool:
+        """Is the child served through its store rather than off its state?
+
+        ONE function, read at both feedback doors: :meth:`feedback_prepare`
+        decides WHAT the transaction restricts with it and
+        :meth:`feedback_commit` decides HOW, so the two cannot come to
+        different conclusions about one configuration.
+        """
+        return getattr(
+            self.child_node.state, "_streamed_domain", None) is not None
+
+    def _reverse_diagnoses(self, kind: str) -> bool:
+        """Does the reverse edge diagnose this PARENT species from the child?
+
+        The other half of that pair, read at the same two doors.  A bounded
+        child is excluded HERE rather than stopped later: the reverse
+        launcher reads the child's planes off a live state and a
+        canonically streamed child serves its arrays through
+        ``NestWindowSource``, so there is nothing on the state to diagnose
+        from.  What this excludes :meth:`feedback_prepare` drops and names
+        once; nothing raises over it, because a partial restriction is an
+        answer and stopping a started run is not.  Serving that child is
+        deferred work, not a missing physical possibility.
+        """
+        reverse = self.microphysics_reverse_transition
+        return (reverse is not None
+                and not self._feedback_child_is_bounded()
+                and transition_handles_field(reverse, kind))
+
+    def _sync_feedback_source(self) -> None:
+        """Pull the reverse launcher's whole declared plane set, ONCE.
+
+        The list is the kernel's input set for the EDGE, not for one field,
+        so this belongs outside :meth:`feedback_commit`'s per-species loop:
+        inside it, a pair with N diagnosed species paid N identical pulls
+        and reported the sum as ``feedback_sync_bytes``.
+        """
+        self.feedback_sync_bytes += _sync_in(
+            self.child_node.state, edge_parent_planes())
+
+    def _mapped_child_field(self, kind: str):
+        """The PARENT's species ``kind``, diagnosed on the CHILD's grid.
+
+        The exact mirror of ``_force_windowed``'s mapped_parent branch, one
+        direction down.  ``launch_microphysics_edge_field`` is parameterized
+        by ``(source_mp, target_mp)`` and is column-local; nothing in it is
+        parent-specific, so the feedback edge runs the same kernel with the
+        child as the source and ``coupled=False``, which is what a
+        restriction reads.  The result lands in the already-audited
+        ``nest_child_field`` arena slot -- the same one ``_raw_child_field``
+        materializes theta in -- and is consumed by ``copy_fcn``
+        immediately, so no per-field payload is introduced.
+
+        The child's planes arrive through :meth:`_sync_feedback_source`,
+        called once per transaction before the loop that calls this.  Only
+        a kind :meth:`_reverse_diagnoses` accepts is passed here, so the
+        child is never bounded when this runs.
+        """
+        contract = self.microphysics_reverse_transition
+        state = self.child_node.state
+        shape = _transition_field_shape(state, kind)
+        backing = self._scratch("nest_child_field")
+        count = math.prod(shape)
+        if count > backing.size:
+            raise RuntimeError("child field exceeds F16 arena capacity")
+        out = backing.reshape(-1)[:count].reshape(shape)
+        return launch_microphysics_edge_field(
+            contract, state, kind, out=out, coupled=False)
+
     def _rolling_out(self, kind: str):
         result = {}
         for side, suffix in _SIDES:
@@ -654,8 +746,9 @@ class NestCoupler:
         width = bdy_width(run.spec_zone, run.relax_zone, run.spec_bdy_width)
         mapped_parent = None
         if transition_handles_field(self.microphysics_transition, kind):
-            # The existing mapping inventory guard still refuses a streamed
-            # mixed-scheme parent. Resident parents keep their ratified mapper.
+            # Streamed and resident parents take the same mapper; the pull
+            # that makes the streamed one correct lives in
+            # ``_coupled_parent_field``, windowed like every other FORCE read.
             mapped_parent = self._coupled_parent_field(kind)
         for side, window, destination in boundary_windows(
                 reg, width, streamed_chunk_shape(node.state)):
@@ -810,18 +903,74 @@ class NestCoupler:
             raise RuntimeError(
                 f"feedback requires synchronized clocks, got parent "
                 f"{parent.clock.ticks} and child {node.clock.ticks}")
-        kinds = nest_field_kinds(parent.cfg.run)
-        missing = [
-            kind for kind in kinds
-            if kind != "mu" and getattr(
-                node.state, {"t": "thp", "ph": "php"}.get(kind, kind),
-                None) is None
-        ]
-        if missing:
-            raise RuntimeError(
-                f"child state lacks parent feedback fields {missing}")
+        # WHAT THE CHILD CAN SUPPLY, not what it happens to be named for.
+        # The inventory is the PARENT's, because the parent is what gets
+        # written; a mixed-scheme child legitimately carries no array by
+        # some of those names (an mp=18 parent carries qh, an mp=6 child
+        # does not), and the reverse contract diagnoses exactly those from
+        # the species the child does carry.  So a parent kind is fed back
+        # when the child holds it OR the reverse edge produces it.
+        #
+        # A parent kind that is neither is DROPPED, not refused: the mirror
+        # of the forward path, which drops a target species the source
+        # scheme has nothing to build it from.  The parent keeps its own
+        # value there, which is the answer a partial restriction has; the
+        # dropped list travels in the payload and is warned once below so
+        # the omission is stated rather than inferred.
+        reverse = self.microphysics_reverse_transition
+        bounded_child = self._feedback_child_is_bounded()
+        kinds, dropped, unreachable = [], [], []
+        for kind in nest_field_kinds(parent.cfg.run):
+            if self._reverse_diagnoses(kind):
+                kinds.append(kind)
+            elif (bounded_child and reverse is not None
+                    and transition_handles_field(reverse, kind)):
+                # A species the reverse edge WOULD diagnose, off a child
+                # whose arrays are served through ``NestWindowSource``
+                # rather than held on the state the launcher reads.  It
+                # joins the dropped list rather than being copied by name:
+                # across mixed schemes the child's same-named array is not
+                # the parent's species, so a raw restriction is the finite,
+                # plausible, wrong parent this whole edge exists to avoid.
+                dropped.append(kind)
+                unreachable.append(kind)
+            elif kind == "mu" or getattr(
+                    node.state, _state_attr(kind), None) is not None:
+                kinds.append(kind)
+            else:
+                dropped.append(kind)
+        kinds = tuple(kinds)
+        if dropped and not self._feedback_drop_warned:
+            self._feedback_drop_warned = True
+            absent = [kind for kind in dropped if kind not in unreachable]
+            reasons = []
+            if absent:
+                reasons.append(
+                    f"the child carries no {absent} and the reverse "
+                    "microphysics edge "
+                    f"{'' if reverse is None else reverse.policy_id!r} "
+                    "diagnoses none of them")
+            if unreachable:
+                reasons.append(
+                    f"{unreachable} would have to be diagnosed from the "
+                    "child's own species and this child is tile-streamed, "
+                    "so its arrays reach a reader through NestWindowSource "
+                    "rather than on the state the reverse edge reads; set "
+                    "tiles.mode = 'off' on the child, or give both domains "
+                    "the same mp_physics, to restrict those too")
+            warnings.warn(
+                "two-way feedback restricts "
+                f"{len(kinds)} of {len(kinds) + len(dropped)} parent "
+                f"prognostic fields on edge d{parent.cfg.grid_id:02d} -> "
+                f"d{node.cfg.grid_id:02d}: " + "; ".join(reasons)
+                + ".  The parent keeps its own values for those species "
+                "inside the child footprint.  Give both domains schemes "
+                "whose inventories meet, or read the restricted set from "
+                "the feedback receipt.",
+                RuntimeWarning, stacklevel=2)
         payload = {
             "kinds": kinds,
+            "dropped_kinds": tuple(dropped),
             "ticks": int(node.clock.ticks),
         }
         self._prepared_feedback = payload
@@ -848,10 +997,10 @@ class NestCoupler:
         # the store's own -- plus the four inputs ``feedback_finalize``'s
         # whole-parent update_diagnostics consumes.  Pushed back out below:
         # everything written.  This is O(the fields the transaction
-        # touches) per parent step, which is the honest cost of a
+        # touches) per parent step, which is the accurate cost of a
         # whole-domain finalize; see the module docstring.
         streamed_parent = _is_streamed(parent.state)
-        bounded_child = getattr(node.state, "_streamed_domain", None) is not None
+        bounded_child = self._feedback_child_is_bounded()
         canonical_parent = bounded_child and getattr(
             parent.state, "_streamed_domain", None) is not None
         written = ["mup"]
@@ -877,19 +1026,43 @@ class NestCoupler:
                 parent.state.mup[None], child_mu, self.registrations["m"],
                 spec_zone=run.spec_zone)
 
+        reverse = self.microphysics_reverse_transition
+        diagnosed = tuple(
+            kind for kind in payload["kinds"]
+            if kind != "mu" and self._reverse_diagnoses(kind))
+        if diagnosed:
+            self._sync_feedback_source()
         for kind in payload["kinds"]:
             if kind == "mu":
                 continue
             stagger = _STAGGER.get(kind, "m")
             reg = self.registrations[stagger]
             if bounded_child:
+                # The windowed restriction reads the child's own array BY
+                # NAME, chunk by chunk out of the store, so it is only ever
+                # taken where no conversion is owed.  ``feedback_prepare``
+                # dropped every species the reverse edge handles from a
+                # bounded child's transaction and said so once; this reads
+                # the same predicate rather than trusting that, so a
+                # mixed-scheme species cannot be restricted unconverted
+                # even if the child became bounded after the prepare.
+                if reverse is not None and transition_handles_field(
+                        reverse, kind):
+                    continue
                 self._restrict_windowed(kind, child_source, parent_source)
-            else:
-                child_field = self._raw_child_field(kind)
-                copy_fcn(
-                    getattr(parent.state, _state_attr(kind)), child_field,
-                    reg, spec_zone=run.spec_zone)
-            if kind == "t" and not bounded_child:
+                written.append(_state_attr(kind))
+                continue
+            # A species the reverse edge handles is DIAGNOSED on the child
+            # before it is restricted, never copied by name: with mixed
+            # schemes the child's qi/qs/qg are not the parent's, and for a
+            # species the child lacks entirely there is no array to copy.
+            child_field = (
+                self._mapped_child_field(kind) if kind in diagnosed
+                else self._raw_child_field(kind))
+            copy_fcn(
+                getattr(parent.state, _state_attr(kind)), child_field,
+                reg, spec_zone=run.spec_zone)
+            if kind == "t":
                 _rebase_feedback_theta(parent.state, reg, run.spec_zone)
             written.append(_state_attr(kind))
 
@@ -1014,5 +1187,5 @@ class NestCoupler:
 
 
 __all__ = [
-    "MISMATCHED_MICROPHYSICS_FEEDBACK_BLOCKER", "NestCoupler",
+    "NestCoupler",
 ]

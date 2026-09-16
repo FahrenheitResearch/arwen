@@ -330,7 +330,8 @@ Claimed, each with its receipt above or in the linked pages:
   unmodified WRF v4.6.1 Fortran, per the physics registry's per-option
   records ([PHYSICS.md](PHYSICS.md)).
 - Historical model-versus-model forecast agreement on the reference
-  case at the levels tabulated in section 3, with unequal initial states.
+  case at the levels tabulated in section 3, between runs that did not
+  start from the same state.
   This is not a pure test of time integration and does not validate
   subsequent engine changes or a different physics configuration.
 - Bit-deterministic re-execution on fixed hardware and build.

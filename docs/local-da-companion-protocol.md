@@ -221,6 +221,9 @@ in the message text, and the execution document says how far the run got.
 condensate species absent from the prepared column. It is reported before
 the first member integrates; automatic CWP instead records that missing
 optional operator and lets other streams continue.
+`CONTINUOUS_WINDOW_FAILED` means a continuous window's operation failed;
+`error` names the window, the stage and the reason, `details` carries them
+as fields, and launching the plan again resumes that window.
 
 `refusal_codes.fallback` (`LOCAL_DA_ERROR`) carries anything the door did
 not raise itself, so a switch on `code` always has an arm to land in. Its
@@ -231,6 +234,185 @@ text as the whole of what is known.
 Nothing is refused for being unmeasured, unpriced or unvalidated. A rung
 nobody has timed is priced from the most conservative basis on record and
 run, and the review says so in `wall` and in `warnings`.
+
+## Continuous cycling
+
+A request may carry `continuous_windows`, a whole number of analysis
+windows; `gpuwm local-da --continuous N` sets it. Zero, the default, is the
+reviewed finite cycle described above. A positive count publishes the same
+review with one more field, `continuous`, and launching that saved plan
+runs a bounded continuous cycle instead of the finite one: window `i`
+analyses at `epoch + (i + 1) * cadence_seconds`, restarting its forecast
+leg from window `i - 1`'s analysis, assimilating the observations of its
+own window, then running the reviewed short forecast and rendering it. The
+initial condition, the analysed state and the scientific settings never
+change between windows. Every window's products are rendered, in order,
+and a window that is late is run late and reports its lag; nothing is
+skipped to catch up.
+
+The `continuous` review field carries `enabled`, `windows`, `status_schema`
+(`arwen.local-da-continuous-status.v1`), `status_relative_path`
+(`continuous/status.json`), `control_relative_path` (`continuous/stop`),
+`window_relative_path` (`continuous/window_{index:06d}`), `product_policy`
+(`every-window-in-order`) and `renewal_policy`. The publication record
+gains `status_path` and `control_path`. `--capabilities` publishes the
+continuous contract under `continuous`, with the `statuses` roster, the
+`terminal_statuses` subset, and the argument arrays for `status_command`,
+`stop_command` and `resume_command`.
+
+### Forcing renewal
+
+The reviewed `background` covers the finite cycle. When a window's short
+forecast reaches past the forcing the case holds, that window renews the
+forcing before it starts: the same source cycle is prepared again over a
+longer window through the automatic preparation chain, into
+`window_NNNNNN/forcing/`, and the renewal receipt
+(`arwen.local-da-forcing-renewal.v1`, at `window_NNNNNN/forcing/renewal.json`)
+records the selection, the fetch hints, the frames kept and the frames
+appended. The renewed preparation is admitted only if it keeps the
+reviewed geometry, physics, output and clock, initialises from the same
+source cycle and lead, and carries every forcing frame already run under
+before the appended ones; every member checkpoint of a continuous case
+carries the preserved forcing-prefix contract, and a restart is refused at
+the checkpoint if the live forcing changed a frame the checkpoint was
+written under. A review whose `background.inputs.kind` is `prepared` or
+`local` cannot be renewed, and a window that needs renewal on such a
+review is refused by name: supply inputs that already cover the whole
+continuous window, or review on an automatically prepared source. A review
+saved before the background contract cannot be renewed either; publish a
+new review. Frames the source has not published yet are waited for, with
+the status document reading `WAITING_FORCING`, for at most one forcing
+interval past the window's analysis time; after that the window fails and
+names the frames it waited for.
+
+### The status document and the stop request
+
+`gpuwm local-da --status PLAN` prints the status document of a saved
+continuous plan and exits; `gpuwm local-da --stop PLAN` writes a durable
+stop request under `continuous/stop/` and prints the same document with
+`stop_requested` true. A running controller honours the request between
+operations and reads `STOPPED`; a launch made while no controller runs
+clears the request and resumes, so a stopped plan resumes with a launch and
+stops again only if asked again after that launch. `--launch PLAN` on a continuous plan resumes its
+unfinished window through the same immutable decisions: an interrupted
+analysis is recovered, not recomputed, and a window whose products were
+committed is never re-rendered.
+
+The document is `continuous/status.json`, rewritten atomically at every
+stage change. `status` is one of `NOT_STARTED`, `PREPARING`,
+`WAITING_TIME`, `WAITING_FORCING`, `OBSERVATIONS`, `ANALYZING`,
+`FORECASTING`, `RENDERING`, `READY`, `STOPPING`, `STOPPED`, `COMPLETE`,
+`INTERRUPTED` and `FAILED`; the last four are terminal. `windows`,
+`completed_windows`, `remaining_windows`, `active_window` and
+`analysis_time` place the run in its bounded sequence; `next_analysis_utc`
+accompanies a wait; `lag_seconds` and `processing_seconds` describe the
+window just completed; `latest_products` names the committed product
+receipt of the newest completed window, whose `images` list is the
+rendered pictures; `observation_usage` is the completed window's accepted
+observation counts, in the shape the finite execution document uses;
+`nowcast_score` is the live skill of every completed window, read off the
+window receipts rather than off a snapshot, so a lead an earlier window
+left pending appears as soon as a later pass scores it. A fault reading
+those receipts is recorded as `nowcast_score_error`, a type and message,
+beside a null `nowcast_score`, and never fails the window or the status
+door: the score is a number about the run and not a gate on it.
+`controller_alive` is decided by the held OS lock and the matching owner
+identity in `controller_owner`, never by the age of the file: a non
+terminal status whose owner is gone reads `INTERRUPTED`, and the document a
+controller leaves behind when it exits already says `controller_alive` is
+false, so the raw file never claims a run its process has left. `elapsed_seconds`,
+`session_elapsed_seconds`, `current_stage`, `current_stage_elapsed_seconds`,
+`stage_seconds` and `total_stage_seconds` are measured controller time,
+across launches, with stopped downtime excluded, as `timing_scope` says.
+`reason`, `failed_window` and `failed_stage` accompany `FAILED`.
+
+Each window directory holds its immutable decisions: `inputs.json` (the
+forcing generation and the assets it binds), `analysis.json` (the analysis
+roster and the cycle receipt), `products.json` and `execution.json` (the
+window's forecast, its rendered images, its observation usage and its
+nowcast score) and `complete.json`, with `cycles/`, `forecast/` and
+`products/` beside them in the same shapes the finite run publishes.
+`nowcast-score.json` sits beside them and is the one document in the window
+that is rewritten after the window commits, because a lead cannot be scored
+before its own valid time; `complete.json` names it and carries the score as
+it stood at completion, so the receipt is the current answer and the
+completion record is the record at the time. `continuous/head.json` names the
+newest completed window and `continuous/binding.json` the clock the
+sequence was published under.
+
+A continuous run that fails exits nonzero with the run refusal
+`CONTINUOUS_WINDOW_FAILED`: `error` names the window, the stage and the
+reason, `details` carries `window`, `stage` and `reason`, and
+`forecast_started` says whether a member had begun. Completed windows,
+their products and their analysis checkpoints are retained, and launching
+the saved plan again resumes the failed window.
+
+## The nowcast score
+
+Every local DA run scores its own forecast against the radar, with no flag,
+and the private workstation reads the same documents.
+
+`nowcast-score.json` is `arwen.local-da-nowcast-score.v1`. A finite run
+writes it in the case directory; a continuous run writes one per window at
+`continuous/window_NNNNNN/nowcast-score.json`. It carries `analysis_time`,
+`scored_utc`, the `evaluating_tree` that produced it (package, version and
+the enclosing checkout's commit), the full `registration` with its
+`registration_sha256`, the `primary` statistic (threshold, half width, box
+length in metres and the sentence naming it), the `grid` it was scored on
+with the scored interior cell count, the `model` record (the forecast
+manifest, the domain, the member scored, the members available and the
+reflectivity variable and reduction), the `observations` record (the bucket,
+the product, the decode box, and every archive object taken with its key,
+its `s3://` URI and its SHA-256), the `analysis_scan` the persistence
+baseline was carried from, and `leads`.
+
+Each entry of `leads` carries `lead_minutes`, `valid_time` and `status`, one
+of `scored`, `pending`, `missing-obs` and `unavailable`. A scored lead adds
+`scan` (the frame used, its offset from the requested instant, its SHA-256
+and the archive object it came from), `observed_coverage_fraction`,
+`interior_valid_fraction`, the full `fss` matrix over every registered
+threshold and neighbourhood, `primary_fss`, `primary_fss_useful`, both base
+rates, `scored_cells`, the `regrid` plan record, a `persistence` block with
+the same matrix and primary for the analysis-time scan carried forward, and
+`difference_primary`, which is the model primary scalar minus the
+persistence one. An unscored lead carries `reason` instead and never carries
+a score; a `missing-obs` lead below the coverage floor also carries
+`minimum_observed_fraction` and every `candidate_frames` row the selection
+rejected. `leads_scored`, `leads_pending`, `leads_missing_obs`,
+`leads_unavailable`, `primary_by_lead`, `persistence_primary_by_lead` and
+`difference_by_lead` are the same facts indexed for a consumer that only
+wants the headline.
+
+The compact form is `arwen.local-da-nowcast-summary.v1`: `receipt_path`,
+`receipt_schema`, `analysis_time`, `primary`, `registration_sha256`, the
+four lead lists, and `leads`, one row per lead carrying `lead_minutes`,
+`valid_time`, `status`, `primary_fss`, `persistence_primary_fss`,
+`difference_primary`, `primary_observed_base_rate`,
+`primary_model_base_rate`, and `reason` when the lead is not scored.
+The two base rates are in the compact row and not only in the receipt
+because an FSS of 1 with `primary_observed_base_rate` 0.0 means the
+radar found no echo at the primary threshold anywhere in the scored
+interior, not that the forecast was perfect: persistence scores 1 there
+too and `difference_primary` is 0.0, so without the base rate a clear
+box and a skilful forecast are the same three numbers. The finite
+execution document carries it under `nowcast_score`; a continuous window's
+`execution.json`, `products.json` and `complete.json` carry it under the
+same key; the status document carries `nowcast_score` with a `windows` list
+of those summaries and an `open_leads` count. A summary's own `status` is
+`scored` only when at least one lead of that window carries a number;
+otherwise it is `pending`, `missing-obs` or `unavailable`, in the same words
+the lead rows use, so a status document a reader only skims never shows
+`scored` beside a window that scored nothing. A window whose score could not
+be attempted at all carries `status` `unavailable` with the reason and no
+receipt.
+
+`gpuwm local-da --score PLAN` scores every still-unscored lead of a saved
+plan now and prints the same summary per window. It exists because latency
+is ordinary: the 60 minute lead of a real-time analysis cannot be scored
+until an hour after that analysis. A running continuous controller does the
+same pass itself as each window completes. `--capabilities` publishes the
+contract under `nowcast_score`, with the two schemas, the registered leads,
+the lead statuses and the `score_command` argument array.
 
 ## Review and confirmation
 
@@ -293,7 +475,8 @@ There is no automatic smaller-domain retry.
 
 `observation_usage` contains completed cycle indices, `accepted_for_analysis`
 and per-batch `accepted` counts from the analysis innovation masks after QC
-and thinning. `cwp_accepted` is the column batch's accepted count. Zero is
+and thinning. Those are accepted observation counts and not a skill number;
+the skill of the forecast that follows is `nowcast_score` beside them. `cwp_accepted` is the column batch's accepted count. Zero is
 explicit for a forecast-only cycle; older unreported counts remain null.
 The included `routes` retain missing-feed reasons and optional
 `observed_columns`, which counts source-QC columns before analysis. Display

@@ -60,6 +60,7 @@ BRIDGE_ENV = {
     "hrrr_grib2_bridge": "GPUWM_HRRR_DECODER",
     "grib2_inventory": "GPUWM_GRIB2_INVENTORY",
     "grib2_dump": "GPUWM_GRIB2_DUMP",
+    "gdt101_remap": "GPUWM_GDT101_REMAP",
 }
 # `gpuwm_mapped_engine` is deliberately NOT in this map, for the same
 # reason `rw_netcdf` is not: this map's consumers resolve through
@@ -102,6 +103,7 @@ CRATE_RELATIVE = "tools/grib1_bridge"
 #: rebuild bumps whether or not anything changed.
 BRIDGE_ABI_MARKERS = {
     "rw_netcdf": b"dtype\t<f8\t|S1\twater_layer_conversion\tsource_soil_recovery",
+    "gdt101_remap": b"arwen.gdt101-regional-remap.v1",
     "rw_zarr": b"arwen.regular-forcing-record.v1",
     "arwen-tui": b"Usage: arwen-tui [--config FILE] [--python EXECUTABLE]",
     "grib1_bridge": b"usage: grib1_bridge INPUT.grb OUTPUT_DIR",
@@ -147,15 +149,24 @@ BRIDGE_ABI_MARKERS = {
     # gpuwm.io.nc_writer_bridge.ABI_MARKER; a test binds the two.
     "netcdf_writer": b"gpuwm_ncwrite_scan_nonfinite",
     # The mapped decode engine behind `gpuwm prep --source mapped`.  The
-    # marker is its OUTPUT SCHEMA name rather than a usage line, because
-    # that is the literal which changes exactly when the frameset
-    # contract changes: a binary built before a frameset change still
-    # launches, still refuses politely, and would then write a directory
-    # `gpuwm.mapped_engine_bridge.read_frameset` no longer reads -- the
-    # 1.1.0 GFS series-file failure class, one layer further in.  Spelled
-    # to match gpuwm.mapped_engine_bridge.ABI_MARKER; a test binds the
-    # two.
-    "gpuwm_mapped_engine": b"gpuwm-mapped-frameset-v1",
+    # marker is a contract line rather than a usage line, and it carries
+    # TWO contracts because this binary has two a stale build can break.
+    # Its OUTPUT contract is the frameset schema: a binary built before a
+    # frameset change still launches, still refuses politely, and would
+    # then write a directory `gpuwm.mapped_engine_bridge.read_frameset`
+    # no longer reads -- the 1.1.0 GFS series-file failure class, one
+    # layer further in.  Its DECODE contract is the set of Section-5 data
+    # representations its vendored reader has a reader for: a binary
+    # built before the IEEE-packed (template 5.4) reader landed passes a
+    # frameset-only handshake, then meets a conformant 5.4 message and
+    # refuses it as "Section 5 simple packing too short", telling the
+    # user to re-fetch bytes that were correct all along.  Both move the
+    # marker now.  Spelled to match
+    # gpuwm.mapped_engine_bridge.ABI_MARKER and
+    # mapped_engine::ABI_CONTRACT; tests bind all three.
+    "gpuwm_mapped_engine": (
+        b"gpuwm-mapped-engine-abi frameset=gpuwm-mapped-frameset-v1 "
+        b"grib2-drt=0,2,3,4,40,41,42,50,51,61,200"),
     # The static-field builder cdylib (tools/rustwx/crates/static-fields),
     # the default engine for the WPS-geogrid-equivalent statics from the
     # static-rust-port lanes on.  A library, so the literal is an
@@ -281,7 +292,7 @@ def cargo_build_one_liner(crate_relative: str = CRATE_RELATIVE) -> str:
     has no Windows PowerShell 5.1 equivalent (there is no subshell that
     contains a location change there), so adopting it would give the two
     shells different SHAPES rather than one shape with two separators.
-    The explicit ``cd`` back is honest and identical in both, and is
+    The explicit ``cd`` back is accurate and identical in both, and is
     already the form the README documents for PowerShell.
     """
 
@@ -546,7 +557,7 @@ def install_aware_one_line_hint(one_liner: str,
     one-liner anyway is the failure this exists to avoid: it names a
     directory a wheel install does not have.
 
-    So the honest one-line composition is a pointer.  ``gpuwm doctor``
+    So the accurate one-line composition is a pointer.  ``gpuwm doctor``
     already assembles the full bootstrap for this exact machine, and
     naming it is true on every install, where ``cd tools/rustwx`` is
     true on only some.
@@ -697,14 +708,29 @@ PACKAGED_BRIDGE_SUBDIR = ("libexec", "bridges")
 def ensure_executable(path: Path) -> Path:
     """Give a wheel-shipped artifact back its executable bit.
 
-    ``pip`` does not preserve unix modes for package data.  It applies
-    them only to entries under the wheel's ``.data/scripts/``
-    directory; everything else lands 0644 however the wheel recorded it.
-    So the binaries this package ships arrive on Linux and macOS present,
-    correct, and unrunnable -- measured, not theorised: a clean-venv
-    install of the manylinux wheel put all eleven artifacts in place and
-    then died with ``PermissionError: [Errno 13] Permission denied`` on
-    the first ``subprocess.run``.
+    ``pip`` honours a staged member's recorded mode when the high half
+    of its zip ``external_attr`` is a whole ``st_mode`` with the
+    regular-file type bit included: its ``zip_item_is_executable``
+    tests ``S_ISREG`` before it reads the execute bits.  ``setup.py``
+    writes that mode today, so a wheel built from this tree installs its
+    bridge binaries executable and this function finds nothing to
+    repair.  Measured on the rebuilt manylinux wheel: all 28 staged
+    artifacts read back ``0o100755``, and a ``pip install`` into a clean
+    venv leaves every one of them 775 and passing
+    ``os.access(..., os.X_OK)``.
+
+    It is kept for the wheels that do not carry that mode.  A wheel
+    published before that fix stamped ``0o755`` with no file-type bits,
+    so pip's predicate rejected it and wrote the binaries 0644, and the
+    same is true of a bundle laid down by any other route that stamps no
+    mode.  That failure is measured, not theorised: a clean-venv install
+    of such a wheel put all eleven artifacts in place and then died with
+    ``PermissionError: [Errno 13] Permission denied`` on the first
+    ``subprocess.run``.  This function is the repair for bytes that are
+    already published, not a substitute for the stamping: reverting
+    ``setup.py``'s constants on the strength of it existing would put
+    that defect back for every door that resolves a bridge by another
+    route.
 
     The repair is done at resolution rather than asked of the user,
     because "fixed" means a bare ``pip install gpuwm`` works: a flag or a
@@ -732,8 +758,10 @@ def ensure_executable(path: Path) -> Path:
     except OSError as error:
         raise PermissionError(
             f"{path} is not executable and its mode could not be repaired "
-            f"({error}).  pip does not preserve executable bits on package "
-            f"data, so a wheel-installed bridge needs one of:\n"
+            f"({error}).  A bridge installed from a wheel published before "
+            f"its staged modes carried the regular-file type bit, "
+            f"or laid down by a route that stamps no mode at all, "
+            f"arrives without the execute bit, so it needs one of:\n"
             f"  chmod +x {path}\n"
             f"  # or point gpuwm at a copy you control via its environment "
             f"variable") from None

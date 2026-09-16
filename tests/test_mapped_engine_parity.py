@@ -313,7 +313,7 @@ STAGED_SOURCES: dict[str, dict[str, object]] = {
         "files": _files("ifs", "20260816000000-0h-oper-fc.grib2",
                         "20260816000000-3h-oper-fc.grib2"),
     },
-    # An AI atmosphere with no land surface: the source whose honest
+    # An AI atmosphere with no land surface: the source whose accurate
     # answer is a REFUSAL naming the state it does not publish.
     "aifs-single": {
         "mapping": "rw-wps-aifs-single-grib2.mapping.json",
@@ -372,7 +372,7 @@ STAGED_SOURCES: dict[str, dict[str, object]] = {
                         "gec00.t00z.pgrb2b.0p50.f003"),
     },
     # The hybrid-init mapping decoded against its pressure product alone:
-    # the honest answer is a refusal naming the surface state the file
+    # the accurate answer is a refusal naming the surface state the file
     # does not carry, and both engines must give it.
     "aigfs-gdas-hybrid-pres": {
         "mapping": "rw-wps-aigfs-gdas-hybrid-grib2.mapping.json",
@@ -2358,12 +2358,25 @@ def test_a_pinned_decoder_tool_routes_to_the_python_engine(monkeypatch):
 
 
 def test_the_abi_marker_is_registered_and_spelled_once():
-    """One literal, in the bridge estate and in the seam module."""
+    """One literal, in the bridge estate and in the seam module, and it
+    carries BOTH contracts a stale engine can break: the frameset shape it
+    writes and the Section-5 template set it can read."""
 
-    assert bridges.BRIDGE_ABI_MARKERS["gpuwm_mapped_engine"] \
-        == engine_bridge.ABI_MARKER
-    assert engine_bridge.ABI_MARKER \
-        == engine_bridge.FRAMESET_SCHEMA.encode("ascii")
+    marker = engine_bridge.ABI_MARKER
+    assert bridges.BRIDGE_ABI_MARKERS["gpuwm_mapped_engine"] == marker
+    assert engine_bridge.FRAMESET_SCHEMA.encode("ascii") in marker
+    assert b"grib2-drt=" in marker
+    root = Path(__file__).resolve().parents[1]
+    source = (root / "tools/rw_wps/crates/mapped-engine/src/lib.rs").read_text()
+    assert marker.decode("ascii") in source, (
+        "the Rust half must compile in the same literal the Python half "
+        "searches the binary for")
+    core = (root / "tools/grib1_bridge/vendor/grib-core/src/grib2/parser.rs"
+            ).read_text()
+    declared = re.search(
+        'pub const DECODE_TEMPLATES: &str = "([^"]+)"', core).group(1)
+    assert marker.decode("ascii").endswith(declared), (
+        "the marker's template list must be the decoder's own declaration")
 
 
 def test_the_doctor_estate_reports_the_engine():
@@ -2436,6 +2449,16 @@ def test_the_compose_registry_covers_every_registered_composition_source():
         # be permanently skipped rather than covered.  It is reported by
         # `--kind compose --list` the moment the bytes appear.
         "20crv3-cf": "no staged NetCDF-CF corpus",
+        # The one source whose compose inputs are not published bytes: a
+        # GDT-101 mesh reaches compose only through the normalization
+        # stage, so this row's primary files would be the 350 regional
+        # intermediates that stage writes, not anything a staging tree can
+        # hold.  Producing them means running the native remapper over 352
+        # raw objects first, which is a golden that regenerates its own
+        # inputs -- a different shape from every row above, and it needs
+        # its own staging contract rather than a literal file list.
+        "icon-global": "compose inputs are produced by the normalization "
+                       "stage, not published",
     }
     registered = {
         adapter.source_id for adapter in source_adapters()

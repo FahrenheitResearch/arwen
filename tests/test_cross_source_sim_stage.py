@@ -137,7 +137,7 @@ def test_a_failed_binding_alignment_refuses(prepared_tree):
 
 @pytest.mark.parametrize("tamper", [None, "mapping", "data", "provenance"])
 def test_real_cross_source_receipt_also_binds_caller_authored_authorities(prepared_tree, tamper):
-    """The retained real producer receipt is also valid under an honest generic identity."""
+    """The retained real producer receipt is also valid under an accurate generic identity."""
     prepared, proof, manifest = prepared_tree
     proof, manifest = copy.deepcopy(proof), copy.deepcopy(manifest)
     receipt = proof["source_composition"]

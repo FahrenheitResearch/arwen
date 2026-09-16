@@ -286,7 +286,7 @@ def case_frame_bytes(rung: str) -> dict:
     # The device frame carries fields the store cannot serve, so the two
     # files are only comparable over the frame the streamed path can write.
     # Restricting the MONOLITHIC one to that inventory (rather than padding
-    # the streamed one) keeps the comparison honest: the missing rows are
+    # the streamed one) keeps the comparison accurate: the missing rows are
     # reported by :func:`case_diagnostic_sources`, not papered over here.
     trimmed = {k: device[k] for k in streamed}
     trim_path = tsout.write_frame(work / "mono-trimmed.nc", trimmed, cfg,

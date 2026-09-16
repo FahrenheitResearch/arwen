@@ -270,7 +270,7 @@ def _code_pins(entries: dict[str, dict[str, Any]]) -> None:
         # wheel's capsule carried status "resolved" wrapping the value
         # "unavailable: fatal: not a git repository".  Resolved is a claim
         # that something measured the value; a payload that says
-        # unavailable refutes it in the same breath.  The pin is honestly
+        # unavailable refutes it in the same breath.  The pin is accurately
         # unavailable, and the half that DOES exist -- the version, which
         # ``gpuwm.__version__`` reads from the installed distribution's
         # metadata -- stays bound in the entry.

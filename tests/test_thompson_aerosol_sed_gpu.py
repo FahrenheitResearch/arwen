@@ -387,7 +387,7 @@ def test_cloud_sediment_reproduces_wrf_fall_speeds(scenario):
     """vtck, vtnck and the working rc must be BIT-EXACT.
 
     vtnck (:3663) has no mp=8 counterpart at all: classic Thompson never
-    computes a droplet-number fall speed.  It is the single most load-bearing
+    computes a droplet-number fall speed.  It is the single most essential
     new quantity in this package, and it is what makes mass and number fall
     consistently instead of silently drifting nc.
     """
@@ -1565,7 +1565,7 @@ def test_a_copied_mass_velocity_would_freeze_the_mean_droplet_mass():
 # launchers BYTE-FOR-BYTE unchanged (module_mp_thompson.F:3790-3936 has no
 # is_aerosol_aware branch and no nc/nwfa/nifa reference).  Only cloud is
 # re-implemented, and only because it grows a number channel.  These tests
-# keep that boundary honest in both directions: this module must not grow a
+# keep that boundary accurate in both directions: this module must not grow a
 # second copy of anything thompson.py already launches, and the one operator
 # it does own must tile and gate exactly like its classic sibling.
 
@@ -1745,7 +1745,7 @@ def _run_mp28_column(name):
     """One complete mp_physics=28 microphysics call on one oracle column.
 
     The launch order is MP28_PORT_SPEC.md's WP-09 order, which is WRF's
-    mp_thompson order; the placements are load-bearing and a call-recording
+    mp_thompson order; the placements are essential and a call-recording
     test in WP-09 will pin them again once the adapter exists.
     """
     from gpuwm.core.thompson import (

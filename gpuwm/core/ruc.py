@@ -58,6 +58,7 @@ from gpuwm.core.ruc_contract import (
     RUC_TABLE_ASSETS,
     WRF_SUPPORTED_NUM_SOIL_LAYERS,
 )
+from gpuwm.core.ruc_validation import RucValidationBatch
 
 #: numpy under a private name, so a function can shadow ``np`` with a caller's
 #: array namespace and still reach the default.
@@ -675,7 +676,7 @@ def _resolved_soil_levels(profile, what: str, *,
 
     :mod:`gpuwm.core.ruc_gpu` imports THIS function rather than mirroring it,
     so a shape error reads the same on the host lane and the device lane.  The
-    substring ``must have shape`` is load-bearing -- several tests match on it
+    substring ``must have shape`` is essential -- several tests match on it
     -- and at nine levels the message is what it always was apart from naming
     the set instead of the one count.
     """
@@ -711,6 +712,32 @@ def ruc_zshalf(zs) -> "np.ndarray":
     return half
 
 
+def _selected(mask, np, populated=True):
+    """The columns an arm runs on, as INDICES rather than as a boolean mask.
+
+    A boolean mask costs a host read every time it indexes a device array:
+    CuPy has to know how many elements the mask selects before it can shape
+    the gather or broadcast the assignment, and it learns that by reading the
+    end of a scan.  One ``sfctmp`` dispatch gathers and scatters through the
+    same mask dozens of times, so that read is paid dozens of times for an
+    answer that never changes inside the arm.
+
+    Converting once pays it once, and the arm's own ``np.any(mask)`` test
+    disappears into the conversion: ``size`` is a host integer afterwards.
+    Nothing about the selection moves -- ``nonzero`` returns ascending
+    indices, which is the order a boolean mask gathers and scatters in, and
+    the indices are unique, so a scatter through them writes each column
+    once, as before.
+
+    ``populated=False`` says a caller has ALREADY established that the mask
+    selects nothing -- see the dispatch's one-read arm census -- and skips
+    the conversion entirely rather than paying a read to rediscover it.
+    """
+    if not populated:
+        return np.zeros(0, dtype=np.intp)
+    return np.nonzero(mask)[0]
+
+
 def _horizontal_integer_field(
     value, shape: tuple[int, ...], name: str, *, arrays=None
 ) -> np.ndarray:
@@ -724,38 +751,65 @@ def _horizontal_integer_field(
 
 
 def _horizontal_float_field(
-    value, shape: tuple[int, ...], name: str, *, arrays=None
+    value, shape: tuple[int, ...], name: str, *, arrays=None, batch=None
 ) -> np.ndarray:
+    """One RUC input field, checked finite.
+
+    With a :class:`~gpuwm.core.ruc_validation.RucValidationBatch` the check is
+    QUEUED rather than read: on the device namespace ``not np.all(...)`` is a
+    copy to the host and a stream synchronisation, and one call validates
+    about 122 fields.  The batch decides all of them with one read, raising
+    the first failure in submission order -- the same field and the same
+    message this returned field by field.  A shape refusal still fires
+    immediately, after flushing, so a non-finite field queued earlier still
+    wins.
+    """
     np = arrays if arrays is not None else _NUMPY
     raw = np.asarray(value, dtype=np.float32)
     if raw.shape != shape:
         try:
             raw = np.broadcast_to(raw, shape)
         except ValueError as exc:
+            if batch is not None:
+                batch.flush()
             raise ValueError(
                 f"{name} shape {raw.shape} is not broadcastable to {shape}"
             ) from exc
+    if batch is not None:
+        return batch.finite(raw, name)
     if not np.all(np.isfinite(raw)):
         raise ValueError(f"{name} must be finite")
     return raw
 
 
 def _root_count_field(value, shape: tuple[int, ...], *, arrays=None,
-                      nzs: int = NUM_SOIL_LAYERS) -> np.ndarray:
+                      nzs: int = NUM_SOIL_LAYERS, batch=None) -> np.ndarray:
     np = arrays if arrays is not None else _NUMPY
     raw = np.asarray(value)
     if not np.issubdtype(raw.dtype, np.integer):
+        if batch is not None:
+            batch.flush()
         raise TypeError("nroot must contain integer root-zone level counts")
     if raw.shape != shape:
         try:
             raw = np.broadcast_to(raw, shape)
         except ValueError as exc:
+            if batch is not None:
+                batch.flush()
             raise ValueError(
                 f"nroot shape {raw.shape} is not broadcastable to {shape}"
             ) from exc
     roots = raw.astype(np.int32, copy=False)
-    if np.any((roots < 1) | (roots >= nzs)):
-        bad = int(roots[(roots < 1) | (roots >= nzs)][0])
+    invalid = (roots < 1) | (roots >= nzs)
+    if batch is not None:
+        # The offending count is still READ and still named, but only on the
+        # failing path, after the batch's own single read.
+        batch.refuse_if_any(
+            invalid,
+            lambda: f"RUC nroot {int(roots[invalid][0])} is outside 1..{nzs - 1}")
+        return roots
+    if np.any(invalid):
+        bad = int(roots[invalid][0])
         raise ValueError(f"RUC nroot {bad} is outside 1..{nzs - 1}")
     return roots
 
@@ -885,28 +939,44 @@ def ruc_surface_parameters(
         green_range < one, one, (one - bounded).astype(np.float32)
     ).astype(np.float32)
 
+    # SELECTED BY ``where``, NOT BY A BOOLEAN MASK.  Each of the six forest
+    # classes, the water/land split and the soil-class split below used to
+    # index with a boolean array, which on the device namespace costs a host
+    # read per gather and per scatter -- 33 of them for one call of a routine
+    # that does five float32 operations per column.  ``where`` is elementwise
+    # and reads nothing.  The classes are distinct, so at most one arm of the
+    # chain claims a column and the answer is the loop's; the arithmetic is
+    # evaluated on every column instead of on the selected ones, in the same
+    # order and with the same operand pairing, and discarded where it does
+    # not apply.
     scaled_lai = (np.float32(0.8) * table_lai).astype(np.float32)
     delta_lai = np.zeros(forest_class.shape, dtype=np.float32)
     for klass, cap in ((1, 0.2), (2, 0.5), (3, 0.45), (4, 0.75),
                        (5, 0.86), (7, 0.5)):
-        selected = forest_class == klass
-        delta_lai[selected] = np.minimum(
-            np.float32(cap), scaled_lai[selected]).astype(np.float32)
+        delta_lai = np.where(
+            forest_class == klass,
+            np.minimum(np.float32(cap), scaled_lai).astype(np.float32),
+            delta_lai,
+        ).astype(np.float32)
 
     water = vegetation_flat == water_category
-    land = ~water
     if not rdlai2d:
-        leaf_flat[water] = table_lai[water]
-        leaf_flat[land] = (
-            table_lai[land]
-            - (delta_lai[land] * factor[land]).astype(np.float32)
+        leaf_flat[:] = np.where(
+            water,
+            table_lai,
+            (table_lai
+             - (delta_lai * factor).astype(np.float32)).astype(np.float32),
         ).astype(np.float32)
-    roughness_flat[land] = np.where(
-        forest_class[land] == 7,
-        (table_z0[land]
-         - (np.float32(0.125) * factor[land]).astype(np.float32)
-         ).astype(np.float32),
-        table_z0[land],
+    roughness_flat[:] = np.where(
+        water,
+        roughness_flat,
+        np.where(
+            forest_class == 7,
+            (table_z0
+             - (np.float32(0.125) * factor).astype(np.float32)
+             ).astype(np.float32),
+            table_z0,
+        ).astype(np.float32),
     ).astype(np.float32)
 
     output_flat["emiss"][:] = np.asarray(
@@ -919,19 +989,25 @@ def ruc_surface_parameters(
     solid = soil_flat != 14
     soil_table = np.asarray(
         [row.values for row in bundle.soil.rows], dtype=np.float32)
-    selected = soil_flat.astype(np.intp)[solid] - 1
+    # The row is looked up for EVERY column and the water class's row is
+    # then discarded by ``where``; the category was already checked to be
+    # inside 1..len(rows) above, so the lookup itself cannot leave the table.
+    selected = soil_flat.astype(np.intp) - 1
     drysmc = soil_table[selected, 1]
-    output_flat["rhocs"][solid] = (
-        soil_table[selected, 2] * np.float32(1.0e6)).astype(np.float32)
-    output_flat["bclh"][solid] = soil_table[selected, 0]
-    output_flat["dqm"][solid] = (
-        soil_table[selected, 3] - drysmc).astype(np.float32)
-    output_flat["ksat"][solid] = soil_table[selected, 6]
-    output_flat["psis"][solid] = (-soil_table[selected, 5]).astype(np.float32)
-    output_flat["qmin"][solid] = drysmc
-    output_flat["ref"][solid] = soil_table[selected, 4]
-    output_flat["wilt"][solid] = soil_table[selected, 8]
-    output_flat["qwrtz"][solid] = soil_table[selected, 9]
+    for name, value in (
+        ("rhocs", (soil_table[selected, 2]
+                   * np.float32(1.0e6)).astype(np.float32)),
+        ("bclh", soil_table[selected, 0]),
+        ("dqm", (soil_table[selected, 3] - drysmc).astype(np.float32)),
+        ("ksat", soil_table[selected, 6]),
+        ("psis", (-soil_table[selected, 5]).astype(np.float32)),
+        ("qmin", drysmc),
+        ("ref", soil_table[selected, 4]),
+        ("wilt", soil_table[selected, 8]),
+        ("qwrtz", soil_table[selected, 9]),
+    ):
+        output_flat[name][:] = np.where(
+            solid, value, output_flat[name]).astype(np.float32)
 
     return RucSurfaceParameters(
         iforest=forest,
@@ -1829,15 +1905,16 @@ def ruc_qsn(tn, table: np.ndarray | None = None, *, arrays=None) -> np.ndarray:
     """
 
     np = arrays if arrays is not None else _NUMPY
+    admission = RucValidationBatch(np)
     values = np.asarray(tn, dtype=np.float32)
-    if not np.all(np.isfinite(values)):
-        raise ValueError("RUC qsn temperatures must be finite")
+    admission.finite_message(values, "RUC qsn temperatures must be finite")
     saturation = (
         _load_ruc_saturation_table()
         if table is None
         else np.asarray(table, dtype=np.float32)
     )
     if saturation.shape != (5001,):
+        admission.flush()
         raise ValueError(
             f"RUC qsn table must have shape (5001,), got {saturation.shape}"
         )
@@ -1845,8 +1922,14 @@ def ruc_qsn(tn, table: np.ndarray | None = None, *, arrays=None) -> np.ndarray:
     raw = (values - np.float32(173.15)).astype(np.float32)
     raw = (raw / np.float32(0.05)).astype(np.float32)
     raw = (raw + np.float32(1.0)).astype(np.float32)
-    if not np.all(np.abs(raw) < np.float32(2.0 ** 31)):
-        raise ValueError("RUC qsn index expression overflows Fortran INT")
+    # Both admission tests resolve here, in submission order, so a
+    # non-finite temperature -- which also fails the range test, since a
+    # comparison against NaN is false -- still refuses by the name it
+    # refused by before.
+    admission.refuse_if_any(
+        ~(np.abs(raw) < np.float32(2.0 ** 31)),
+        "RUC qsn index expression overflows Fortran INT")
+    admission.flush()
     index = raw.astype(np.int32)
 
     below = index < np.int32(1)
@@ -1950,8 +2033,11 @@ def _ruc_constant_flux_depth(conflx, label: str, *, arrays=None) -> np.ndarray:
     depth = np.asarray(conflx, dtype=np.float32)
     if depth.ndim > 1:
         raise ValueError(f"RUC {label} conflx must be scalar or 1-D")
-    if not np.all(np.isfinite(depth)) or np.any(depth < np.float32(0.0)):
-        raise ValueError(f"RUC {label} conflx must be finite and nonnegative")
+    admission = RucValidationBatch(np)
+    message = f"RUC {label} conflx must be finite and nonnegative"
+    admission.finite_message(depth, message)
+    admission.refuse_if_any(depth < np.float32(0.0), message)
+    admission.flush()
     return np.atleast_1d(depth)
 
 
@@ -7575,6 +7661,7 @@ def ruc_surface_temperature_step(
             raise KeyError(f"unknown RUC sfctmp stage override(s): {unknown}")
         stage.update(stages)
 
+    admission = RucValidationBatch(np)
     profiles: dict[str, np.ndarray] = {}
     shape: tuple[int, ...] | None = None
     for name in RUC_SFCTMP_PROFILE_INPUTS:
@@ -7583,20 +7670,22 @@ def ruc_surface_temperature_step(
             nzs = _resolved_soil_levels(array, "RUC sfctmp profiles")
             shape = array.shape
         elif array.shape != shape:
+            admission.flush()
             raise ValueError(
                 f"{name} shape {array.shape}; expected shared profile shape {shape}"
             )
-        if not np.all(np.isfinite(array)):
-            raise ValueError(f"{name} must be finite")
+        admission.finite(array, name)
         profiles[name] = array
     assert shape is not None
     horizontal_shape = shape[1:]
     ncolumn = int(np.prod(horizontal_shape))
     columns = {
         name: _horizontal_float_field(
-            values[name], horizontal_shape, name, arrays=arrays)
+            values[name], horizontal_shape, name, arrays=arrays,
+            batch=admission)
         for name in RUC_SFCTMP_COLUMN_INPUTS
     }
+    admission.flush()
     vegetation_category = _horizontal_integer_field(
         ivgtyp, horizontal_shape, "ivgtyp", arrays=arrays
     ).reshape(ncolumn)
@@ -7711,9 +7800,30 @@ def ruc_surface_temperature_step(
         )
     }
 
+    # ONE READ SAYS WHICH ARMS HAVE COLUMNS.  Every one of the eleven arms
+    # below selects on ``snow``, ``mosaic`` and ``seaice_is_ice``, and all
+    # three are fixed before the dispatch starts, so their eight distinct
+    # combinations are tested together and their verdicts read together.
+    # Arm by arm this was a host read each to discover that the arm had
+    # nothing to do, and on a warm grid nine of the eleven have nothing to
+    # do.
+    mosaic_land = snow & mosaic & ~seaice_is_ice
+    mosaic_ice = snow & mosaic & seaice_is_ice
+    snow_column = snow
+    snow_land = snow & ~seaice_is_ice
+    snow_ice = snow & seaice_is_ice
+    bare_column = ~snow
+    bare_land = ~snow & ~seaice_is_ice
+    bare_ice = ~snow & seaice_is_ice
+    _arm_masks = (mosaic_land, mosaic_ice, snow_column, snow_land, snow_ice,
+                  bare_column, bare_land, bare_ice)
+    (runs_mosaic_land, runs_mosaic_ice, runs_snow_column, runs_snow_land,
+     runs_snow_ice, runs_bare_column, runs_bare_land, runs_bare_ice) = (
+        np.stack([np.any(each) for each in _arm_masks]).tolist())
+
     # :1767-1822 -- mosaic land: ``soil`` on the snow-free fraction.
-    mask = snow & mosaic & ~seaice_is_ice
-    if np.any(mask):
+    mask = _selected(mosaic_land, np, runs_mosaic_land)
+    if mask.size:
         gswnew = np.float32(local["gswin"][mask] * np.float32(
             one - flat["alb_snow_free"][mask]
         ))
@@ -7790,8 +7900,8 @@ def ruc_surface_temperature_step(
         state["smf"][mask] = free.smf
 
     # :1823-1878 -- mosaic sea ice: ``sice`` on the snow-free fraction.
-    mask = snow & mosaic & seaice_is_ice
-    if np.any(mask):
+    mask = _selected(mosaic_ice, np, runs_mosaic_ice)
+    if mask.size:
         gswnew = np.float32(
             local["gswin"][mask] * np.float32(one - local["albice"][mask])
         )
@@ -7813,7 +7923,7 @@ def ruc_surface_temperature_step(
                 "qvatm": flat["qvatm"][mask],
                 # :1853 -- a literal 0.98, not ``emiss``.
                 "emiss": np.full(
-                    int(np.count_nonzero(mask)),
+                    int(mask.size),
                     np.float32(0.98),
                     dtype=np.float32,
                 ),
@@ -7840,7 +7950,7 @@ def ruc_surface_temperature_step(
         # :1863-1877.  Every one of these is reassigned by :1961-1975 below
         # over exactly this mask, so the whole block is dead.  It is
         # transcribed anyway because "dead" is a claim about the source, not
-        # a licence to skip it -- with one honest gap: :1863 multiplies the
+        # a licence to skip it -- with one accurate gap: :1863 multiplies the
         # ENTRY ``eeta``, which this port does not accept as an input
         # precisely because no path can observe it, so the factor here is
         # zero rather than WRF's entry value.  Both are overwritten before
@@ -7863,8 +7973,8 @@ def ruc_surface_temperature_step(
 
     # :1892-1898 -- absorbed solar and net radiation for the snow albedo.
     snow_rnet = np.zeros(ncolumn, dtype=np.float32)
-    mask = snow
-    if np.any(mask):
+    mask = _selected(snow_column, np, runs_snow_column)
+    if mask.size:
         gswnew = np.float32(
             local["gswin"][mask] * np.float32(one - state["alb"][mask])
         )
@@ -7878,8 +7988,8 @@ def ruc_surface_temperature_step(
         snow_rnet[mask] = rnet
 
     # :1905-1933 -- the snow column on land.
-    mask = snow & ~seaice_is_ice
-    if np.any(mask):
+    mask = _selected(snow_land, np, runs_snow_land)
+    if mask.size:
         # :1907-1911
         snfr = np.where(mosaic[mask], one, state["snowfrac"][mask]).astype(
             np.float32
@@ -7960,8 +8070,8 @@ def ruc_surface_temperature_step(
         snow_layers[mask] = packed.ilnb
 
     # :1934-1976 -- the snow column on sea ice.
-    mask = snow & seaice_is_ice
-    if np.any(mask):
+    mask = _selected(snow_ice, np, runs_snow_ice)
+    if mask.size:
         snfr = np.where(mosaic[mask], one, state["snowfrac"][mask]).astype(
             np.float32
         )
@@ -8031,8 +8141,8 @@ def ruc_surface_temperature_step(
             state[name][:, mask] = value
 
     # :1979-2039 -- mosaic recombination on land.
-    mask = snow & mosaic & ~seaice_is_ice
-    if np.any(mask):
+    mask = _selected(mosaic_land, np, runs_mosaic_land)
+    if mask.size:
         snowfrac = state["snowfrac"][mask]
         rest = np.float32(one - snowfrac)
 
@@ -8104,8 +8214,8 @@ def ruc_surface_temperature_step(
     # :2040-2074 -- mosaic recombination on sea ice.  A shorter output list:
     # edir1, ec1, ett1, cst, mavail, infiltr and the soil arrays keep the
     # values :1961-1975 forced.
-    mask = snow & mosaic & seaice_is_ice
-    if np.any(mask):
+    mask = _selected(mosaic_ice, np, runs_mosaic_ice)
+    if mask.size:
         snowfrac = state["snowfrac"][mask]
         rest = np.float32(one - snowfrac)
 
@@ -8161,14 +8271,15 @@ def ruc_surface_temperature_step(
             state[name][mask] = blend(shadow[name][mask], state[name][mask])
 
     # :2077-2115 -- melt-out reset, cover rebuild, urban cap, accumulation.
-    mask = snow
-    if np.any(mask):
-        melted = mask & (state["snhei"] == zero)
+    mask = _selected(snow_column, np, runs_snow_column)
+    if mask.size:
+        melted_here = snow_column & (state["snhei"] == zero)
+        melted = _selected(melted_here, np)
         state["alb"][melted] = flat["alb_snow_free"][melted]
         land_category[melted] = vegetation_category[melted]
 
-        remaining = mask & ~melted
-        if np.any(remaining):
+        remaining = _selected(snow_column & ~melted_here, np)
+        if remaining.size:
             snhei = state["snhei"][remaining]
             depth_fraction = np.minimum(
                 one,
@@ -8216,7 +8327,7 @@ def ruc_surface_temperature_step(
                     )
                 ), arrays=arrays)
         # :2111
-        town = mask & (vegetation_category == urban)
+        town = _selected(snow_column & (vegetation_category == urban), np)
         state["snowfrac"][town] = np.minimum(
             np.float32(0.75), state["snowfrac"][town]
         )
@@ -8229,8 +8340,8 @@ def ruc_surface_temperature_step(
     # :2118-2195 -- the snow-free branch.
     rnet_free = np.zeros(ncolumn, dtype=np.float32)
     xinet_free = np.zeros(ncolumn, dtype=np.float32)
-    mask = ~snow
-    if np.any(mask):
+    mask = _selected(bare_column, np, runs_bare_column)
+    if mask.size:
         state["snheiprint"][mask] = zero
         state["snweprint"][mask] = zero
         state["smelt"][mask] = zero
@@ -8246,8 +8357,8 @@ def ruc_surface_temperature_step(
         rnet_free[mask] = bare_rnet
         xinet_free[mask] = bare_xinet
 
-    mask = ~snow & ~seaice_is_ice
-    if np.any(mask):
+    mask = _selected(bare_land, np, runs_bare_land)
+    if mask.size:
         bare = leaf["soil"](
             {
                 "soilmois": state["soilm1d"][:, mask],
@@ -8313,8 +8424,8 @@ def ruc_surface_temperature_step(
             state[name][mask] = getattr(bare, name)
         state["infiltr"][mask] = bare.infiltrp
 
-    mask = ~snow & seaice_is_ice
-    if np.any(mask):
+    mask = _selected(bare_ice, np, runs_bare_ice)
+    if mask.size:
         # :2158-2160 -- rescale the absorbed solar flux to the ice albedo.
         gswnew = np.where(
             state["alb"][mask] != local["albice"][mask],
@@ -8931,6 +9042,7 @@ def ruc_land_surface_step(
             raise TypeError(
                 "missing RUC ARW driver inputs: " + ", ".join(missing_arw))
 
+    admission = RucValidationBatch(np)
     shape: tuple[int, ...] | None = None
     profiles: dict[str, np.ndarray] = {}
     for name in RUC_DRIVER_PROFILE_STATE:
@@ -8939,19 +9051,23 @@ def ruc_land_surface_step(
             nzs = _resolved_soil_levels(array, "RUC driver profiles")
             shape = array.shape
         elif array.shape != shape:
+            admission.flush()
             raise ValueError(f"{name} shape {array.shape}; expected {shape}")
-        if not np.all(np.isfinite(array)):
-            raise ValueError(f"{name} must be finite")
+        admission.finite(array, name)
         profiles[name] = array
     assert shape is not None
     horizontal_shape = shape[1:]
     ncolumn = int(np.prod(horizontal_shape))
 
+    # The reshape and the copy are what the driver keeps; the finiteness of
+    # the field it copied FROM is what the batch decides, and the two are the
+    # same values.
     columns: dict[str, np.ndarray] = {}
     for name in RUC_DRIVER_COLUMN_STATE + RUC_DRIVER_COLUMN_FORCING:
         columns[name] = np.array(
             _horizontal_float_field(
-                values[name], horizontal_shape, name, arrays=arrays
+                values[name], horizontal_shape, name, arrays=arrays,
+                batch=admission,
             ).reshape(ncolumn),
             dtype=np.float32,
             copy=True,
@@ -8960,7 +9076,8 @@ def ruc_land_surface_step(
         for name in RUC_DRIVER_ARW_FORCING:
             columns[name] = np.array(
                 _horizontal_float_field(
-                    values[name], horizontal_shape, name, arrays=arrays
+                    values[name], horizontal_shape, name, arrays=arrays,
+                    batch=admission,
                 ).reshape(ncolumn),
                 dtype=np.float32,
                 copy=True,
@@ -8971,12 +9088,13 @@ def ruc_land_surface_step(
     soil_category = _horizontal_integer_field(
         isltyp, horizontal_shape, "isltyp", arrays=arrays
     ).reshape(ncolumn)
-    if np.any((vegetation_category < 1) | (vegetation_category > ncategory)):
-        raise ValueError(
-            f"RUC ivgtyp is outside 1..{ncategory} for {vegetation.name}"
-        )
-    if np.any((soil_category < 1) | (soil_category > len(bundle.soil.rows))):
-        raise ValueError(f"RUC isltyp is outside 1..{len(bundle.soil.rows)}")
+    admission.refuse_if_any(
+        (vegetation_category < 1) | (vegetation_category > ncategory),
+        f"RUC ivgtyp is outside 1..{ncategory} for {vegetation.name}")
+    admission.refuse_if_any(
+        (soil_category < 1) | (soil_category > len(bundle.soil.rows)),
+        f"RUC isltyp is outside 1..{len(bundle.soil.rows)}")
+    admission.flush()
 
     state = {
         name: np.array(
@@ -9204,10 +9322,19 @@ def ruc_land_surface_step(
             if em_core == 1 and lakemodel == 1
             else np.zeros(ncolumn, dtype=bool))
     # :823-826 jumps to label 2999 before either the water or land arm.
-    water = raw_water & ~lake
-    land = ~(raw_water | lake)
+    #
+    # The three arms keep BOTH forms of their selection: the boolean, which
+    # is what the next arm is built out of, and the column indices, which are
+    # what every gather and scatter below uses.  On the device namespace a
+    # boolean mask is a host read per use and the indices are free after the
+    # first, and this driver writes through ``land`` alone more than fifty
+    # times.
+    water_here = raw_water & ~lake
+    land_here = ~(raw_water | lake)
+    water = _selected(water_here, np)
+    land = _selected(land_here, np)
     patmb = (columns["p8w"] * np.float32(1.0e-2)).astype(np.float32)
-    if np.any(water):
+    if water.size:
         columns["smavail"][water] = one
         columns["smmax"][water] = one
         columns["snow"][water] = zero
@@ -9231,8 +9358,8 @@ def ruc_land_surface_step(
     seaice = np.where(
         columns["xice"] >= threshold, one, zero).astype(np.float32)
     iland = np.array(vegetation_category, dtype=np.int32, copy=True)
-    ice = land & (seaice > np.float32(0.5))
-    if np.any(ice):
+    ice = _selected(land_here & (seaice > np.float32(0.5)), np)
+    if ice.size:
         # ``:862-895``.
         iland[ice] = ice_category
         columns["znt"][ice] = np.float32(0.011)
@@ -9390,7 +9517,7 @@ def ruc_land_surface_step(
         # the chain is off, and a water column then ``CYCLE``s before
         # assigning anything -- so a trailing water column leaves the
         # returned ``ilnb`` at the seed, not at the last land answer.
-        if not ilnb_chain and bool(water[ncolumn - 1] | lake[ncolumn - 1]):
+        if not ilnb_chain and bool(water_here[ncolumn - 1] | lake[ncolumn - 1]):
             carried_ilnb = ilnb_seed
 
         soilm1d[:, run] = np.asarray(surface_step.soilm1d, dtype=np.float32)

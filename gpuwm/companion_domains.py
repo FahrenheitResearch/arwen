@@ -23,12 +23,26 @@ RESULT_SCHEMA = "arwen.companion-domain-result.v1"
 
 # Explicit example settings already shipped in this configuration. This is
 # an editable preset, not a new detection algorithm or a model-wide default.
+#
+# THE TWO MOVEMENT BOUNDS ARE NOT INDEPENDENT, and the floor is the one
+# that states the physics: keep 0.7 of the child, so at most 0.3 of it is
+# strip the move exposes and the child must spin up.  The per-axis
+# maximum is DERIVED from it -- an overlap floor f admits a per-axis
+# magnitude of 1 - sqrt(f) of the nest's own width in parent cells on the
+# binding diagonal move, which on this 40-parent-cell-wide nest is
+# 40 * (1 - sqrt(0.7)) = 6.53, so 6
+# (gpuwm.core.nest_relocation.max_parent_cells_for_overlap; the pair is
+# checked by tests/test_relocation_overlap_clamp.py).  Declaring 8 here
+# against a floor of 0.7 said a diagonal move of 8 was available when the
+# floor refuses it, which is what ended a cyclone quick forecast at its
+# first relocation cadence.  6 parent cells at 12 km is 72 km per 900 s
+# cadence, which no storm outruns.
 VORTEX_PRESET_SOURCE = "configs/cyclone_nest_slots_12km.toml: domain 2 follow"
 VORTEX_PRESET = {
     "field": "pressure", "threshold": 25.0, "level_hpa": 850.0,
     "radius_km": 60.0, "search_margin_cells": 20, "min_shift_cells": 2,
-    "max_shift_cells": 8, "cooldown_seconds": 3600.0,
-    "cadence_seconds": 900.0, "max_move_parent_cells": 8,
+    "max_shift_cells": 6, "cooldown_seconds": 3600.0,
+    "cadence_seconds": 900.0, "max_move_parent_cells": 6,
     "min_overlap_fraction": 0.7,
 }
 

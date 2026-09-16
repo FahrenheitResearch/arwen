@@ -12,7 +12,7 @@
 ! scratch directory and was subsequently lost, which made the embedded
 ! _WRF_COLD_WARM_LOOP table in that test unverifiable by a reader.
 !
-! PROVENANCE HONESTY -- READ BEFORE TRUSTING THE ROW COUNT.  This file is a
+! PROVENANCE ACCURACY -- READ BEFORE TRUSTING THE ROW COUNT.  This file is a
 ! RECONSTRUCTION, not a recovery.  The original driver was not on disk.  What
 ! is recovered with certainty, because every one of them is printed in the
 ! committed test table, is:

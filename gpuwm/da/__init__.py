@@ -34,7 +34,7 @@ Contents (each landed by its own v1.2 lane):
   innovation statistics.
 
 The deliberate absence of any submodule import here is a design statement, and
-it is load-bearing twice over.  A ``from gpuwm.da import *`` that pulled in
+it is essential twice over.  A ``from gpuwm.da import *`` that pulled in
 cupy at import time would make every DA symbol a GPU dependency for callers
 that only wanted a dataclass, and would break the test suite's ``-m "not
 gpu"`` guarantee (see ``tests/conftest.py``).  It also keeps several lanes

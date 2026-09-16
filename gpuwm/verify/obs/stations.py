@@ -10,7 +10,7 @@ is made explicit and receipted here:
   not a difference.  :func:`freeze_station_set` returns the survivors *and*
   every drop with its reason, and the harness records both.
 * **A station is dropped, never corrected.**  When model terrain and station
-  elevation disagree by more than the registered tolerance, the honest move
+  elevation disagree by more than the registered tolerance, the accurate move
   is to stop scoring that station; a lapse-rate adjustment would invent the
   agreement it is measuring.  The dropped count is published.
 * **Time matching is one-sided about failure.**  A (station, hour) with no

@@ -97,7 +97,7 @@ def _driver_column(smois, tslb, sh2o, *, veg=10, soil=6):
 
 
 # ---------------------------------------------------------------------------
-# the user's failure mode, and the perturbed control that keeps it honest
+# the user's failure mode, and the perturbed control that keeps it accurate
 # ---------------------------------------------------------------------------
 
 def test_smois_exact_zero_column_is_nan_when_the_floor_is_bypassed(params):
@@ -197,7 +197,7 @@ def test_negative_era5_values_floored_counted_and_healthy_cells_untouched(
     smcdry = _smcdry(params, 3)
     receipt = state.moisture_floor
     assert receipt["total_floored_cells"] == 5  # 4 layers + 1 diluted L1
-    assert receipt["min_pre_floor"] == -1e-4  # pre-CLIP honesty, not 0.0
+    assert receipt["min_pre_floor"] == -1e-4  # pre-CLIP accuracy, not 0.0
     touched = receipt["fields"]
     assert sorted(touched) == [
         "SMOIS_L1", "SMOIS_L2", "SMOIS_L3", "SMOIS_L4"]

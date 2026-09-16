@@ -623,7 +623,7 @@ def _exact_subset_indices(
 #: The two DECLARED shapes a terrain supplement's clock can take.
 #:
 #: ``valid_time_exact`` requires a terrain frame at every primary valid
-#: time -- the default, and the only honest choice for a producer that
+#: time -- the default, and the only accurate choice for a producer that
 #: writes terrain into every step (HRRR's in-band terrain, 20CRv3's
 #: per-time supplement).  ``cycle_invariant_broadcast`` is for the
 #: producers that write their static fields only into the analysis frame

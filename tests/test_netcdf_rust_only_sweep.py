@@ -14,7 +14,7 @@ Four lists, and the point is that all four are explicit:
 * :data:`_WORKAROUND_ENGINE` may, and has to prove the netCDF4 half is an
   ESCAPE: the default engine is Drew's Rust writer and the environment
   variable that reaches netCDF4 is named in the module.
-* :data:`_OPEN_FINDINGS` may, and is the honest one: a data path that has
+* :data:`_OPEN_FINDINGS` may, and is the accurate one: a data path that has
   NOT been converted, named with the finding against it.  It is EMPTY
   today -- F1 (wrfinput/wrfbdy) and F2 (`gpuwm spectral score`) of the
   2026-08-18 hidden-scope audit were both closed, by separate lanes, and

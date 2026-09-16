@@ -456,7 +456,7 @@ defined-behaviour divergences were needed on the WPS path: the crate
 reproduces the numpy bits everywhere the dual run looked.
 
 **Benchmark (cold = fresh process, warm = second in-process call;
-single-run honest numbers, this box):**
+single-run accurate numbers, this box):**
 
 | domain | Python cold | Rust cold | speedup | Python warm | Rust warm |
 |---|---|---|---|---|---|
@@ -491,7 +491,7 @@ coverage sweep counts it.  Bindings pinned by
 `pytest tests/test_static_rust_parity.py` 13 green;
 `test_static_build.py`, `test_lambert.py`, `test_projection_oracle.py`
 (109), corridor/highres/native suites (95), and the estate suites
-(`test_bridge_fetch.py`, `test_doctor_route_honesty.py`,
+(`test_bridge_fetch.py`, `test_doctor_route_accuracy.py`,
 `test_verify_release_artifacts.py`, `test_nc_writer_bridge.py`,
 `test_doctor.py`, 227) all green on the bare default path with the
 reference bundle present.

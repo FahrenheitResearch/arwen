@@ -388,7 +388,7 @@ def test_wizard_suggested_margin_passes_the_lake_donor_proof():
             dry, _CoverageGrid(point), np.array([[True]]))
 
 
-def test_git_identity_degrades_honestly_outside_a_checkout(monkeypatch):
+def test_git_identity_degrades_accurately_outside_a_checkout(monkeypatch):
     """An installed wheel is neither a git checkout nor a sealed
     runtime: provenance reports unavailable instead of demanding
     GPUWM_NATIVE_DISTRIBUTION_MANIFEST or raising."""
@@ -411,7 +411,7 @@ def test_git_identity_degrades_honestly_outside_a_checkout(monkeypatch):
 def test_implementation_hashes_no_longer_demand_the_sealed_manifest(
         monkeypatch, tmp_path):
     """Wheel installs miss the repo-only paths (tools/, Rust sources);
-    the inventory records them honestly without requiring the sealed
+    the inventory records them accurately without requiring the sealed
     archive's distribution manifest."""
     import gpuwm.gfs_direct as gfs_direct
 
@@ -1481,7 +1481,7 @@ def test_the_gfs_adapter_cli_carries_the_corridor_request_to_the_preparation(
     capsys.readouterr()
 
 
-def test_the_adapter_prints_corridor_size_honesty_lines(
+def test_the_adapter_prints_corridor_size_accuracy_lines(
         monkeypatch, tmp_path, capsys):
     from gpuwm import gfs_direct
 

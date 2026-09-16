@@ -226,7 +226,7 @@ def test_the_local_gpu_switch_stops_the_check_touching_the_device(
 ])
 def test_a_box_that_cannot_be_judged_says_so_rather_than_passing(
         monkeypatch, payload, expected):
-    """``info``, honestly.  A box with no device must not fail doctor."""
+    """``info``, accurately.  A box with no device must not fail doctor."""
     check = _check(monkeypatch, payload)
     assert check.status == "info"
     assert check.brief == expected

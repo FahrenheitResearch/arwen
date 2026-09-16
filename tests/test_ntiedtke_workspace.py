@@ -181,7 +181,7 @@ def test_the_right_base_reproduces_the_oracle():
 
 
 def test_a_wrong_base_fails_a_real_boundary_grade():
-    """THE LOAD-BEARING TEST OF THE WHOLE DESIGN.
+    """THE ESSENTIAL TEST OF THE WHOLE DESIGN.
 
     Bind a 1-based stage with base 0 and the grade must fail. If it passed,
     every "the base is established by grading" claim in §32 would be empty,

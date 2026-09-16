@@ -1,9 +1,9 @@
-"""The observation seam refuses what it cannot honestly score.
+"""The observation seam refuses what it cannot accurately score.
 
 Two halves.  The first pins the seam's refusals: an observed field that
 carries a NaN where a mask belongs, a longitude nobody wrapped, a value that
 cannot be the quantity it claims, a station report with an unknown variable.
-Each of those has exactly one honest reading, and the seam takes it before a
+Each of those has exactly one accurate reading, and the seam takes it before a
 score is computed on top.
 
 The second half pins the stand-ins.  The ingest lane is being built beside

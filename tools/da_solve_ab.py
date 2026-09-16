@@ -32,7 +32,7 @@ WHAT IT MEASURES, and why each part is here.
 
 * **GPU contention, both interleavings.**  During a real DA cycle the card
   is integrating the ensemble.  A device analysis therefore does not get an
-  idle GPU, and the honest question is not "which arm is faster alone" but
+  idle GPU, and the accurate question is not "which arm is faster alone" but
   "which arrangement finishes the leg sooner".  ``--interleave`` measures
   both: ``serial`` runs the ensemble-shaped load to completion and then the
   analysis (what a cycle does today), ``concurrent`` runs them together
@@ -222,7 +222,7 @@ def verify_bundle(bundle: Path, manifest: dict) -> dict:
 def load_grid(bundle: Path, manifest: dict):
     """Rebuild the :class:`~gpuwm.obs.target_grid.TargetGrid`.
 
-    Two forms, because a real bundle and a synthetic one honestly have
+    Two forms, because a real bundle and a synthetic one accurately have
     different provenance.  ``wrfout`` re-reads the history file the
     observations were gridded against, which is what a real leg has.
     ``projection_npz`` carries the projection parameters plus the

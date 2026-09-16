@@ -264,7 +264,7 @@ def streamed(n: int, tile: int, *, nz: int, steps: int, rung: str,
     decision = streaming.decide(cfg, options)
     report(f"    decision: {decision.explain()}")
 
-    # THE HONESTY THIS MEASUREMENT NEEDS.  A real out-of-core run fills its
+    # THE ACCURACY THIS MEASUREMENT NEEDS.  A real out-of-core run fills its
     # pinned store from the ingest and never builds a resident domain at all
     # -- that is the whole premise, since no such domain fits.  This harness
     # DOES build one, because `attach` copies a prepared DomainState's

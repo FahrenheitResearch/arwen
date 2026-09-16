@@ -306,7 +306,7 @@ def test_the_arm_scope_list_is_derived_from_the_tree() -> None:
 #: (expm1f, tanhf, atanf, log10f).  Pinned rather than derived because each
 #: file names the routine differently -- r_atan, ng_atanf, glibc_atanf,
 #: mynn_tanhf, nmpe_expm1f, ruc_tanhf_glibc -- and the derivation below is
-#: what keeps the pin honest.
+#: what keeps the pin accurate.
 FDLIBM_FILES: tuple[str, ...] = (
     "mynn_dmp_sibling.cu", "mynn_pbl.cu", "noahmp_bareflux.cu",
     "noahmp_energy.cu", "noahmp_fluxprep.cu", "noahmp_glacier.cu",

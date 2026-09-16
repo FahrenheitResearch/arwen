@@ -27,6 +27,7 @@ import numpy as np
 import pytest
 
 from gpuwm import netcdf_bridge
+from conftest import requires_netcdf_bridge
 
 netCDF4 = pytest.importorskip("netCDF4")
 
@@ -202,6 +203,7 @@ def test_bridge_answers_its_declared_abi_contract():
     assert netcdf_bridge.DUMP_SCHEMA in completed.stdout
 
 
+@requires_netcdf_bridge
 @pytest.mark.parametrize("container", ["NETCDF3_CLASSIC", "NETCDF3_64BIT_OFFSET", "NETCDF3_64BIT_DATA", "NETCDF4"])
 def test_fixed_character_records_preserve_exact_shape_and_bytes(tmp_path, container):
     bridge = _bridge()
@@ -220,6 +222,7 @@ def test_fixed_character_records_preserve_exact_shape_and_bytes(tmp_path, contai
         assert ds.variables["Times"][1].tobytes() == values[1].tobytes()
 
 
+@requires_netcdf_bridge
 def test_variable_length_text_is_not_truncated_to_characters(tmp_path):
     bridge = _bridge()
     path = tmp_path / "text.nc"

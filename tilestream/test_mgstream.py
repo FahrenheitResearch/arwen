@@ -28,7 +28,7 @@ Both are gated.
 THE NEGATIVE CONTROLS ARE NOT OPTIONAL.  A bit-exact multi-GPU result is
 exactly the kind of good news this project has been wrong about before, and
 the specific way it would be wrong is that the ordering being credited was
-never load-bearing -- two workers that happen to run far enough apart give the
+never essential -- two workers that happen to run far enough apart give the
 right answer for the wrong reason.  So each ordering rule is also run BROKEN,
 and a control that fails to fire is reported as a failed control.
 """

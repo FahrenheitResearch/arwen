@@ -585,7 +585,14 @@ def _write_geometry_case(selection: dict, *, case_id: str, staged: Path,
         hints["area"] = area
     case_data = None
     if source == "era5":
-        case_data = {"forcing": [str(data_dir / "era5-combined.grib")],
+        # The provider decides the container the fetch publishes (GRIB1
+        # from the CDS, NetCDF from the keyless ARCO reader), so the name
+        # is taken from the fetch's own table keyed on the [fetch] table
+        # this function just built.  A catalog option that declares a
+        # provider one day is carried with no edit here; a literal would
+        # have had to be found again.
+        from gpuwm.fetch import era5_combined_name
+        case_data = {"forcing": [str(data_dir / era5_combined_name(hints.get("era5_provider")))],
                      "vtable": wizard._PACKAGED_VTABLE.name,
                      "forcing_interval_s": (cadence * 3600 if cadence is not None else
                                              wizard.source_forcing_interval_seconds(source)),

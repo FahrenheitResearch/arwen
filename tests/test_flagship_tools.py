@@ -589,9 +589,9 @@ def test_evidence_pack_recomputes_every_numeric_comparator(
 
     assert evidence_pack._recomputed_passed(record, value) is expected
 
-    honest = evidence_pack.FoundEvidence(
+    accurate = evidence_pack.FoundEvidence(
         record.milestone, metric, expected, "fixture#", (), 0, value)
-    assert evidence_pack._gate_verdict(record, honest) == (
+    assert evidence_pack._gate_verdict(record, accurate) == (
         ("PASS" if expected else "FAIL"), expected)
     lying = evidence_pack.FoundEvidence(
         record.milestone, metric, not expected, "fixture#", (), 0, value)

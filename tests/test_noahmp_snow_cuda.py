@@ -247,7 +247,7 @@ def test_expf_sweep_selects_every_table_entry():
 
 
 def test_device_negative_controls():
-    """The device gate must be able to fail, on both of its load-bearing parts.
+    """The device gate must be able to fail, on both of its essential parts.
 
     1. CUDA's own ``expf`` must be seen to disagree with glibc's over the same
        sweep.  If it agreed everywhere, ``glibc_expf`` passing would say

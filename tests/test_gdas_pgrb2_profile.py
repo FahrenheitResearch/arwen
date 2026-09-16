@@ -16,7 +16,7 @@ Selectors were authored from real 2026-08-17 06Z bytes
 (gdas.t06z.pgrb2.0p25.f000/f003, noaa-gfs-bdp-pds) through the converged
 grib-core inventory.
 
-The honesty pins live here too: the certified route reads the hourly
+The accuracy pins live here too: the certified route reads the hourly
 f000..f009 files, whose bytes stamp even hour 0 a FORECAST
 (typeOfProcessedData=fc, generating process 81 at hour 0, 96 after);
 the one product stamped an ANALYSIS (`pgrb2.1p00.anl`) is a strict
@@ -149,7 +149,7 @@ def test_the_gdas_composition_binds_noah_layers_one_to_one():
     assert supplement["time_alignment"] == "valid_time_exact"
 
 
-def test_the_gdas_provenance_names_the_analysis_route_honestly():
+def test_the_gdas_provenance_names_the_analysis_route_accurately():
     authorities = packaged_authorities(PROFILE_ID)
     provenance = json.loads(
         authorities["provenance"].read_text(encoding="utf-8"))

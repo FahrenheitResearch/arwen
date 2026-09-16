@@ -1386,7 +1386,7 @@ def test_the_analyzed_inventory_tuple_and_its_moist_packages_agree():
     package row would raise a bare ``KeyError`` mid-initialization, and a
     package row for an id outside the tuple is a retention rule nothing
     reads.  The tuple stays a literal so the repo-wide admission census can
-    see the site; this is what keeps the literal honest.
+    see the site; this is what keeps the literal accurate.
     """
     assert (tuple(sorted(HRRR_ANALYZED_HYDROMETEOR_MOIST_PACKAGE))
             == tuple(sorted(HRRR_ANALYZED_HYDROMETEOR_MP_PHYSICS)))

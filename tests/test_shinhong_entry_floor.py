@@ -92,7 +92,7 @@ def test_sub_floor_positive_entry_is_out_of_domain_but_not_the_hazard():
     """(0, floor) entries stay finite -- the chain's own amax1 floors
     absorb them.  They are still outside WRF's shinhonginit domain, so
     the driver heals them too, but the CLASS boundary of the crash is
-    <= 0 / non-finite and this pin keeps that boundary honest."""
+    <= 0 / non-finite and this pin keeps that boundary accurate."""
     from gpuwm.verify.shinhong_ref import np_shinhong_column
 
     args, surface = _convective_column()

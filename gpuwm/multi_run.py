@@ -37,7 +37,8 @@ from typing import Callable, Mapping, Sequence
 
 from gpuwm.supervisor import (GPUFileLock, GPUIdentity, GPU_LOCK_ROOT_ENV,
                               SHARED_INPUT_AUTHORITY_ROOT_ENV,
-                              preflight_exclusive_gpu, query_gpus, utc_now)
+                              preflight_exclusive_gpu,
+                              priced_reservation_bytes, query_gpus, utc_now)
 
 
 PLAN_SCHEMA = "gpuwm.multi-run-plan/v1"
@@ -206,7 +207,7 @@ class GroupExecutionError(RuntimeError):
 
 @dataclass
 class OrchestrationState:
-    """Mutable stage ledger used for honest interruption receipts."""
+    """Mutable stage ledger used for accurate interruption receipts."""
 
     stage: str = "plan_load"
     summary_capable: bool = False
@@ -942,6 +943,29 @@ def _run_command(run: PlannedRun) -> tuple[str, ...]:
     )
 
 
+def _worker_reservation_bytes(module: str,
+                              arguments: Sequence[str]) -> int | None:
+    """This worker's priced peak envelope, or None when it cannot be priced.
+
+    Read off the prepared runner's own ``--experiment-config`` value, which
+    the argument contract above has already pinned to one declared input,
+    and priced through :func:`gpuwm.supervisor.priced_reservation_bytes` --
+    the same function ``gpuwm run`` and ``gpuwm stream`` price a shared
+    card from.  ONE function, every door: a multi-run worker that priced
+    its own reservation differently would be admitted onto a card the
+    supervisor it wraps refuses, or refused off one that supervisor admits.
+
+    Unpriceable is None, never a number and never a refusal: an unpriced
+    run is admitted against the device's measured free memory and says so.
+    """
+
+    values = _runner_path_values(module, arguments, "worker arguments")
+    config = values.get("--experiment-config")
+    if config is None:
+        return None
+    return priced_reservation_bytes(Path(config))
+
+
 def _locked_module_main(*, gpu_uuid: str, module_name: str, outdir: Path,
                         inputs: Sequence[Path],
                         arguments: Sequence[str]) -> int:
@@ -956,6 +980,7 @@ def _locked_module_main(*, gpu_uuid: str, module_name: str, outdir: Path,
         raise RuntimeError(
             "multi-run worker device mask does not match its physical UUID: "
             f"CUDA_VISIBLE_DEVICES={visible!r}, UUID={gpu_uuid!r}")
+    reservation_bytes = _worker_reservation_bytes(module_name, arguments)
     if outdir.exists():
         raise ValueError(
             f"multi-run worker outdir already exists: {outdir}; refusing "
@@ -968,7 +993,12 @@ def _locked_module_main(*, gpu_uuid: str, module_name: str, outdir: Path,
             raise ValueError(
                 f"multi-run worker outdir already exists: {outdir}; "
                 "refusing to mix production outputs")
-        preflight_exclusive_gpu(gpu_uuid, approved_pids={os.getpid()})
+        # Priced against THIS worker's own configuration, so a co-tenant
+        # that fits beside it is admitted here exactly as it is at
+        # ``gpuwm run``, and one that does not is refused at both.
+        preflight_exclusive_gpu(
+            gpu_uuid, approved_pids={os.getpid()},
+            reservation_bytes=reservation_bytes)
         module = importlib.import_module(module_name)
         target = getattr(module, "main", None)
         if not callable(target):
@@ -989,8 +1019,15 @@ def _locked_check_main(*, gpu_uuid: str, config: Path, mode: str) -> int:
         raise RuntimeError(
             "multi-run check-worker device mask does not match its physical "
             f"UUID: CUDA_VISIBLE_DEVICES={visible!r}, UUID={gpu_uuid!r}")
+    reservation_bytes = priced_reservation_bytes(config)
     with GPUFileLock(gpu_uuid, run_id=f"multi-run-check-{os.getpid()}"):
-        preflight_exclusive_gpu(gpu_uuid, approved_pids={os.getpid()})
+        # Plan review prices the card from the configuration it is
+        # reviewing, because a review that cleared a shared card the run
+        # door then refused would be a plan review that reviewed a
+        # different question than the run.
+        preflight_exclusive_gpu(
+            gpu_uuid, approved_pids={os.getpid()},
+            reservation_bytes=reservation_bytes)
         cli = importlib.import_module("gpuwm.cli")
         command = ["check", str(config)]
         if mode == "alloc":
@@ -1653,7 +1690,7 @@ def _execution_timing(
 
 
 def _unstarted_authority_verification(reason: str) -> dict[str, object]:
-    """Describe honestly why no continuous authority monitor was started."""
+    """Describe accurately why no continuous authority monitor was started."""
 
     return {
         "errors": [],

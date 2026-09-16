@@ -345,7 +345,7 @@ def build_rank_state(analysis: RealAnalysis, spec: _spec.TileSpec, *,
 
     Mirrors ``restore_prepared_cache`` + ``initialize_prepared_physics``
     step for step, with every horizontally-extended input replaced by its
-    window.  The order is the production order and it is load-bearing:
+    window.  The order is the production order and it is essential:
     ``load_base`` decides whether ``thb/pb/alb/phb`` are 1-D or 3-D and
     whether ``mub`` is retired for ``mub2d``; ``set_map_coriolis`` derives
     ``has_msf``/``rotational``; only then can the prognostic arrays be

@@ -294,7 +294,7 @@ def test_prior_inflation_reaches_the_whole_domain_not_just_the_observed_part():
 def test_rtps_holds_spread_across_cycles():
     """The reason to inflate: without it, cycling bleeds the spread away.
 
-    Also the honest caveat.  This OSSE has a PERFECT model -- the truth and
+    Also the accurate caveat.  This OSSE has a PERFECT model -- the truth and
     the ensemble are advected by the same exact operator -- so there is no
     model error for inflation to compensate, and alpha = 0.8 leaves the
     ensemble over-dispersive by cycle three (spread ~1.5 against an error

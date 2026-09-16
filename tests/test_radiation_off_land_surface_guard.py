@@ -21,7 +21,7 @@ Two things changed, and this file pins both:
     longwave-off run whose land surface reads GLW is REFUSED rather than
     filled (``gpuwm.core.physics._resolve_initial_glw``).  That is
     stronger than replacing 300.0 with WRF's zero, which is what this
-    lane originally did: WRF's zero is honest about being nothing, but a
+    lane originally did: WRF's zero is accurate about being nothing, but a
     surface budget closing against zero is still not a forecast, and a
     default of any value is a number the caller did not choose.  A run
     that genuinely wants a fixed sky types it -- and says so in the

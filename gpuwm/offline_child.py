@@ -21,7 +21,7 @@ import hashlib
 import json
 from pathlib import Path
 from types import MappingProxyType
-from typing import Callable, Mapping, Sequence
+from typing import Mapping, Sequence
 import time
 
 import netCDF4
@@ -148,13 +148,26 @@ _MY2_WRF_TO_STATE = MappingProxyType({
     "QNCLOUD": "nc", "QNRAIN": "nr", "QNICE": "ni",
     "QNSNOW": "ns", "QNGRAUPEL": "ng", "QNHAIL": "nh",
 })
+#: mp_physics=16 (WDM6, Registry.EM_COMMON:3031, ``scalar:qnn,qnc,qnr``).
+#: The FOURTH scheme-qualified map, for the reason the NSSL and MY2 ones
+#: exist: QNCCN is published by WDM6 (its CCN reservoir, state ``nn``) and
+#: by NSSL (``qnn``), and the two bind to different state fields.  The six
+#: masses and the warm-rain number pair reuse the generic names.  This
+#: row is what gpuwm/ingest/wrfinput.py::MOISTURE_MAP already carries for
+#: the root door; until it landed here the offline lane refused every
+#: WDM6 parent for want of it.
+_WDM6_WRF_TO_STATE = MappingProxyType({
+    "QVAPOR": "qv", "QCLOUD": "qc", "QRAIN": "qr",
+    "QICE": "qi", "QSNOW": "qs", "QGRAUP": "qg",
+    "QNCLOUD": "nc", "QNRAIN": "nr", "QNCCN": "nn",
+})
 
 
 
 def _scheme_wrf_to_state(source_mp_physics: int) -> Mapping[str, str]:
     """The wrfout-name -> state-field map for one parent scheme.
 
-    Three schemes need their own: QHAIL/QNHAIL/QNCCN are declared by more
+    Four schemes need their own: QHAIL/QNHAIL/QNCCN are declared by more
     than one WRF package and bind to different state fields in each, so a
     single shared map could only be right for one of them.  Everything
     else reads the generic map, whose rows are the names Morrison,
@@ -168,57 +181,21 @@ def _scheme_wrf_to_state(source_mp_physics: int) -> Mapping[str, str]:
         return _NSSL_WRF_TO_STATE
     if source_mp == 9:
         return _MY2_WRF_TO_STATE
+    if source_mp == 16:
+        return _WDM6_WRF_TO_STATE
     return _WRF_TO_STATE
 
 
 #: Parent microphysics schemes this offline-child route can carry.
 #:
-#: NOT a profile whitelist -- the four checks below are the ordinary
-#: fail-closed kind the 2026-07-31 suite ruling keeps: the child's
-#: hydrometeor mapping is written against the transported species of
-#: WSM6 (6), Thompson (8), Morrison (10), NSSL (18), Thompson
-#: aerosol-aware (28) and P3 (50), and a parent outside that set has no
-#: mapping to refuse or accept with.  Naming the set once keeps the four
-#: enforcement points from ever disagreeing about which parents the
-#: mapping actually implements; each refusal still quotes the exact
-#: switch and value.
-#:
-#: 28 is admitted for the SAME-SCHEME case only: a 28 parent forcing a 28
-#: child.  Its transported inventory is classic Thompson's plus
-#: ``nc``/``nwfa``/``nifa`` (all three declared scalars at
-#: Registry.EM_COMMON:3036) and its two per-domain surface-emission
-#: constants (:492-493); every one of them rides the generic SINT/couple
-#: paths this module already runs for ``nr``/``ni``, with no new numerics.
-#: What is DELIBERATELY NOT admitted is any CROSS-scheme edge touching 28 --
-#: see :data:`_CROSS_SCHEME_REFUSED_MP_PHYSICS`.
-#: 50 (P3) is admitted on exactly 28's terms: SAME-SCHEME only.  Its
-#: transported inventory is ``qv,qc,qr,qi`` plus ``ni``/``nr`` and the
-#: prognostic rime pair ``qir``/``qib`` (Registry.EM_COMMON:3038) -- no
-#: qs, no qg -- and all four scalars ride the generic SINT/couple paths
-#: like the moments beside them.  Every CROSS-scheme edge touching 50 is
-#: refused at this module's own gates by
-#: :data:`_P3_OFFLINE_EDGE_UNBUILT_MP_PHYSICS` below -- no longer through
-#: the derived closure mirror, because the online nest lane RATIFIED the
-#: rime-pair closure (``microphysics_transition.p3_edge_entry_reference``
-#: / ``p3_edge_exit_reference``) and this offline lane has not wired
-#: either leg.
-#: mp_physics=16 (WDM6) is DELIBERATELY ABSENT, in the same shape mp=28's
-#: cross-scheme refusal takes: the scheme ships and runs, but this module's
-#: wrfout field map has no row for its CCN reservoir.  ``nn`` and NSSL's
-#: ``qnn`` both publish under QNCCN, so admitting 16 here would make the
-#: reverse mapping ambiguous exactly where the child state is built, and a
-#: WDM6 child forced from a WDM6 parent would silently start with a
-#: zero-filled reservoir -- the inert-aerosol failure mode mp=28's
-#: microphysics_init hook exists to prevent.  Admitting it means giving the
-#: field map a scheme-qualified QNCCN row and measuring the closure, not
-#: adding 16 to this set.
-#: DERIVED from the physics registry's per-option ``consumers.offline_child``
-#: rows (``same_scheme``), which carry the reasons above and the two this
-#: module never named: mp=0 and mp=1 (admitted by this module's own
-#: transported-field helper while this set refused them) and mp=9 (no
-#: scheme-qualified QHAIL/QNHAIL row in the field map).  Each refused row
-#: cites its defect, so admitting a scheme is one row in
-#: tools/build_registry.py and never a literal here.
+#: NOT a profile whitelist: the child's hydrometeor reading is written
+#: against the transported species of each scheme, and a parent outside
+#: the set has no field map to read it with.  DERIVED from the physics
+#: registry's per-option ``consumers.offline_child`` rows (``same_scheme``),
+#: so admitting a scheme is one row in tools/build_registry.py and never a
+#: literal here; a refused row names its defect.  mp=16 (WDM6) joined the
+#: set when the field map learned its scheme-qualified QNCCN row
+#: (:data:`_WDM6_WRF_TO_STATE`); every other ported scheme was already in.
 def _offline_child_mp_physics() -> frozenset[int]:
     from gpuwm.physics_registry import consumer_rows_by_selector
 
@@ -243,153 +220,68 @@ def offline_child_refusal(mp_physics: int) -> str | None:
 
 OFFLINE_CHILD_MP_PHYSICS = _offline_child_mp_physics()
 
-#: Schemes that may not participate in an offline CROSS-physics conversion.
-#: DERIVED from ``gpuwm.core.microphysics_transition.
-#: UNVALIDATED_MIXED_EDGE_SELECTORS`` rather than re-spelled, so the mirror
-#: cannot drift again: the online nest lane refuses every mixed edge touching
-#: one of these because no cross-scheme entry closure for its moments has
-#: been measured, and an offline downscale that performed the same
-#: unvalidated closure through a different code path would defeat that
-#: refusal rather than respect it.
-#:
-#: mp=16 is in this set even though ``OFFLINE_CHILD_MP_PHYSICS`` already
-#: excludes it, i.e. an mp=16 parent is refused EARLIER, at
-#: ``ParentPhysicsBinding.__post_init__``.  That earlier gate is a stronger
-#: refusal but it is a DIFFERENT guarantee -- it says "this module cannot
-#: read the field", not "this closure is unmeasured" -- and it would silently
-#: stop being a refusal the day the QNCCN field-map row lands.  Keeping the
-#: mirror exact means the closure question is answered on its own terms, at
-#: the site whose job it is.  mp=50 walked that exact path end to end: it
-#: sat in mp=16's shape until the field map learned its qir/qib rows and 50
-#: joined the admitted set (the "unreadable" gate vanished), this derived
-#: set carried the live refusal for a while, and then the online lane
-#: ratified the rime-pair closure and 50 left
-#: ``UNVALIDATED_MIXED_EDGE_SELECTORS`` too -- retiring it from here BY
-#: DERIVATION, with nothing to re-spell.  What still refuses a P3
-#: cross-scheme edge offline is the next constant down, on its own feet.
-_CROSS_SCHEME_REFUSED_MP_PHYSICS = frozenset(
-    _mt.UNVALIDATED_MIXED_EDGE_SELECTORS)
-
-#: Selectors whose online cross-scheme closure IS ratified but whose
-#: offline conversion leg is UNBUILT at this module's sites.  mp=50: the
-#: online nest lane closes every P3 mixed edge with the measured rime-pair
-#: pair of maps -- ``p3_edge_entry_reference`` merges qi/qs/qg and
-#: diagnoses qir/qib, ``p3_edge_exit_reference`` splits by rime state --
-#: but nothing here runs either map: :func:`map_microphysics_to_nssl18`
-#: consumes a five-species qi/qs/qg inventory directly, and the forcing
-#: and initial-state paths convert only through it.  Without this named
-#: gate a P3 parent would pass the closure mirror above (50 is not in it
-#: any more) and then die on an incidental "lacks transported fields
-#: ['qg', 'qs']" shape error -- or worse, a caller padding zero qs/qg
-#: would silently drop the parent's rime state.  Wiring the ratified maps
-#: into this lane is the named follow-up ``offline-p3-edge-closure``;
-#: landing it retires this constant (gate law / guard-retirement law).
-_P3_OFFLINE_EDGE_UNBUILT_MP_PHYSICS = frozenset({50})
-
-#: The same statement for the three parents that joined the SAME-scheme
-#: admission set with audit R-017.  Admitting a parent to be read is not
-#: admitting it to be CONVERTED: :func:`map_microphysics_to_nssl18` is the
-#: only converting site, and for each of these it would produce a wrong
-#: child rather than refuse, so each gets its own named reason and none is
-#: shared.  Building the leg retires its row (guard-retirement law); the
-#: same-scheme 0->0, 1->1 and 9->9 downscales this lane now supports are
-#: unaffected, because a same-scheme edge never reaches this gate.
-_OFFLINE_CROSS_LEG_UNBUILT_REASONS = {
-    0: ("an mp=0 parent transports vapour and the warm-rain pair and no "
-        "frozen species at all, and the NSSL conversion consumes a "
-        "six-species qv/qc/qr/qi/qs/qg inventory; diagnosing ice, snow and "
-        "graupel from a parent that carries none is a cross-scheme "
-        "question with no measured closure at this site, and padding zeros "
-        "would hand the child a frozen inventory the parent never had"),
-    1: ("an mp=1 (Kessler) parent transports qv/qc/qr and no frozen "
-        "species, and the NSSL conversion consumes a six-species "
-        "inventory -- the same missing closure mp=0 has, for the same "
-        "reason"),
-    9: ("this site zeroes the target's hail mass before the per-scheme "
-        "arms run (``result['qh'] = zeros``, the Morrison arm being the "
-        "only one that fills it), so an mp=9 parent's SEVENTH transported "
-        "species would be silently dropped on the way to NSSL, which "
-        "carries hail itself.  The online nest lane closes this edge "
-        "properly -- mp=9 and mp=18 are both dual-rimed, so qg->qg and "
-        "qh->qh map straight across "
-        "(gpuwm/core/microphysics_transition._DUAL_RIMED_SELECTORS) -- and "
-        "nothing here runs that mapping"),
-}
-_OFFLINE_CROSS_LEG_UNBUILT_MP_PHYSICS = frozenset(
-    _OFFLINE_CROSS_LEG_UNBUILT_REASONS)
-
-
-def _cross_scheme_refusal_clause(mp: int) -> str:
-    """Name the scheme and the moments its missing closure would need.
-
-    One source of truth with the online nest lane
-    (:mod:`gpuwm.core.microphysics_transition`), so an offline refusal can
-    never tell a WDM6 operator that their scheme is Thompson.
-    """
-
-    scheme = _mt._UNVALIDATED_MIXED_EDGE_REASONS[int(mp)][0]
-    moments = "/".join(_mt.UNVALIDATED_MIXED_EDGE_MOMENTS[int(mp)])
-    return f"mp_physics={int(mp)} ({scheme}), moments {moments}"
-
-
-def _refuse_unbuilt_p3_offline_edge(source_mp: int, target_mp: int) -> None:
-    """Refuse a P3 cross-scheme edge by name, at every converting site.
-
-    One function for the initial-state path, the forcing path and the
-    direct NSSL converter, so the three sites cannot drift apart the way
-    the three admission literals once did (the mp=28 lesson recorded at
-    ``HRRR_ANALYZED_HYDROMETEOR_MP_PHYSICS``).  See
-    :data:`_P3_OFFLINE_EDGE_UNBUILT_MP_PHYSICS` for why this is its own
-    refusal and not the retired closure mirror.
-    """
-
-    source_mp, target_mp = int(source_mp), int(target_mp)
-    if source_mp == target_mp:
-        return
-    unbuilt = sorted({source_mp, target_mp}
-                     & _OFFLINE_CROSS_LEG_UNBUILT_MP_PHYSICS)
-    if unbuilt:
-        mp = unbuilt[0]
-        raise OfflineChildContractError(
-            f"offline cross-physics conversion across the mp_physics="
-            f"{source_mp} -> {target_mp} edge is REFUSED: "
-            f"{_OFFLINE_CROSS_LEG_UNBUILT_REASONS[mp]}.  Same-scheme "
-            f"{mp} -> {mp} downscaling IS supported (that is what this "
-            "lane admits mp_physics=" + str(mp) + " for); to change "
-            "microphysics between the parent and the child, run the child "
-            "as an ONLINE nest, where the edge closure is ported.")
-    if not ({source_mp, target_mp}
-            & _P3_OFFLINE_EDGE_UNBUILT_MP_PHYSICS):
-        return
-    raise OfflineChildContractError(
-        f"offline cross-physics conversion across the mp_physics="
-        f"{source_mp} -> {target_mp} edge is REFUSED: the online nest "
-        "lane's ratified P3 (mp_physics=50) closure "
-        "(gpuwm/core/microphysics_transition.py::p3_edge_entry_reference/"
-        "p3_edge_exit_reference) has no offline leg at this site -- the "
-        "NSSL mapping consumes a five-species qi/qs/qg inventory and "
-        "nothing here runs the measured merge/split first -- so "
-        "converting would zero-fill or invent the single ice category's "
-        "rime pair qir/qib instead of conserving it; same-scheme "
-        "50 -> 50 downscaling is supported, and wiring the ratified maps "
-        "into this lane is the named follow-up offline-p3-edge-closure")
-
-#: The parents a CROSS-scheme conversion has a measured mapping for: every
-#: admitted parent that is neither cross-refused nor waiting on its offline
-#: conversion leg.  Derived, never re-spelled, so the cross-scheme site
-#: cannot drift from the same-scheme sites above.
+#: The schemes a CROSS-scheme offline conversion has a contract for, at
+#: either end of the edge: every parent this lane can read whose mixed
+#: nest edge the online transition kernel ports
+#: (gpuwm/core/microphysics_transition.PORTED_MP_PHYSICS).  The offline
+#: conversion IS the online one -- the same ``resolve_microphysics_transition``
+#: contract and the same ``microphysics_edge_field`` kernel, run on the
+#: archived parent's own grid before the horizontal interpolation, in the
+#: online lane's order (``TRANSITION_ORDER``) -- so the set is derived from
+#: that tuple rather than re-spelled, and a scheme ratified online is
+#: admitted offline in the same change.  What is NOT in it is mp=0: a
+#: microphysics-off domain carries no hydrometeor inventory to close an
+#: edge over, and the online code has no contract for a 0->X or X->0 edge
+#: either (its import-time registry check cites exactly that absence).
 PARENT_SCHEME_CONTRACT = (
-    OFFLINE_CHILD_MP_PHYSICS - _CROSS_SCHEME_REFUSED_MP_PHYSICS
-    - _P3_OFFLINE_EDGE_UNBUILT_MP_PHYSICS
-    - _OFFLINE_CROSS_LEG_UNBUILT_MP_PHYSICS)
+    OFFLINE_CHILD_MP_PHYSICS & frozenset(_mt.PORTED_MP_PHYSICS))
+
+
+def offline_cross_scheme_refusal(
+        source_mp_physics: int, target_mp_physics: int) -> str | None:
+    """The one refusal a mixed offline edge can still meet, or ``None``.
+
+    A same-scheme edge is never refused here.  A mixed edge is refused
+    only when one end has no hydrometeor contract at all: mp=0 transports
+    vapour (and, on a gpuwm tape, the warm-rain pair) and no scheme-owned
+    species, so there is no mass to diagnose a target's moments from and
+    nothing for a target of 0 to receive -- the online nest edge has no
+    closure for it and this lane runs the online closure, so it refuses
+    the same edge for the same reason rather than inventing one.
+    """
+
+    source_mp, target_mp = int(source_mp_physics), int(target_mp_physics)
+    if source_mp == target_mp:
+        return None
+    outside = sorted({source_mp, target_mp} - PARENT_SCHEME_CONTRACT)
+    if not outside:
+        return None
+    mp = outside[0]
+    return (
+        f"offline cross-physics conversion across the mp_physics="
+        f"{source_mp} -> {target_mp} edge is REFUSED: mp_physics={mp} "
+        "has no microphysics-transition contract at either end of a mixed "
+        "edge.  A microphysics-off domain transports no scheme-owned "
+        "hydrometeor species, so a target's number moments and rimed "
+        "categories cannot be diagnosed from it and a target of 0 has no "
+        "state to receive them; the online nest edge "
+        "(gpuwm/core/microphysics_transition.PORTED_MP_PHYSICS) ports no "
+        "such closure and this lane runs that closure rather than a second "
+        f"one.  Same-scheme {mp} -> {mp} downscaling IS supported; the "
+        "schemes a cross-scheme edge converts between are "
+        + ", ".join(str(value) for value in sorted(PARENT_SCHEME_CONTRACT))
+        + ".")
+
+
+def _require_cross_scheme_contract(source_mp_physics: int,
+                                   target_mp_physics: int) -> None:
+    refusal = offline_cross_scheme_refusal(source_mp_physics, target_mp_physics)
+    if refusal is not None:
+        raise OfflineChildContractError(refusal)
 
 
 class OfflineChildContractError(ValueError):
     """The archived parent cannot safely force the requested child."""
-
-
-class MomentDiagnosisRequired(OfflineChildContractError):
-    """A target number moment needs the official target-scheme initializer."""
 
 
 def reserve_output_root(path, *, flag: str = "--out") -> Path:
@@ -755,6 +647,15 @@ class ParentPhysicsBinding:
     evidence_kind: str
     evidence_path: Path
     evidence_sha256: str
+    #: WSM6's ``hail_opt`` (mp=6, RunConfig ``wsm6_hail_opt``) or WDM6's
+    #: (mp=16, ``wdm6_hail_opt``): whether the parent's single rimed
+    #: category means graupel (0) or hail (1).  A cross-scheme conversion
+    #: maps that category by its MEANING (``microphysics_transition.
+    #: _rimed_category``), so the switch is parent evidence exactly as
+    #: ``morr_rimed_ice`` is for Morrison.  ``None`` for every other
+    #: scheme, and for a companion that does not record it, where the
+    #: contract takes WRF's default of graupel.
+    hail_opt: int | None = None
 
     def __post_init__(self) -> None:
         if int(self.mp_physics) not in OFFLINE_CHILD_MP_PHYSICS:
@@ -769,6 +670,13 @@ class ParentPhysicsBinding:
                 and self.morr_rimed_ice is not None):
             raise OfflineChildContractError(
                 "morr_rimed_ice evidence is only valid for mp_physics=10")
+        if self.hail_opt is not None:
+            if int(self.mp_physics) not in {6, 16}:
+                raise OfflineChildContractError(
+                    "hail_opt evidence is only valid for mp_physics=6 or 16")
+            if int(self.hail_opt) not in {0, 1}:
+                raise OfflineChildContractError(
+                    "bound WSM6/WDM6 parent hail_opt must be 0 or 1")
         if self.evidence_kind not in {"gpuwm-restart", "wrf-namelist"}:
             raise OfflineChildContractError(
                 f"unsupported parent physics evidence {self.evidence_kind!r}")
@@ -788,6 +696,7 @@ class ParentPhysicsBinding:
             "evidence_kind": self.evidence_kind,
             "evidence_path": str(Path(self.evidence_path).resolve()),
             "evidence_sha256": str(self.evidence_sha256).lower(),
+            "hail_opt": (None if self.hail_opt is None else int(self.hail_opt)),
         })
 
 
@@ -838,10 +747,15 @@ def bind_parent_physics_from_gpuwm_restart(
         "physics_setup": setup,
         "physics_setup_fingerprint": fingerprint,
     }
+    hail_opt = None
+    if mp_physics in (6, 16):
+        raw_hail = config.get("wsm6_hail_opt" if mp_physics == 6
+                              else "wdm6_hail_opt")
+        hail_opt = None if raw_hail is None else int(raw_hail)
     return ParentPhysicsBinding(
         mp_physics=mp_physics, morr_rimed_ice=morr, domain_id=domain_id,
         evidence_kind="gpuwm-restart", evidence_path=path,
-        evidence_sha256=_canonical_sha256(evidence))
+        evidence_sha256=_canonical_sha256(evidence), hail_opt=hail_opt)
 
 
 def bind_parent_physics_from_wrf_namelist(
@@ -870,11 +784,15 @@ def bind_parent_physics_from_wrf_namelist(
     if mp_physics == 10:
         morr = int(domain_value(
             "morr_rimed_ice", required=False, default=1))
+    hail_opt = None
+    if mp_physics in (6, 16):
+        raw_hail = domain_value("hail_opt", required=False, default=None)
+        hail_opt = None if raw_hail is None else int(raw_hail)
     digest = hashlib.sha256(path.read_bytes()).hexdigest()
     return ParentPhysicsBinding(
         mp_physics=mp_physics, morr_rimed_ice=morr, domain_id=domain_id,
         evidence_kind="wrf-namelist", evidence_path=path,
-        evidence_sha256=digest)
+        evidence_sha256=digest, hail_opt=hail_opt)
 
 
 def _decode_time(variable) -> datetime:
@@ -1195,7 +1113,7 @@ def read_parent_microphysics(
     read through the same WRF-name mapping ``_raw_parent_state`` uses.
     Without it the historical closed-world contract stands: the six-species
     mass set is required, because with no scheme evidence there is no
-    smaller inventory this reader could honestly call complete -- a P3
+    smaller inventory this reader could accurately call complete -- a P3
     archive (no QSNOW/QGRAUP by Registry.EM_COMMON:3038) is readable
     through the evidence-bearing form, not by weakening the blind one.
     """
@@ -1238,195 +1156,280 @@ def _same_shape(fields: Mapping[str, np.ndarray]) -> tuple[int, ...]:
     return next(iter(shapes))
 
 
-def map_microphysics_to_nssl18(
-        fields: Mapping[str, np.ndarray], *, source_mp_physics: int,
-        morr_rimed_ice: int | None = None,
-        diagnose_missing: Callable[[Mapping[str, np.ndarray], Sequence[str]],
-                                   Mapping[str, np.ndarray]] | None = None,
-        active_mass_threshold: float = 1.0e-8,
-        air_density=None,
-) -> tuple[Mapping[str, np.ndarray], Mapping[str, object]]:
-    """Map WSM6/Thompson/Morrison transported state into NSSL mp18.
+#: Cells per device round on the host-chunked conversion route.  The edge
+#: kernel is column-local (every output cell reads its own cell's planes
+#: and its own column's 2-D mass), so a parent is converted a band of
+#: rows at a time and the band is sized to this many cells: the CPU
+#: preprocess route keeps working on a card too small to hold the whole
+#: parent, and the interpolation after it stays on the host as before.
+CONVERSION_CHUNK_CELLS = 262144
 
-    The ordinary initial and boundary remappers supply their actual child
-    air density, so missing target moments use the qualified native calcnfromq
-    initializer automatically. Its mass/CCN changes travel with its moments.
-    Direct callers can still supply an explicit diagnosis callback.
-    """
 
-    source_mp = int(source_mp_physics)
-    if source_mp in _CROSS_SCHEME_REFUSED_MP_PHYSICS:
-        # NAMED refusal, in the same words the online nest lane uses.  What
-        # is missing is a validated cross-scheme entry closure for the
-        # scheme's own moments, which is exactly why
-        # gpuwm/core/microphysics_transition.py refuses every one of its
-        # MIXED nest edges.  Converting them here through a second,
-        # unvalidated path would defeat that refusal.  The scheme name and
-        # the moment list come from that module, never re-spelled here.
-        raise OfflineChildContractError(
-            "offline cross-physics conversion to NSSL mp18 is REFUSED for "
-            f"{_cross_scheme_refusal_clause(source_mp)}: no cross-scheme "
-            "entry closure for those moments has been measured, and the "
-            "online nest lane refuses the same edge "
-            "(gpuwm/core/microphysics_transition.py::"
-            f"UNVALIDATED_MIXED_EDGE_SELECTORS); same-scheme {source_mp} -> "
-            f"{source_mp} downscaling is supported")
-    _refuse_unbuilt_p3_offline_edge(source_mp, 18)
-    if source_mp not in PARENT_SCHEME_CONTRACT:
-        raise OfflineChildContractError(
-            "offline cross-physics conversion to NSSL mp18 has no conversion "
-            f"leg for source mp_physics={source_mp}; the parents it "
-            "converts are "
-            + ", ".join(str(value) for value in sorted(PARENT_SCHEME_CONTRACT))
-            + ".  Same-scheme downscaling is a different question and is "
-            "supported for "
-            + ", ".join(str(value)
-                        for value in sorted(OFFLINE_CHILD_MP_PHYSICS)))
-    normalized = {name: np.asarray(value, dtype=np.float32)
-                  for name, value in fields.items()}
-    if source_mp == 18:
-        missing = sorted(set(_NSSL_FIELDS) - set(normalized))
-        if missing:
-            raise OfflineChildContractError(
-                f"NSSL passthrough lacks transported fields {missing}")
-        result = {}
-        shape = _same_shape({name: normalized[name] for name in _NSSL_FIELDS})
-        for name in _NSSL_FIELDS:
-            value = normalized[name]
-            if value.shape != shape or not np.isfinite(value).all() or np.any(value < 0):
-                raise OfflineChildContractError(
-                    f"NSSL passthrough field {name} is non-finite, negative, "
-                    "or wrong-shaped")
-            result[name] = np.array(value, copy=True, order="C")
-        return MappingProxyType(result), MappingProxyType({
-            "source_mp_physics": 18,
-            "target_mp_physics": 18,
-            "category_mapping": "nssl18-passthrough",
-            "carried_source_moments": tuple(_NSSL_FIELDS[7:]),
-            "diagnosed_target_moments": (),
-            "active_mass_threshold": float(active_mass_threshold),
+@dataclass(frozen=True)
+class OfflineSchemeTransition:
+    """One resolved cross-scheme conversion, and how it was executed."""
+
+    contract: _mt.MicrophysicsTransitionContract
+    fields: Mapping[str, np.ndarray]
+    device: str
+    host_chunked: bool
+    chunk_rows: int | None
+    chunks: int
+    parent_hypsometric_opt: int
+
+    def receipt(self) -> Mapping[str, object]:
+        """The online contract's own receipt, plus how this lane ran it.
+
+        Carries the source and target identity twice on purpose: once as
+        the contract spells it (``source_mp_physics``/``target_mp_physics``)
+        and once under this lane's own ``source``/``target`` rows, so a
+        restart or run record that syncs on the conversion seam finds both
+        ends named whichever key its reader walks.
+        """
+        receipt = dict(self.contract.receipt())
+        receipt.update({
+            "source": {"mp_physics": int(self.contract.source_mp_physics),
+                       "rimed_category": self.contract.source_rimed_category},
+            "target": {"mp_physics": int(self.contract.target_mp_physics),
+                       "rimed_category": self.contract.target_rimed_category},
+            "converted_fields": tuple(self.fields),
+            "conversion_site": "archived-parent-grid",
+            "translation_order": _mt.TRANSITION_ORDER,
+            "executor": "gpuwm.core.microphysics_transition."
+                        "launch_microphysics_edge_parent_field",
+            "device": self.device,
+            "host_chunked": bool(self.host_chunked),
+            "chunk_rows": self.chunk_rows,
+            "chunks": int(self.chunks),
+            "parent_density": (
+                "1/alt from the archived total geopotential and dry mass, "
+                f"hypsometric_opt={int(self.parent_hypsometric_opt)}, the "
+                "form gpuwm.core.diagnostics.update_diagnostics evaluates"),
         })
-    missing_mass = sorted(set(_MASS_FIELDS) - set(normalized))
-    if missing_mass:
-        raise OfflineChildContractError(
-            f"source microphysics lacks mass fields {missing_mass}")
-    shape = _same_shape({name: normalized[name] for name in _MASS_FIELDS})
-    for name in _MASS_FIELDS:
-        value = normalized[name]
-        if not np.isfinite(value).all() or np.any(value < 0.0):
+        return MappingProxyType(receipt)
+
+
+def _offline_transition_contract(
+        source_mp_physics: int, target_mp_physics: int, *,
+        morr_rimed_ice: int | None, hail_opt: int | None,
+        child_cfg=None) -> _mt.MicrophysicsTransitionContract:
+    """Resolve the ONLINE edge contract for an archived parent and a child.
+
+    The parent is described by its bound evidence (scheme, Morrison's
+    rimed-ice switch, WSM6/WDM6's hail switch); the child by its own
+    RunConfig when the caller has one, and otherwise by the target scheme
+    with the config defaults, which is what a direct library caller gets.
+    The child's ``nest_microphysics_transition`` is always the unset
+    default here -- a standalone child is not a nested domain and
+    validate_run_config refuses any other spelling on it -- so the pair
+    resolves to the one closure the matrix defines for it, exactly as an
+    online nest with the key left out does.
+    """
+    from types import SimpleNamespace
+
+    source_mp, target_mp = int(source_mp_physics), int(target_mp_physics)
+    _require_cross_scheme_contract(source_mp, target_mp)
+    parent = SimpleNamespace(
+        mp_physics=source_mp, moist=True, moist_cq=True,
+        morr_rimed_ice=(1 if morr_rimed_ice is None else int(morr_rimed_ice)),
+        wsm6_hail_opt=(0 if hail_opt is None else int(hail_opt)),
+        wdm6_hail_opt=(0 if hail_opt is None else int(hail_opt)),
+        nest_microphysics_transition=_mt.SAME_SCHEME_POLICY)
+    if child_cfg is None:
+        child = SimpleNamespace(
+            mp_physics=target_mp, moist=True, moist_cq=True,
+            morr_rimed_ice=1, wsm6_hail_opt=0, wdm6_hail_opt=0,
+            wdm6_ccn_conc=1.0e8,
+            nest_microphysics_transition=_mt.SAME_SCHEME_POLICY)
+    else:
+        if int(getattr(child_cfg, "mp_physics")) != target_mp:
             raise OfflineChildContractError(
-                f"source microphysics mass field {name} is non-finite or negative")
-    result = {name: np.array(normalized[name], copy=True, order="C")
-              for name in _MASS_FIELDS}
-    result["qh"] = np.zeros(shape, dtype=np.float32)
-    category_mapping = "graupel-to-graupel"
-    if source_mp == 10:
-        if morr_rimed_ice not in {0, 1}:
-            raise OfflineChildContractError(
-                "Morrison -> NSSL requires explicit morr_rimed_ice=0/1")
-        if int(morr_rimed_ice) == 1:
-            result["qh"] = result["qg"]
-            result["qg"] = np.zeros(shape, dtype=np.float32)
-            category_mapping = "morrison-hail-to-nssl-hail"
-
-    aliases = {
-        "qndrop": ("qndrop", "nc"), "qnr": ("qnr", "nr"),
-        "qni": ("qni", "ni"), "qns": ("qns", "ns"),
-        "qng": ("qng", "ng"), "qnh": ("qnh", "nh"),
-        "qvolg": ("qvolg", "volg"), "qvolh": ("qvolh", "volh"),
-    }
-    carried = []
-    for target, choices in aliases.items():
-        for choice in choices:
-            if choice in normalized:
-                value = np.asarray(normalized[choice], dtype=np.float32)
-                if value.shape != shape:
-                    raise OfflineChildContractError(
-                        f"source {choice} shape {value.shape} != {shape}")
-                if not np.isfinite(value).all() or np.any(value < 0.0):
-                    raise OfflineChildContractError(
-                        f"source moment {choice} is non-finite or negative")
-                result[target] = np.array(value, copy=True, order="C")
-                carried.append(target)
-                break
-
-    # Morrison hail reclassification carries its graupel moments to hail.
-    if source_mp == 10 and morr_rimed_ice == 1:
-        if "qng" in result and "qnh" not in result:
-            result["qnh"] = result.pop("qng")
-        if "qvolg" in result and "qvolh" not in result:
-            result["qvolh"] = result.pop("qvolg")
-
-    required_by_mass = {
-        "qc": "qndrop", "qr": "qnr", "qi": "qni", "qs": "qns",
-        "qg": "qng", "qh": "qnh",
-    }
-    needs = []
-    threshold = float(active_mass_threshold)
-    if not np.isfinite(threshold) or threshold < 0.0:
+                f"child cfg mp_physics={child_cfg.mp_physics} != prepared "
+                f"target {target_mp}")
+        child = SimpleNamespace(
+            mp_physics=target_mp,
+            moist=bool(getattr(child_cfg, "moist", True)),
+            moist_cq=bool(getattr(child_cfg, "moist_cq", True)),
+            morr_rimed_ice=int(getattr(child_cfg, "morr_rimed_ice", 1)),
+            wsm6_hail_opt=int(getattr(child_cfg, "wsm6_hail_opt", 0)),
+            wdm6_hail_opt=int(getattr(child_cfg, "wdm6_hail_opt", 0)),
+            wdm6_ccn_conc=float(getattr(child_cfg, "wdm6_ccn_conc", 1.0e8)),
+            nest_microphysics_transition=_mt.SAME_SCHEME_POLICY)
+    try:
+        return _mt.resolve_microphysics_transition(parent, child)
+    except ValueError as error:
         raise OfflineChildContractError(
-            "active_mass_threshold must be finite and non-negative")
-    for mass_name, number_name in required_by_mass.items():
-        active = bool(np.any(result[mass_name] > np.float32(threshold)))
-        if number_name not in result:
-            if active:
-                needs.append(number_name)
+            "offline cross-physics conversion across the mp_physics="
+            f"{source_mp} -> {target_mp} edge is refused by the shared "
+            f"nest-transition contract: {error}") from error
+
+
+def _parent_alt(phi_total, mu, coeffs, znw, *, p_top: float,
+                hypsometric_opt: int) -> np.ndarray:
+    """``alt`` (inverse dry density) on the parent grid, from the archive.
+
+    The same float32 expression ``gpuwm.core.diagnostics.update_diagnostics``
+    evaluates on a live parent for each ``hypsometric_opt``, so the density
+    the edge kernel diagnoses a target's moments against offline is the
+    density it would have read from the live parent's state.
+    """
+    f32 = np.float32
+    phi = np.asarray(phi_total, dtype=np.float32)
+    dphi = np.asarray(phi[1:] - phi[:-1], dtype=np.float32)
+    mu = np.asarray(mu, dtype=np.float32)[None]
+    if int(hypsometric_opt) == 2:
+        c3f = np.asarray(coeffs["c3f"], dtype=np.float32)[:, None, None]
+        c4f = np.asarray(coeffs["c4f"], dtype=np.float32)[:, None, None]
+        c3h = np.asarray(coeffs["c3h"], dtype=np.float32)[:, None, None]
+        c4h = np.asarray(coeffs["c4h"], dtype=np.float32)[:, None, None]
+        top = f32(p_top)
+        pfu = np.asarray(c3f[1:] * mu + c4f[1:] + top, dtype=np.float32)
+        dpf = np.asarray((c3f[:-1] - c3f[1:]) * mu + (c4f[:-1] - c4f[1:]),
+                         dtype=np.float32)
+        phm = np.asarray(c3h * mu + c4h + top, dtype=np.float32)
+        alt = np.asarray(
+            dphi / phm / np.log1p(np.asarray(dpf / pfu, dtype=np.float32)),
+            dtype=np.float32)
+    else:
+        znw = np.asarray(znw, dtype=np.float32).reshape(-1)
+        rdnw = np.asarray(f32(1.0) / (znw[1:] - znw[:-1]),
+                          dtype=np.float32)[:, None, None]
+        c1h = np.asarray(coeffs["c1h"], dtype=np.float32)[:, None, None]
+        c2h = np.asarray(coeffs["c2h"], dtype=np.float32)[:, None, None]
+        alt = np.asarray(-dphi * rdnw / (c1h * mu + c2h), dtype=np.float32)
+    if not np.isfinite(alt).all() or np.any(alt <= 0.0):
+        raise OfflineChildContractError(
+            "cross-scheme conversion requires a positive finite parent "
+            "layer density, and the archived geopotential and dry mass "
+            "give none")
+    return np.ascontiguousarray(alt)
+
+
+def _parent_transition_donor(raw, moisture, coeffs, *, p_top: float,
+                             hypsometric_opt: int, target_mp_physics: int):
+    """The parent-grid planes the edge kernel reads, as host float32 arrays.
+
+    The same set the live lane hands the kernel off a resident
+    ``DomainState`` (``microphysics_transition._WINDOWED_EDGE_PLANES``),
+    rebuilt from the archive: ``alt`` from the total geopotential and dry
+    mass, the species under their state names, the 2-D mass pair and the
+    hybrid coefficients.  Entering Milbrandt-Yau the kernel forms the
+    absolute temperature from thb/thp/p per cell, so for that target the
+    archived total theta is handed over as ``thb`` with a zero ``thp``
+    and the full pressure as ``p``; every other target ignores the three.
+    """
+    ny, nx = np.asarray(raw["MUB"]).shape[-2:]
+    phb = np.asarray(raw["PHB"], dtype=np.float64)
+    ph = np.asarray(raw["PH"], dtype=np.float64)
+    mub = np.ascontiguousarray(raw["MUB"], dtype=np.float32)
+    mup = np.ascontiguousarray(raw["MU"], dtype=np.float32)
+    total_mu = np.asarray(mub, dtype=np.float32) + np.asarray(mup, dtype=np.float32)
+    planes = {
+        "alt": _parent_alt(phb + ph, total_mu, coeffs, raw["ZNW"],
+                           p_top=p_top, hypsometric_opt=hypsometric_opt),
+        "mub2d": mub, "mup": mup,
+        "c1h": np.ascontiguousarray(coeffs["c1h"], dtype=np.float32),
+        "c2h": np.ascontiguousarray(coeffs["c2h"], dtype=np.float32),
+    }
+    for name in ("qv", "qc", "qr", "qi", "qs", "qg", "qh", "qir", "qib"):
+        value = moisture.get(name)
+        planes[name] = (None if value is None
+                        else np.ascontiguousarray(value, dtype=np.float32))
+    if int(target_mp_physics) == 9:
+        theta = np.asarray(raw["T"], dtype=np.float32) + np.float32(300.0)
+        planes["thb"] = np.ascontiguousarray(theta, dtype=np.float32)
+        planes["thp"] = np.zeros(theta.shape, dtype=np.float32)
+        planes["p"] = np.ascontiguousarray(
+            np.asarray(raw["P"], dtype=np.float32)
+            + np.asarray(raw["PB"], dtype=np.float32), dtype=np.float32)
+    else:
+        planes["thb"] = planes["thp"] = planes["p"] = None
+    return planes
+
+
+def _launch_conversion(contract, planes, names, *, coupled: bool, xp):
+    """Run the edge kernel once per target field on device-resident planes."""
+    from types import SimpleNamespace
+
+    donor = SimpleNamespace(**planes)
+    shape = tuple(int(v) for v in donor.qv.shape)
+    out = {}
+    for name in names:
+        target = xp.empty(shape, dtype=xp.float32)
+        _mt.launch_microphysics_edge_parent_field(
+            contract, donor, name, out=target, coupled=bool(coupled))
+        out[name] = target
+    return out
+
+
+def _convert_parent_microphysics(
+        contract, planes, *, coupled: bool, backend: str,
+        hypsometric_opt: int) -> OfflineSchemeTransition:
+    """Diagnose the target scheme's fields on the PARENT grid.
+
+    ``backend == "cuda"``: every plane goes to the device once and the
+    kernel runs on the whole parent, the converted fields staying on the
+    device for the interpolation that follows.  ``backend == "cpu"``: the
+    kernel has no host implementation, so the parent is converted a band
+    of rows at a time through the device (host to device to host), the
+    way the retired NSSL initializer did, and the fields come back to the
+    host for the CPU interpolation.  Either way the conversion runs before
+    any horizontal interpolation, in the online lane's order.
+    """
+    names = _mt.transition_target_fields(contract)
+    try:
+        import cupy as cp
+    except Exception as error:   # pragma: no cover - box without a GPU
+        raise OfflineChildContractError(
+            "offline cross-physics conversion runs the nest-transition "
+            "kernel (gpuwm/core/kernels/nest_microphysics.cu), which has "
+            "no host implementation, and CuPy/CUDA is not usable on this "
+            f"machine: {error}.  Prepare the child on a machine with a "
+            "working CUDA device, or keep the parent's own scheme") from error
+    if backend == "cuda":
+        device_planes = {
+            name: (None if value is None
+                   else cp.ascontiguousarray(cp.asarray(value, dtype=cp.float32)))
+            for name, value in planes.items()}
+        fields = _launch_conversion(contract, device_planes, names,
+                                    coupled=coupled, xp=cp)
+        return OfflineSchemeTransition(
+            contract=contract, fields=MappingProxyType(fields), device="cuda",
+            host_chunked=False, chunk_rows=None, chunks=1,
+            parent_hypsometric_opt=int(hypsometric_opt))
+    if backend != "cpu":
+        raise OfflineChildContractError(
+            f"offline-child backend must be cpu or cuda, got {backend!r}")
+    nz, ny, nx = (int(v) for v in np.asarray(planes["qv"]).shape)
+    rows = max(1, min(ny, CONVERSION_CHUNK_CELLS // max(1, nz * nx)))
+    host = {name: np.empty((nz, ny, nx), dtype=np.float32) for name in names}
+    columnar = {"c1h", "c2h"}
+    chunks = 0
+    for j0 in range(0, ny, rows):
+        j1 = min(ny, j0 + rows)
+        band = {}
+        for name, value in planes.items():
+            if value is None:
+                band[name] = None
+            elif name in columnar:
+                band[name] = cp.ascontiguousarray(
+                    cp.asarray(value, dtype=cp.float32))
+            elif np.ndim(value) == 2:
+                band[name] = cp.ascontiguousarray(
+                    cp.asarray(value[j0:j1], dtype=cp.float32))
             else:
-                result[number_name] = np.zeros(shape, dtype=np.float32)
-    if "qvolg" not in result:
-        result["qvolg"] = np.ascontiguousarray(result["qg"] / np.float32(700.0))
-    if "qvolh" not in result:
-        result["qvolh"] = np.ascontiguousarray(result["qh"] / np.float32(900.0))
-    qnn_background = np.float32(_mt.NSSL2_BACKGROUND_CCN_PER_KG)
-    result["qnn"] = np.maximum(
-        np.float32(0.0), qnn_background - result.get("qndrop", np.float32(0.0)))
-    if np.ndim(result["qnn"]) == 0:
-        result["qnn"] = np.full(shape, result["qnn"], dtype=np.float32)
-    initialization_receipt = None
-    if needs:
-        if diagnose_missing is None:
-            if air_density is None:
-                raise MomentDiagnosisRequired(
-                    "active NSSL categories require official calcnfromq diagnosis "
-                    f"for {sorted(needs)}; supply the actual child air density")
-            from gpuwm.core.nssl2_offline_init import initialize_missing_moments
-            density = air_density() if callable(air_density) else air_density
-            # Complete target state is returned: copying only the missing
-            # moments would discard calcnfromq's mass return to vapor.
-            result, initialization_receipt = initialize_missing_moments(result, density)
-        else:
-            diagnosed = dict(diagnose_missing(MappingProxyType(result), tuple(needs)))
-            for name in needs:
-                if name not in diagnosed:
-                    raise MomentDiagnosisRequired(
-                        f"calcnfromq did not return required moment {name}")
-                result[name] = np.ascontiguousarray(diagnosed[name], dtype=np.float32)
-            result["qnn"] = np.maximum(
-                np.float32(0.0), qnn_background - result["qndrop"]).astype(np.float32)
-    for name, value in result.items():
-        if value.shape != shape or not np.isfinite(value).all() or np.any(value < 0):
-            raise OfflineChildContractError(
-                f"diagnosed {name} is non-finite, negative, or wrong-shaped")
-
-    unknown = set(result) - set(_NSSL_FIELDS)
-    missing = set(_NSSL_FIELDS) - set(result)
-    if unknown or missing:
-        raise OfflineChildContractError(
-            f"internal NSSL conversion inventory drift: unknown={sorted(unknown)}, "
-            f"missing={sorted(missing)}")
-    receipt = MappingProxyType({
-        "source_mp_physics": source_mp,
-        "target_mp_physics": 18,
-        "category_mapping": category_mapping,
-        "carried_source_moments": tuple(sorted(carried)),
-        "diagnosed_target_moments": tuple(sorted(needs)),
-        "target_initialization": initialization_receipt,
-        "qnn_background_number_per_kg": float(qnn_background),
-        "graupel_init_density_kg_m3": 700.0,
-        "hail_init_density_kg_m3": 900.0,
-        "active_mass_threshold": threshold,
-    })
-    return MappingProxyType({name: result[name] for name in _NSSL_FIELDS}), receipt
+                band[name] = cp.ascontiguousarray(
+                    cp.asarray(value[:, j0:j1], dtype=cp.float32))
+        converted = _launch_conversion(contract, band, names,
+                                       coupled=coupled, xp=cp)
+        for name, value in converted.items():
+            host[name][:, j0:j1] = cp.asnumpy(value)
+        del band, converted
+        chunks += 1
+    return OfflineSchemeTransition(
+        contract=contract, fields=MappingProxyType(host), device="cuda",
+        host_chunked=True, chunk_rows=int(rows), chunks=int(chunks),
+        parent_hypsometric_opt=int(hypsometric_opt))
 
 
 #: Land/soil identity attributes a child surface source must declare.
@@ -1434,7 +1437,7 @@ def map_microphysics_to_nssl18(
 #: ice index) across landuse tables, so they are required evidence.
 _SURFACE_IDENTITY_ATTRS = ("MMINLU", "ISWATER", "ISLAKE", "ISICE")
 
-#: Child-grid surface fields.  ``required`` is the minimum honest warm
+#: Child-grid surface fields.  ``required`` is the minimum accurate warm
 #: start for a land-surface + surface-layer child; ``optional`` fields
 #: are carried when present and receipted either way.  All arrays are
 #: read on the EXACT child grid -- like WRF's ``ndown``, gpuwm's offline
@@ -1941,10 +1944,15 @@ def _transported_source_fields(source_mp_physics: int) -> tuple[str, ...]:
     # offline mirror reads all three too.  The contract test pins the two
     # lanes equal, and the lanes are what has to agree here.
     names = ["qv", "qc", "qr"]
-    if source_mp in {6, 8, 10, 28}:
+    if source_mp in {6, 8, 10, 16, 28}:
         names += ["qi", "qs", "qg"]
     if source_mp == 8:
         names += ["nr", "ni"]
+    elif source_mp == 16:
+        # WDM6 (Registry.EM_COMMON:3031): WSM6's six masses plus the CCN
+        # reservoir and the warm-rain number pair, in the online forcing
+        # table's order (gpuwm/core/nest_fields.py, mp==16 arm).
+        names += ["nn", "nc", "nr"]
     elif source_mp == 28:
         # Thompson aerosol-aware: classic Thompson's two moments plus the
         # prognostic droplet number and the two aerosol tracers.  Order is
@@ -2124,17 +2132,6 @@ def _mass_edges(znw, mu, hybrid_opt, etac, p_top):
                           mu=np.asarray(mu, dtype=np.float64))
 
 
-def _nssl_child_density(phi, phb, mu, znw, hybrid_opt, etac, p_top):
-    total_phi = (np.asarray(_to_host(phb), dtype=np.float64)
-                 + np.asarray(_to_host(phi), dtype=np.float64))
-    edges = _mass_edges(znw, _to_host(mu), hybrid_opt, etac, p_top)
-    alt = geopotential_thickness_per_mass(total_phi, edges)
-    if not np.isfinite(alt).all() or np.any(alt <= 0):
-        raise OfflineChildContractError(
-            "NSSL target initialization requires positive finite child layer density")
-    return np.ascontiguousarray(1.0 / alt, dtype=np.float32)
-
-
 def _remap_geopotential(phi, src_edges, dst_edges):
     """Remap ``alt = dphi/dm`` and rebuild, rather than interpolating PHI.
 
@@ -2271,9 +2268,7 @@ def interpolate_parent_initial_state(
         physics_binding: ParentPhysicsBinding | None = None,
         target_mp_physics: int | None = None,
         morr_rimed_ice: int | None = None, backend: str = "cpu",
-        child_eta_levels=None,
-        diagnose_missing: Callable[[Mapping[str, np.ndarray], Sequence[str]],
-                                   Mapping[str, np.ndarray]] | None = None,
+        child_eta_levels=None, child_cfg=None,
 ) -> InterpolatedInitialState:
     """SINT one archived parent state into a standalone child cold start.
 
@@ -2281,6 +2276,13 @@ def interpolate_parent_initial_state(
     base state.  A later static-geography join may replace/blend those fields,
     but it must run the existing ``blend_terrain``/``adjust_tempqv`` contract;
     this function never claims a high-resolution terrain adjustment happened.
+
+    A child of a DIFFERENT microphysics scheme is converted on the parent's
+    own grid first, by the online nest edge's contract and kernel
+    (:func:`_convert_parent_microphysics`), and the target scheme's fields
+    are what gets interpolated -- the live lane's order.  ``child_cfg`` is
+    the child's RunConfig when the caller has one; it supplies the
+    switches the contract reads (rimed-category options, WDM6's CCN seed).
     """
 
     source_mp_physics, morr_rimed_ice = _resolve_source_physics(
@@ -2288,6 +2290,15 @@ def interpolate_parent_initial_state(
     backend = str(backend).strip().lower()
     target_mp = int(source_mp_physics if target_mp_physics is None
                     else target_mp_physics)
+    transition = None
+    if target_mp != int(source_mp_physics):
+        transition = _offline_transition_contract(
+            int(source_mp_physics), target_mp,
+            morr_rimed_ice=morr_rimed_ice,
+            hail_opt=(None if physics_binding is None
+                      else physics_binding.hail_opt),
+            child_cfg=child_cfg)
+    hypsometric_opt = int(getattr(child_cfg, "hypsometric_opt", 2))
     info = inspect_parent_history_frame(path, source_mp_physics=source_mp_physics)
     expected = (placement.parent_ny, placement.parent_nx)
     actual = (info.dimensions["south_north"], info.dimensions["west_east"])
@@ -2319,50 +2330,37 @@ def interpolate_parent_initial_state(
         value = _backend_array(raw[name], backend)
         interpolated[name] = sint(
             value, registrations[_INITIAL_FIELD_STAGGER.get(name, "")])
+    conversion_receipt = None
+    donor = moisture
+    if transition is not None:
+        # Diagnose the target scheme on the PARENT, then interpolate: the
+        # converted fields replace the parent's own species as the donor
+        # of everything below, so the clamp's reference peaks are the
+        # converted fields' own.
+        converted = _convert_parent_microphysics(
+            transition,
+            _parent_transition_donor(
+                raw, moisture, coeffs, p_top=p_top,
+                hypsometric_opt=hypsometric_opt, target_mp_physics=target_mp),
+            coupled=False, backend=backend, hypsometric_opt=hypsometric_opt)
+        conversion_receipt = converted.receipt()
+        donor = converted.fields
     source_mixing = {
         name: sint(_backend_array(value, backend), registrations[""])
-        for name, value in moisture.items()
+        for name, value in donor.items()
     }
     # The number moments carry magnitudes of 1e3..1e9 per kilogram, so a
     # float32 SINT can round one across zero.  Applied BEFORE any consumer:
-    # the mp18 mapping below refuses a negative source moment, and the
-    # engine's radiation gate refuses a negative nr at the first radiative
-    # call.  Both of those are correct; the artefact is what has to go.
+    # the engine's radiation gate refuses a negative nr at the first
+    # radiative call.  That is correct; the artefact is what has to go.
     initial_clamp = clamp_sint_undershoot_mapping(source_mixing)
     # Actual nonnegative archived cloud water can land at -6e-22 kg/kg
     # after SINT. Reuse the bounded eight-ULP policy with the DONOR scale,
     # and no absolute floor; larger negatives still reach the strict gate.
     initial_clamp.update(clamp_sint_undershoot_mapping(
         source_mixing, names=_POSITIVE_MASS_FIELDS, floor_scale=0.0,
-        reference_fields=moisture))
-    conversion_receipt = None
-    _refuse_unbuilt_p3_offline_edge(int(source_mp_physics), target_mp)
-    if target_mp == 18:
-        mapped, conversion_receipt = map_microphysics_to_nssl18(
-            {name: _to_host(value) for name, value in source_mixing.items()},
-            source_mp_physics=int(source_mp_physics),
-            morr_rimed_ice=morr_rimed_ice,
-            diagnose_missing=diagnose_missing,
-            air_density=lambda: _nssl_child_density(
-                interpolated["PH"], interpolated["PHB"],
-                interpolated["MUB"] + interpolated["MU"], raw["ZNW"],
-                hybrid_opt, etac, p_top),
-        )
-        source_mixing = mapped
-    elif (target_mp != int(source_mp_physics)
-            and target_mp in _CROSS_SCHEME_REFUSED_MP_PHYSICS):
-        raise OfflineChildContractError(
-            "offline cross-physics initialization of a child at "
-            f"{_cross_scheme_refusal_clause(target_mp)} from an "
-            f"mp_physics={int(source_mp_physics)} parent is REFUSED: no "
-            "cross-scheme entry closure for those moments has been measured, "
-            "and the online nest lane refuses the same edge "
-            "(gpuwm/core/microphysics_transition.py::"
-            f"UNVALIDATED_MIXED_EDGE_SELECTORS).  Same-scheme {target_mp} -> "
-            f"{target_mp} downscaling is supported")
-    elif target_mp != int(source_mp_physics):
-        raise OfflineChildContractError(
-            "cross-physics offline initialization currently targets NSSL mp18")
+        reference_fields={name: _to_host(value)
+                          for name, value in donor.items()}))
     fields = {name: _to_host(value) for name, value in interpolated.items()}
     fields.update({name: np.array(raw[name], copy=True, dtype=np.float32)
                    for name in constants})
@@ -2854,16 +2852,16 @@ def interpolate_parent_boundary_snapshot(
         physics_binding: ParentPhysicsBinding | None = None,
         target_mp_physics: int | None = None,
         morr_rimed_ice: int | None = None, backend: str = "cpu",
-        child_eta_levels=None,
-        diagnose_missing: Callable[[Mapping[str, np.ndarray], Sequence[str]],
-                                   Mapping[str, np.ndarray]] | None = None,
+        child_eta_levels=None, child_cfg=None,
 ) -> InterpolatedBoundarySnapshot:
     """Conservatively SINT one archived parent state onto a child frame.
 
     Dynamics and source scalars are coupled on the parent before SINT, matching
     online ``bdy_interp1`` spatial semantics.  When target physics differs,
-    coupled source scalars are uncoupled on the child, converted there, and
-    recoupled in the target inventory.
+    the target scheme's fields are diagnosed on the parent by the online
+    edge kernel, COUPLED by the kernel itself with the parent's hybrid mass
+    (the ``coupled=True`` form the live nest coupler uses), and interpolated
+    beside the dynamics exactly as the parent's own species would have been.
     """
 
     source_mp_physics, morr_rimed_ice = _resolve_source_physics(
@@ -2877,20 +2875,51 @@ def interpolate_parent_boundary_snapshot(
             f"parent history mass grid {actual} != placement parent grid {expected}")
     target_mp = int(source_mp_physics if target_mp_physics is None
                     else target_mp_physics)
+    transition = None
+    if target_mp != int(source_mp_physics):
+        transition = _offline_transition_contract(
+            int(source_mp_physics), target_mp,
+            morr_rimed_ice=morr_rimed_ice,
+            hail_opt=(None if physics_binding is None
+                      else physics_binding.hail_opt),
+            child_cfg=child_cfg)
+    hypsometric_opt = int(getattr(child_cfg, "hypsometric_opt", 2))
     started = time.perf_counter()
     child_znw = resolve_child_ladder(child_eta_levels)
     with netcdf_bridge.open_dataset(path) as dataset:
         raw, moisture = _raw_parent_state(dataset, int(source_mp_physics))
         coeffs, hybrid_opt, etac, p_top = _vertical_coefficients(raw, dataset)
-        if child_znw is not None or (target_mp == 18 and target_mp != int(source_mp_physics)):
-            # Target initialization also needs the actual child dry density.
+        if child_znw is not None or transition is not None:
             # Needed to make the child's geopotential a perturbation
-            # against its OWN base; read here rather than in
-            # _raw_parent_state so a child that inherits its parent's ladder
-            # still requires exactly the variables it always did.
+            # against its OWN base, and for the parent density a
+            # cross-scheme conversion diagnoses moments against; read here
+            # rather than in _raw_parent_state so a child that inherits its
+            # parent's ladder and scheme still requires exactly the
+            # variables it always did.
             raw["PHB"] = _read_record(dataset, "PHB")
+        if transition is not None and target_mp == 9:
+            # Entering Milbrandt-Yau the kernel forms the absolute
+            # temperature per cell from theta and the full pressure.
+            raw["P"] = _read_record(dataset, "P")
+            raw["PB"] = _read_record(dataset, "PB")
+    conversion_receipt = None
+    converted = None
+    if transition is not None:
+        converted = _convert_parent_microphysics(
+            transition,
+            _parent_transition_donor(
+                raw, moisture, coeffs, p_top=p_top,
+                hypsometric_opt=hypsometric_opt, target_mp_physics=target_mp),
+            coupled=True, backend=backend, hypsometric_opt=hypsometric_opt)
+        conversion_receipt = converted.receipt()
     coupled, raw_device, parent_chm = _couple_parent(
-        raw, moisture, coeffs, backend)
+        raw, {} if converted is not None else moisture, coeffs, backend)
+    if converted is not None:
+        # Already coupled by the kernel with the parent's own hybrid mass.
+        coupled.update({name: _backend_array(value, backend)
+                        for name, value in converted.fields.items()})
+    moisture_names = frozenset(
+        moisture if converted is None else converted.fields)
     registrations = {
         "": placement.registration("", wrapper="bdy"),
         "x": placement.registration("x", wrapper="bdy"),
@@ -2915,53 +2944,6 @@ def interpolate_parent_boundary_snapshot(
     boundary_clamp.update(clamp_sint_undershoot_mapping(
         interpolated, names=_POSITIVE_MASS_FIELDS, floor_scale=0.0,
         reference_fields=coupled))
-    conversion_receipt = None
-    if target_mp != int(source_mp_physics):
-        _refuse_unbuilt_p3_offline_edge(int(source_mp_physics), target_mp)
-        if (target_mp in _CROSS_SCHEME_REFUSED_MP_PHYSICS
-                or int(source_mp_physics)
-                in _CROSS_SCHEME_REFUSED_MP_PHYSICS):
-            refused = (target_mp if target_mp
-                       in _CROSS_SCHEME_REFUSED_MP_PHYSICS
-                       else int(source_mp_physics))
-            raise OfflineChildContractError(
-                f"offline cross-physics forcing across the mp_physics="
-                f"{int(source_mp_physics)} -> {target_mp} edge is REFUSED: "
-                f"{_cross_scheme_refusal_clause(refused)} has no measured "
-                "cross-scheme entry closure, and the online "
-                "nest lane refuses the same edge "
-                "(gpuwm/core/microphysics_transition.py::"
-                "UNVALIDATED_MIXED_EDGE_SELECTORS)")
-        if target_mp != 18:
-            raise OfflineChildContractError(
-                "cross-physics offline forcing currently targets NSSL mp18")
-        xp = np if backend == "cpu" else __import__("cupy")
-        child_mub = sint(raw_device["MUB"], registrations[""])
-        child_mup = interpolated["mu"][0]
-        child_mu = child_mub + child_mup
-        c1h = xp.asarray(coeffs["c1h"], dtype=xp.float32)[:, None, None]
-        c2h = xp.asarray(coeffs["c2h"], dtype=xp.float32)[:, None, None]
-        child_chm = c1h * child_mu[None] + c2h
-        source_mixing = {
-            name: _to_host(interpolated.pop(name) / child_chm)
-            for name in tuple(moisture)
-        }
-        mapped, conversion_receipt = map_microphysics_to_nssl18(
-            source_mixing, source_mp_physics=int(source_mp_physics),
-            morr_rimed_ice=morr_rimed_ice,
-            diagnose_missing=diagnose_missing,
-            air_density=lambda: _nssl_child_density(
-                interpolated["phi"] / (
-                    xp.asarray(coeffs["c1f"], dtype=xp.float32)[:, None, None]
-                    * child_mu[None]
-                    + xp.asarray(coeffs["c2f"], dtype=xp.float32)[:, None, None]),
-                sint(_backend_array(raw["PHB"], backend), registrations[""]),
-                child_mu, raw["ZNW"], hybrid_opt, etac, p_top),
-        )
-        child_chm_host = _to_host(child_chm)
-        interpolated.update({
-            name: child_chm_host * value for name, value in mapped.items()
-        })
     remap_receipts = ()
     if child_znw is not None:
         parent_znw = np.asarray(raw["ZNW"], dtype=np.float64).reshape(-1)
@@ -2973,7 +2955,7 @@ def interpolate_parent_boundary_snapshot(
                     _backend_array(raw["PHB"], backend), registrations[""])),
                 parent_znw=parent_znw, child_znw=child_znw,
                 hybrid_opt=hybrid_opt, etac=etac, p_top=p_top,
-                moisture_names=frozenset(moisture)))
+                moisture_names=moisture_names))
     fields = MappingProxyType({name: _to_host(value)
                                for name, value in interpolated.items()})
     receipt = MappingProxyType({
@@ -3010,9 +2992,7 @@ def build_offline_lateral_boundaries(
         contract: ParentHistoryContract, placement: OfflineChildPlacement, *,
         target_mp_physics: int | None = None,
         morr_rimed_ice: int | None = None, backend: str = "cpu",
-        child_eta_levels=None,
-        diagnose_missing: Callable[[Mapping[str, np.ndarray], Sequence[str]],
-                                   Mapping[str, np.ndarray]] | None = None,
+        child_eta_levels=None, child_cfg=None,
         spec_bdy_width: int = 5, spec_zone: int = 1, relax_zone: int = 4,
 ) -> OfflineBoundaryResult:
     """Stream parent frames into compact child lateral value/tendency strips."""
@@ -3039,8 +3019,7 @@ def build_offline_lateral_boundaries(
             physics_binding=contract.physics_binding,
             target_mp_physics=target_mp_physics,
             morr_rimed_ice=morr_rimed_ice, backend=backend,
-            child_eta_levels=child_eta_levels,
-            diagnose_missing=diagnose_missing,
+            child_eta_levels=child_eta_levels, child_cfg=child_cfg,
         )
         sides = {
             side: extract_lateral_side(snapshot.fields, side, spec_bdy_width)
@@ -3072,13 +3051,14 @@ __all__ = [
     "DERIVED_CHILD_SURFACE_CAVEAT", "DERIVED_CHILD_SURFACE_POLICY",
     "derive_child_surface_from_parent",
     "read_child_surface_state",
-    "MomentDiagnosisRequired", "OfflineChildContractError",
+    "OfflineChildContractError", "OfflineSchemeTransition",
+    "PARENT_SCHEME_CONTRACT",
     "ParentHistoryContract", "ParentHistoryFrame", "ParentPhysicsBinding",
     "bind_parent_physics_from_gpuwm_restart",
     "bind_parent_physics_from_wrf_namelist",
     "build_offline_child_domain_state", "build_offline_lateral_boundaries",
     "inspect_parent_history_frame", "interpolate_parent_boundary_snapshot",
-    "interpolate_parent_initial_state", "map_microphysics_to_nssl18",
+    "interpolate_parent_initial_state", "offline_cross_scheme_refusal",
     "read_parent_microphysics", "reserve_output_root",
     "validate_parent_history",
 ]

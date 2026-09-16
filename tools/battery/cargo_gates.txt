@@ -78,7 +78,7 @@
 #   it before it believes any leg that renders; a test leg sharing that
 #   directory can rebuild, replace or lock the binary the cut is
 #   adjudicating, and the two answers would then depend on which leg ran
-#   last.  The gate also stays honest about the tree: a cut refuses to
+#   last.  The gate also stays accurate about the tree: a cut refuses to
 #   assemble from a dirty source tree, and target/ artefacts are exactly
 #   what makes one dirty on a clone whose .gitignore has moved.
 #
@@ -196,7 +196,7 @@ cpu  tools/rustwx  rw-fetch  44
 # programs a campaign's accept/reject verdict is read off, and their
 # whole design claim is that they reproduce the reference judge's bits
 # rather than merely being defensible.  The summation contract is the
-# load-bearing part -- the pairwise tree, the 8192-element reduction
+# essential part -- the pairwise tree, the 8192-element reduction
 # buffer around it, and the cell-first ring packing -- and it is what
 # these tests pin.  Floor is this package's first green run, 43 across
 # the lib, `runscore_contract` and `table_contract`.

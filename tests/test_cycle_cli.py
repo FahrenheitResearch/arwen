@@ -112,7 +112,7 @@ def test_a_run_without_parent_state_writes_no_receipt(tmp_path):
 
 
 def test_a_model_parent_with_no_port_refuses_rather_than_pretending(tmp_path):
-    """The adapter LANDED, so the refusal moved -- it must move honestly.
+    """The adapter LANDED, so the refusal moved -- it must move accurately.
 
     This test used to assert ``"no engine adapter"``, which was the right
     thing to say while the closed-loop lane's capability was unmerged.

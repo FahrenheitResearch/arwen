@@ -319,7 +319,7 @@ def test_a_missing_field_stays_missing():
 @pytest.mark.parametrize("value", ["MODIFIED_IGBP_MODIS_NOAH", b"raw",
                                    True, 17, 3.5])
 def test_a_scalar_beside_the_fields_comes_back_as_itself(value):
-    """A static bundle is not all arrays, and the difference is load-bearing.
+    """A static bundle is not all arrays, and the difference is essential.
 
     ``MMINLU`` is a string naming the land-use table; a slab whose static
     mapping held ``np.asarray("MODIS...")`` instead would still be a mapping

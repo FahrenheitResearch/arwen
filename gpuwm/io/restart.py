@@ -270,6 +270,7 @@ CONFIG_DIAGNOSTIC_FIELDS = frozenset(
 #: the sealed interval inventory recorded in the checkpoint.  Ordinary
 #: restart readers never consult this marker and retain exact setup matching.
 SEALED_FORCING_EXTENSION_MODE = "sealed-prefix-v1"
+PRESERVED_FORCING_PREFIX_MODE = "preserved-prefix-v1"
 
 #: Root external-LBC clock semantic identity (Davies clock bind,
 #: 2026-07-28).  Which dtbc the root's external Davies consumers took is
@@ -1114,6 +1115,86 @@ def producer_identity() -> dict[str, str]:
         "version": __version__,
         "restart_format_version": str(RESTART_FORMAT_VERSION),
     }
+
+
+#: The header key carrying which memory road WROTE a checkpoint.
+#: Provenance, never identity: see :func:`written_mode_note`.
+WRITTEN_MODE_HEADER_KEY = "written_mode"
+
+#: The two roads, in the words the note and the resume disclosure use.
+RESIDENT_WRITTEN_MODE = "resident"
+STREAMED_WRITTEN_MODE = "streamed"
+
+
+def written_mode_note(mode: str, cfg, *, store: str | None = None) -> dict:
+    """Which memory road wrote this checkpoint, and at what shape.
+
+    RESTART IDENTITY VERSUS RESTART PROVENANCE.  The combination restart
+    x memory mode is free by construction: streaming contributes nothing
+    to the restart identity (``core.streaming.identity_payload_entry``),
+    so a file written streamed resumes resident and one written resident
+    resumes streamed, and this note may never change that.  It does not:
+    nothing in this value is read by :func:`setup_fingerprint`,
+    :func:`physics_setup_identity`, :func:`_require_config_match` (which
+    compares ``header["config"]`` alone) or by
+    ``gpuwm.state_digest.canonical_state_digest`` and
+    ``canonical_store_digest``, neither of which reads a header at all;
+    they walk a ``DomainState`` and a store.  So the digest of the same
+    weather is the same number whichever road wrote it, and a checkpoint
+    written before this key existed resumes exactly as it did.
+
+    What the note is FOR is the question an operator cannot otherwise
+    answer from the file: a run that was killed for exhausting host RAM
+    leaves a checkpoint that says which road it was on when it died.
+    Without it the only mode anything can report is the mode of the run
+    doing the READING, which is the question nobody asked.
+
+    ``store`` is the road's backing store where that is a real choice
+    (``"host"`` pinned RAM or ``"device"`` VRAM for a streamed write) and
+    ``None`` where it is not.  The shape is the domain's, taken from
+    ``cfg`` so every writer spells it the same way.
+
+    WHO STAMPS IT TODAY.  The resident writer (:func:`_write_restart`)
+    does, and it is the only writer in this package.  The streamed
+    writer builds its own header in
+    ``tilestream.restart_stream.write_streamed_restart`` and does not
+    call this yet, so a streamed archive carries no stamp and
+    :func:`header_written_mode` answers ``None`` for it.  That asymmetry
+    is safe by construction: both readers check for MISSING required
+    keys and neither rejects an extra one (:func:`_validate_restart` and
+    ``tilestream.restart_stream.validate_streamed_restart``), so it
+    costs a disclosure, never a resume.  ``streamed`` is defined here
+    rather than left for later so that the streamed writer, when it is
+    reached, stamps the same key with the same words through this one
+    function instead of inventing a second spelling.
+    """
+    if mode not in (RESIDENT_WRITTEN_MODE, STREAMED_WRITTEN_MODE):
+        raise ValueError(
+            f"written mode must be {RESIDENT_WRITTEN_MODE!r} or "
+            f"{STREAMED_WRITTEN_MODE!r}, not {mode!r}")
+    note = {"mode": mode, "shape": [int(cfg.ny), int(cfg.nx)]}
+    if store is not None:
+        note["store"] = str(store)
+    return note
+
+
+def header_written_mode(header) -> str | None:
+    """The road named in ``header``, or ``None`` when it names none.
+
+    ``None`` is a fact about the FILE and never a reason to refuse: a
+    checkpoint written before the stamp existed reports it, so does one
+    written by the streamed writer, which does not stamp yet (see
+    :func:`written_mode_note`), and every one of them still resumes.  So
+    ``None`` may be read as "this file does not say", never as "this
+    file was written resident".
+    """
+    if not isinstance(header, dict):
+        return None
+    note = header.get(WRITTEN_MODE_HEADER_KEY)
+    if not isinstance(note, dict):
+        return None
+    mode = note.get("mode")
+    return mode if isinstance(mode, str) and mode else None
 
 
 def _admissible_elapsed_seconds(value, where: str) -> float:
@@ -3018,7 +3099,8 @@ def root_external_lbc_clock_identity(state, cfg) -> str | None:
 def write_restart(path, state, cfg, *, run_trackers=None,
                   tree_header: dict | None = None,
                   extra_scratch_slots=(),
-                  sealed_forcing_extension: bool = False) -> Path:
+                  sealed_forcing_extension: bool = False,
+                  preserved_forcing_prefix: bool = False) -> Path:
     """Serialize the complete cross-step model state to ``path``.
 
     ``run_trackers`` (optional JSON-able dict) carries the caller's
@@ -3037,14 +3119,21 @@ def write_restart(path, state, cfg, *, run_trackers=None,
             path, state, cfg, run_trackers=run_trackers,
             tree_header=tree_header,
             extra_scratch_slots=extra_scratch_slots,
-            sealed_forcing_extension=sealed_forcing_extension)
+            sealed_forcing_extension=sealed_forcing_extension,
+            preserved_forcing_prefix=preserved_forcing_prefix)
 
 
 def _write_restart(path, state, cfg, *, run_trackers=None,
                    tree_header: dict | None = None,
                    extra_scratch_slots=(),
-                   sealed_forcing_extension: bool = False) -> Path:
+                   sealed_forcing_extension: bool = False,
+                   preserved_forcing_prefix: bool = False) -> Path:
     path = Path(path)
+    if preserved_forcing_prefix:
+        if sealed_forcing_extension:
+            raise ValueError('A checkpoint cannot declare two forcing continuation modes')
+        _require_preservable_forcing_prefix(state, cfg, path=path,
+            elapsed=_admissible_elapsed_seconds(state.elapsed_seconds, 'preserved restart write'))
     _validate_nssl2_live_restart_state(state, cfg)
     _validate_thompson_aerosol_live_restart_state(state, cfg)
     _validate_milbrandt2_live_restart_state(state, cfg)
@@ -3092,6 +3181,13 @@ def _write_restart(path, state, cfg, *, run_trackers=None,
         # comes from installed distribution metadata, so this is the release
         # that is speaking rather than a hand-maintained constant.
         "producer": producer_identity(),
+        # Provenance, excluded from every identity by construction; see
+        # written_mode_note.  The resident writer materialises a full host
+        # copy of the domain, which is what "resident" names here.  The
+        # streamed writer lives in another package and does not stamp
+        # yet, so a header with no key says "this file does not say".
+        WRITTEN_MODE_HEADER_KEY: written_mode_note(
+            RESIDENT_WRITTEN_MODE, cfg),
         "elapsed_seconds": _admissible_elapsed_seconds(
             state.elapsed_seconds, "restart write"),
         "config": dataclasses.asdict(cfg),
@@ -3103,9 +3199,10 @@ def _write_restart(path, state, cfg, *, run_trackers=None,
                          else dict(run_trackers)),
         "array_manifest": array_manifest,
     }
-    if sealed_forcing_extension:
+    if sealed_forcing_extension or preserved_forcing_prefix:
         header.update({
-            "forcing_extension_mode": SEALED_FORCING_EXTENSION_MODE,
+            "forcing_extension_mode": (PRESERVED_FORCING_PREFIX_MODE if preserved_forcing_prefix
+                                       else SEALED_FORCING_EXTENSION_MODE),
             "setup_core_fingerprint": setup_core_fingerprint(state),
             "lateral_boundary_prefix": lateral_boundary_prefix_identity(state),
         })
@@ -3354,7 +3451,7 @@ def _require_config_match(stored_config: dict, cfg, path) -> None:
             f"restart file {path} was written under a different "
             "configuration; refusing to continue a different model:\n  "
             + "\n  ".join(differences))
-        # Restart honesty for the 2026-08-16 mixing auto-switch: a
+        # Restart accuracy for the 2026-08-16 mixing auto-switch: a
         # checkpoint from the old anisotropic default meeting a run that
         # selects the isotropic length gets told WHY the default moved
         # under it and how to resume, not just that a field differs.  A
@@ -3936,7 +4033,7 @@ def tree_fingerprint_mismatch_reason(gid: int, header, model) -> str:
         "may change the forecast length and the output/restart cadence; "
         "everything else -- geometry, timestep, physics, nesting, "
         "prepared inputs -- must be the run that wrote the checkpoint")
-    # Same restart honesty as the single-domain door: when the moved
+    # Same restart accuracy as the single-domain door: when the moved
     # piece is the mixing length going 0 -> 1, the changed DEFAULT (the
     # 2026-08-16 auto-switch) is named beside the refusal, with the
     # remedy, instead of leaving "experiment_identity differs" to be
@@ -5480,8 +5577,33 @@ def _require_sealed_forcing_extension(header, state, *, path: Path,
             "checkpoint-boundary frame")
 
 
+def _require_preservable_forcing_prefix(state, cfg, *, path, elapsed):
+    if not getattr(cfg, 'specified', False) or getattr(cfg, 'nested', False):
+        raise RestartMismatchError(f'{path}: preserved forcing requires a specified root domain')
+    controls, intervals = _validated_forcing_prefix(
+        lateral_boundary_prefix_identity(state), label='preserved', path=path)
+    if elapsed > float(intervals[-1]['end_seconds']):
+        raise RestartMismatchError(f'{path}: the forcing inventory ends before the checkpoint clock')
+    return controls, intervals
+
+
+def _require_preserved_forcing_prefix(header, state, cfg, *, path, elapsed):
+    if header.get('forcing_extension_mode') != PRESERVED_FORCING_PREFIX_MODE:
+        raise RestartMismatchError(f'{path}: this checkpoint has no preserved forcing-prefix contract; restore its exact preparation')
+    if header.get('setup_core_fingerprint') != setup_core_fingerprint(state):
+        raise RestartMismatchError(f'{path}: forcing renewal changes immutable base state, coordinates or map factors')
+    old_controls, old = _validated_forcing_prefix(
+        header.get('lateral_boundary_prefix'), label='stored preserved', path=path)
+    new_controls, new = _require_preservable_forcing_prefix(state, cfg, path=path, elapsed=elapsed)
+    if elapsed > float(old[-1]['end_seconds']):
+        raise RestartMismatchError(f'{path}: the stored forcing ends before its checkpoint clock')
+    if old_controls != new_controls or new[:len(old)] != old:
+        raise RestartMismatchError(f'{path}: forcing renewal changed a previously declared interval or boundary controls; retain the complete original prefix')
+
+
 def _validate_restart(path, state, cfg, *,
-                      sealed_forcing_extension: bool = False
+                      sealed_forcing_extension: bool = False,
+                      preserved_forcing_prefix: bool = False
                       ) -> _ValidatedRestart:
     """Load one archive and perform all refusal checks without mutation."""
     path = Path(path)
@@ -5525,7 +5647,11 @@ def _validate_restart(path, state, cfg, *,
         raise RestartMismatchError(
             f"restart file {path} has an invalid elapsed_seconds") from exc
     live_setup_fingerprint = setup_fingerprint(state)
-    if sealed_forcing_extension:
+    if preserved_forcing_prefix:
+        if sealed_forcing_extension:
+            raise ValueError('A restore cannot declare two forcing continuation modes')
+        _require_preserved_forcing_prefix(header, state, cfg, path=path, elapsed=elapsed)
+    elif sealed_forcing_extension:
         if header.get("forcing_extension_mode") != \
                 SEALED_FORCING_EXTENSION_MODE:
             raise RestartMismatchError(
@@ -5761,7 +5887,7 @@ def _apply_validated_restart(validated: _ValidatedRestart,
                        header=header)
 
 
-def restore_restart(path, state, cfg) -> RestartInfo:
+def restore_restart(path, state, cfg, *, preserved_forcing_prefix=False) -> RestartInfo:
     """Restore a restart file into a freshly PREPARED state, in place.
 
     The caller must have completed the normal deterministic setup first
@@ -5774,7 +5900,7 @@ def restore_restart(path, state, cfg) -> RestartInfo:
     and restores ``elapsed_seconds`` LAST, after
     ``attach_lateral_boundaries`` reset it to zero.
     """
-    validated = _validate_restart(path, state, cfg)
+    validated = _validate_restart(path, state, cfg, preserved_forcing_prefix=preserved_forcing_prefix)
     return _apply_validated_restart(validated, state, cfg)
 
 
@@ -6038,6 +6164,8 @@ __all__ = [
     "restart_filename", "restore_restart", "restore_tree_restart",
     "lateral_boundary_prefix_identity", "setup_core_fingerprint",
     "setup_fingerprint", "state_manifest", "write_restart",
+    "WRITTEN_MODE_HEADER_KEY", "RESIDENT_WRITTEN_MODE",
+    "STREAMED_WRITTEN_MODE", "written_mode_note", "header_written_mode",
     "checkpoint_placements",
     "write_tree_restart",
 ]

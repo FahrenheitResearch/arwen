@@ -301,7 +301,7 @@ def test_the_receipt_line_tells_the_truth_for_every_disposition():
     unused = line(0, 0, 0, token=False)
     assert "nothing reads or publishes GLW" in unused
     # Guarded configurations without the token cannot arrive through
-    # build_experiment; a hand-assembled experiment gets the honest
+    # build_experiment; a hand-assembled experiment gets the accurate
     # refusal sentence, never the unused one.
     for lw, sw, surface in ((0, 1, 2), (0, 1, 0), (0, 0, 2)):
         no_source = line(lw, sw, surface, token=False)

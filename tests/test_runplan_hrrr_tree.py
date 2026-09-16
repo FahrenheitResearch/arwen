@@ -15,7 +15,7 @@ this could have gone wrong:
 * the tool prints ``preparation_receipt_sha256`` on stdout, and it is
   not read -- the tool computes it as the sha256 of ``receipt.json``'s
   bytes, so hashing the artifact gives the identical digest without
-  making a printed line load-bearing.
+  making a printed line essential.
 
 CPU-only throughout: the stages are captured at the ``run_stage`` seam
 and the runner at its ``observer`` seam.

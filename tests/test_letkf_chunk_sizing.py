@@ -291,7 +291,7 @@ def _flaky_eigendecompose(failures, real, exc_factory):
 def test_allocation_failure_halves_the_chunk_and_changes_nothing(monkeypatch):
     """OOM mid-analysis degrades the chunk; the increments are bitwise same.
 
-    Bitwise HERE, and the qualifier is load-bearing.  Each gridpoint's
+    Bitwise HERE, and the qualifier is essential.  Each gridpoint's
     transform is mathematically independent of how gridpoints are
     batched, and numpy honours that to the byte, because its batched
     eigensolve and its matmuls are per-matrix loops whose summation order
@@ -355,7 +355,7 @@ def test_repeated_failures_keep_halving_down_to_one(monkeypatch):
 
 
 def test_a_wall_at_chunk_one_refuses_with_the_remedy(monkeypatch):
-    """When no smaller solve exists, the refusal is honest and named."""
+    """When no smaller solve exists, the refusal is accurate and named."""
     grid, prior, obs, fields = _tiny_case()
     flaky = _flaky_eigendecompose(
         10 ** 6, letkf_mod._eigendecompose,

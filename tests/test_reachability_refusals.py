@@ -236,7 +236,7 @@ def test_the_real74_entry_points_actually_call_the_guard(tmp_path,
                                                          monkeypatch):
     """The guard must be CALLED, not merely defined.
 
-    This is the load-bearing test of the row.  The first version of the
+    This is the essential test of the row.  The first version of the
     fix added ``require_bundle()`` and wired it to nothing: every unit
     test of the function passed, and `gpuwm verify real74_d01` on the
     installed wheel still died with the same twenty-line

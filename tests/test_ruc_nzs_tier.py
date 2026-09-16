@@ -123,7 +123,9 @@ PRE_FIX_DZSTOP = (
 
 def _shipped() -> str:
     """``ruc.cu`` exactly as it sits on disk, with no newline translation."""
-    return KERNEL.read_text(encoding="utf-8", newline="")
+    # read_bytes rather than read_text(newline=""): the keyword arrived in
+    # Python 3.13, and the bytes route keeps every newline exactly as well.
+    return KERNEL.read_bytes().decode("utf-8")
 
 
 def _block(name: str) -> re.Pattern[str]:

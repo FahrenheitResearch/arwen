@@ -4206,7 +4206,7 @@ def _warmed_integration_rates(
     truth.
 
     Both existing rate fields keep their names and their meaning: they
-    are the honest cost of THIS run, compilation included, which is what
+    are the accurate cost of THIS run, compilation included, which is what
     a fifteen-minute run actually took.  These are additional.
 
     ``None`` rather than a fabricated number whenever the arithmetic has

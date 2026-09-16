@@ -318,61 +318,33 @@ def build_parser() -> argparse.ArgumentParser:
                              "Range-folded gates stay excluded. Changes the "
                              "file's clear_air_source, and therefore what a "
                              "DA adapter will accept it as")
-    parser.add_argument("--dealias", action="store_true",
-                        help="unfold radial velocity per sweep before "
-                             "gridding, instead of masking every gate that "
-                             "might be folded. Gates the unfolder cannot "
-                             "resolve are still dropped and counted; gates "
-                             "it does resolve are bounded by an absolute "
-                             "speed rather than a fraction of Nyquist, "
-                             "which is what recovers a mesocyclone couplet "
-                             "living above 0.8 * Nyquist. Records the "
-                             "per-gate account in the file's provenance. "
-                             "The default engine needs the region-global "
-                             "shared library; gpuwm doctor prints how to "
-                             "get it")
+    parser.add_argument("--no-dealias", dest="dealias",
+                        action="store_false", default=True,
+                        help="grid radial velocity WITHOUT unfolding it, "
+                             "masking every gate that might be folded "
+                             "instead. Dealiasing is the default because "
+                             "the masks find signatures of aliasing rather "
+                             "than aliasing: a spatially coherent fold "
+                             "passes all four of them and reaches the "
+                             "filter as a smooth, plausible, wrong wind "
+                             "field. Pass this to isolate the unfolder's "
+                             "effect, not to avoid it. The default engine "
+                             "resolves down a stated chain when the "
+                             "region-global shared library is not staged; "
+                             "gpuwm doctor prints how to get it")
     add_dealias_engine_arguments(parser)
     return parser
 
 
-def dealias_params_from_args(args, params_class, unavailable_reason):
-    """``DealiasParams`` for these flags, or None -- refusing at the door.
-
-    Shared by the three front doors so the refusal, the message and the
-    parameter object are one implementation.  ``--dealias-refinement``
-    without ``--dealias`` is refused rather than ignored: a run that asked
-    for a treatment and silently did not get it is exactly the failure the
-    A/B discipline exists to prevent.
-
-    ``--dealias-refinement`` unset is None, not False, and it stays None
-    all the way into ``DealiasParams``: the refinement default belongs to
-    the engine (on for ``region-global``, meaningless for ``vad-region``),
-    and a front door that resolved it to a bool here would have to know
-    that table too.  Asked for explicitly beside the engine that has no
-    such pass, it is refused by name at the door rather than as a
-    traceback from the parameter object.
-    """
-
-    from gpuwm.obs.dealias import ENGINE_REGION_GLOBAL
-
-    engine = getattr(args, "dealias_engine", None)
-    refinement = getattr(args, "dealias_refinement", None)
-    if not args.dealias:
-        if refinement is not None:
-            raise SystemExit(
-                "--dealias-refinement/--no-dealias-refinement refines a "
-                "dealiased field; pass --dealias as well, or drop it")
-        return None
-    if refinement and engine != ENGINE_REGION_GLOBAL:
-        raise SystemExit(
-            f"--dealias-refinement with --dealias-engine {engine}: that "
-            f"engine has no refinement pass; only {ENGINE_REGION_GLOBAL} "
-            "does. A switch that is accepted and then ignored is how a run "
-            "gets reported as having had a treatment it never got")
-    reason = unavailable_reason(engine)
-    if reason is not None:
-        raise SystemExit(f"--dealias-engine {engine}: {reason}")
-    return params_class(engine=engine, refinement=refinement)
+#: The shared resolver, re-exported under this module's own name.
+#:
+#: It lives in :mod:`gpuwm.obs.dealias`, beside the engines, because
+#: ``gpuwm`` must not import ``tools`` and the ``gpuwm obs radar grid``
+#: door has to reach the same function this one does -- one function,
+#: every door, or two doors resolve the same install differently.  The
+#: spelling stays here so ``tools.obs_radar_grid_from_pack`` and
+#: ``tools.da_nowcast`` keep importing it from the production spine.
+from gpuwm.obs.dealias import dealias_params_from_args   # noqa: E402
 
 
 def add_dealias_engine_arguments(parser) -> None:
@@ -389,10 +361,10 @@ def add_dealias_engine_arguments(parser) -> None:
     a hardcoded value.
     """
 
-    from gpuwm.obs.dealias import ENGINE_REGION_GLOBAL, ENGINES
+    from gpuwm.obs.dealias import ENGINES
 
     parser.add_argument("--dealias-engine", choices=list(ENGINES),
-                        default=ENGINE_REGION_GLOBAL,
+                        default=None,
                         help="which solver unfolds a sweep. "
                              "'region-global' (default) is the vendored "
                              "region-global-dealias crate -- a Rust port "
@@ -780,7 +752,7 @@ def main(argv=None) -> int:
         # `any(cc_qc)`, because a file written without the mask must keep
         # the exact key set it always had.  This is a receipt, not that
         # file, and a receipt that stayed silent about a mask that was
-        # asked for and found nothing to do would be the less honest of
+        # asked for and found nothing to do would be the less accurate of
         # the two.  The per-radar cc_* counters already ride each entry's
         # "counts"; this is their sum across the radars that
         # contributed, so a reader sees the file-wide price of the mask

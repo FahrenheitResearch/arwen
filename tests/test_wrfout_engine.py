@@ -198,7 +198,7 @@ def test_a_tape_with_no_frames_is_refused_at_close(
     ``quarantine_orphan_wrfouts`` trusts, so nothing downstream would ever
     look at it again.
 
-    The engine parametrization is load-bearing: the guard belongs to
+    The engine parametrization is essential: the guard belongs to
     ``WrfoutWriter.close()``, ahead of the engine branch, and a repair
     pushed down into the classic tape would leave the netCDF4 escape
     publishing empty files.

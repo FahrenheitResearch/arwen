@@ -792,7 +792,7 @@ def test_the_coarse_fixture_is_the_widened_fixture_plus_a_dx_sweep():
 #: has by then propagated into the carried UST/MOL that charnock_1955 (:657)
 #: and the WSTAR scale read: 30 move.  With ISFFLX=0 the thirteen outputs of
 #: :1027-1044 are the literal constant 0 and cannot respond to anything, so
-#: only 14 move -- which is the honest size of the hole this stage closes.
+#: only 14 move -- which is the accurate size of the hole this stage closes.
 DX_INSENSITIVE = {
     (1, 1): ("regime", "qgh", "qsfc", "q2", "gz1oz0", "wstar", "cpm", "znt"),
     (2, 1): ("regime", "qgh", "qsfc", "q2", "cpm"),

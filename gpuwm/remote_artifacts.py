@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 import hashlib
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 import secrets
 import subprocess
@@ -18,6 +18,7 @@ import threading
 import time
 
 SCHEMA = "gpuwm.remote-artifacts.v1"
+OUTPUT_SET_SCHEMA = "arwen.committed-output-set.v1"
 INDEX_SCHEMA = "gpuwm.remote-artifact-index.v1"
 MAX_INDEX_PAGE = 256
 MAX_FRAME = 512 * 1024 * 1024
@@ -131,6 +132,17 @@ def _resolved_authority(manifest, root, started):
     raise ValueError("Native producer configuration receipt was not published within its bounded event prefix")
 
 
+def run_root(record):
+    """The folder this job's run writes into, which is not the folder above it.
+
+    A remote job is given an output directory and the run claims a stamped
+    folder inside it, exactly as a local run does. Every reader of a job's
+    artifacts asks this one function, so a manifest, a chain pointer and a
+    committed frame are all resolved against the same tree.
+    """
+    return Path(record.get("run_root") or record["outdir"])
+
+
 def _hosted_producer(record, state, outer):
     """Follow only the native chain pointer, with exact saved-config linkage."""
     root, parent_path, parent, parent_bytes, parent_started = outer
@@ -156,11 +168,11 @@ def _hosted_producer(record, state, outer):
     path = _inside(str(path), producer_root)
     producer, payload = _raw(path, 48 * 1024)
     started = _timestamp(producer.get("started_at_utc"))
-    config_path = _inside(record.get("snapshot_config"), Path(record["snapshot_plan"]).parent)
+    config_path = _inside(record.get("snapshot_config"), Path(record["snapshot_config"]).parent)
     if config_path.stat().st_size > 128 * 1024:
         raise ValueError("Native producer saved configuration exceeds its metadata byte limit")
     config_hash = _file_sha(config_path)
-    if (config_hash != record.get("config_sha256") or config_hash != record.get("snapshot_sha256")
+    if (config_hash != record.get("snapshot_sha256")
             or producer.get("schema") != "gpuwm.run-manifest.v1"
             or producer.get("run_dir") != str(producer_root) or producer.get("outputs_dir") != str(producer_root)
             or producer.get("pid") != parent["pid"]
@@ -486,12 +498,15 @@ def _completion_evidence(record, state, bound, directory, *, commits=None):
     for name, digest in record["snapshot_inputs"].items():
         if _sha(metadata(inputs / name, inputs)) != digest:
             raise ValueError("Producer completion saved input identity changed")
-    for key, digest in (("snapshot_plan", record["plan_sha256"]),
-                        ("snapshot_config", record["config_sha256"])):
+    # The saved snapshot is the document the run loads, so its own recorded
+    # digest binds it. The source file's config_sha256 describes a different
+    # file and differs on every route that re-emits the configuration.
+    documents = [("snapshot_config", record["snapshot_sha256"])]
+    if record.get("snapshot_plan"):
+        documents.insert(0, ("snapshot_plan", record["plan_sha256"]))
+    for key, digest in documents:
         if _sha(metadata(record[key], inputs)) != digest:
             raise ValueError("Producer completion saved plan/configuration identity changed")
-    if record["config_sha256"] != record["snapshot_sha256"]:
-        raise ValueError("Producer completion saved configuration binding changed")
 
     root, path, manifest, payload, started, binding = bound
     if manifest.get("route") == "prepared" and binding is None:
@@ -501,11 +516,11 @@ def _completion_evidence(record, state, bound, directory, *, commits=None):
         evidence.append(binding)
         parent = binding["parent_manifest"]
         parent_manifest = json.loads(parent["utf8"])
-        authorities.insert(0, (Path(record["outdir"]), Path(parent["remote_path"]),
+        authorities.insert(0, (run_root(record), Path(parent["remote_path"]),
                               parent_manifest, parent["utf8"].encode("utf-8"),
                               _timestamp(parent_manifest["started_at_utc"])))
         pointer = binding["chain_pointer"]
-        if metadata(pointer["remote_path"], Path(record["outdir"]), 256) != pointer["utf8"].encode("utf-8"):
+        if metadata(pointer["remote_path"], run_root(record), 256) != pointer["utf8"].encode("utf-8"):
             raise ValueError("Producer completion chain pointer changed")
     latest = started
     for root, path, manifest, payload, started in authorities:
@@ -534,7 +549,7 @@ def _completion_evidence(record, state, bound, directory, *, commits=None):
                 stream_hash.update(line)
                 if event.get("event") == "resolved_plan":
                     if (event.get("config_source") != record["snapshot_config"]
-                            or event.get("config_sha256") != record["config_sha256"]):
+                            or event.get("config_sha256") != record["snapshot_sha256"]):
                         raise ValueError("Producer completion resolved source identity changed")
                     resolved = True
                 if event.get("event") == "output_committed":
@@ -564,12 +579,32 @@ def _completion_evidence(record, state, bound, directory, *, commits=None):
     return _sha(_encoded(evidence))
 
 
+def plan_binding(record):
+    """The plan identity this job's own route publishes in its run manifest.
+
+    A staged run-plan job records the plan document it launched and the digest
+    reviewed for it. A configuration job launches ``gpuwm go <saved config>``
+    and the run names that command as its plan source, with a plan digest the
+    run computes for itself. Both are a binding; neither is the action word.
+    """
+    if record.get("action") not in {"start", "resume", "start-plan"}:
+        return None
+    if record.get("snapshot_plan"):
+        return record["snapshot_plan"], record.get("plan_sha256")
+    config = record.get("snapshot_config")
+    if not isinstance(config, str) or not config:
+        return None
+    return "gpuwm go " + config, None
+
+
 def bound_manifest(record, state, *, job_directory=None):
     """Shared native run identity for bounded status and committed frame reads."""
     from gpuwm import remote_worker as rw
-    if record.get("action") != "start-plan" or not record.get("snapshot_plan"):
+    binding = plan_binding(record)
+    if binding is None:
         return None
-    root = Path(record["outdir"])
+    plan_source, plan_sha256 = binding
+    root = run_root(record)
     if not root.is_absolute() or root.is_symlink() or root.resolve() != root:
         raise ValueError("recorded remote output tree changed or is not canonical")
     manifest_path = root / "run-manifest.json"
@@ -581,8 +616,9 @@ def bound_manifest(record, state, *, job_directory=None):
     pid = manifest.get("pid")
     if (manifest.get("schema") != "gpuwm.run-manifest.v1"
             or manifest.get("run_dir") != str(root) or manifest.get("outputs_dir") != str(root)
-            or manifest.get("plan_source") != record["snapshot_plan"]
-            or manifest.get("plan_sha256") != record.get("plan_sha256")
+            or manifest.get("plan_source") != plan_source
+            or (manifest.get("plan_sha256") != plan_sha256 if plan_sha256 is not None
+                else not HEX.fullmatch(str(manifest.get("plan_sha256", ""))))
             or started + CLOCK_CORRECTION_MS < _timestamp(record["created_at"])
             or type(pid) is not int or pid <= 0
             or not isinstance(manifest.get("run_id"), str) or not manifest["run_id"]):
@@ -628,9 +664,8 @@ def catalog(request, workspace, *, sequence=None, metadata_only=False):
     domain = _domain(request.get("domain", 1))
     directory = rw._directory(workspace, request.get("job"))
     record, state = rw._record(directory), rw._status(directory)
-    if record.get("action") != "start-plan" or not record.get("snapshot_plan"):
-        raise ValueError("Committed frame retrieval currently requires this job's saved run-plan manifest")
     result = {"schema": SCHEMA, "job_id": record["id"], "remote_output_root": record["outdir"],
+              "run_root": str(run_root(record)),
               "available_domains": [], "frames": [], "waiting": True}
     if metadata_only:
         result.update(schema=INDEX_SCHEMA, domain=domain, entries=[], next_after_sequence=None, latest_sequence=None)
@@ -725,11 +760,12 @@ def _progress_schedule(record):
     import tomllib
     if not record.get("snapshot_config"):
         return None
-    path = _inside(record["snapshot_config"], Path(record["snapshot_plan"]).parent)
+    path = _inside(record["snapshot_config"], Path(record["snapshot_config"]).parent)
     with path.open("rb") as stream:
         raw = stream.read(128 * 1024 + 1)
-    if (len(raw) > 128 * 1024 or _sha(raw) != record.get("config_sha256")
-            or _sha(raw) != record.get("snapshot_sha256")):
+    # The saved snapshot is the document the run loads, so its own recorded
+    # digest binds it. The source file's digest describes a different file.
+    if len(raw) > 128 * 1024 or _sha(raw) != record.get("snapshot_sha256"):
         raise ValueError("Progress schedule does not match the saved configuration")
     config = tomllib.loads(raw.decode("utf-8"))
     experiment = config.get("experiment", {})
@@ -834,7 +870,7 @@ def _forecast_progress(record, manifest, manifest_bytes, root, model, outputs, h
             "valid_time": valid_time(elapsed), "updated_unix_ms": updated, "phase": phase,
             "domains": domains, "checkpoint": checkpoint,
             "source": {"run_id": manifest["run_id"], "manifest_sha256": _sha(manifest_bytes),
-                       "snapshot_config_sha256": record["config_sha256"],
+                       "snapshot_config_sha256": record["snapshot_sha256"],
                        "event_sequence": model.get("sequence")}}
 
 
@@ -922,7 +958,7 @@ def native_progress(record, state):
         progress, _ = _raw(_inside(progress_path, root), 64 * 1024)
         from gpuwm.supervisor import HEARTBEAT_SCHEMA
         if (progress.get("schema") == HEARTBEAT_SCHEMA and progress.get("run_id") == manifest["run_id"]
-                and progress.get("pid") == manifest["pid"] and progress.get("config_digest") == record.get("config_sha256")
+                and progress.get("pid") == manifest["pid"] and progress.get("config_digest") == record.get("snapshot_sha256")
                 and _timestamp(progress.get("started_at_utc")) == started
                 and _timestamp(progress.get("updated_at_utc")) >= started):
             heartbeat = progress
@@ -1048,8 +1084,9 @@ def stream(request, workspace, output):
 def stream_main():
     from gpuwm import remote_worker as rw
     try:
-        if sys.platform != "linux":
-            raise ValueError("remote artifact streams require Linux")
+        # One ownership provider answers the platform question at every door:
+        # this stream serves a job whose ownership is established the same way.
+        rw._ownership_provider()
         payload = sys.stdin.buffer.read(rw.MAX_BYTES + 1)
         if len(payload) > rw.MAX_BYTES:
             raise ValueError("artifact stream request exceeds 128 KiB")
@@ -1168,6 +1205,94 @@ def sync(args, command, stream_command):
                                    "reason": "corrupt_retained_object"}}
     frame["path"] = str(path)
     return {"artifacts": value, "transferred_bytes": transferred, "cache": cache_status}
+
+
+#: How many committed files one retrieval walks. A run's whole output set is
+#: bounded by its own commit stream, and this is the bound the client states
+#: rather than discovering it after thousands of transfers.
+MAX_OUTPUT_SET = 20_000
+
+
+def sync_outputs(args, command, stream_command):
+    """Retrieve this run's committed output set, verified file by file.
+
+    The set is the run manifest's own commit stream, walked page by page
+    through the timeline door, and each file is fetched through the same
+    verified transfer one frame uses: the node states the digest it committed
+    and the transfer refuses on any other bytes. A file already in the cache
+    with that digest is not fetched again, so an interrupted retrieval resumes
+    rather than starting over, and the receipt names every file with its digest.
+    """
+    from gpuwm.remote_artifact_cache import _owned_directory
+    from gpuwm.remote_cli import _transport
+    domain = _domain(args.domain)
+    base = {"schema": "gpuwm.remote.request.v1", "workspace": args.workspace, "job": args.job,
+            "domain": domain}
+    root = _owned_directory(Path(args.cache_root))
+    entries, cursor, waiting = [], _sequence(getattr(args, "after_sequence", 0) or 0, cursor=True), True
+    while True:
+        page = _transport(command, {**base, "action": "artifact-index", "after_sequence": cursor}, timeout=120)
+        if not page["ok"]:
+            raise ValueError(page["error"]["message"])
+        value = page.get("artifact_index")
+        if (not isinstance(value, dict) or value.get("schema") != INDEX_SCHEMA
+                or value.get("job_id") != args.job or value.get("domain") != domain
+                or not isinstance(value.get("entries"), list)):
+            raise ValueError("Node returned an invalid committed output page for this job and domain")
+        waiting = bool(value.get("waiting", True))
+        entries += value["entries"]
+        if len(entries) > MAX_OUTPUT_SET:
+            raise ValueError(f"This run has committed more than {MAX_OUTPUT_SET} files in this domain "
+                             "and one retrieval carries at most that many. Retrieve a narrower window "
+                             "with --after-sequence, or retrieve selected frames instead.")
+        cursor = value.get("next_after_sequence")
+        if cursor is None:
+            break
+    files, transferred = [], 0
+    for entry in entries:
+        reply = _transport(command, {**base, "action": "artifacts", "sequence": _sequence(entry["sequence"])},
+                           timeout=120)
+        if not reply["ok"]:
+            raise ValueError(reply["error"]["message"])
+        value = reply.get("artifacts")
+        frames = value.get("frames") if isinstance(value, dict) else None
+        if (not isinstance(value, dict) or value.get("schema") != SCHEMA or value.get("job_id") != args.job
+                or not isinstance(frames, list) or len(frames) != 1):
+            raise ValueError("Node committed output response must name one selected-domain frame")
+        frame = frames[0]
+        if (frame.get("domain") != domain or type(frame.get("size_bytes")) is not int
+                or not 0 < frame["size_bytes"] <= MAX_FRAME
+                or not HEX.fullmatch(str(frame.get("sha256", "")))):
+            raise ValueError("Node committed output size, domain or SHA binding is invalid")
+        name = PurePosixPath(str(frame.get("remote_path", ""))).name
+        if not name or "/" in name or "\\" in name or name in (".", ".."):
+            raise ValueError("Node committed output does not name one retrievable file")
+        directory = _owned_directory(root / f"d{domain:02d}")
+        path = directory / name
+        if path.exists() and not path.is_symlink() and path.stat().st_size == frame["size_bytes"] and _file_sha(path) == frame["sha256"]:
+            state = "retained"
+        else:
+            _download(stream_command, {**base, "action": "stream-artifact",
+                                       "sequence": frame["commit"]["sequence"],
+                                       "expected_frame_sha256": frame["sha256"],
+                                       "expected_commit_sha256": frame["commit"]["sha256"],
+                                       "expected_manifest_sha256": value["run_manifest"]["sha256"]},
+                      path, frame, timeout=600)
+            if path.stat().st_size != frame["size_bytes"] or _file_sha(path) != frame["sha256"]:
+                raise ValueError("A retrieved committed output failed its byte identity check")
+            transferred += frame["size_bytes"]
+            state = "transferred"
+        files.append({"sequence": frame["commit"]["sequence"], "domain": domain,
+                      "valid_time": entry.get("valid_time"), "path": str(path),
+                      "remote_path": frame.get("remote_path"), "bytes": frame["size_bytes"],
+                      "sha256": frame["sha256"], "state": state})
+    receipt = {"schema": OUTPUT_SET_SCHEMA, "job_id": args.job, "domain": domain,
+               "run_complete": not waiting and bool(files), "files": files,
+               "bytes": sum(row["bytes"] for row in files), "transferred_bytes": transferred}
+    document = root / f"committed-outputs-d{domain:02d}.json"
+    document.write_bytes(_encoded(receipt))
+    receipt["receipt_path"] = str(document)
+    return {"committed_outputs": receipt, "transferred_bytes": transferred}
 
 
 def index(args, command):

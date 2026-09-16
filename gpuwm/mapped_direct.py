@@ -70,6 +70,7 @@ from gpuwm.mapped_source import (
     read_input_list,
     warn_regular_join_drops,
 )
+from gpuwm.moisture_floor_receipt import moisture_floor_proof_entry
 from gpuwm.native_wrf_contract import (
     canonical_noah_surface,
     load_native_static_cache,
@@ -1269,6 +1270,15 @@ def prepare_mapped_wrf(
                 "artifact_receipt": dict(
                     hierarchy_result.hierarchy.artifacts.receipt
                 ),
+                # WHETHER EACH DOMAIN'S INITIALIZATION MODIFIED VAPOUR ON
+                # THE WAY IN, root and children alike.  Unconditional, and
+                # stated even when no floor fired: an absent key would read
+                # as "prepared before the receipt existed", a different
+                # claim and one no reader of the bundle could check.  Old
+                # bundles that predate it are still accepted -- the reader
+                # discards the requirement when the key is absent, the way
+                # it already does for `stock_wrf_export`.
+                **dict(hierarchy_result.hierarchy.moisture_floor_receipts),
                 "wrf_manifest": dict(
                     hierarchy_result.hierarchy.wrf_manifest
                 ),
@@ -1408,6 +1418,16 @@ def prepare_mapped_wrf(
             },
             "source_composition": composition_receipt,
             "preprocessing": preprocess.receipt(),
+            # WHETHER THIS INITIALIZATION MODIFIED VAPOUR ON THE WAY IN.
+            # Unconditional, and stated even when no floor fired.
+            **moisture_floor_proof_entry(
+                initial_result,
+                when_unrecorded=(
+                    "this preparation's initialization result carries "
+                    "no moisture-floor field, so it came from an ingest "
+                    "predating the receipt; re-prepare the case to "
+                    "record whether its vapour was floored on the way "
+                    "in")),
             "static": static_output_receipt,
             "geometry": geometry_receipt,
             "prepared_cache": cache_receipt,

@@ -510,15 +510,23 @@ def test_the_masking_only_statement_is_unchanged_to_the_byte():
     assert hashlib.sha256(
         _DEALIASING_STATEMENT.encode("utf-8")).hexdigest() == (
         "5825d41ba7f790237a09576f524289770030672722dbc0a95c2f1601aa5ae42a")
-    assert dealiasing_statement(SuperobParams()) is _DEALIASING_STATEMENT
+    # Re-anchored to the parameters that now MEAN masking only.  The
+    # statement is unchanged to the byte, as the digest above says; what
+    # moved is which parameter object produces it, because dealiasing is
+    # what a bare SuperobParams does.
+    assert dealiasing_statement(
+        SuperobParams(dealias=None)) is _DEALIASING_STATEMENT
 
 
-def test_default_params_serialise_to_the_historical_key_set():
-    """No ``dealias`` key appears until someone asks for dealiasing.
+def test_masking_only_params_serialise_to_the_historical_key_set():
+    """Rewritten from test_default_params_serialise_to_the_historical_key_set.
 
-    ``superob_params`` is a file attribute and ``provenance.superob_params``
-    is a JSON blob; adding a key to either changes every byte after it.  The
-    identity of the disabled path is that the key set does not move.
+    That test pinned the DEFAULT key set, and the default moved: a bare
+    ``SuperobParams`` dealiases now, so its payload carries the ``dealias``
+    block that says which engine ran.  What the test was protecting is that
+    the MASKING-ONLY path's key set does not move, and that claim is
+    unchanged: a file written with ``dealias=None`` carries the key set it
+    always had, to the byte.
 
     The two ``clear_air_*`` keys are not an exception to that rule; they are
     the clear-air lane's own additions, made and justified before this one,
@@ -528,7 +536,7 @@ def test_default_params_serialise_to_the_historical_key_set():
 
     from gpuwm.obs.superob import SuperobParams
 
-    payload = SuperobParams().to_payload()
+    payload = SuperobParams(dealias=None).to_payload()
     assert set(payload) == {
         "nyquist_reject_fraction", "nyquist_min_ms", "nyquist_max_ms",
         "nyquist_spread_fraction", "shear_fold_fraction",
@@ -538,6 +546,8 @@ def test_default_params_serialise_to_the_historical_key_set():
         "clear_air_min_gates", "clear_air_error_dbz"}
     assert all(isinstance(value, float) for value in payload.values())
     assert "dealias" in SuperobParams(dealias=DealiasParams()).to_payload()
+    # And the default carries it, because the default dealiases.
+    assert "dealias" in SuperobParams().to_payload()
 
 
 def test_the_unfolder_is_not_reached_when_dealiasing_is_off(monkeypatch):
@@ -556,13 +566,15 @@ def test_the_unfolder_is_not_reached_when_dealiasing_is_off(monkeypatch):
 
     monkeypatch.setattr(superob, "dealias_sweep", explode)
 
-    from test_obs_radar_grid import _grid, _volume
+    from test_obs_radar_grid import _grid, _volume  # noqa: PLC0415
 
     grid = _grid()
     volume = _volume(grid, reflectivity=[35.0] * 6,
                      velocity=[24.0, -24.0, 12.0, -12.0, 0.0, 30.0],
                      azimuths=(45.0, 90.0, 135.0))
-    contribution = superob.superob_volume(volume, grid)
+    # Re-anchored: "off" is stated now, because on is the default.
+    contribution = superob.superob_volume(
+        volume, grid, params=superob.SuperobParams(dealias=None))
     assert contribution.dealias == {}
 
 
@@ -585,7 +597,7 @@ def test_the_disabled_path_writes_the_same_bytes_as_a_repeat_build(tmp_path):
                      azimuths=(45.0, 90.0, 135.0))
     digests = []
     for name in ("a.nc", "b.nc"):
-        params = SuperobParams()
+        params = SuperobParams(dealias=None)
         contribution = superob_volume(volume, grid, params=params)
         observations = merge_contributions([contribution], grid, params=params)
         receipt = write_radar_grid(tmp_path / name, observations, grid,
@@ -648,7 +660,7 @@ def test_the_profile_refuses_to_extrapolate_past_what_it_sampled():
     """Outside the sampled heights the profile knows nothing and says so.
 
     ``np.interp`` holds its end value flat forever, which would assert the
-    13 km wind at 20 km and anchor gates to it.  NaN is the honest answer and
+    13 km wind at 20 km and anchor gates to it.  NaN is the accurate answer and
     it propagates into "no reference here", which the unfolder already knows
     how to handle.
     """

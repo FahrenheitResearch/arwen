@@ -480,7 +480,8 @@ def run_wrf_forecast(directory, outdir, *, run_seconds=None, restart=None,
         # processes print to.
         missing = announce_render_readiness(DOOR, announce=not relaunched)
         if exclusive_gpu:
-            from gpuwm.supervisor import select_gpu, preflight_exclusive_gpu, GPUFileLock
+            from gpuwm.supervisor import (select_gpu, preflight_exclusive_gpu,
+                                          priced_reservation_bytes, GPUFileLock)
             gpu = select_gpu(gpu_uuid)
             command = [sys.executable, '-m', 'gpuwm.wrfinput_forecast',
                        '--wrfinput', str(Path(directory).resolve()),
@@ -505,8 +506,12 @@ def run_wrf_forecast(directory, outdir, *, run_seconds=None, restart=None,
                 command += ['--render-dir', str(Path(render_dir).resolve())]
             command += ProgressOptions.worker_flags(progress_options)
             with GPUFileLock(gpu.uuid, run_id=f'wrf-input-{os.getpid()}'):
+                # Priced against THIS run's reservation through the same
+                # function `gpuwm run` prices from, so a co-tenant admitted
+                # at one door is admitted at the other.
                 preflight_exclusive_gpu(gpu.uuid, approved_pids={os.getpid()},
-                                        allow_shared_gpu=allow_shared_gpu)
+                                        allow_shared_gpu=allow_shared_gpu,
+                                        reservation_bytes=priced_reservation_bytes(run.experiment))
                 return worker_exit_status(subprocess.run(
                     command, env=dict(os.environ, CUDA_VISIBLE_DEVICES=gpu.uuid),
                     check=False).returncode)

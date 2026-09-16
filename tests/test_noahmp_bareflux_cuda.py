@@ -259,7 +259,7 @@ def test_device_negative_controls_rounding(rows):
         "un-pinning FADD/FSUB/FMUL together went undetected"
     )
 
-    # The double-precision FMA sites are a different story and the honest
+    # The double-precision FMA sites are a different story and the accurate
     # answer is measured, not asserted.  Replacing __fma_rn(a,b,c) with a bare
     # a*b+c and compiling with --fmad=false (so nvcc cannot contract it back)
     # changes NO float32 result: a sweep of 120,000,000 random float32 inputs
@@ -405,7 +405,7 @@ def test_the_runtime_batch_gate_can_fail(rows):
     live input on a single column is the smallest thing that must still be
     visible through it -- but *which* input is a measurement, not a guess: see
     :data:`_ONE_ULP_REACH`.  ``SFCTMP`` moves ten of the thirteen outputs and
-    is the honest choice; the entry ``TGB`` moves none of them.
+    is the accurate choice; the entry ``TGB`` moves none of them.
     """
     import struct
 

@@ -344,7 +344,7 @@ fn the_bound_edge_pair_straddles_the_flip() {
 fn the_documented_divergence_has_a_perturbed_control_that_is_not_exempt() {
     // "Never bit-exact to a bug": the tie case is exempt from index
     // parity because scipy has no rule there.  That exemption is only
-    // honest if its perturbed twin -- the same grid with one ULP of
+    // accurate if its perturbed twin -- the same grid with one ULP of
     // longitude, where the answer IS a fact -- is held to full parity.
     let specs = read_manifest();
     assert!(

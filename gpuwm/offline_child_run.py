@@ -20,6 +20,8 @@ import sys
 import time
 
 import netCDF4
+from typing import Mapping
+
 import numpy as np
 
 from gpuwm import downscale_pricing
@@ -33,8 +35,10 @@ from gpuwm.io.history_selection import HISTORY_VOCABULARY
 from gpuwm.physics_registry import consumer_rows_by_selector
 from gpuwm.io.wrfout import INITIAL_CONDITION_GLOBAL_ATTRS
 from gpuwm.explain import warn
+from gpuwm.core.microphysics_transition import TRANSITION_ORDER
 from gpuwm.offline_child import (
     DERIVED_CHILD_SURFACE_CAVEAT,
+    PARENT_SCHEME_CONTRACT,
     OfflineChildContractError,
     OfflineChildPlacement,
     bind_parent_physics_from_gpuwm_restart,
@@ -67,25 +71,6 @@ _CAPABILITIES = {
     "parent_producers": ["gpuwm", "stock-wrf"],
     "minimum_parent_frames": 2,
     "physics_evidence": ["gpuwm-restart", "wrf-namelist"],
-    # 28 (Thompson aerosol-aware) is same-scheme only: an mp=28 parent
-    # forcing an mp=28 child.  Every CROSS-scheme edge touching 28 is
-    # refused by name (gpuwm/offline_child.py::
-    # _CROSS_SCHEME_REFUSED_MP_PHYSICS), matching the online nest lane's
-    # refusal in gpuwm/core/microphysics_transition.py.
-    # 50 (P3) is same-scheme only on the same terms: the lane reads its
-    # whole transported set (qv,qc,qr,qi + ni/nr + the rime pair qir/qib,
-    # Registry.EM_COMMON:3038), and every cross-scheme edge touching 50 is
-    # refused by the same derived set.
-    # 16 (WDM6) is absent from BOTH lists and from OFFLINE_CHILD_MP_PHYSICS:
-    # this runner cannot read a WDM6 parent at all, because nn and NSSL's
-    # qnn share the QNCCN wrfout name and the field map has no
-    # scheme-qualified row.  It is cross-refused as well, so the mirror with
-    # the online lane stays exact.
-    # 9 (Milbrandt-Yau) joined the same-scheme list when the lane learned
-    # its own QHAIL/QNHAIL rows (_MY2_WRF_TO_STATE), the third
-    # scheme-qualified map beside NSSL's -- the shape 16 is still in.  0
-    # (passiveqv) and 1 (Kessler) joined with it: their transported sets
-    # are qv, and qv/qc/qr, which the lane already built.
     # DERIVED from the registry's consumers.offline_child rows, the same
     # source gpuwm.offline_child.OFFLINE_CHILD_MP_PHYSICS is built from, so
     # the capability receipt users read cannot disagree with the gate.
@@ -93,7 +78,17 @@ _CAPABILITIES = {
         int(mp) for mp, row in
         consumer_rows_by_selector("microphysics", "offline_child").items()
         if row.get("same_scheme") is True),
-    "cross_scheme_transitions": [],
+    # A child of a DIFFERENT scheme is converted by the online nest edge's
+    # own contract and kernel (gpuwm/core/microphysics_transition.py), run
+    # on the archived parent's grid before interpolation, for every ordered
+    # pair of these schemes; the one edge without a contract is mp=0 at
+    # either end (gpuwm.offline_child.offline_cross_scheme_refusal).
+    "cross_scheme_transitions": {
+        "mp_physics": sorted(int(mp) for mp in PARENT_SCHEME_CONTRACT),
+        "policy": "gpuwm.core.microphysics_transition (the online nest "
+                  "edge contract and kernel, run on the parent archive)",
+        "order": TRANSITION_ORDER,
+    },
     # A child may carry its OWN eta ladder, deeper than the archived
     # parent's, when it declares one (``eta_levels`` in the child config,
     # written by ``gpuwm downscale --child-levels``).  The remap is
@@ -334,20 +329,26 @@ class _ChildProgress:
         :func:`_finish_child_render` runs.  ``render_products`` absent
         or ``none`` arms nothing and leaves :attr:`render_plan` ``None``,
         which is the single answer to "does this run draw?".
+
+        That second answer is not decided here.  This door hands the
+        plan to :func:`gpuwm.first_products.arm`, which is where the
+        whole decision lives for every door, so a route cannot grow a
+        second answer to "did this run ask for pictures".
         """
 
-        from gpuwm.first_products import FirstProducts, early_render_requested
+        from gpuwm.first_products import arm
 
-        if not early_render_requested(render_products):
+        root = Path(outdir)
+        plan = {"run": root, "wrfout_dir": root,
+                "render": root / "png",
+                "render_products": str(render_products)}
+        trigger = arm(plan, report=self._first_products_ready,
+                      warn=self.warn)
+        if trigger is None:
             self.render_plan = None
             return None
-        root = Path(outdir)
-        self.render_plan = {"run": root, "wrfout_dir": root,
-                            "render": root / "png",
-                            "render_products": str(render_products)}
-        self._first_products = FirstProducts(
-            self.render_plan, report=self._first_products_ready,
-            warn=self.warn)
+        self.render_plan = plan
+        self._first_products = trigger
         return self.render_plan
 
     @property
@@ -653,7 +654,7 @@ def _child_boundary_clock(cfg, *, lbc_interval_seconds: float, steps: int,
 
 
 def _initialize_child_physics(child, cfg, initial, surface, start_time):
-    """Attach the child physics driver with an honest warm start.
+    """Attach the child physics driver with an accurate warm start.
 
     mp-only children keep the established default initialization.  A
     radiation scheme needs the child latitude/longitude and UTC start
@@ -769,6 +770,19 @@ def _initialize_child_physics(child, cfg, initial, surface, start_time):
             driver.fields[field_name][...] = cp.asarray(
                 value, dtype=cp.float32)
     return driver
+
+
+def _jsonable(value):
+    """Plain JSON types for a receipt built from mappings, tuples and numpy."""
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    if isinstance(value, Mapping):
+        return {str(key): _jsonable(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return [_jsonable(item) for item in value]
+    if isinstance(value, np.generic):
+        return value.item()
+    return str(value)
 
 
 def _create_output_root(path: Path) -> Path:
@@ -1284,12 +1298,21 @@ def _run(args: argparse.Namespace,
         contract.frames[0].path, placement,
         physics_binding=binding, target_mp_physics=cfg.mp_physics,
         backend=args.preprocess_backend,
-        child_eta_levels=cfg.eta_levels)
+        child_eta_levels=cfg.eta_levels, child_cfg=cfg)
+    conversion = initial.receipt.get("conversion")
+    if conversion is not None:
+        _log("microphysics_conversion",
+             source_mp_physics=int(conversion["source_mp_physics"]),
+             target_mp_physics=int(conversion["target_mp_physics"]),
+             policy_id=conversion["policy_id"],
+             species_action_counts=dict(conversion["species_action_counts"]),
+             device=conversion["device"],
+             host_chunked=bool(conversion["host_chunked"]))
     prepared = build_offline_lateral_boundaries(
         contract, placement,
         target_mp_physics=cfg.mp_physics,
         backend=args.preprocess_backend,
-        child_eta_levels=cfg.eta_levels,
+        child_eta_levels=cfg.eta_levels, child_cfg=cfg,
         spec_bdy_width=cfg.spec_bdy_width,
         spec_zone=cfg.spec_zone, relax_zone=cfg.relax_zone)
     # A float32 SINT of a number moment can round across zero.  When it
@@ -1396,7 +1419,13 @@ def _run(args: argparse.Namespace,
             seconds=float(clock.elapsed_seconds))
         path = write_restart(
             outdir / restart_filename(valid, domain=f"d{cfg.grid_id:02d}"),
-            child, cfg)
+            child, cfg,
+            # The scheme conversion this child was born through, source
+            # and target named, so a record built from this restart
+            # carries both ends of the seam; absent for a same-scheme
+            # child, whose header is what it always was.
+            tree_header=(None if conversion is None else {
+                "offline_microphysics_conversion": _jsonable(conversion)}))
         checkpoint_paths.append(Path(path))
         _log("child_checkpoint", elapsed_seconds=float(clock.elapsed_seconds),
              path=str(path), bytes=Path(path).stat().st_size)
@@ -1514,6 +1543,15 @@ def _run(args: argparse.Namespace,
         "child_surface_source": (
             None if surface is None else dict(surface.receipt)),
         "child_surface_file_receipts": surface_file_receipts,
+        # The online nest edge's own contract receipt for a child of a
+        # different scheme (species actions, closure constants, source and
+        # target identity), plus where this lane ran it; None when the
+        # child inherited its parent's scheme.
+        "microphysics_conversion": _jsonable(conversion),
+        "boundary_conversion_frames": (
+            0 if conversion is None else sum(
+                1 for receipt in prepared.frame_receipts
+                if receipt.get("conversion") is not None)),
         "preparation_seconds": prepared.preparation_seconds,
         # ``{}`` for a child that configures no [tiles], which is what keeps
         # every report written before this seam existed byte-identical.  A

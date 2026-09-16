@@ -192,7 +192,7 @@ on every run). The floor is measured, not asserted: exner is recomputed
 twice from the same input and the disagreement between the two
 recomputations is the smallest signal the instrument can resolve. On this
 float64 path that difference is exactly 0, so the reported floor is clamped
-to machine epsilon -- the honest limit of the representation rather than a
+to machine epsilon -- the accurate limit of the representation rather than a
 flattering zero.
 
 **Threshold 1e-6, justified against that floor rather than a guess.** The

@@ -104,7 +104,7 @@ _NOAHMP_SLAB_BATCHES = (
 #: stride constants are still being written -- one per leaf, `THERMOPROP_N_IN`,
 #: `TSNOSOI_N_OUT` and six more so far -- so an exhaustive allowlist of them
 #: would fire on every commit of the conversion for a reason that is not a
-#: defect, and a gate that cries wolf gets deleted.  The load-bearing half of
+#: defect, and a gate that cries wolf gets deleted.  The essential half of
 #: the property is checked either way: the shape must read the batch width.
 #: The four modules already on the forecast path keep the strict form, where
 #: the name set is settled and an unrecognised name is worth a failure.
@@ -780,7 +780,7 @@ def _grid_sized_sites(source: str, rel: str, *, strict: bool = True):
     ``strict`` additionally requires every other name to be a recognised
     per-column stride, which is the right rule where the name set is settled.
     Without it the test is that no name is a grid dimension, which is the
-    load-bearing half.
+    essential half.
     """
     bad = []
     for _rel, function, allocator, lineno, node in _allocation_sites(

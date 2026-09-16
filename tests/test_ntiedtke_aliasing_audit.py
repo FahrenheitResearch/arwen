@@ -1,7 +1,7 @@
 """The aliasing audit is a GATE, not a receipt.
 
 `gpuwm/data/ntiedtke/oracle/nt-aliasing-audit.txt` lists every dummy in
-`cu_ntiedtke.F90` whose INCOMING value is load-bearing -- either read
+`cu_ntiedtke.F90` whose INCOMING value is essential -- either read
 before it is written, or an ``intent(out)`` written only inside a branch so
 that a column missing the branch keeps the caller's value.
 
@@ -107,7 +107,7 @@ def test_the_receipt_still_names_the_routines_that_matter():
         assert routine in text, f"{routine} absent from the audit receipt"
     assert "cubasmcn   ktype" in text, (
         "cubasmcn's conditionally-written ktype is the single most "
-        "load-bearing row in this file and it is gone")
+        "essential row in this file and it is gone")
 
 
 # ===========================================================================
@@ -120,7 +120,7 @@ def test_the_receipt_still_names_the_routines_that_matter():
 # against it, so the list sat in a text file while the fixture was built
 # without consulting it.
 #
-# A load-bearing dummy that a mirror does not ACCEPT AS A PARAMETER cannot
+# An essential dummy that a mirror does not ACCEPT AS A PARAMETER cannot
 # be honouring the caller's value: there is nowhere for that value to come
 # from.  So the check is direct, and it fails at the shape rather than
 # waiting for an oracle comparison that may not be able to see it.
@@ -138,7 +138,7 @@ _PORTED = {
     "cutypen": _ref.np_ntiedtke_cutypen,
 }
 
-#: Load-bearing dummies a mirror legitimately does not take, each with the
+#: Essential dummies a mirror legitimately does not take, each with the
 #: reason it is safe.  AN ENTRY HERE IS A CLAIM ABOUT THE FORTRAN, and it
 #: has to be one someone checked by reading the body -- not by analogy.
 _EXCUSED = {
@@ -187,7 +187,7 @@ def test_every_load_bearing_dummy_reaches_its_mirror():
                 continue
             missing.append(f"{routine}.{dummy}")
     assert not missing, (
-        "load-bearing dummies absent from their mirror's signature, so the "
+        "essential dummies absent from their mirror's signature, so the "
         f"caller's value has nowhere to come from: {missing}")
 
 

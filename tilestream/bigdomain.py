@@ -94,7 +94,7 @@ structural rather than a missing switch:
     and no gate row has ever tiled a non-periodic domain.
 ``periodic``
     what all 14 physics rungs of ``test_gate`` certify bit-exact, and what
-    this module runs.  Its cost is honest and worth stating: on a real
+    this module runs.  Its cost is accurate and worth stating: on a real
     Lambert grid the index wrap is a GEOGRAPHIC discontinuity -- latitude,
     Coriolis and the solar zenith all jump across it -- so the outermost few
     rows and columns are not physical and the figures crop them.
@@ -110,7 +110,7 @@ import numpy as np
 
 #: ``full + MYNN + Noah-MP``: the top rung of the bit-exact matrix, copied
 #: from ``test_gate.PHYSICS_RUNGS`` so this module runs where the gate does
-#: not.  ``ztop=20000`` is load-bearing -- at an 8 km top RRTMGP pads to 140
+#: not.  ``ztop=20000`` is essential -- at an 8 km top RRTMGP pads to 140
 #: layers against its own limit of 128 and raises.
 RUNG: dict = dict(
     moist=True, mp_physics=10, ztop=20000.0,
@@ -788,7 +788,7 @@ def snapshot(store, geo_store, cfg, *, elapsed_s: float, refl: bool = True,
              slab_rows: int = 64, refl_stash: str = "absent") -> dict:
     """Everything one figure needs, as plain host arrays.
 
-    Column-max ``w`` is in here because it is the single most honest test of
+    Column-max ``w`` is in here because it is the single most accurate test of
     whether a spin-up is doing anything: it is a prognostic the model
     integrates, it is exactly zero in a state that is not moving, and no
     colour scale can make it look like convection when it is 0.2 m/s.

@@ -262,7 +262,7 @@ arm.
 
 ## Coverage, and what is still missing
 
-Honest accounting of the current case table:
+Accurate accounting of the current case table:
 
 | arm | cases | firing |
 | --- | --- | --- |

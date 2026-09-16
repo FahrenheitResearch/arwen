@@ -601,7 +601,7 @@ def effective_prepared_domain_config(document):
 CACHE_WRITER_KEY = "writer"
 
 #: What a header with no stamp tells us: it was written before stamping
-#: existed.  Naming that is the honest answer; guessing a version is not.
+#: existed.  Naming that is the accurate answer; guessing a version is not.
 UNSTAMPED_WRITER = "a release before 1.1.1 (which stamped no version)"
 
 #: Preparation receipts a preparer binds into the cache's user metadata
@@ -634,7 +634,7 @@ SOIL_PREPARATION_RECEIPTS = (
 
 
 def cache_writer_version(header) -> str:
-    """The gpuwm that wrote this cache header, or an honest unknown."""
+    """The gpuwm that wrote this cache header, or an accurate unknown."""
 
     writer = header.get(CACHE_WRITER_KEY) if isinstance(header, Mapping) \
         else None

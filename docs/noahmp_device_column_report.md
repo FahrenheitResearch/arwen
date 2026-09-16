@@ -156,7 +156,7 @@ so vegetated columns do not repeat the prefix. Then:
 5. repeat the full leaf oracle, six-step bare/snowpack state gate, width sweep,
    and 50-step trajectory hashes after every leaf.
 
-Until those steps remove the flat host term, the honest registry status is
+Until those steps remove the flat host term, the accurate registry status is
 unchanged: implemented, expert-only, and not production-width viable.
 
 ---
@@ -655,7 +655,7 @@ against the measured 0.532 ms/column:
   it falls to about **0.07 ms/column**, 26 seconds for that nest, **16 minutes
   per simulated minute**. That is the first genuinely different regime.
 
-So the honest statement is: **Noah-MP cannot reach production width by moving
+So the accurate statement is: **Noah-MP cannot reach production width by moving
 more leaves. It needs the per-column Python loop itself to go** -- the
 `for j: for i:` in `noahmp_lsm_step` that builds a kwargs dictionary, a
 `SnowColumn`, a `ficeold` vector and a generator frame per column, and the
@@ -815,7 +815,7 @@ restructuring costs nothing on the host path.
 **1.2 -- 1.3 hours of wall clock per simulated minute, from 1.55 -- 1.63.**  A
 15-minute forecast goes from about 24 hours to about 19.  It is a real
 improvement and it is **still not survivable**, and the corrected ceiling
-analysis below says why more honestly than the previous section did.
+analysis below says why more accurately than the previous section did.
 
 ## The numbers above do not reproduce, and that matters
 
@@ -1098,7 +1098,7 @@ normal.  So the whole of the implementation is about scope.
 The obvious refinement is to give the *land surface* a long interval and leave
 the *surface layer* on every step, because soil moisture and soil temperature
 evolve on hours-to-days timescales while the surface layer at 333 m does not.
-That would be the honest version of this change rather than the cheap one.
+That would be the accurate version of this change rather than the cheap one.
 
 **WRF does not offer it.**  In `phys/module_surface_driver.F` the predicate is
 computed once, into `run_param`, and `run_param_if:` opens at **:1895** and
@@ -1272,7 +1272,7 @@ reorganised.  By 240 minutes, with the PBL near its afternoon equilibrium, only
 surface fluxes have become the larger discrepancy, 31.8% of columns differing
 by more than 10 W m-2 in HFX.
 
-One honest caveat on the PBL number: PBL height is *diagnosed* by a threshold
+One accurate caveat on the PBL number: PBL height is *diagnosed* by a threshold
 search, so it can move discontinuously for a small change in the profile, and a
 single column's maximum overstates the physical difference.  But 90.9% of
 columns with a median of 826 m during the growth phase is not a threshold
@@ -1396,7 +1396,7 @@ No kernel source was changed in this section.  The estimate it replaces -- that
 the composition's first step was free -- was the reason it looked like the
 cheap half of the remaining work.  It is not free, but having separated the
 renames from the real divergences it is also not as large as the raw count
-first suggested.  The honest sequencing is:
+first suggested.  The accurate sequencing is:
 
 1. **the 18 identical copies and the 8 renames** -- mechanical, no arithmetic
    argument needed, and the seven snow routines collapse the moment `C_F32`
@@ -1434,7 +1434,7 @@ repetitions after a warm-up, two independent runs:
 360,000 land columns, `dt = 1.667 s`, `bldt = 0`, 35.99 calls per simulated
 minute.  The higher end of each pair was taken while the Noah-MP suite was
 running on the same card and is kept in the range rather than discarded,
-because that is the honest spread on this box.  The previous section's
+because that is the accurate spread on this box.  The previous section's
 1.22--1.31 hours and this 1.38--1.66 hours are the same regime measured by
 two harnesses, and this document has already recorded that no single published
 millisecond from one of its sections should be compared with another.
@@ -1539,7 +1539,7 @@ one guard synchronisation and the bundle construction, not the kernels.
 So the same mistake this document has now recorded four times -- naming a
 remainder confidently and wrongly -- was in its own ceiling analysis.  The
 floor is not 0.079 ms/column.  It is whatever the kernels cost once no Python
-runs per column, and the only honest thing to say about it today is that one
+runs per column, and the only accurate thing to say about it today is that one
 batch of four kernels fell 9.2x when its packing was removed.
 
 That also settles the sequencing question the previous section left open.  A
@@ -1663,7 +1663,7 @@ forms are worth recording because they *looked* like controls and were not:
 3. **The strided-pointer trap only bites VEGE_FLUX** of the two flux leaves;
    every BARE_FLUX field is copied into a freshly allocated slab first, so a
    stride cannot leak there.  The test says so rather than implying both
-   halves are load-bearing.  Where it *can* bite, it was reproduced
+   halves are essential.  Where it *can* bite, it was reproduced
    deliberately: neutering `ascontiguousarray` in the SFLX prefix moves 685
    comparisons with exactly the PAHV/PAHG/PAHB/CANLIQ signature the existing
    module's comment records, and in VEGE_FLUX it fails at 36 of 40 columns on
@@ -1983,7 +1983,7 @@ local-frame regeneration test red on the card since it landed.
   stale in the pessimistic direction.  Whether Noah-MP graduates from
   expert-only is a lead decision with its own validation ladder (restart,
   multi-domain, a real case end to end), not a drive-by in a wiring commit.
-  What this lane owed was the honest number beside the stale one, and
+  What this lane owed was the accurate number beside the stale one, and
   `NOAHMP_RUNTIME_RESTRICTIONS["column_solver_location"]` -- which is this
   module's own string -- now carries it.
 * The `restart_identity` string still says
@@ -1997,7 +1997,7 @@ local-frame regeneration test red on the card since it landed.
 ## 2026-07-27: the restriction surfaces are aligned
 
 The lead authorized retiring the host-era speed warnings the previous
-section left standing beside the honest number.  What changed, and what
+section left standing beside the accurate number.  What changed, and what
 deliberately did not:
 
 * `gpuwm/physics_compat.py`: `NOAHMP_MEASURED_COLUMN_CEILING` 352 -> 360,000

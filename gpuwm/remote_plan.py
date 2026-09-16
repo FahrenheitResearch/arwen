@@ -1,7 +1,8 @@
 """Manifest-bound desktop plans for the existing durable SSH job controller.
 
-Only selected small inputs are staged. Missing ERA5 forcing stays declared and
-is acquired by run-plan's existing fetch owner after a reviewed launch.
+Only selected small inputs are staged. A declared forcing that a saved
+acquisition recipe reproduces stays declared and is acquired by run-plan's
+existing fetch owner after a reviewed launch.
 """
 from __future__ import annotations
 
@@ -22,6 +23,10 @@ BLOB_BUNDLE_SCHEMA = "gpuwm.remote.plan-bundle.v2"
 MAX_FILES = 20
 MAX_INPUT_BYTES = 64 * 1024
 MAX_SINGLE_BYTES = 48 * 1024
+#: What one staged request may be, derived from the node's own fixed RPC read
+#: rather than written twice: the worker reads at most MAX_BYTES from stdin and
+#: refuses anything larger, and base64 inflates the payload inside it.
+MAX_MANIFEST_BYTES = 120 * 1024
 ID = re.compile(r"[a-f0-9]{32}\Z")
 SHA = re.compile(r"[a-f0-9]{64}\Z")
 
@@ -52,6 +57,58 @@ def _name(value):
     return value
 
 
+def _device(value):
+    """One device selector grammar, the run plan's own, read through it.
+
+    A selector is a nonnegative card index or a full GPU UUID. The plan door
+    and this door cannot drift apart because there is one grammar to drift.
+    """
+    from gpuwm.runplan import PlanError, _run_option
+    try:
+        return _run_option("device", value, Path("/"))
+    except PlanError as error:
+        raise ValueError(f"Selected node card: {error}".split("[[explain]]")[0].strip()) from error
+
+
+def device_selection(probe, device):
+    """Which card this run will use, and what that card reported.
+
+    A selector this node's own probe does not list is missing, and a run that
+    cannot reach the card it was told to use is refused here rather than after
+    it has started. A node that could not read its devices at all does not
+    refuse: the selector is carried and the pricing says it was unmeasured.
+    """
+    if device is None:
+        return None
+    selector = _device(device)
+    devices = probe.get("devices") if isinstance(probe, dict) else None
+    rows = devices if isinstance(devices, list) else []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("index")) == selector or str(row.get("uuid")) == selector:
+            return {"device": selector, "index": row.get("index"), "uuid": row.get("uuid"),
+                    "name": row.get("name"), "memory_free_bytes": row.get("memory_free_bytes"),
+                    "basis": "this node's own device probe"}
+    if not rows:
+        return {"device": selector, "index": None, "uuid": None, "name": None,
+                "memory_free_bytes": None,
+                "basis": "this node reported no devices, so the selected card was not measured"}
+    listed = ", ".join(f"{row.get('index')} ({row.get('uuid')})" for row in rows if isinstance(row, dict))
+    raise ValueError(f"This node has no card '{selector}', so the run would start on a card nobody "
+                     f"selected or fail to start at all. This node's probe lists {listed}. Select one "
+                     "of those, or drop the selection and let the run take the node's own default.")
+
+
+def _geography_absence(declared):
+    """One sentence for the one fact, from both doors that decide it."""
+    where = f" (declared at {declared})" if isinstance(declared, str) and declared else ""
+    return (f"This configuration needs a geography tree{where}. A geography tree is a data authority "
+            f"the node must already hold; the staging bundle carries at most {MAX_INPUT_BYTES // 1024} KiB "
+            "of selected inputs and never sends it. Set 'Remote geography folder' on the selected node, "
+            "then review this map configuration again.")
+
+
 def _assert_relocated(value, allowed, field="configuration"):
     """Never leave an unhandled desktop authority path to fail on Linux later."""
     if isinstance(value, dict):
@@ -71,17 +128,21 @@ def _assert_relocated(value, allowed, field="configuration"):
                              "explicitly and use the existing remote-input route rather than assuming a node path.")
 
 
-def _read_selected(path, role):
+def _read_selected(path, role, *, rewritten=False):
     path = Path(path)
     if path.is_symlink() or not path.is_file():
         raise ValueError(f"Selected {role} input '{path.name}' is missing or is not a regular file. "
                          "Save its companion file, or stage the declared input on the node first.")
     size = path.stat().st_size
     if size > MAX_SINGLE_BYTES:
-        raise ValueError(f"Selected {role} input '{path.name}' is {size:,} bytes; automatic companion "
-                         f"staging is limited to {MAX_SINGLE_BYTES:,} bytes per file. Transfer this "
-                         "specific input to an owned node folder and use the existing remote-input "
-                         "route, or select an unfetched case with a matching saved acquisition recipe.")
+        because = ("it is rewritten during staging, so the bytes that must reach the node are not "
+                   "this file's and cannot travel as a verified copy of it"
+                   if rewritten else
+                   "it is emitted into the staging manifest rather than streamed")
+        raise ValueError(f"Selected {role} input '{path.name}' is {size:,} bytes and {because}; the "
+                         f"manifest carries at most {MAX_SINGLE_BYTES:,} bytes for one such file. "
+                         "Transfer this specific input to an owned node folder and use the existing "
+                         "remote-input route, or select an input this staging can carry.")
     with path.open("rb") as stream:
         payload = stream.read(MAX_SINGLE_BYTES + 1)
     if len(payload) != size:
@@ -133,7 +194,8 @@ def _wps_bytes(payload, geog, stage_file, rewrites, *, source):
     return with_domain_ids(text, domain_ids).encode("utf-8")
 
 
-def build_bundle(plan_path, *, workspace, outdir, geog_root=None,
+def build_bundle(plan_path, *, workspace, outdir, geog_root=None, prepared_root=None,
+                 wps_namelist=None, restart=None, device=None,
                  expected_plan_sha256, expected_config_sha256):
     """Run on the client; return only explicitly selected, bounded input bytes."""
     from gpuwm.case_data import forcing_has_glob, resolved_case_data_paths, same_case_data_path
@@ -145,6 +207,11 @@ def build_bundle(plan_path, *, workspace, outdir, geog_root=None,
     workspace = _remote_path(workspace, "node workspace")
     outdir = _remote_path(outdir, "node output directory")
     geog = None if geog_root is None else _remote_path(geog_root, "node geography directory")
+    relocations = {
+        "prepared_root": None if prepared_root is None else _remote_path(prepared_root, "node prepared bundle"),
+        "wps_namelist": None if wps_namelist is None else _remote_path(wps_namelist, "node WPS namelist"),
+        "restart": None if restart is None else _remote_path(restart, "node checkpoint"),
+    }
     source_plan = Path(plan_path).resolve(strict=True)
     plan_bytes = _read_selected(source_plan, "run-plan")
     if _sha(plan_bytes) != expected_plan_sha256:
@@ -176,12 +243,17 @@ def build_bundle(plan_path, *, workspace, outdir, geog_root=None,
     rewrites = []
     expected_downloads = []
 
-    def stage_file(path, name, role, *, transform=None, allow_blob=False, placement="inputs"):
+    def stage_file(path, name, role, *, transform=None, placement="inputs"):
         path = Path(path)
         if not path.is_absolute():
             path = config.parent / path
         name = _name(name)
-        if placement == "data" or allow_blob and path.is_file() and path.stat().st_size > MAX_SINGLE_BYTES:
+        # Size selects the mechanism, it does not end the request: anything the
+        # small-input manifest cannot carry goes by verified object transfer,
+        # unless staging rewrites it, in which case the local bytes are not
+        # what has to reach the node and there is nothing to verify against.
+        oversize = path.is_file() and not path.is_symlink() and path.stat().st_size > MAX_SINGLE_BYTES
+        if placement == "data" or (oversize and transform is None):
             from gpuwm.remote_input_transfer import describe, MAX_BLOBS, MAX_BUNDLE_BLOB_BYTES
             if transform is not None:
                 raise ValueError("Only unchanged raw inputs may use the binary transfer")
@@ -196,7 +268,7 @@ def build_bundle(plan_path, *, workspace, outdir, geog_root=None,
             rewrites.append({"field": role, "before": identity["source_path"], "after": destination,
                              "basis": "exact selected raw bytes through verified SHA-256 object transfer"})
             return destination
-        content = _read_selected(path, role)
+        content = _read_selected(path, role, rewritten=transform is not None)
         originals[str(path.resolve())] = _sha(content)
         if transform:
             content = transform(content)
@@ -221,8 +293,7 @@ def build_bundle(plan_path, *, workspace, outdir, geog_root=None,
     if "case_data" in raw:
         data = resolved_case_data_paths(raw["case_data"], base_dir=config.parent, source=str(config))
         if geog is None:
-            raise ValueError("This saved case requires geography. Set 'Remote geography folder' "
-                             "on the selected node before reviewing its map configuration.")
+            raise ValueError(_geography_absence(data.get("geog_root")))
         rewrites.append({"field": "case_data.geog_root", "before": data.get("geog_root"), "after": geog})
         data["geog_root"] = geog
         entries = data.get("forcing", [])
@@ -248,24 +319,39 @@ def build_bundle(plan_path, *, workspace, outdir, geog_root=None,
                 if len(expanded) > 64:
                     raise ValueError("The selected forcing pattern exceeds sixty-four files")
             entries = list(dict.fromkeys(expanded))
+        # Whether the node can reproduce this forcing is a registry fact, not a
+        # model name: any row whose declared runner is the combined-GRIB1 case
+        # data preparation binds by the family's own declared output names.
         managed = False
-        if isinstance(hints, dict) and hints.get("source") == "era5" and original_fetch_out is not None:
+        if isinstance(hints, dict) and hints.get("source") and original_fetch_out is not None:
+            from gpuwm.case_data import CASE_DATA_RUNNER
             from gpuwm.fetch import ERA5_COMBINED_NAMES
-            provider = hints.get("era5_provider", "cds")
-            expected = ERA5_COMBINED_NAMES.get(provider)
-            managed = bool(expected and len(entries) == 1 and
-                           same_case_data_path(entries[0], original_fetch_out / expected))
+            from gpuwm.source_adapters import get_source_adapter
+            try:
+                adapter = get_source_adapter(str(hints["source"]))
+            except ValueError:
+                adapter = None
+            if adapter is not None and getattr(adapter, "runner", None) == CASE_DATA_RUNNER:
+                expected = ERA5_COMBINED_NAMES.get(hints.get("era5_provider", "cds"))
+                # Every declared entry has to be an output of the declared
+                # acquisition; the mapping decides how many outputs there are.
+                managed = bool(expected and entries and all(
+                    same_case_data_path(entry, original_fetch_out / expected) for entry in entries))
         missing = [path for path in entries if not Path(path).is_file()]
         if missing:
             if not managed or len(missing) != len(entries):
+                declared = hints.get("source") if isinstance(hints, dict) else None
                 raise ValueError(f"Declared forcing '{Path(missing[0]).name}' is not available locally "
-                                 "and is not the exact output of this case's saved ERA5 acquisition. "
-                                 "Correct the selected forcing/acquisition binding or transfer that input to the node.")
-            destination = str(PurePosixPath(remote_data) / Path(entries[0]).name)
-            data["forcing"] = [destination]
-            expected_downloads.append({"role": "forcing", "path": destination,
-                                       "source": hints["source"], "recipe": copy.deepcopy(hints)})
-            rewrites.append({"field": "case_data.forcing", "before": entries, "after": [destination],
+                                 f"and this case's saved '{declared}' acquisition recipe does not "
+                                 "produce it on the node. Correct the forcing/acquisition binding, "
+                                 "or transfer that input to the node.")
+            destinations = list(dict.fromkeys(
+                str(PurePosixPath(remote_data) / Path(entry).name) for entry in entries))
+            data["forcing"] = destinations
+            for destination in destinations:
+                expected_downloads.append({"role": "forcing", "path": destination,
+                                           "source": hints["source"], "recipe": copy.deepcopy(hints)})
+            rewrites.append({"field": "case_data.forcing", "before": entries, "after": destinations,
                              "basis": "same declared acquisition output on selected node"})
         else:
             receipt = None if not managed else original_fetch_out / "era5-acquisition.json"
@@ -290,7 +376,7 @@ def build_bundle(plan_path, *, workspace, outdir, geog_root=None,
                 data["forcing"] = [stage_file(entries[0], Path(entries[0]).name, "forcing", placement="data")]
                 stage_file(receipt, receipt.name, "ERA5 acquisition receipt", placement="data")
             else:
-                data["forcing"] = [stage_file(path, f"forcing/{i:02d}-{Path(path).name}", "forcing", allow_blob=True)
+                data["forcing"] = [stage_file(path, f"forcing/{i:02d}-{Path(path).name}", "forcing")
                                    for i, path in enumerate(entries)]
         for key, destination in (("vtable", "inputs/Vtable"), ("wps_namelist", "case.namelist.wps"),
                                  ("water_temperature_overlay", "inputs/water-temperature-overlay.nc")):
@@ -300,15 +386,15 @@ def build_bundle(plan_path, *, workspace, outdir, geog_root=None,
                 if key == "wps_namelist":
                     wps_paths.add(Path(original).resolve())
                     transform = lambda b, p=Path(original): _wps_bytes(b, geog, stage_file, rewrites, source=p)
-                data[key] = stage_file(original, destination, key, transform=transform, allow_blob=key=="water_temperature_overlay")
+                data[key] = stage_file(original, destination, key, transform=transform)
         if data.get("source_orography") is not None:
             value = data["source_orography"]
             if isinstance(value, dict):
                 data["source_orography"] = {
-                    key: stage_file(path, f"inputs/orography-{key}.nc", "source orography", allow_blob=True)
+                    key: stage_file(path, f"inputs/orography-{key}.nc", "source orography")
                     for key, path in value.items()}
             else:
-                data["source_orography"] = stage_file(value, "inputs/orography.nc", "source orography", allow_blob=True)
+                data["source_orography"] = stage_file(value, "inputs/orography.nc", "source orography")
         raw["case_data"] = data
 
     for role, path in route_input_paths(config).items():
@@ -326,29 +412,62 @@ def build_bundle(plan_path, *, workspace, outdir, geog_root=None,
     options = plan.setdefault("run_options", {})
     if "case_data" in raw and options.get("data_dir") is not None:
         raise ValueError("This saved plan names [case_data].forcing directly, so run_options.data_dir "
-                         "is unused. Omit that run option; the saved fetch.out and forcing paths "
-                         "already bind acquisition to the selected node cache.")
-    for key in ("prepared_root", "restart", "wps_namelist"):
-        if options.get(key) is not None:
-            raise ValueError(f"This plan names existing '{key}' input. Use the selected node's existing "
-                             "prepared/resume route; automatic map staging cannot transfer that large authority safely.")
+                         "would point acquisition at a directory none of the running forcing comes from. "
+                         "Omit that run option, or remove [case_data] and let the saved [fetch] recipe "
+                         "acquire on the node.")
+    from gpuwm.runplan import ROUTES
+    carried = ROUTES[plan.get("route")].run_options if plan.get("route") in ROUTES else frozenset()
+    for key, replacement in relocations.items():
+        if options.get(key) is None and replacement is None:
+            continue
+        if key not in carried:
+            raise ValueError(f"This plan takes the '{plan.get('route')}' route, which carries run "
+                             f"options {', '.join(sorted(carried)) or 'none'} and not '{key}', so the "
+                             "run would refuse the plan this staging wrote. Remove that option, or "
+                             "review a plan whose route carries it.")
+        if replacement is None:
+            flag = "--" + key.replace("_", "-")
+            raise ValueError(f"This plan names a local '{key}' input and that authority is far larger "
+                             f"than the {MAX_INPUT_BYTES // 1024} KiB of selected inputs this staging "
+                             f"manifest carries, so it cannot travel with the plan. Pass {flag} naming "
+                             "the node's own copy and this review relocates the plan onto it, or remove "
+                             "that run option from the plan.")
+        rewrites.append({"field": "run_options." + key, "before": options.get(key), "after": replacement})
+        options[key] = replacement
+    if device is not None:
+        if "device" not in carried:
+            raise ValueError(f"This plan takes the '{plan.get('route')}' route, which carries no "
+                             "'device' run option, so the card this review selected could not be "
+                             "honoured. Review a plan whose route carries it, or drop the selection.")
+        rewrites.append({"field": "run_options.device", "before": options.get("device"), "after": device})
+        options["device"] = _device(device)
     for key, replacement in (("geog_root", geog), ("data_dir", remote_data)):
         if options.get(key) is not None or (key == "geog_root" and geog is not None) or (key == "data_dir" and data_cache_key is not None and "case_data" not in raw):
             if replacement is None:
-                raise ValueError("Set the selected node's geography folder before relocating this plan")
+                raise ValueError(_geography_absence(options.get(key)))
             rewrites.append({"field": "run_options." + key, "before": options.get(key), "after": replacement})
             options[key] = replacement
+            if (key == "data_dir" and "case_data" not in raw
+                    and isinstance(hints, dict) and hints.get("source")):
+                # The node acquires into this cache, so review states it and
+                # runs the same node readiness check the staged route runs.
+                expected_downloads.append({"role": "forcing", "path": remote_data,
+                                           "source": hints["source"], "recipe": copy.deepcopy(hints)})
     plan["config"] = {"path": "case.toml"}
     rewrites.append({"field": "output_root", "before": plan.get("output_root"), "after": outdir})
     plan["output_root"] = outdir
-    allowed_paths = [remote_data, remote_inputs, outdir] + ([] if geog is None else [geog])
+    allowed_paths = ([remote_data, remote_inputs, outdir] + ([] if geog is None else [geog])
+                     + [value for value in relocations.values() if value is not None])
     _assert_relocated(raw, allowed_paths)
     _assert_relocated(plan, allowed_paths, "plan")
     files["case.toml"] = {"role": "configuration", "payload": emit_experiment_toml(raw).encode("utf-8")}
     files["plan.json"] = {"role": "run-plan", "payload": _encoded(plan)}
-    if len(files) > MAX_FILES or sum(len(v["payload"]) for v in files.values()) > MAX_INPUT_BYTES:
-        raise ValueError("Selected configuration and companion files exceed the 64 KiB staging bundle. "
-                         "Stage this exact input set on the node and use its existing remote-input route.")
+    measured = sum(len(value["payload"]) for value in files.values())
+    if len(files) > MAX_FILES or measured > MAX_INPUT_BYTES:
+        raise ValueError(f"The selected configuration and companion files are {measured:,} bytes in "
+                         f"{len(files)} documents and the staging manifest carries at most "
+                         f"{MAX_INPUT_BYTES:,} bytes in {MAX_FILES} documents. Stage this exact input "
+                         "set on the node and use its existing remote-input route.")
     for original, digest in originals.items():
         if _sha(_read_selected(Path(original), "selected")) != digest:
             raise ValueError(f"Selected input '{Path(original).name}' changed while preparing the manifest")
@@ -365,8 +484,11 @@ def build_bundle(plan_path, *, workspace, outdir, geog_root=None,
         bundle.update(schema=BLOB_BUNDLE_SCHEMA, blobs=blobs, data_cache_key=data_cache_key)
         verify_sources(source_blobs(bundle))
     bundle["sha256"] = _sha(_encoded(bundle))
-    if len(_encoded(bundle)) > 120 * 1024:
-        raise ValueError("Selected staging manifest exceeds the bounded SSH request size")
+    encoded = len(_encoded(bundle))
+    if encoded > MAX_MANIFEST_BYTES:
+        raise ValueError(f"This staging manifest is {encoded:,} bytes and the node reads at most "
+                         f"{MAX_MANIFEST_BYTES:,} bytes for one request. Stage this exact input set "
+                         "on the node and use its existing remote-input route.")
     return bundle
 
 
@@ -591,6 +713,136 @@ def memory_review(config, *, experiment=None, cadence=None):
             "measured_unix_ms": int(time.time() * 1000)}
 
 
+def _node_acquisition_readiness(expected_downloads):
+    """Can this node run each declared acquisition? A registry question.
+
+    A row's own declared credentials decide it, so a source registered
+    tomorrow is answered without editing this door. A credential whose
+    presence cannot be established here is stated by the row itself and never
+    refused: only a DECLARED credential this box reports absent refuses.
+    """
+    from gpuwm.source_adapters import get_source_adapter
+    from gpuwm.source_credentials import credential_present, credential_short_note
+    readiness = None
+    for item in expected_downloads:
+        try:
+            adapter = get_source_adapter(str(item.get("source", "")))
+        except ValueError:
+            continue
+        if (adapter.source_id == "era5"
+                and (item.get("recipe") or {}).get("era5_provider", "cds") == "cds"):
+            # This family keeps its own client-availability probe, which answers
+            # more than whether the key file exists.
+            from gpuwm.cds_credentials import acquisition_readiness as cds_readiness
+            readiness = cds_readiness()
+            if not readiness["ready"]:
+                raise ValueError("Selected node cannot acquire ERA5 from CDS: " + readiness["message"])
+            continue
+        for credential in getattr(adapter, "credentials", ()):
+            if credential_present(credential) is False:
+                raise ValueError(f"The selected node cannot acquire this run's '{adapter.source_id}' "
+                                 "forcing: " + credential_short_note(credential))
+    return readiness
+
+
+def memory_advice(memory, probe=None, selection=None):
+    """One sizing statement for every remote door. It advises; it never refuses.
+
+    A remote memory figure is an estimate made on the node before the run
+    exists, and an estimate does not override the configuration a reader asked
+    for: the runner owns the real allocation and reports a real failure. So a
+    measured card that looks too small is stated with both byte figures and
+    the ways out; a review that could not be computed is stated with its
+    error; an unmeasured card is priced against the recorded capacity of the card
+    this run will actually use, or the most conservative recorded capacity when
+    no card was named, that basis is named, and the run is warned once. In
+    every case the run is launched as requested.
+    """
+    memory = memory if isinstance(memory, dict) else {}
+    probe = probe if isinstance(probe, dict) else {}
+    envelope = memory.get("peak_envelope_bytes")
+    verdict = memory.get("verdict")
+    warn = bool(memory.get("warn"))
+    if memory.get("error"):
+        return {"advice": "Remote memory review could not be computed on this node: "
+                          + str(memory["error"])[:1000]
+                          + ". The run is launched as requested; a real allocation failure is the "
+                            "runner's to report. Correct the review on the node to size it first.",
+                "warn": True, "basis": "memory review failed"}
+    if memory.get("refuse"):
+        free = memory.get("free_bytes")
+        return {"advice": f"This configuration's envelope is {envelope} bytes of card memory and this "
+                          f"node's card measured {free} bytes free, so the run may not fit. Free memory "
+                          "on that card, re-size this configuration against it, or select a larger "
+                          "card; the run is launched as requested and a real allocation failure is "
+                          f"the runner's to report. ({verdict})",
+                "warn": True, "basis": "measured device probe"}
+    if memory.get("measured"):
+        return {"advice": None, "warn": warn, "basis": "measured device probe"}
+    devices = probe.get("devices") if isinstance(probe.get("devices"), list) else []
+    if isinstance(selection, dict) and type(selection.get("memory_free_bytes")) is int:
+        # A run that named its card is priced against that card, never against
+        # the smallest of a set it will not run on.
+        devices = [selection]
+    recorded = [device.get("memory_free_bytes") for device in devices
+                if isinstance(device, dict) and type(device.get("memory_free_bytes")) is int]
+    reason = memory.get("probe_reason")
+    if recorded:
+        basis = probe.get("device_query_basis") or "recorded device capacity"
+        card = ("the card this run selected" if devices is not probe.get("devices")
+                else "the most conservative recorded capacity")
+        value = {"advice": None, "warn": True, "basis": basis, "priced_free_bytes": min(recorded),
+                 "priced_note": "This node's card memory was not measured for this configuration"
+                                + (f" ({reason})" if reason else "")
+                                + f"; its envelope of {envelope} bytes is priced against {card}, "
+                                  f"{min(recorded)} free bytes, read from {basis}."}
+        if isinstance(selection, dict):
+            value["device"] = selection
+        return value
+    return {"advice": None, "warn": True, "basis": "no recorded device capacity", "priced_free_bytes": None,
+            "priced_note": "This node records no device capacity at all"
+                           + (f" ({reason})" if reason else "")
+                           + f", so this configuration's envelope of {envelope} bytes has no recorded "
+                             "basis to be priced against; it is run and stated."}
+
+
+def node_device_probe(memory=None):
+    """This node's own device probe, read so an unmeasured card can be priced.
+
+    The sizing the memory review already measured is carried through, so no
+    door measures the card twice for one configuration. A probe this node
+    cannot read at all is stated by the pricing, never refused here.
+    """
+    try:
+        return hardware_probe(sizing=(memory or {}).get("sizing"), measure_sizing=False)
+    except Exception:  # noqa: BLE001 - an unreadable probe prices as no recorded capacity.
+        return None
+
+
+def memory_decision(config, *, probe=None, device=None, **kwargs):
+    """The memory record both doors read, with its sizing advice attached.
+
+    A door that has already read this node's probe passes it; a door that has
+    not leaves it unset and this function reads it. Either way the advice is
+    priced against the capacity this node's own probe recorded, so the staged
+    door and the node-configuration door state one basis for one configuration,
+    and a review that raises on the node is a stated fact rather than a silent
+    pass or a relayed traceback.
+    """
+    try:
+        memory = memory_review(config, **kwargs)
+    except Exception as error:  # noqa: BLE001 - a failed review is stated, never a silent pass.
+        memory = {"measured": False, "advisory": True, "free_bytes": None, "refuse": False,
+                  "warn": True, "verdict": str(error), "error": str(error)}
+    probe = node_device_probe(memory) if probe is None else probe
+    selection = device_selection(probe, device)
+    advice = memory_advice(memory, probe, selection)
+    memory.update(advice, warn=bool(memory.get("warn")) or bool(advice.get("warn")))
+    if selection is not None:
+        memory["device"] = selection
+    return memory
+
+
 def review(request, workspace):
     from gpuwm import remote_worker as rw
     from gpuwm.runplan import load_plan, resolve_plan
@@ -603,14 +855,29 @@ def review(request, workspace):
     plan_path, config = directory / "plan.json", directory / "case.toml"
     resolution, experiment, _data = resolve_plan(load_plan(plan_path), require_inputs=False)
     raw = tomllib.loads(config.read_text())
-    acquisition_readiness = None
-    if any(item.get("source") == "era5" and item.get("recipe", {}).get("era5_provider", "cds") == "cds"
-           for item in bundle["expected_downloads"]):
-        from gpuwm.cds_credentials import acquisition_readiness as cds_readiness
-        acquisition_readiness = cds_readiness()
-        if not acquisition_readiness["ready"]:
-            raise ValueError("Selected node cannot acquire ERA5 from CDS: " + acquisition_readiness["message"])
-    memory = memory_review(config, experiment=experiment, cadence=raw.get("fetch", {}).get("cadence"))
+    acquisition_readiness = _node_acquisition_readiness(bundle["expected_downloads"])
+    # One probe, read once, and one advice function: this door hands the probe
+    # it reports to the same decision the node-configuration door takes.
+    probe = hardware_probe(measure_sizing=False)
+    # The plan the node will run is the authority for which card it runs on and
+    # which existing node inputs it binds, so both are read from that document.
+    plan_options = json.loads(plan_path.read_bytes()).get("run_options", {})
+    memory = memory_decision(config, probe=probe, device=plan_options.get("device"),
+                             experiment=experiment,
+                             cadence=raw.get("fetch", {}).get("cadence"))
+    for key, kind in (("prepared_root", "directory"), ("wps_namelist", "file"), ("restart", "file")):
+        value = plan_options.get(key)
+        if value is None:
+            continue
+        path = Path(value)
+        if not (path.is_dir() if kind == "directory" else path.is_file()):
+            raise ValueError(f"This plan's '{key}' names {value} on the selected node and no such "
+                             f"{kind} is there, so the run would refuse it after starting. Correct "
+                             f"that path and review this map configuration again.")
+    probe = {**probe, "sizing": memory.get("sizing")}
+    # A staged plan's own document names its output root and that document's
+    # digest is what this review approves, so the run root is that directory
+    # rather than a folder claimed under it.
     hashes = {entry["name"]: entry["sha256"] for entry in bundle["files"]}
     hashes.update({entry["placement"] + "/" + entry["name"]: entry["sha256"] for entry in bundle.get("blobs", [])})
     wps = hashes.get("case.namelist.wps")
@@ -618,11 +885,19 @@ def review(request, workspace):
               "plan": str(plan_path), "plan_sha256": hashes["plan.json"],
               "config": str(config), "config_sha256": hashes["case.toml"],
               "wps_sha256": wps, "input_sha256": _sha(_encoded(hashes)),
-              "outdir": str(outdir), "geog_root": bundle["geog_root"], "runtime": rw.runtime(),
-              "probe": hardware_probe(sizing=memory.get("sizing"), measure_sizing=False),
-              "resolution": resolution, "memory": memory,
+              "outdir": str(outdir), "run_root": str(outdir), "geog_root": bundle["geog_root"], "runtime": rw.runtime(),
+              "probe": probe, "resolution": resolution, "memory": memory,
               "source": bundle["source"], "source_inputs": bundle["source_inputs"], "path_rewrites": bundle["rewrites"],
-              "expected_downloads": bundle["expected_downloads"]}
+              "expected_downloads": bundle["expected_downloads"],
+              "entry": {"door": "run-plan", "document": str(plan_path), "flags": []},
+              "capabilities": rw.capabilities(),
+              "manifest_bytes": len(_encoded(bundle)), "manifest_maximum_bytes": MAX_MANIFEST_BYTES,
+              "render_products": plan_options.get("render_products"),
+              "prepared_root": plan_options.get("prepared_root"),
+              "wps_namelist": plan_options.get("wps_namelist"),
+              "checkpoint": plan_options.get("restart"),
+              "device": plan_options.get("device"),
+              **rw.route_statement("staged_plan", f"staged bundle {bundle['id']} from {bundle['source']['config_path']}")}
     if acquisition_readiness is not None:
         result["acquisition_readiness"] = acquisition_readiness
     if bundle.get("blobs"):
@@ -633,6 +908,11 @@ def review(request, workspace):
 
 def launch(request, workspace):
     from gpuwm import remote_worker as rw
+    existing = rw.reconciled_job(request, workspace)
+    if existing is not None:
+        # The same attempt, retried: this staged plan was already launched and
+        # its job is the answer, rather than a second forecast on one card.
+        return existing
     review_value, bundle, directory = review(request, workspace)
     if bundle.get("blobs"):
         expected = _sha(_encoded(review_value["source_blobs"]))
@@ -647,10 +927,13 @@ def launch(request, workspace):
     # actual allocation and execution errors remain owned by the runner.
     snapshots = {entry["name"]: (directory / entry["name"]).read_bytes() for entry in bundle["files"]}
     sources = {str(directory / name): payload for name, payload in snapshots.items()}
-    review_value.update({"argv": [os.sys.executable, "-I", "-u", "-m", "gpuwm.cli", "run-plan", str(directory / "plan.json")],
-                         "cwd": str(directory), "geog_root": bundle["geog_root"], "products": None,
-                         "prepared_root": None, "wps_namelist": None, "parent_job": None,
-                         "checkpoint": None, "inputs": {path: _sha(payload) for path, payload in sources.items()}})
+    # Every run option the reviewed plan carries is recorded as this job's own,
+    # so a reader of the job record is told what the run actually binds rather
+    # than a fixed empty answer the plan disagrees with.
+    review_value.update({"argv": rw.compose_argv(review_value["entry"]),
+                         "cwd": str(directory), "geog_root": bundle["geog_root"],
+                         "products": review_value.get("render_products"), "parent_job": None,
+                         "inputs": {path: _sha(payload) for path, payload in sources.items()}})
     review_value["external_inputs"] = {
         str((directory if entry["placement"] == "inputs" else _data_directory(bundle, workspace)) / entry["name"]): entry["sha256"]
         for entry in bundle.get("blobs", [])}

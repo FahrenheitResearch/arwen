@@ -263,8 +263,8 @@ def qualify_artifacts(release: Path, source: Path, revision: str,
     readelf = shutil.which("readelf", path=commands.environment.get("PATH"))
     require(readelf is not None, "readelf is required to verify native compatibility")
     declarations = bridge_assets.BUNDLED_ARTIFACTS
-    require(len(declarations) == 28 and len({a.name for a in declarations}) == 28,
-            "release declaration must contain all 28 distinct native artifacts")
+    require(len(declarations) == 29 and len({a.name for a in declarations}) == 29,
+            "release declaration must contain all 29 distinct native artifacts")
     results = []
     for artifact in declarations:
         path = release / bridge_assets.artifact_filename(artifact, "linux-x86_64")
@@ -406,7 +406,11 @@ def main(argv: list[str] | None = None) -> int:
         require(toolchain_identity(args.rust_toolchain, commands, source) == report["toolchain"],
                 "copied Rust toolchain changed during build")
         report["qualified_output"] = emit_artifacts(args.output, report["artifacts"])
-        report["status"] = "PASS_MANYLINUX_2_28_ALL_28_NATIVE_ARTIFACTS"
+        # The count travels as its own field: a status literal that carried it
+        # went stale the release the bundle grew, and the drivers that compared
+        # the literal kept passing over a number that was no longer true.
+        report["artifact_count"] = len(report["artifacts"])
+        report["status"] = "PASS_MANYLINUX_2_28_ALL_NATIVE_ARTIFACTS"
         returncode = 0
     except Exception as error:
         report["error"] = f"{type(error).__name__}: {error}"

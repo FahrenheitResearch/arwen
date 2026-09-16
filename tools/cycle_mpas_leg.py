@@ -94,7 +94,7 @@ def _vertical_metric(derived: Mapping[str, np.ndarray]) -> Any:
 class ReplayBackend:
     """The loud stub: replays recorded frames instead of integrating.
 
-    Its rebuild capability is deliberately narrow and honest.  Replay
+    Its rebuild capability is deliberately narrow and accurate.  Replay
     knows the equation of state, so it can rebuild ``exner`` from
     ``rho_theta``; it knows nothing about the port's discrete curl, so it
     cannot rebuild ``normal_velocity``, ``vertical_velocity`` or the

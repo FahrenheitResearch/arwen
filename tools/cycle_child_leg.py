@@ -17,7 +17,7 @@ refusal comes back as ``DIVERGED`` with the field, the cell index and the
 value, and the child's slot is released.  Nothing is re-raised.  A parent
 refusal is not this file's business and is not caught anywhere in it.
 
-HONESTY: the child plan is a placement decision, not a skill claim.  No
+ACCURACY: the child plan is a placement decision, not a skill claim.  No
 case names, no station names anywhere in this file (standing owner rule).
 """
 

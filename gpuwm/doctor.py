@@ -33,7 +33,7 @@ company.
 
 Statuses distinguish what was proven: ``verified`` means the deep check
 ran and passed; ``present`` is for the few items where nothing deeper
-than existence can honestly be checked, plus the one deep check that
+than existence can accurately be checked, plus the one deep check that
 can half-pass and says which half (the radar-DA eigensolver);
 ``untested`` is for a question this module deliberately does not answer
 -- it never runs cargo, so it cannot say whether a build would succeed
@@ -188,6 +188,11 @@ _BRIDGE_CONSUMERS = {
                   "routes (gpuwm prep/rw-wps), which resolve it from here "
                   "(--grib2-dump overrides) -- see the mapped/20CRv3 "
                   "route line",
+    "gdt101_remap": "every source whose native grid is a GDT-101 "
+                    "unstructured mesh (gpuwm fetch/prep/go --source "
+                    "icon-global), whose input-normalization stage writes "
+                    "its regional intermediates with this binary and "
+                    "refuses rather than falling back without it",
 }
 
 #: The doors a box without CuPy cannot open, and the half it keeps.
@@ -352,7 +357,7 @@ def _build_action(crate_relative: str = bridges.CRATE_RELATIVE) -> str:
 
     Three installs, three true one-liners.  In a checkout it is the
     cargo build.  On a wheel with a bundle published for this platform
-    it is the download.  On a wheel without one the honest answer is
+    it is the download.  On a wheel without one the accurate answer is
     that there is no single command -- it is a clone and a build -- so
     the action is the flag that prints those steps rather than a
     fabricated one-liner naming a directory this install does not have.
@@ -426,7 +431,7 @@ def _import_probe(module: str,
 #: lazily, so on a CUDA-13-only box ``import cupy`` succeeds, kernels
 #: compile, and the first matmul of a real run is what dies.  Proven on a
 #: rented CUDA 13.2 node (2026-08-05): import probes, certification, and a
-#: 57-test GPU slice all passed honestly before the first cuBLAS load
+#: 57-test GPU slice all passed accurately before the first cuBLAS load
 #: killed the campaign.  So this probe performs that first load on
 #: purpose, in a fresh subprocess, and reports the CUDA majors of both
 #: sides so the check can name the extra that matches the box.
@@ -636,7 +641,7 @@ def _cupy_check() -> Check:
         if result.get("devices", 0) == 0:
             # No device to load cuBLAS against, so the pairing cannot be
             # judged -- and a box without a CUDA device must not fail
-            # doctor for it.  ``present``, honestly: import proven,
+            # doctor for it.  ``present``, accurately: import proven,
             # pairing not.
             reason = result.get("device_error") or result.get(
                 "cupy") or result.get("probe") or "no CUDA device visible"
@@ -734,7 +739,7 @@ def _cupy_check() -> Check:
 #:    missing headers selects that remedy; runtime failures and wrong answers
 #:    remain execution failures even when (1) passed.
 #:
-#: THE COLD CACHE IS LOAD-BEARING.  ``CUPY_CACHE_DIR`` is redirected to an
+#: THE COLD CACHE IS ESSENTIAL.  ``CUPY_CACHE_DIR`` is redirected to an
 #: empty directory because a warm kernel cache is exactly what hides this
 #: fault: the box that produced this check compiled its reductions once under
 #: CUDA 12, moved to a CUDA-13 toolkit, and kept serving the cached cubins for
@@ -1228,7 +1233,7 @@ def _cusolver_hint(box_major: int | None) -> tuple[str, str]:
 #: multiplies arrays" are both true on a box where the factorisation cannot
 #: run at all.
 #:
-#: TWO PROPERTIES OF THIS SCRIPT ARE LOAD-BEARING.  Do not tidy them away.
+#: TWO PROPERTIES OF THIS SCRIPT ARE ESSENTIAL.  Do not tidy them away.
 #:
 #: 1. It runs in a FRESH PROCESS (see :func:`_eigensolver_probe`), and
 #: 2. it calls NOTHING from ``cupy.linalg`` before ``eigh``.
@@ -1431,7 +1436,10 @@ _IMPORT_NAME = {
     "matplotlib": "matplotlib",
     "jsonschema": "jsonschema",
     "pytest": "pytest",
+    "pytest-xdist": "xdist",
     "psutil": "psutil",
+    # The CDS client ([era5] extra): distribution and module share the name.
+    "cdsapi": "cdsapi",
     "huggingface-hub": "huggingface_hub",
     "h5py": "h5py",
     # The MCP SDK ([mcp] extra): distribution and module share the name.
@@ -1781,7 +1789,7 @@ def _package_evidence(requirement: _Requirement,
     ``state`` is one of ``"ok"``, ``"absent"``, ``"broken"``,
     ``"untested"`` or ``"excluded"``.  ``untested`` is not a euphemism
     for ok: it is the answer for a distribution whose import name this
-    module does not know, where the honest report is that its metadata
+    module does not know, where the accurate report is that its metadata
     was read and nothing was imported.
 
     ``excluded`` is the state pip put the package in, not one this box
@@ -2170,7 +2178,7 @@ def _geog_stack_check() -> Check:
     where the shared library will not load -- an ABI mismatch, a conda
     and pip GDAL fighting, a half-removed dist-info.  ``find_spec`` calls
     all of those green.  The front-door refusal uses the cheap probe
-    because it runs on every build; doctor is where the expensive, honest
+    because it runs on every build; doctor is where the expensive, accurate
     answer belongs.
     """
     from gpuwm.static.geog_stack import GEOG_EXTRA, GEOG_MODULES
@@ -2544,13 +2552,14 @@ _OBS_FRONT_DOOR_ACTION = ("build the obs front doors from a clone "
 #: :func:`_bundle_coverage_checks` turns the set into a live sweep, so a
 #: new artifact is REPORTED (as untested, never as ok) from the moment
 #: the bundle carries it, rather than waiting for this map to catch up.
-#: ``tests/test_doctor_route_honesty.py`` fails when they disagree.
+#: ``tests/test_doctor_route_accuracy.py`` fails when they disagree.
 _CHECKED_ARTIFACTS = {
     "grib1_bridge": "the `bridge ...` lines",
     "gfs_grib2_bridge": "the `bridge ...` lines",
     "hrrr_grib2_bridge": "the `bridge ...` lines",
     "grib2_inventory": "the `bridge ...` and mapped/20CRv3 route lines",
     "grib2_dump": "the `bridge ...` and mapped/20CRv3 route lines",
+    "gdt101_remap": "the `bridge ...` lines",
     "gpuwm_preprocess_cpu": "the `cpu preprocess library` line",
     "rw_fetch": "the `fetch backbone` line",
     "rw_wrfbatch": "the `renderer` line",
@@ -2565,6 +2574,7 @@ _CHECKED_ARTIFACTS = {
     "rw_goes": "the `obs front door` lines",
     "rw_opera": "the `obs front door` lines",
     "rw_netcdf": "the `NetCDF decoder` line",
+    "rw_zarr": "the `era5 route fetch transport` line",
     "netcdf_writer": "the `NetCDF writer` line",
     "gpuwm_mapped_engine": "the `mapped decode engine` line",
     "static_fields": "the `static builder` line",
@@ -3786,7 +3796,7 @@ def _matplotlib_engine_note() -> str:
     because the project render law ( 2026-08-06) reserves
     weather-field product plots for that binary and names exactly one
     permitted fallback, which is not this engine (audit F7).  So the
-    honest doctor line is about a WORKAROUND a reader can type, never
+    accurate doctor line is about a WORKAROUND a reader can type, never
     about a safety net that catches them.
     """
 

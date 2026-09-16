@@ -32,7 +32,7 @@ about to be superseded by the next volume is work nobody will look at;
 those cycles run observations only, and the gallery says which mode it
 is in.
 
-**Honest degradation, out loud.**  A late volume, a skipped cycle, a
+**Accurate degradation, out loud.**  A late volume, a skipped cycle, a
 failed stage: each is written into the status file AND stamped on the
 gallery page through ``auto-notice.json``.  Nothing is padded, no volume
 is re-used as a new one, and the model is never advanced past data it
@@ -78,7 +78,7 @@ nobody commits into.
 Site ids are arguments here as everywhere: no station name belongs in
 this file, its defaults or its identifiers (standing owner rule).
 
-HONESTY: demo-grade nowcast.  UNSCORED, outside any registered campaign,
+ACCURACY: demo-grade nowcast.  UNSCORED, outside any registered campaign,
 EXPERIMENTAL like every tool it drives.  No skill claim is made or
 implied; the gallery says so on every figure.
 """
@@ -263,7 +263,7 @@ def plan_leg(*, init: datetime, elapsed_s: float, volume_time: datetime,
              max_leg_s: float = MAX_LEG_SECONDS) -> LegPlan:
     """Advance to this volume's time, or say why that is not a leg.
 
-    The refusals are the honest half: a volume the cycle has already
+    The refusals are the accurate half: a volume the cycle has already
     passed, one so close to the last that the leg would be a few steps,
     or a gap so long that one leg would swallow it -- that last is a feed
     outage and has to be handled as one, not as a very long cycle.
@@ -674,9 +674,9 @@ def dealias_argv_tail(args) -> list[str]:
     letting the callee default, for the reason
     :class:`~tools.da_nowcast.DealiasChoice` gives: whatever built the
     assimilated observations must also build the verification
-    composites.  ``DealiasChoice.argv_tail`` is empty when dealiasing is
-    off, which is what an unflagged daemon does -- the same as the front
-    door's ``run`` with no ``--dealias``.
+    composites.  ``DealiasChoice.argv_tail`` spells ``--no-dealias`` when
+    dealiasing is off, because on is what an unflagged daemon does now --
+    the same as the front door's ``run`` with no flag.
     """
 
     return DealiasChoice.from_args(args).argv_tail()
@@ -1008,14 +1008,16 @@ def add_run_arguments(parser: argparse.ArgumentParser) -> None:
     # door's argv and its own obs stage's argv, and two front doors that
     # describe the same solver differently is how a reader ends up
     # believing they ran different ones.
-    parser.add_argument("--dealias", action="store_true",
-                        help="unfold radial velocity per sweep instead of "
-                             "masking every gate that might be folded, "
-                             "for the assimilated observations AND the "
-                             "verification composites. The choice is "
-                             "carried across every epoch roll, so a long "
-                             "daemon does not quietly stop dealiasing at "
-                             "the first one")
+    parser.add_argument("--no-dealias", dest="dealias",
+                        action="store_false", default=True,
+                        help="mask every gate that might be folded instead "
+                             "of unfolding radial velocity per sweep, for "
+                             "the assimilated observations AND the "
+                             "verification composites. Unfolding is the "
+                             "default. The choice is carried across every "
+                             "epoch roll, so a long daemon does not "
+                             "quietly change what it grades itself "
+                             "against at the first one")
     # The same two options tools.obs_radar_grid_build takes, defined by
     # that tool and added here rather than restated.
     from tools.obs_radar_grid_build import add_dealias_engine_arguments

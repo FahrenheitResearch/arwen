@@ -180,7 +180,7 @@ def four_domain_census(tmp_path_factory):
     """The full selectable sweep, from a fresh interpreter, run from a cwd
     that is NOT the repository.
 
-    The foreign cwd is load-bearing.  ``gpuwm`` is installed editable, and its
+    The foreign cwd is essential.  ``gpuwm`` is installed editable, and its
     finder resolves to whichever checkout ran ``pip install -e`` -- not to the
     tree under test.  Run as a script, ``sys.path[0]`` is ``tools/``, which
     holds no ``gpuwm``, so the editable finder wins and the census silently
@@ -261,7 +261,7 @@ def test_the_peak_neighbourhood_holds_no_combination_over_the_ceiling(
 def test_the_peak_is_still_where_it_was_measured(neighbourhood_census):
     """The cheap arm re-derives the peak; it does not read it back.
 
-    This is what makes the reduction honest.  The sweep does not start from
+    This is what makes the reduction accurate.  The sweep does not start from
     ``WORST_MEASURED_COUNT``; it measures 56 selectable combinations around
     the anchor and reports the largest.  If a scheme edit moves the peak
     inside the surface/PBL family -- which is where the peak lives, and
@@ -495,7 +495,7 @@ def test_noahmp_slice_matches_the_current_wrf_authority(
     transcribing one, and the 1.7 validator refuses km_opt=3 unless
     bl_pbl_physics=0.  The reference config this sweep is built from runs
     a PBL, so km_opt=3 is genuinely not selectable here and the probe
-    reports it honestly.  Every count below is therefore the 1.5.2 line's
+    reports it accurately.  Every count below is therefore the 1.5.2 line's
     two-thirds where km_opt multiplies -- and the two numbers that do NOT
     multiply by it, the 632 peak and the 608 widest pbl11 row, are
     unchanged, which is the claim this file exists to hold.

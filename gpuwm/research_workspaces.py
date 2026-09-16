@@ -14,11 +14,13 @@ import io
 import json
 import math
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 import tempfile
+import tomllib
 
 from gpuwm.configuration_recovery import MemoryAdmissionError, retain_final_candidate
+from gpuwm.explain import warn
 
 
 CATALOG_PATH = Path(__file__).parent / "data" / "tui" / "research-workspaces.json"
@@ -186,36 +188,66 @@ def validate_recipe(recipe: dict, *, known_products: set[str] | None = None,
     if preset is None:
         raise ValueError(f"Unknown plot preset: {recipe['plot_preset']}")
     capabilities = diagnostic_capabilities() if _capabilities is None else _capabilities
-    if known_products is None:
-        known_products = set(capabilities["products"])
     if not isinstance(recipe["diagnostics"], list) or not recipe["diagnostics"] \
-            or any(not isinstance(product, str) or product not in known_products for product in recipe["diagnostics"]):
+            or any(not isinstance(product, str) or not product.strip() for product in recipe["diagnostics"]):
         raise ValueError("Recipe diagnostics must name supported native renderer products")
+    # ONE authority for "can this lane draw that?", and it is not this
+    # file.  The renderer's catalog is the vocabulary; the packaged JSON
+    # records only two things the renderer cannot state for itself -- the
+    # concrete reason a product is unserved on this lane, and the window
+    # a product needs before it means anything.
+    #
+    # `known_products` is the renderer's catalog when a caller has one.
+    # This door has none: it runs at packaged-catalog load and at recipe
+    # lookup, where there is no run, no wrfout, no store root and no
+    # built renderer, and creating a research TOML is promised not to
+    # need one.  Absent, the vocabulary check is simply not made, which
+    # is the truthful answer here rather than a smaller catalog standing
+    # in for the real one.
     for product in recipe["diagnostics"]:
-        if product not in capabilities["products"]:
-            reason = capabilities["unavailable"].get(product, "This selector has not been qualified for the ArWen history path.")
+        reason = capabilities["unavailable"].get(product)
+        if reason is not None:
             raise ValueError(f"Research diagnostic {product} is not supported by the ArWen history renderer. {reason}")
-        minimum = capabilities["products"][product]["minimum_hours"]
+        if known_products is not None and product not in known_products:
+            raise ValueError(f"Research diagnostic {product} is not supported by the ArWen history renderer. The renderer's catalog carries no product of that name; gpuwm render --list-products names every product this install can draw. Recipe diagnostics must name supported native renderer products")
+        recorded = capabilities["products"].get(product)
+        if recorded is None:
+            # No recorded row is not a breakage and not a refusal.  The
+            # product runs, priced from the most conservative recorded
+            # basis -- no recorded window requirement, so zero hours --
+            # with that basis stated and one warning.  A window that IS
+            # required is still enforced downstream, by name and with its
+            # own reason, so running cannot produce a wrong picture here.
+            warn(f"research diagnostic {product} has no recorded window "
+                 f"requirement in {DIAGNOSTICS_PATH.name}, so {recipe['id']} "
+                 "is priced with none; the renderer reports its own "
+                 "availability for this product at render time.",
+                 "The packaged record carries a row per product whose "
+                 "window requirement was measured. A product with no row "
+                 "is one nobody measured a window for, which is not the "
+                 "same as one that cannot be drawn: the render catalog "
+                 "answers availability per store, and this file never "
+                 "narrows it.")
+            continue
+        minimum = recorded["minimum_hours"]
         if geometry["forecast_hours"] < minimum:
             raise ValueError(f"Research diagnostic {product} needs at least {minimum} hours of history; {recipe['id']} declares {geometry['forecast_hours']:g} hours. Select a matching window or a longer study.")
 
 
 def diagnostic_capabilities() -> dict:
-    document, digest = _read_json(DIAGNOSTICS_PATH, "research diagnostic capabilities")
-    try:
-        if document.get("schema") != "arwen.research.diagnostics.v1":
-            raise ValueError("expected schema arwen.research.diagnostics.v1")
-        if not isinstance(document["products"], dict) or not document["products"]:
-            raise ValueError("products must be a nonempty object")
-        if not isinstance(document["unavailable"], dict):
-            raise ValueError("unavailable must be an object")
-        for name, entry in document["products"].items():
-            minimum = entry["minimum_hours"]
-            if not isinstance(name, str) or not isinstance(entry["kind"], str) or isinstance(minimum, bool) or not isinstance(minimum, int) or minimum < 0:
-                raise ValueError(f"invalid diagnostic capability {name}")
-    except (KeyError, TypeError, ValueError) as error:
-        raise ValueError(f"Invalid research diagnostic capabilities at {DIAGNOSTICS_PATH}: {error}. Restore the matching ArWen package data, then retry.") from error
-    return {**document, "sha256": digest}
+    """The packaged lane record, read by the one function both doors call.
+
+    The reader lives in :mod:`gpuwm.tui_products` beside the presets,
+    because the preset picker asks this same file the same question and
+    two readers of one record is how a picker and a recipe validator
+    come to disagree about one configuration.  The PATH stays this
+    module's, so a caller that points this door at another copy still
+    points the reader at it.
+    """
+
+    from gpuwm.tui_products import lane_capabilities
+
+    return lane_capabilities(DIAGNOSTICS_PATH)
 
 
 def _native_products() -> set[str]:
@@ -491,7 +523,18 @@ def _final_text(text: str, recipe: dict, *, lat: float, lon: float, data_dir: Pa
         # This compiler exposes the wizard's default ERA5 acquisition path.
         # Its relative path was authored from the private stage, so bind it to
         # the final data directory while preserving every other case-data key.
-        forcing = json.dumps([(data_dir / "era5-combined.grib").as_posix()])
+        #
+        # ONLY THE DIRECTORY MOVES.  The file NAME is the emitter's answer
+        # and this function has no better one: the two ERA5 providers
+        # publish two different containers, so re-spelling a literal here
+        # would overwrite a correct name with the other provider's the
+        # moment a recipe selected one -- and the config would then declare
+        # a forcing file its own [fetch] table cannot produce, which is
+        # refused only after the download has run.  Rebinding the directory
+        # and keeping the basename cannot drift from the emitter at all.
+        declared = tomllib.loads(case_data["body"])["forcing"]
+        forcing = json.dumps([(data_dir / PurePosixPath(str(item)).name).as_posix()
+                              for item in declared])
         body = re.sub(r"(?m)^forcing\s*=.*$", "forcing = " + forcing, case_data["body"])
         text = text[:case_data.start("body")] + body + text[case_data.end("body"):]
     heading = (f"# Research configuration: {recipe['id']}\n"

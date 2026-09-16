@@ -9,6 +9,7 @@ import time
 from typing import Mapping, Sequence
 
 from gpuwm.ingest.nest_init import initialize_child_chain_parallel
+from gpuwm.moisture_floor_receipt import moisture_floor_proof_entries
 from gpuwm.progress import prep_stage
 from gpuwm.native_domain_artifacts import (
     NativeHierarchyArtifactBuild,
@@ -53,11 +54,28 @@ class NativeHierarchyExportResult:
     ``wrf_manifest`` is the export slot: a READY manifest with a ``files``
     inventory when the export ran, otherwise the NOT_REQUESTED/REFUSED
     document that says why it did not.
+
+    ``moisture_floor_receipts`` is the per-domain answer to "did this
+    initialization modify vapour on the way in", root and children alike.
+    The child results exist only inside this function, so a proof writer
+    downstream has no other way to reach them -- and without them a
+    floored nest is a fact that lived in one process's stderr.
+
+    IT HAS NO DEFAULT, deliberately.  Every proof writer spreads this
+    mapping into its document unconditionally, so a result built without
+    it writes a proof with no ``moisture_floors_by_domain`` key at all --
+    and an absent key is the one thing this whole receipt exists to
+    prevent, because a reader cannot tell it from "prepared before the
+    receipt existed".  An empty default made that a silent construction
+    detail; requiring the field makes
+    :func:`initialize_and_export_native_hierarchy`, which is the only
+    thing that can compute it, the only thing that can build the result.
     """
 
     artifacts: NativeHierarchyArtifactBuild
     wrf_manifest: Mapping[str, object]
     timings_seconds: Mapping[str, float]
+    moisture_floor_receipts: Mapping[str, object]
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -65,6 +83,9 @@ class NativeHierarchyExportResult:
         object.__setattr__(
             self, "timings_seconds",
             MappingProxyType(dict(self.timings_seconds)))
+        object.__setattr__(
+            self, "moisture_floor_receipts",
+            MappingProxyType(dict(self.moisture_floor_receipts)))
 
 
 def initialize_and_export_native_hierarchy(
@@ -192,10 +213,29 @@ def initialize_and_export_native_hierarchy(
                 export_stage.update(outcome="refused", reason=str(error))
     timings["direct_stock_wrf_export"] = time.perf_counter() - started
     timings["total"] = sum(timings.values())
+    # Root first, then the children in the experiment's declared order,
+    # each under the domain label every other by-domain receipt in the
+    # tree uses.  The same positional pairing
+    # `write_native_hierarchy_artifacts` above works from -- and refuses
+    # by domain name when it disagrees -- so the label a block gets here
+    # is the label that call already bound the child to.
+    floor_receipts = moisture_floor_proof_entries(
+        ((f"d{int(domain.grid_id):02d}", result)
+         for domain, result in zip(
+             exp.domains,
+             (root_initial_result,
+              *(getattr(child, "real", None) for child in child_results)),
+             strict=True)),
+        when_unrecorded=(
+            "this domain's initialization result carries no moisture-floor "
+            "field, so it came from an ingest predating the receipt; "
+            "re-prepare the hierarchy to record whether its vapour was "
+            "floored on the way in"))
     return NativeHierarchyExportResult(
         artifacts=artifact_build,
         wrf_manifest=wrf_manifest,
-        timings_seconds=timings)
+        timings_seconds=timings,
+        moisture_floor_receipts=floor_receipts)
 
 
 __all__ = [

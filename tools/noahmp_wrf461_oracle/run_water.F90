@@ -408,7 +408,7 @@ contains
     p_sice   = s%sice
     p_qsnbot = SENTINEL; p_snoflow = SENTINEL
     p_ponding1 = 0.0;    p_ponding2 = 0.0
-    ! These two emits are load-bearing, not diagnostics: COMBINE leaves
+    ! These two emits are essential, not diagnostics: COMBINE leaves
     ! PONDING1/PONDING2 untouched on some paths, so with the explicit interface
     ! in scope the compiler may treat the stores above as dead before an
     ! INTENT(OUT) call.  Reading them here forces the stores to be live.

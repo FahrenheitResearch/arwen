@@ -1958,7 +1958,7 @@ def geography_halo_vs_steps(rung="full+MYNN+Noah-MP", nx=256, ny=192,
 # per run.  A row the card would not serve reports as MACHINE-LIMITED: not a
 # pass, not a fail, counted separately, and named in the verdict as a
 # coverage hole.  See :func:`capture_would_not_fit` for why neither other
-# outcome is honest.
+# outcome is accurate.
 
 #: (label, kwargs, expect-bit-exact).  ``kind`` selects which case runner.
 GRAPH_CASES: list[tuple[str, dict, bool]] = [
@@ -2014,7 +2014,7 @@ GRAPH_NEGATIVES: list[tuple[str, dict, str]] = [
           nsteps=3, graph_key="none", graph_reuse="run"),
      "cumulus is due on alternate steps at cudt=0.1 min, so one graph for "
      "the whole run also replays a cumulus step's kernels on a "
-     "non-cumulus step.  Note the cadence key is only load-bearing under "
+     "non-cumulus step.  Note the cadence key is only essential under "
      "reuse='run': under the default the sweep index already separates "
      "every step, and this control is what shows the difference"),
     ("graph_scalars=False: the replay does not re-apply the step's scalar "

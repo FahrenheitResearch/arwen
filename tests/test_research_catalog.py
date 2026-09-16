@@ -338,3 +338,74 @@ def test_creation_does_not_need_a_renderer_and_binds_the_metadata_actually_read(
     assert receipt["effective_profile"]["nz"] == 49
     assert receipt["catalog_sha256"] != hashlib.sha256(catalog.read_bytes()).hexdigest()
     assert receipt["hardware_policy_sha256"] != hashlib.sha256(hardware.read_bytes()).hexdigest()
+
+
+def _unrecorded_native_product() -> str:
+    """A product the renderer's catalog carries and the record does not.
+
+    Chosen from the two tables rather than hard-coded, so completing the
+    record's isobaric rows cannot turn this check green by accident.
+    """
+    unlisted = sorted(NATIVE_PRODUCTS - RESEARCH_PRODUCTS
+                      - set(CAPABILITIES["unavailable"]))
+    assert unlisted, "every catalog product is recorded; this check is moot"
+    return unlisted[0]
+
+
+def test_a_stored_isobaric_chart_is_not_refused_for_being_unlisted(capsys):
+    """The record is not the vocabulary; its absence refuses nothing."""
+    from gpuwm.research_workspaces import validate_recipe
+
+    recipe = deepcopy(CONFIGS["regional-evolution.reference"])
+    recipe["diagnostics"] = ["500mb_temperature_height_winds"]
+    assert "500mb_temperature_height_winds" in NATIVE_PRODUCTS
+    validate_recipe(recipe)
+
+    # And the mechanism itself, over a product nothing recorded at all:
+    # it runs, priced from the most conservative recorded basis, with
+    # that basis stated and one warning.
+    unrecorded = _unrecorded_native_product()
+    recipe["diagnostics"] = [unrecorded]
+    capsys.readouterr()
+    validate_recipe(recipe)
+    err = capsys.readouterr().err
+    assert "warning:" in err and unrecorded in err
+    assert "no recorded window requirement" in err
+
+
+def test_the_isobaric_rows_of_the_record_are_complete():
+    """Table work: the stored isobaric charts carry their own row."""
+    for level in ("200mb", "250mb", "300mb", "500mb", "700mb", "850mb"):
+        assert f"{level}_height_winds" in RESEARCH_PRODUCTS, level
+    for slug in ("500mb_temperature_height_winds", "300mb_rh_height_winds",
+                 "850mb_dewpoint_height_winds"):
+        assert CAPABILITIES["products"][slug]["minimum_hours"] == 0, slug
+
+
+def test_a_recorded_refusal_names_the_product_and_its_reason():
+    """The bare sentence named neither, so nobody could act on it."""
+    from gpuwm.research_workspaces import validate_recipe
+
+    recipe = deepcopy(CONFIGS["regional-evolution.reference"])
+    recipe["diagnostics"] = ["dcape"]
+    with pytest.raises(ValueError, match="dcape.*downdraft energy"):
+        validate_recipe(recipe)
+
+
+def test_a_slug_outside_the_renderers_catalog_is_still_refused():
+    """When a caller HAS the catalog, a name outside it is missing."""
+    from gpuwm.research_workspaces import validate_recipe
+
+    recipe = deepcopy(CONFIGS["regional-evolution.reference"])
+    recipe["diagnostics"] = ["not_a_product_any_engine_carries"]
+    with pytest.raises(ValueError, match="not supported by the ArWen history renderer"):
+        validate_recipe(recipe, known_products=NATIVE_PRODUCTS)
+
+
+def test_both_doors_read_one_lane_record():
+    """The recipe validator and the preset picker, one function."""
+    from gpuwm import research_workspaces, tui_products
+
+    assert (research_workspaces.diagnostic_capabilities()
+            == tui_products.lane_capabilities(research_workspaces.DIAGNOSTICS_PATH))
+    assert research_workspaces.DIAGNOSTICS_PATH == tui_products.DIAGNOSTICS_PATH

@@ -76,28 +76,34 @@ They start through the normal child cold-start policy. A gpuwm restart/setup
 companion can supply stronger continuity evidence in a later mode, but an
 ordinary history-driven physics change must be interpreted with this spin-up.
 
-For the requested Thompson/Morrison to unified NSSL mp18 path:
+A child of a different scheme is converted by the SAME contract and kernel
+the live nest edge runs (`gpuwm/core/microphysics_transition.py`:
+`resolve_microphysics_transition`, `launch_microphysics_edge_parent_field`),
+on the archived parent's own grid BEFORE the horizontal interpolation, for the
+initial state and for every boundary frame alike (the boundary frames take the
+kernel's coupled form).  Any ordered pair of the schemes that edge ports
+(`PORTED_MP_PHYSICS`: Kessler, WSM6, Thompson, Morrison, NSSL, P3,
+Milbrandt-Yau, WDM6, aerosol-aware Thompson) converts; the one refusal left
+is a microphysics-off end (`offline_cross_scheme_refusal`), which has no
+hydrometeor contract online either.
 
-- `qv/qc/qr/qi/qs` copy directly.
-- Thompson graupel maps to NSSL graupel; NSSL hail starts absent.
-- Morrison `qg` maps according to the bound `morr_rimed_ice` receipt:
-  graupel mode maps to NSSL graupel and hail mode maps to NSSL hail. An absent
-  receipt is an error.
-- Existing compatible rain/ice number moments may be carried, with their
-  source distribution semantics recorded.
-- Any active category lacking its target number moment must run the official
-  NSSL `calcnfromq` initializer. Active mass plus a fabricated zero number is
-  forbidden.
-- NSSL aerosol number starts from its WRF homogeneous background
-  (`0.5e9/1.225 # kg-1`) minus newly diagnosed droplet number.
-- Initial graupel/hail volume moments use the official initialization
-  densities (700/900 kg m-3) when no positive compatible volume is present.
-- NSSL three-moment fields are a separate contract and cannot be zero-filled
-  when that option is active.
-
-The pure-CPU conversion gate is implemented now. It intentionally raises
-`MomentDiagnosisRequired` until the exact NSSL CUDA `calcnfromq` routine is
-provided by the mp18 port.
+- Shared masses map by physical species; a single rimed category maps by its
+  MEANING, read from the parent's bound evidence (`morr_rimed_ice` for
+  Morrison, `hail_opt` for WSM6/WDM6) and the child's own config.
+- Every target number/volume moment is diagnosed by the target scheme's own
+  closure in the kernel (NSSL's calcnfromq, P3's rime-pair entry/exit maps,
+  Milbrandt-Yau's mass-to-number block, WDM6's inflow-face seed).
+- The parent density the kernel diagnoses against is rebuilt from the
+  archive's total geopotential and dry mass with the diagnostics module's own
+  expression for the run's `hypsometric_opt`.
+- The contract's receipt (species actions, closure constants, source and
+  target identity) is written to the run's `report.json` under
+  `microphysics_conversion` and into every child restart header under
+  `offline_microphysics_conversion`.
+- With `--preprocess-backend cpu` the conversion still runs on the GPU, a band
+  of parent rows at a time (host to device to host), and the receipt records
+  `host_chunked`; the interpolation after it stays on the host.  A machine
+  with no usable CUDA device is refused by name for a cross-scheme child.
 
 ## Compatibility boundaries
 

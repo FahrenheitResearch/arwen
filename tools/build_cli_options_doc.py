@@ -95,6 +95,12 @@ MODE_FLAG_DOORS = {
 #: ratchets the count down rather than letting it grow.
 NO_HELP = "_(the parser declares no help text for this option)_"
 
+#: What the page prints for an option whose parser hides it from --help
+#: (``help=argparse.SUPPRESS``).  The reference page lists every option a
+#: door accepts; printing the sentinel itself would put ``==SUPPRESS==``
+#: on a public page.
+HIDDEN = "_(accepted, but not listed by --help)_"
+
 
 def portable(text: str) -> str:
     """Strip machine-specific absolute paths out of a help string.
@@ -209,7 +215,10 @@ def _options(parser: argparse.ArgumentParser) -> list[tuple[str, str]]:
             spelling += " {" + ",".join(str(c) for c in action.choices) + "}"
         elif action.metavar:
             spelling += f" {action.metavar}"
-        text = portable(" ".join((action.help or "").split()))
+        if action.help == argparse.SUPPRESS:
+            text = HIDDEN
+        else:
+            text = portable(" ".join((action.help or "").split()))
         rows.append((spelling, text or NO_HELP))
     return sorted(rows)
 

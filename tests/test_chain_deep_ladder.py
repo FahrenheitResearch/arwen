@@ -47,7 +47,7 @@ def test_per_depth_tables_are_defined_at_every_depth():
         assert _diff6_factor(depth) == value
     # Past the tables: the innermost certified entry, at every depth,
     # forever.  Asserted against the table's own last element so a future
-    # extension of either ladder keeps this test honest.
+    # extension of either ladder keeps this test accurate.
     for depth in range(len(_CHILD_SPAN_FRACTION), 24):
         assert _child_span_fraction(depth) == _CHILD_SPAN_FRACTION[-1]
     for depth in range(len(_DIFF6_FACTORS), 24):

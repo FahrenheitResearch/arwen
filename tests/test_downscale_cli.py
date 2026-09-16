@@ -17,7 +17,8 @@ import netCDF4
 import numpy as np
 import pytest
 
-from gpuwm import netcdf_bridge
+from conftest import requires_netcdf_bridge
+
 from gpuwm.cli import main as cli_main
 from gpuwm.config import load_config
 from gpuwm.downscale import (
@@ -72,15 +73,16 @@ def _a_box_that_can_draw(monkeypatch):
     monkeypatch.setattr(runplan, "render_catalog", lambda: dict(_CATALOG_FIXTURE))
 
 
-#: The three tests marked with this hand the door a real wrfout or restart
-#: set and let it READ the file, which gpuwm decodes through the Rust
+#: The tests marked with this hand the door a real wrfout or restart set
+#: and let it READ the file, which gpuwm decodes through the Rust
 #: rw_netcdf binary and nothing else (gpuwm.netcdf_bridge.NetcdfBridgeMissing
 #: otherwise).  The rest of this deck writes its fixtures with netCDF4 and
 #: never asks gpuwm to decode one, so the gate is per test rather than a
-#: module-level pytestmark that would retire the whole deck.
-needs_netcdf_bridge = pytest.mark.skipif(
-    netcdf_bridge.find_netcdf_bin() is None,
-    reason="rw_netcdf is not built; build tools/rustwx to run this")
+#: module-level pytestmark that would retire the whole deck.  It is the
+#: CAPABILITY probe in conftest, not `find_netcdf_bin() is None`: that
+#: call raises on a GPUWM_RW_NETCDF override naming a missing file, and
+#: evaluated here at import it took the whole collection down with it.
+needs_netcdf_bridge = requires_netcdf_bridge
 
 
 #: A parent RunConfig dict in restart-evidence shape (physics inherited

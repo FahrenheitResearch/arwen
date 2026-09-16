@@ -26,7 +26,7 @@
 ! REAL(4) vs DOUBLE PRECISION follows WRF's own declarations at :1579-1600:
 ! rc/nc/rr/nr/mvd_c/mvd_r/xDc/Dc_b/Dc_g are REAL, lamc/lamr/N0_r and every
 ! p*_* rate are DOUBLE PRECISION.  Getting that wrong moves nc_m3 in the
-! seventh digit, so it is load-bearing, not cosmetic.
+! seventh digit, so it is essential, not cosmetic.
 
 program probe_warm_rates_aero
   use module_mp_thompson, only: thompson_init, WGAMMA, Eff_aero, t_Efrw, Dr

@@ -84,7 +84,18 @@ def per_domain_physics_tuple(config_path: pathlib.Path) -> list[dict]:
     from gpuwm.config import radiation_scheme_ids
     from gpuwm.io.wrfout import wrf_physics_selector_attrs
 
-    experiment, _case_data = load_experiment_case(config_path)
+    # ``require_inputs=False``: this receipt resolves PHYSICS and opens no
+    # weather input.  With the existence check on, regenerating it needed
+    # the run of record's ERA5 bundle staged under
+    # ``$GPUWM_CASE_DATA_ROOT`` (``~/.local/share/gpuwm`` by default), so
+    # the tool and the test that regenerates it died with "forcing file
+    # ... does not exist" on every machine that had not fetched the run of
+    # record's inputs:
+    # a fresh HOME, a clean-venv replay, a reviewer's checkout.  Every
+    # schema, type and policy rule still runs, and the resolvers below
+    # read the same RunConfig objects they read with it on.
+    experiment, _case_data = load_experiment_case(
+        config_path, require_inputs=False)
     rows = []
     for domain in experiment.domains:
         run = domain.run

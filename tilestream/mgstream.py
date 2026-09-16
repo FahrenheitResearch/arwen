@@ -44,7 +44,7 @@ numbers in this module were taken with.  It costs a second host store.
 ------------------------------------------------------------------
 :mod:`tilestream.rings` removes the second store by keeping ONE store and
 saving each tile's outer band before it is overwritten, so a later tile can be
-patched back to time-t values.  "Later" is the load-bearing word: the scheme
+patched back to time-t values.  "Later" is the essential word: the scheme
 is defined over a TOTAL ORDER on tiles, and tile *k* patches from the saved
 rings of its neighbours that come before it.  Those dependencies are real
 device-side dependencies, and they do not care that two tiles are on different
@@ -58,7 +58,7 @@ whole-slab stall into a per-tile one, which pipelines a little and still does
 not scale.  This is not a bug in this module and no scheduling fixes it: the
 ring is a Gauss-Seidel sweep and a Gauss-Seidel sweep is sequential.
 
-The honest cure for a memory-constrained multi-GPU box is not to parallelise
+The accurate cure for a memory-constrained multi-GPU box is not to parallelise
 the ring but to give each GPU its OWN sub-domain store with its own halo band
 and its own private ring, and to refresh those bands between steps -- i.e. to
 put :mod:`tilestream.multigpu`'s decomposition in host RAM instead of VRAM.
@@ -91,7 +91,7 @@ its own tiles in increasing order.
 ``cross_worker_sync="none"`` drops exactly that host-side handshake and keeps
 everything else.  It is the negative control for the ring path: with it the
 two-GPU digest must DIFFER from the monolithic one, and if it does not, the
-ordering being tested was never load-bearing and a "bit-exact" result proves
+ordering being tested was never essential and a "bit-exact" result proves
 nothing.
 
 The shadow path has exactly one ordering obligation -- the per-sweep barrier,
@@ -607,7 +607,7 @@ def run_mgstream(store, cfg, tile_nx, tile_ny, halo: int = 16, nsteps: int = 1,
 def cells_per_second(report: dict) -> float:
     """Interior cells advanced one step per wall second.
 
-    The honest throughput measure when GPUs are added: it is per-DOMAIN, not
+    The accurate throughput measure when GPUs are added: it is per-DOMAIN, not
     per-GPU, so redundant halo compute does not inflate it.
     """
     nz, ny, nx = report["domain"]

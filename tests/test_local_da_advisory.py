@@ -74,7 +74,8 @@ def test_cli_ready_plan_does_not_require_an_override(tmp_path, monkeypatch, caps
     parser = argparse.ArgumentParser()
     module.register_cli(parser.add_subparsers(dest='command'))
     original = module.build_plan
-    monkeypatch.setattr(module, 'build_plan', lambda req: original(req, availability=availability, price=pessimistic))
+    monkeypatch.setattr(module, 'build_plan', lambda req, **kwargs: original(
+        req, availability=availability, price=pessimistic, **kwargs))
     args = parser.parse_args(['local-da', '--point', '40,-100', '--epoch', EPOCH,
         '--scale', '3', '--cadence-seconds', '467', '--forecast-seconds', '600',
         '--vram-gib', '2', '--budget-seconds', '1', '--out', str(tmp_path / 'case')])

@@ -151,7 +151,7 @@ def test_background_probe_error_is_recorded_not_raised():
     assert summary["probes"]["good"]["error"] is None
 
 
-def test_summary_labels_every_probe_scope_honestly():
+def test_summary_labels_every_probe_scope_accurately():
     watcher = GpuPeakMemoryWatcher([
         _probe("device", lambda: 10, scope="device-wide-ish"),
         _probe("pool", lambda: 4, scope="in-process pool"),
@@ -228,7 +228,7 @@ def test_default_cupy_probes_cover_device_and_pool_views(monkeypatch):
     assert probes["cuda_device_used"].read() == 70
     assert probes["cupy_pool_total"].read() == 60
     assert probes["cupy_pool_used"].read() == 45
-    # Honest labels: the memGetInfo view is NOT the whole card on WDDM
+    # Accurate labels: the memGetInfo view is NOT the whole card on WDDM
     # (gpuwm.core.preflight.device_wide_used_bytes documents why), and
     # the pool views are in-process only.
     assert "WDDM" in probes["cuda_device_used"].scope

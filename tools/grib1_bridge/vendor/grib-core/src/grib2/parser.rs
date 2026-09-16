@@ -1295,7 +1295,7 @@ fn parse_section5(sec: &[u8]) -> Result<DataRepresentation, String> {
         0 => parse_drtemplate_simple(sec, &mut dr)?,
         2 => parse_drtemplate_complex(sec, &mut dr)?,
         3 => parse_drtemplate_complex_spatial(sec, &mut dr)?,
-        4 => parse_drtemplate_simple(sec, &mut dr)?, // IEEE float (uses bits_per_value)
+        4 => parse_drtemplate_ieee(sec, &mut dr)?,
         40 => parse_drtemplate_simple(sec, &mut dr)?,
         41 => parse_drtemplate_simple(sec, &mut dr)?,
         42 => parse_drtemplate_ccsds(sec, &mut dr)?,
@@ -1310,6 +1310,55 @@ fn parse_section5(sec: &[u8]) -> Result<DataRepresentation, String> {
     }
 
     Ok(dr)
+}
+
+/// The Section-5 data-representation templates this decoder has a reader
+/// for, in the spelling a binary compiles into its contract marker.
+///
+/// It exists so a stale binary is caught STATICALLY. The decode contract
+/// and the output contract are not the same contract: a binary can write
+/// exactly the shape its caller reads and still refuse bytes the caller
+/// hands it, which is what happened when template 4 was routed to the
+/// simple-packing reader. A marker that moves only with the output shape
+/// cannot see that, so a bridge whose route depends on this set puts this
+/// literal in its marker too (`gpuwm.bridges.BRIDGE_ABI_MARKERS`).
+///
+/// Keep it in step with the `match` in `parse_section5` above: every
+/// template with its own arm is listed, and templates reaching the
+/// best-effort arm are not.
+pub const DECODE_TEMPLATES: &str = "0,2,3,4,40,41,42,50,51,61,200";
+
+/// Template 5.4 (IEEE floating point).
+///
+/// 5.4 is NOT simple packing with a different name: WMO gives it a
+/// twelve-octet Section 5 whose only template octet is the precision code
+/// (Table 5.7), and it carries no reference value, no scale factors and no
+/// bit width.  Routing it through the simple-packing reader asked for octet
+/// 20 of a section that ends at octet 12, so every conformant 5.4 message
+/// was refused with "Section 5 simple packing too short" -- the width the
+/// reader wanted is exactly the thing the precision code states.
+fn parse_drtemplate_ieee(sec: &[u8], dr: &mut DataRepresentation) -> Result<(), String> {
+    if sec.len() < 12 {
+        return Err("Section 5 IEEE packing too short".into());
+    }
+    let precision = read_u8(sec, 11)?;
+    dr.bits_per_value = match precision {
+        1 => 32,
+        2 => 64,
+        // Table 5.7 also spells 3 = IEEE 128-bit, which `unpack_ieee` does
+        // not implement.  Record the width and let the unpacker name it.
+        3 => 128,
+        other => {
+            return Err(format!(
+                "Section 5 template 4 declares precision code {other}, which is not an IEEE width in Code Table 5.7"
+            ))
+        }
+    };
+    dr.reference_value = 0.0;
+    dr.binary_scale = 0;
+    dr.decimal_scale = 0;
+    dr.original_field_type = 0;
+    Ok(())
 }
 
 /// Common simple packing fields (Template 5.0, also base for 5.40, 5.41).
@@ -1599,6 +1648,56 @@ mod tests {
         sec[5..7].copy_from_slice(&6u16.to_be_bytes());
         let error = parse_section4(&sec).expect_err("truncated pv must refuse");
         assert!(error.contains("coordinate values"), "{error}");
+    }
+
+    #[test]
+    fn parse_section5_reads_a_conformant_ieee_template() {
+        // WMO Template 5.4 ends at octet 12; its only template octet is the
+        // precision code.  A twelve-octet section is the conformant length,
+        // not a truncated simple-packing header.
+        let mut sec = vec![0u8; 12];
+        sec[..4].copy_from_slice(&12u32.to_be_bytes());
+        sec[4] = 5;
+        sec[5..9].copy_from_slice(&4u32.to_be_bytes());
+        sec[9..11].copy_from_slice(&4u16.to_be_bytes());
+        sec[11] = 1;
+        let dr = parse_section5(&sec).expect("a 12-octet IEEE section is valid");
+        assert_eq!((dr.template, dr.bits_per_value, dr.section5_num_data_points), (4, 32, 4));
+        sec[11] = 2;
+        assert_eq!(parse_section5(&sec).unwrap().bits_per_value, 64);
+        sec[11] = 9;
+        let error = parse_section5(&sec).expect_err("an unknown precision code must refuse");
+        assert!(error.contains("precision code 9"), "{error}");
+    }
+
+    #[test]
+    fn every_declared_decode_template_has_a_reader() {
+        // DECODE_TEMPLATES is a contract literal a bridge compiles into
+        // its ABI marker, so it has to stay in step with the dispatch it
+        // describes.  Each listed template reads a conformant section of
+        // its own length; template 4's is twelve octets, the rest are
+        // simple-packing-shaped.
+        for token in super::DECODE_TEMPLATES.split(',') {
+            let template: u16 = token.parse().expect("a template number");
+            let length = match template {
+                4 => 12,
+                42 => 25,
+                2 => 47,
+                3 => 49,
+                _ => 21,
+            };
+            let mut sec = vec![0u8; length];
+            sec[..4].copy_from_slice(&(length as u32).to_be_bytes());
+            sec[4] = 5;
+            sec[5..9].copy_from_slice(&4u32.to_be_bytes());
+            sec[9..11].copy_from_slice(&template.to_be_bytes());
+            if template == 4 {
+                sec[11] = 1;
+            }
+            let dr = parse_section5(&sec)
+                .unwrap_or_else(|e| panic!("template {template}: {e}"));
+            assert_eq!(dr.template, template);
+        }
     }
 
     #[test]

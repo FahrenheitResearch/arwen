@@ -30,7 +30,7 @@
 //! **whole** cut identity — elevation, ray and bin counts, range scale, range
 //! start, and the sweep's own start and end times — *and* their per-ray
 //! azimuths match ray for ray. Anything less becomes two sweeps, which is the
-//! honest reading: they are two passes.
+//! accurate reading: they are two passes.
 //!
 //! That rule makes the merge ratio a measurement rather than an assumption.
 //! Thirty files becoming ten sweeps says the feed records all three moments on
@@ -122,7 +122,7 @@ pub struct AssembleReport {
 
 /// The digest an assembled volume carries in place of a file digest.
 ///
-/// An assembled volume has no bytes of its own, so it cannot honestly quote a
+/// An assembled volume has no bytes of its own, so it cannot accurately quote a
 /// file `sha256`. This is the SHA-256 of the manifest text — one
 /// `"<sha256>  <name>\n"` line per member, sorted by name — which identifies
 /// exactly the set of files that went in and changes if any of them changes.

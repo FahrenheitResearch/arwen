@@ -45,7 +45,7 @@ use serde::{Deserialize, Serialize};
 /// Mean Earth radius, metres.  The ring geodesy is a spherical
 /// small-circle walk: at the 50-500 km radii an operator draws, the
 /// spherical/ellipsoidal difference is well under a pixel at any sane
-/// canvas size, and stating the sphere is honest where quietly using one
+/// canvas size, and stating the sphere is accurate where quietly using one
 /// under an ellipsoidal name would not be.
 const EARTH_RADIUS_M: f64 = 6_371_000.0;
 
@@ -134,7 +134,7 @@ pub struct MapOverlays {
 /// Everything one `--annotate FILE.json` can say on a panel.
 ///
 /// Three slots, because three is what the renderer has.  A multi-paragraph
-/// honesty footer (the `IC_FOOTER` block in `tilestream/bigdomain_render.py`)
+/// accuracy footer (the `IC_FOOTER` block in `tilestream/bigdomain_render.py`)
 /// does NOT fit in them and is not silently truncated into them; there is
 /// no footer band in `MapRenderRequest` to squeeze one into.
 ///

@@ -1194,6 +1194,15 @@ def _admit_render_products(render_products, *, dry_run: bool) -> None:
             "gpuwm render --list-products names every product this "
             "install can draw; repeat this command with names from it, "
             "or 'all'.")
+    # A vertical section needs a LINE, and this chain composes none.
+    # The engine refuses an `xsec:` request that carries no `--section`,
+    # but it refuses it at render, which is after the child has been
+    # integrated; the grammar is knowable here, with nothing opened.
+    from gpuwm import rustwx
+
+    section_problem = rustwx.section_spec_problem(render_products)
+    if section_problem is not None:
+        raise OfflineChildContractError(section_problem)
 
 
 def _downscale_main(args, reservation: _OutputReservation,

@@ -21,7 +21,7 @@ observations" are different claims and only the second is evidence.
 nothing.**  Not a warning, not a downgrade to a smaller label: a refusal.
 A stream that assimilated zero observations across the opening cycles is
 either misconfigured or being fed files that do not cover the domain, and
-in both cases the honest outcome is a stopped run and a message naming the
+in both cases the accurate outcome is a stopped run and a message naming the
 stream -- not six hours of card time producing a result whose headline
 would be a lie.  Two cycles rather than one because a single cycle can
 legitimately miss a satellite granule or a radar volume; a stream that is

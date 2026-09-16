@@ -215,7 +215,7 @@ owns it.
 | `--cycle-seconds` | required | the DA cycle length is the run's shape; there is no safe default |
 | `--cycles N` | required | how far the lineage runs |
 | `--parent-kind` | required, from `PARENT_KINDS` | which engine advances the parent. `replay` advances the clock alone and is how you rehearse a lattice; a kind with no engine adapter in this tree refuses at plan time rather than pretending to integrate an atmosphere |
-| `--child-slots N` | `0` | reservations are priced at t=0. Zero means parent-only, which is the honest default for a tree with no placement provider |
+| `--child-slots N` | `0` | reservations are priced at t=0. Zero means parent-only, which is the accurate default for a tree with no placement provider |
 | `--child-dt-seconds` | the parent step | a child step must divide the parent's exactly; defaulting to the parent's is the one value that always does |
 | `--placement-provider` | `none` | placement is a capability, not an assumption. `none` cycles the parent alone |
 | `--max-forecast-only-cycles` | `3` | forecast-only is legitimate when a feed is late; forecast-only *forever* is a run that quietly stopped being a DA cycle. Three cycles is enough to ride out one missed volume without hiding a dead feed |

@@ -141,7 +141,7 @@ to expect:
    41%.  The difference is exactly the allocation and first-touch cost item
    1 excludes: ``.get()`` creates 229 new pageable buffers on every
    checkpoint.  So the pageable copy IS worth fixing, but not for the reason
-   usually given, and the honest way to state the win is end-to-end.
+   usually given, and the accurate way to state the win is end-to-end.
 3. None of it matters for this lane, because the streamed writer does not
    make the copy at all -- 1.39x and 1.93x faster than the resident writer,
    with no resident device state to be faster than.  Above the card's
@@ -404,7 +404,7 @@ def domain_setup_from_stream(geography, template_state, *,
     of ``nz``/``hybrid_opt``/``etac``/``p_top`` and a tile therefore rebuilds
     them exactly.
 
-    That last sentence is the load-bearing one and it is not taken on trust.
+    That last sentence is the essential one and it is not taken on trust.
     ``driver.setup_window_mismatches`` already compares a tile's setup against
     the parent's window field by field, and :func:`assert_setup_identical`
     compares the fingerprint this function produces against a monolithic

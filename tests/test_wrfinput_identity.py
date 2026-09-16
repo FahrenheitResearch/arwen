@@ -9,6 +9,7 @@ import pytest
 
 from gpuwm import netcdf_bridge
 from gpuwm.ingest.wrfinput_identity import read_wrfinput_identity, check_wrfinput_identity
+from conftest import requires_netcdf_bridge
 
 netCDF4 = pytest.importorskip('netCDF4')
 
@@ -42,6 +43,7 @@ def _request():
                 start_time=datetime(2021,12,30,17),soil_layers=4)
 
 
+@requires_netcdf_bridge
 @pytest.mark.parametrize('representation', [0,1])
 def test_file_identity_accepts_both_standard_theta_flags(tmp_path, representation):
     identity=read_wrfinput_identity(_file(tmp_path,USE_THETA_M=representation))
@@ -51,6 +53,7 @@ def test_file_identity_accepts_both_standard_theta_flags(tmp_path, representatio
 @pytest.mark.parametrize('field,value,label', [
     ('p_top',7000.,'P_TOP'),('hybrid_opt',1,'HYBRID_OPT'),('etac',.3,'ETAC'),
     ('eta_levels',(1.,.5,0.),'ZNW')])
+@requires_netcdf_bridge
 def test_vertical_value_change_is_refused_even_when_level_count_matches(tmp_path,field,value,label):
     identity=read_wrfinput_identity(_file(tmp_path))
     request=_request();setattr(request['vertical'],field,value)
@@ -58,13 +61,21 @@ def test_vertical_value_change_is_refused_even_when_level_count_matches(tmp_path
         check_wrfinput_identity(identity, **request)
 
 
+@requires_netcdf_bridge
 def test_land_surface_identity_is_not_inferred_from_soil_layer_count(tmp_path):
     identity=read_wrfinput_identity(_file(tmp_path,SF_SURFACE_PHYSICS=4))
     with pytest.raises(ValueError, match='SF_SURFACE_PHYSICS'):
         check_wrfinput_identity(identity, **_request())
 
 
-@pytest.mark.parametrize('mutation,label', [('time','Times'),('midpoint','ZNU'),('missing_eta','ZNW'),('fractional_flag','finite integer')])
+# PER CASE, not per function: only the Times mutation is read through the
+# bridge.  The other three are refused off the vertical arrays the reader
+# already holds and pass with no staged estate, and they are refusal
+# tests, so a function-wide gate lost three of them to a stale binary.
+@pytest.mark.parametrize('mutation,label', [
+    pytest.param('time','Times',marks=requires_netcdf_bridge),
+    ('midpoint','ZNU'),('missing_eta','ZNW'),
+    ('fractional_flag','finite integer')])
 def test_malformed_file_identity_is_refused(tmp_path,mutation,label):
     path=_file(tmp_path)
     with netCDF4.Dataset(path,'a') as ds:

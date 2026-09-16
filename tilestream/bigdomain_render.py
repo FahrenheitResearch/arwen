@@ -45,7 +45,7 @@ w) print their own limits in the colourbar label.
 It does not hide a zero.  ``panel_or_note`` writes "field is uniformly X"
 across a panel whose field has no variation, because a blank panel and a
 panel of genuinely constant data look identical and only one of them is a
-result.  At t+0 of this configuration that is the honest state of every
+result.  At t+0 of this configuration that is the accurate state of every
 surface diagnostic: Noah-MP and MYNN have not been called yet, so ``T2``,
 ``U10``, ``PBLH`` and the rest are still zero, and the reflectivity field is
 uniformly the -35 dBZ floor because the initial state carries no condensate.
@@ -68,7 +68,7 @@ from pathlib import Path
 import numpy as np
 
 
-#: Every figure carries this.  It is the whole honesty budget of the exercise
+#: Every figure carries this.  It is the whole accuracy budget of the exercise
 #: in one paragraph, and it belongs ON the picture rather than in a report
 #: that gets separated from it.
 IC_FOOTER = (
@@ -186,7 +186,7 @@ def refl_panel(fig, axis, lon, lat, refl, *, title):
                   f"no echo anywhere: column-max REFL_10CM peaks at "
                   f"{float(np.nanmax(refl)):.1f} dBZ,\nbelow the 5 dBZ floor "
                   f"of the NWS scale.\nThe initial state carries no "
-                  f"condensate; this is an honest zero.",
+                  f"condensate; this is an accurate zero.",
                   ha="center", va="center", fontsize=9, color="#8a1c1c",
                   transform=axis.transAxes)
         axis.set_xlim(float(lon.min()), float(lon.max()))
@@ -292,7 +292,7 @@ def seam_statistics(d: dict, *, tile: int, crop: int,
     :mod:`tilestream.driver`), or a ring arena patching the wrong rectangle
     all put their error exactly on those columns, so any of them would push
     this well above 1.  Near 1 says the boundaries are not special -- which
-    is the only thing it can honestly claim.  It does not prove the interior
+    is the only thing it can accurately claim.  It does not prove the interior
     is right; the digest comparison does that.
 
     ``WMAX`` is the default rather than reflectivity because it is smooth
@@ -574,7 +574,7 @@ def zoom(path: Path, out_png: Path, *, crop: int, run_label: str,
          side: int = 400, dpi: int = 170) -> None:
     """A window of the big domain at full model resolution.
 
-    The hero figure is honest and nearly unreadable: 4320 km across, a storm
+    The hero figure is accurate and nearly unreadable: 4320 km across, a storm
     is 30 cells wide, and a reader cannot tell a supercell from a speck.
     This crops the busiest ``side``x``side`` cells -- the SAME array, no
     resampling, no second run -- so the structure inside those specks is

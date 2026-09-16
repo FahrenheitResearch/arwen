@@ -285,7 +285,7 @@ def _host_field_a_mp8_form(tc0, moment):
     This is what the header used to carry.  It is not WRF's operator tree and
     it is not what mp=28 ships; it exists so
     ``test_the_hoisted_mp8_field_fit_really_does_disagree_with_wrf`` can prove
-    the association is load-bearing rather than cosmetic.
+    the association is essential rather than cosmetic.
     """
     f = np.float32
     tc0 = f(tc0)
@@ -1118,7 +1118,7 @@ def test_snow_number_matches_the_gfortran_o2_reference_values():
     ``csg(15) = WGAMMA(mu_s+1)`` is PRIVATE and comes from WRF's own REAL(4)
     Lanczos series (:5325-5346), not from ``math.gamma``; ten anchors from a
     gfortran transcription of that series plus :2029-2088 keep the literal
-    honest as well as the arithmetic.
+    accurate as well as the arithmetic.
     """
     import cupy as cp
     from gpuwm.core.thompson_aerosol_launch import probe_snow_number
@@ -1137,7 +1137,7 @@ def test_snow_number_matches_the_gfortran_o2_reference_values():
             np.float32(smoc_ref), tc0
         assert _host_snow_number(smob_ref, smoc_ref) == np.float32(ns_ref)
         assert np.float32(got[index]) == np.float32(ns_ref), tc0
-    # PROVENANCE OF _CSG15, recorded honestly rather than overclaimed.  WRF's
+    # PROVENANCE OF _CSG15, recorded as it is rather than overclaimed.  WRF's
     # REAL(4) Lanczos series gives 0.8980315327644348 where CPython's
     # math.gamma gives 0.8980315267615606 -- 6.68e-09 relative apart in
     # DOUBLE.  At this particular argument both round to the SAME float32, so
@@ -1559,7 +1559,7 @@ def test_cloud_dist_matches_the_host_transcription_over_the_staging_grid():
     no program that ``use``s the module can reach them.  (Verified by
     compilation: gfortran reports "Symbol 'ccg' referenced at (1) not found in
     module 'module_mp_thompson'".)  The best available gate is therefore a
-    host transcription, and the honest response is to run it over far more
+    host transcription, and the accurate response is to run it over far more
     states rather than to pretend the seven original ones were an oracle.
     """
     import cupy as cp
@@ -2297,7 +2297,7 @@ def test_bound_rain_number_matches_a_host_transcription():
 def test_bound_ice_number_matches_a_host_transcription_and_is_idempotent():
     """module_mp_thompson.F:4029-4039 == thompson.cu:3719-3743.
 
-    Idempotence is load-bearing: sed.cu keeps mp=8's fused placement while
+    Idempotence is essential: sed.cu keeps mp=8's fused placement while
     WP-04's terminal state kernel applies the same bound again.
     """
     import cupy as cp

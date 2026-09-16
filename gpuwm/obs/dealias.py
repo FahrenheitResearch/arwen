@@ -258,6 +258,153 @@ def engine_unavailable_reason(engine: str) -> str | None:
             f"{list(ENGINES)}")
 
 
+#: The order a default (unnamed) dealiasing request resolves down.
+#:
+#: Dealiasing is what a bare radar ingest does now, so the default cannot be
+#: a hard prerequisite: an install without the region-global shared library
+#: would otherwise have a dead door on every ingest.  The chain is stated
+#: rather than implicit -- the shipped engine first, the scipy one next,
+#: masking-only last -- and which rung ran is recorded in the file's own
+#: provenance, so nothing about the descent is silent.  An engine the
+#: OPERATOR named is never resolved away; it is refused by name, because a
+#: run that asked for one solver and got another is the A/B break the
+#: engine selector exists to prevent.
+DEFAULT_ENGINE_CHAIN = (ENGINE_REGION_GLOBAL, ENGINE_VAD_REGION)
+
+#: One warning per resolution per process, not one per constructed object.
+_RESOLUTION_WARNED: set = set()
+
+
+def first_available_engine(unavailable_reason=None) -> str | None:
+    """The first engine on :data:`DEFAULT_ENGINE_CHAIN` this install can run.
+
+    ``None`` means neither can, which is masking-only: the behaviour this
+    stage has always had, reached by descent rather than by omission.
+    """
+
+    if unavailable_reason is None:
+        unavailable_reason = engine_unavailable_reason
+    for engine in DEFAULT_ENGINE_CHAIN:
+        if unavailable_reason(engine) is None:
+            return engine
+    return None
+
+
+def resolve_default_dealias(params, unavailable_reason=None):
+    """Resolve an UNNAMED dealiasing request against this install.
+
+    ``params`` is a ``DealiasParams`` or None.  None stays None.  A request
+    naming an engine other than the chain head is honoured exactly, so a
+    named engine that cannot run still fails where it is asked for.  A
+    request carrying the chain head is resolved down the chain when that
+    engine is not staged here: to the next engine, or to None (masking
+    only) when neither can run.  Warns once per process per outcome and
+    names the basis.
+
+    ONE function for every door: the tools front doors, the ``gpuwm obs``
+    door and the parameter object itself all ask it, so no two of them can
+    believe different things about the same install.
+    """
+
+    if params is None:
+        return None
+    engine = str(getattr(params, "engine", DEFAULT_ENGINE_CHAIN[0]))
+    if engine != DEFAULT_ENGINE_CHAIN[0]:
+        return params
+    if unavailable_reason is None:
+        unavailable_reason = engine_unavailable_reason
+    reason = unavailable_reason(engine)
+    if reason is None:
+        return params
+    from gpuwm.explain import warn                    # noqa: PLC0415
+
+    fallback = first_available_engine(unavailable_reason)
+    key = (engine, fallback)
+    first_time = key not in _RESOLUTION_WARNED
+    _RESOLUTION_WARNED.add(key)
+    if fallback is None:
+        if first_time:
+            warn("velocity dealiasing is on by default and no engine on "
+                 f"this install can run it, so this volume is gridded with "
+                 f"masking only; the file's own dealiasing statement says "
+                 f"so",
+                 why=reason)
+        return None
+    if first_time:
+        warn(f"velocity dealiasing is on by default and the {engine} engine "
+             f"is not staged here, so the {fallback} engine ran instead; the "
+             f"file's own dealiasing statement and superob_params record "
+             f"which one",
+             why=reason)
+    import dataclasses as _dataclasses                # noqa: PLC0415
+
+    # ``refinement=None`` and not the resolved bool: the refinement default
+    # belongs to the engine, and the engine just changed.  A caller who
+    # NAMED refinement never reaches here, because naming it names
+    # region-global and a named engine is refused rather than resolved.
+    return _dataclasses.replace(params, engine=fallback, refinement=None)
+
+
+def dealias_params_from_args(args, params_class=None,
+                             unavailable_reason=None):
+    """``DealiasParams`` for these flags, or None -- refusing at the door.
+
+    Shared by every front door so the refusal, the message and the
+    parameter object are one implementation.  It lives here, beside the
+    engines, rather than in a tool, because ``gpuwm`` must not import
+    ``tools``; the tools re-export it under their own name.
+
+    ``--dealias-refinement`` without dealiasing is refused rather than
+    ignored: a run that asked for a treatment and silently did not get it
+    is exactly the failure the A/B discipline exists to prevent.
+
+    ``--dealias-refinement`` unset is None, not False, and it stays None
+    all the way into ``DealiasParams``: the refinement default belongs to
+    the engine (on for ``region-global``, meaningless for ``vad-region``),
+    and a front door that resolved it to a bool here would have to know
+    that table too.  Asked for explicitly beside the engine that has no
+    such pass, it is refused by name at the door rather than as a
+    traceback from the parameter object.
+
+    An engine the operator NAMED and that cannot run is a hard refusal.  An
+    unnamed default resolves down :data:`DEFAULT_ENGINE_CHAIN` instead,
+    because turning a missing optional library into a dead door for every
+    bare ingest would trade one reachability defect for another.
+    """
+
+    if params_class is None:
+        params_class = DealiasParams
+    if unavailable_reason is None:
+        unavailable_reason = engine_unavailable_reason
+
+    named = getattr(args, "dealias_engine", None)
+    refinement = getattr(args, "dealias_refinement", None)
+    if not getattr(args, "dealias", True):
+        if refinement is not None:
+            raise SystemExit(
+                "--dealias-refinement/--no-dealias-refinement refines a "
+                "dealiased field; drop --no-dealias, or drop it")
+        return None
+    engine = DEFAULT_ENGINE_CHAIN[0] if named is None else str(named)
+    if refinement and engine != ENGINE_REGION_GLOBAL:
+        raise SystemExit(
+            f"--dealias-refinement with --dealias-engine {engine}: that "
+            f"engine has no refinement pass; only {ENGINE_REGION_GLOBAL} "
+            "does. A switch that is accepted and then ignored is how a run "
+            "gets reported as having had a treatment it never got")
+    reason = unavailable_reason(engine)
+    if named is not None or refinement:
+        # A NAMED engine is honoured exactly, or refused by name.  It is
+        # never resolved away: a run that asked for one solver and silently
+        # got another grades itself against a differently-built truth.
+        if reason is not None:
+            raise SystemExit(f"--dealias-engine {engine}: {reason}")
+        return params_class(engine=engine, refinement=refinement)
+    return resolve_default_dealias(
+        params_class(engine=engine, refinement=refinement),
+        unavailable_reason=unavailable_reason)
+
+
 class DealiasParamsError(ValueError):
     """A dealiasing parameter that cannot mean what the pass needs it to mean.
 
@@ -327,7 +474,7 @@ class DealiasParams:
     #: How far the edge's mean jump may sit from its winning integer, in
     #: units of the Nyquist interval.  A true fold lands within a few
     #: hundredths of an integer; 0.25 is the point past which "fold" and "no
-    #: fold" stop being distinguishable and abstention is the honest answer.
+    #: fold" stop being distinguishable and abstention is the accurate answer.
     edge_max_offset: float = 0.25
     #: Gates per range band in the harmonic reference fit.  BowEcho
     #: ``REFERENCE_BAND_GATES``.
@@ -1682,7 +1829,7 @@ def dealias_sweep(velocity: np.ndarray, azimuth_deg: np.ndarray,
     # ---- 3. anchor -------------------------------------------------------
     timing.mark("anchor", regions=n_regions, edges=len(edges))
     # A region may anchor only when it has enough gates with a reference,
-    # its fold estimate is unambiguous, and -- the load-bearing one -- it
+    # its fold estimate is unambiguous, and -- the essential one -- it
     # still looks environmental after unfolding.  The last is what stops a
     # rotational couplet, whose whole nature is to depart from the
     # background wind, from being flattened onto it.

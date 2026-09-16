@@ -17,7 +17,7 @@ only one calling radiation during the compared steps)::
         fresh tile buffers, READ restart,
         streamed N more                            -> must equal A and B
 
-C is the claim.  A is what keeps B and C honest: a restart round trip that
+C is the claim.  A is what keeps B and C accurate: a restart round trip that
 reproduced a streamed run which was itself wrong would still pass B == C.
 
 WHAT "FRESH" MEANS, AND WHY IT IS THE WHOLE POINT

@@ -1,0 +1,514 @@
+{
+  "bridge": "gdt101_remap",
+  "cadence": {
+    "cycle_hours": [
+      0,
+      6,
+      12,
+      18
+    ],
+    "forcing_interval_seconds": 10800,
+    "horizons": [
+      {
+        "cycle_hours": [
+          0,
+          12
+        ],
+        "max_lead_hours": 180
+      },
+      {
+        "cycle_hours": [
+          6,
+          18
+        ],
+        "max_lead_hours": 120
+      }
+    ],
+    "step_hours": 3
+  },
+  "contract": "arwen.gdt101-regional-remap.v1",
+  "fields": {
+    "CLAT": {
+      "kind": "time-invariant",
+      "mode": "nearest",
+      "role": "geometry",
+      "selector": {
+        "category": 191,
+        "discipline": 0,
+        "level_type": 1,
+        "level_value": 0.0,
+        "parameter": 1,
+        "second_level_type": 255,
+        "second_level_value": 0.0
+      }
+    },
+    "CLON": {
+      "kind": "time-invariant",
+      "mode": "nearest",
+      "role": "geometry",
+      "selector": {
+        "category": 191,
+        "discipline": 0,
+        "level_type": 1,
+        "level_value": 0.0,
+        "parameter": 2,
+        "second_level_type": 255,
+        "second_level_value": 0.0
+      }
+    },
+    "FI": {
+      "kind": "pressure-level",
+      "levels": {
+        "kind": "scaled",
+        "scale": 100.0,
+        "values": [
+          30,
+          50,
+          70,
+          100,
+          150,
+          200,
+          250,
+          300,
+          400,
+          500,
+          600,
+          700,
+          800,
+          850,
+          900,
+          925,
+          950,
+          1000
+        ]
+      },
+      "mode": "idw4",
+      "selector": {
+        "category": 3,
+        "discipline": 0,
+        "level_type": 100,
+        "level_value": null,
+        "parameter": 4,
+        "second_level_type": 255,
+        "second_level_value": 0.0
+      }
+    },
+    "FR_ICE": {
+      "kind": "single-level",
+      "mode": "seaice-nearest",
+      "selector": {
+        "category": 2,
+        "discipline": 10,
+        "level_type": 1,
+        "level_value": 0.0,
+        "parameter": 0,
+        "second_level_type": 255,
+        "second_level_value": 0.0
+      }
+    },
+    "FR_LAND": {
+      "kind": "time-invariant",
+      "mode": "nearest",
+      "role": "land_fraction",
+      "selector": {
+        "category": 0,
+        "discipline": 2,
+        "level_type": 1,
+        "level_value": 0.0,
+        "parameter": 0,
+        "second_level_type": 255,
+        "second_level_value": 0.0
+      }
+    },
+    "HSURF": {
+      "kind": "time-invariant",
+      "mode": "surface-idw4",
+      "role": "terrain",
+      "selector": {
+        "category": 3,
+        "discipline": 0,
+        "level_type": 1,
+        "level_value": 0.0,
+        "parameter": 6,
+        "second_level_type": 101,
+        "second_level_value": 0.0
+      }
+    },
+    "H_SNOW": {
+      "kind": "single-level",
+      "mode": "surface-idw4",
+      "selector": {
+        "category": 1,
+        "discipline": 0,
+        "level_type": 1,
+        "level_value": 0.0,
+        "parameter": 11,
+        "second_level_type": 255,
+        "second_level_value": 0.0
+      }
+    },
+    "PS": {
+      "kind": "single-level",
+      "mode": "surface-idw4",
+      "selector": {
+        "category": 3,
+        "discipline": 0,
+        "level_type": 1,
+        "level_value": 0.0,
+        "parameter": 0,
+        "second_level_type": 255,
+        "second_level_value": 0.0
+      }
+    },
+    "RELHUM": {
+      "kind": "pressure-level",
+      "levels": {
+        "kind": "scaled",
+        "scale": 100.0,
+        "values": [
+          30,
+          50,
+          70,
+          100,
+          150,
+          200,
+          250,
+          300,
+          400,
+          500,
+          600,
+          700,
+          800,
+          850,
+          900,
+          925,
+          950,
+          1000
+        ]
+      },
+      "mode": "idw4",
+      "selector": {
+        "category": 1,
+        "discipline": 0,
+        "level_type": 100,
+        "level_value": null,
+        "parameter": 1,
+        "second_level_type": 255,
+        "second_level_value": 0.0
+      }
+    },
+    "RELHUM_2M": {
+      "kind": "single-level",
+      "mode": "surface-idw4",
+      "selector": {
+        "category": 1,
+        "discipline": 0,
+        "level_type": 103,
+        "level_value": 2.0,
+        "parameter": 1,
+        "second_level_type": 255,
+        "second_level_value": 0.0
+      }
+    },
+    "T": {
+      "kind": "pressure-level",
+      "levels": {
+        "kind": "scaled",
+        "scale": 100.0,
+        "values": [
+          30,
+          50,
+          70,
+          100,
+          150,
+          200,
+          250,
+          300,
+          400,
+          500,
+          600,
+          700,
+          800,
+          850,
+          900,
+          925,
+          950,
+          1000
+        ]
+      },
+      "mode": "idw4",
+      "selector": {
+        "category": 0,
+        "discipline": 0,
+        "level_type": 100,
+        "level_value": null,
+        "parameter": 0,
+        "second_level_type": 255,
+        "second_level_value": 0.0
+      }
+    },
+    "T_2M": {
+      "kind": "single-level",
+      "mode": "surface-idw4",
+      "selector": {
+        "category": 0,
+        "discipline": 0,
+        "level_type": 103,
+        "level_value": 2.0,
+        "parameter": 0,
+        "second_level_type": 255,
+        "second_level_value": 0.0
+      }
+    },
+    "T_G": {
+      "kind": "single-level",
+      "mode": "surface-idw4",
+      "selector": {
+        "category": 0,
+        "discipline": 0,
+        "level_type": 1,
+        "level_value": 0.0,
+        "parameter": 0,
+        "second_level_type": 255,
+        "second_level_value": 0.0
+      }
+    },
+    "T_SO": {
+      "kind": "soil-level",
+      "levels": {
+        "kind": "table",
+        "values": {
+          "0": 0.0,
+          "1458": 14.58,
+          "162": 1.62,
+          "18": 0.18,
+          "2": 0.02,
+          "486": 4.86,
+          "5": 0.005,
+          "54": 0.54,
+          "6": 0.06
+        }
+      },
+      "mode": "soil-nearest",
+      "selector": {
+        "category": 3,
+        "discipline": 2,
+        "level_type": 106,
+        "level_value": null,
+        "parameter": 18,
+        "second_level_type": 255,
+        "second_level_value": 0.0
+      }
+    },
+    "U": {
+      "kind": "pressure-level",
+      "levels": {
+        "kind": "scaled",
+        "scale": 100.0,
+        "values": [
+          30,
+          50,
+          70,
+          100,
+          150,
+          200,
+          250,
+          300,
+          400,
+          500,
+          600,
+          700,
+          800,
+          850,
+          900,
+          925,
+          950,
+          1000
+        ]
+      },
+      "mode": "idw4",
+      "selector": {
+        "category": 2,
+        "discipline": 0,
+        "level_type": 100,
+        "level_value": null,
+        "parameter": 2,
+        "second_level_type": 255,
+        "second_level_value": 0.0
+      }
+    },
+    "U_10M": {
+      "kind": "single-level",
+      "mode": "surface-idw4",
+      "selector": {
+        "category": 2,
+        "discipline": 0,
+        "level_type": 103,
+        "level_value": 10.0,
+        "parameter": 2,
+        "second_level_type": 255,
+        "second_level_value": 0.0
+      }
+    },
+    "V": {
+      "kind": "pressure-level",
+      "levels": {
+        "kind": "scaled",
+        "scale": 100.0,
+        "values": [
+          30,
+          50,
+          70,
+          100,
+          150,
+          200,
+          250,
+          300,
+          400,
+          500,
+          600,
+          700,
+          800,
+          850,
+          900,
+          925,
+          950,
+          1000
+        ]
+      },
+      "mode": "idw4",
+      "selector": {
+        "category": 2,
+        "discipline": 0,
+        "level_type": 100,
+        "level_value": null,
+        "parameter": 3,
+        "second_level_type": 255,
+        "second_level_value": 0.0
+      }
+    },
+    "V_10M": {
+      "kind": "single-level",
+      "mode": "surface-idw4",
+      "selector": {
+        "category": 2,
+        "discipline": 0,
+        "level_type": 103,
+        "level_value": 10.0,
+        "parameter": 3,
+        "second_level_type": 255,
+        "second_level_value": 0.0
+      }
+    },
+    "W_SNOW": {
+      "kind": "single-level",
+      "mode": "surface-idw4",
+      "selector": {
+        "category": 1,
+        "discipline": 0,
+        "level_type": 1,
+        "level_value": 0.0,
+        "parameter": 60,
+        "second_level_type": 255,
+        "second_level_value": 0.0
+      }
+    },
+    "W_SO": {
+      "kind": "soil-level",
+      "levels": {
+        "kind": "bounds",
+        "values": {
+          "0": [
+            0.0,
+            0.01
+          ],
+          "1": [
+            0.01,
+            0.03
+          ],
+          "243": [
+            2.43,
+            7.29
+          ],
+          "27": [
+            0.27,
+            0.81
+          ],
+          "3": [
+            0.03,
+            0.09
+          ],
+          "729": [
+            7.29,
+            21.87
+          ],
+          "81": [
+            0.81,
+            2.43
+          ],
+          "9": [
+            0.09,
+            0.27
+          ]
+        }
+      },
+      "mode": "soil-nearest",
+      "selector": {
+        "category": 3,
+        "discipline": 2,
+        "level_type": 106,
+        "level_value": null,
+        "parameter": 20,
+        "second_level_type": 106,
+        "second_level_value": null
+      }
+    }
+  },
+  "limits": {
+    "max_expanded_object_bytes": 268435456,
+    "max_input_files": 10000,
+    "native_stage_timeout_seconds": 600
+  },
+  "methods": {
+    "atmosphere": "four nearest cell centres, inverse squared chord-distance",
+    "land_fraction": "nearest cell centre",
+    "sea_ice": "nearest on water; zero on land",
+    "soil": "nearest native column on land; missing on water",
+    "surface": "same land/water class IDW over the same four candidates"
+  },
+  "name": "icon-gdt101-pressure-v1",
+  "native_grid": {
+    "cells": 2949120,
+    "grid_template": 101,
+    "originating_centre": 78
+  },
+  "objects": {
+    "cycle_format": "%Y%m%d%H",
+    "output_rename": {
+      "from": "icon_global_icosahedral_",
+      "to": "icon_global_regular-lat-lon_"
+    },
+    "pattern": "icon_global_icosahedral_(?P<kind>pressure-level|single-level|soil-level|time-invariant)_(?P<cycle>\\d{10})(?:_(?P<lead>\\d{3})(?:_(?P<level>\\d+))?)?_(?P<field>[A-Z][A-Z0-9_]*)\\.grib2(?:\\.bz2)?\\Z"
+  },
+  "plan_fields": [
+    "CLAT",
+    "CLON",
+    "FR_LAND"
+  ],
+  "profile": "icon-global-grib2-v1",
+  "qualification": "No stock-WRF, GPU forecast, conservation or skill certification is implied",
+  "roles": {
+    "provenance": "icon_global_invariant_surface_provenance",
+    "terrain": "icon_global_invariant_surface"
+  },
+  "schema": "gpuwm-source-normalization-v1",
+  "source_id": "icon-global",
+  "target": {
+    "halo_degrees": 1.0,
+    "max_abs_latitude": 88.0,
+    "max_longitude_span_degrees": 180.0,
+    "max_points": 2000000,
+    "step_degrees": 0.125
+  },
+  "title": "DWD ICON global R03B07 native GDT-101 to a regional regular lat-lon intermediate"
+}

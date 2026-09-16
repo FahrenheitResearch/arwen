@@ -1047,7 +1047,7 @@ def real_bundle(tmp_path_factory):
     # bytes.  Artifacts from before the stamped builds prove nothing and
     # skip; artifacts from two different revisions are exactly the
     # mixed-revision bundle the release check exists to refuse, and no
-    # honest --source-rev exists for them.
+    # accurate --source-rev exists for them.
     revisions: set[str] = set()
     for artifact in bridge_assets.BUNDLED_ARTIFACTS:
         if artifact.vendored:
@@ -1227,7 +1227,7 @@ def test_the_published_bundle_downloads_and_verifies(tmp_path):
     # A tree that has not been through a release cut declares `release:
     # null` and no platforms at all -- that is what an unpinned document
     # is supposed to say, and there is genuinely nothing published to
-    # fetch, so skipping is the honest answer.
+    # fetch, so skipping is the accurate answer.
     #
     # A tree that HAS been cut and still has no bundle for a platform the
     # project claims to support is a release that failed to publish, and
@@ -1252,7 +1252,7 @@ def test_the_published_bundle_downloads_and_verifies(tmp_path):
     # MAP ASSET -- `stage_from_bundle` appends both to the list it returns.
     # This used to assert against `bundle.binaries` alone, which was true
     # only while bundles carried no assets; on the published v2.0.0 bundle
-    # it reads 9 where the honest answer is 47.  The expectation is derived
+    # it reads 9 where the accurate answer is 47.  The expectation is derived
     # from the manifest rather than written down, so a bundle that gains or
     # loses either kind moves this test with it instead of falsifying it.
     expected = [dest / pin.filename for pin in bundle.binaries]

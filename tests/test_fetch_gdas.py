@@ -280,7 +280,7 @@ def test_gdas_prints_no_next_command_that_ends_in_a_refusal(tmp_path,
     said: list[str] = []
     out = tmp_path / "gdas"
     out.mkdir()
-    # The authoring seam prints the honest stop, not an rw-wps line.
+    # The authoring seam prints the accurate stop, not an rw-wps line.
     try:
         fetch.author_gfs_front_door_manifest(
             out=out, bridge=None, wps_namelist=None,

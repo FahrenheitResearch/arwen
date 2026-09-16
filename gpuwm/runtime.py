@@ -74,6 +74,9 @@ from gpuwm.ingest.preprocess_backend import (
 )
 from gpuwm.ingest.real import initialize_real
 from gpuwm.ingest.ruc_soil import preprocess_land_surface_soil
+from gpuwm.moisture_floor_receipt import (
+    MOISTURE_FLOOR_BY_DOMAIN_KEY, moisture_floor_block,
+    moisture_floor_field_names)
 from gpuwm.static.build import (GeogSelection, build_static,
                                 monthly_interp_to_date)
 from gpuwm.static.lambert import grids_from_projection_config
@@ -140,6 +143,12 @@ class PreparedRealCase:
     store_input: object | None = None
     streamed_store: object | None = None
     initialization_receipt: dict | None = None
+    #: Checkpoints written from this case carry the preserved forcing-prefix
+    #: contract, and a restart into it is admitted only when the live forcing
+    #: inventory keeps every interval the checkpoint was written under and
+    #: appends after them.  A cycling run whose forcing is renewed between
+    #: legs sets it; an ordinary run leaves the exact-setup restart rule.
+    preserved_forcing_prefix: bool = False
 
 
 @dataclass(frozen=True)
@@ -199,6 +208,15 @@ class ExperimentRunSummary:
     #: during finalization and handed on so the supervisor's success
     #: capsule does not re-read the same hundreds of GiB a second time.
     frame_records: tuple[Mapping[str, object], ...] = ()
+    #: The capsule ``receipts`` fragment this run's own capsule stated
+    #: about its initialization -- ``{"moisture_floors_by_domain": {...}}``
+    #: -- or ``None`` from a route that emitted no front-door capsule.
+    #: Carried for the same reason as ``frame_records`` and for one more:
+    #: `gpuwm run` SUPERVISES by default, and the supervisor writes its
+    #: success capsule into the same directory under the same fixed name
+    #: AFTER this one, so what the run route recorded and did not hand
+    #: back was replaced rather than kept.
+    moisture_floor_receipts: Mapping[str, object] | None = None
 
 
 #: Environment switch that turns the trajectory-digest instrumentation off.
@@ -259,18 +277,72 @@ def _frame_records(paths, *, progress_callback=None, completed_records=()
     return file_records(paths, completed=completed_records, before_record=beginning)
 
 
+#: What the run route says for a domain whose prepared case holds no
+#: moisture-floor field: a restored idealized stand-in, or a case built by
+#: an ingest older than the receipt.  Never "nothing was floored" -- this
+#: route did not observe that.
+_RUN_FLOORS_UNRECORDED = (
+    "this domain's prepared case carries no moisture-floor field, so its "
+    "initial state came from a stand-in or from an ingest predating the "
+    "receipt; re-run from forcing to record whether its vapour was floored "
+    "on the way in")
+
+
+def _run_moisture_floor_receipts(prepared_cases) -> dict[str, object]:
+    """The per-domain floor blocks for a front-door run's capsule.
+
+    WHY THE RUN ROUTE NEEDS ITS OWN.  ``proof.json`` is a PREPARED
+    BUNDLE's document; `gpuwm go` and `gpuwm run` take the experiment
+    route, which writes a certification capsule and no proof at all.  The
+    floors were therefore reachable only from `gpuwm prep` and the direct
+    adapters -- not from the door most runs go through -- so a forecast
+    whose initial vapour was modified on the way in still looked exactly
+    like one whose was not, in the only document that run produced.
+
+    NON-FATAL, per domain.  This is assembled after the last model step,
+    beside the frame hashes, and a receipt must never turn a finished
+    forecast into a crash.  A domain whose block cannot be built says so
+    in its own block instead of vanishing from the mapping, because a
+    missing domain is the absence this receipt exists to prevent.
+    """
+
+    cases = (dict(prepared_cases) if isinstance(prepared_cases, Mapping)
+             else dict(prepared_cases or {}))
+    blocks: dict[str, object] = {}
+    for grid_id, case in sorted(cases.items()):
+        label = f"d{int(grid_id):02d}"
+        try:
+            blocks[label] = moisture_floor_block(
+                getattr(case, "initial_result", None),
+                when_unrecorded=_RUN_FLOORS_UNRECORDED)
+        except Exception as error:  # noqa: BLE001 - the forecast stands
+            blocks[label] = {
+                "recorded": False,
+                "not_recorded_because": (
+                    "this domain's floor receipt could not be read from its "
+                    f"prepared case: {type(error).__name__}: {error}"),
+            }
+    return {MOISTURE_FLOOR_BY_DOMAIN_KEY: blocks} if blocks else {}
+
+
 def _emit_front_door_capsule(outdir, *, emission_site: str, exp,
                              data: CaseDataConfig, wrfout_paths,
                              trajectory_digest, io_mode: str,
                              frame_records=None,
                              progress_callback=None,
-                             receipts=None) -> Path:
+                             prepared_cases=None,
+                             receipts=None) -> tuple[Path, dict[str, object]]:
     """Write the front door's certification capsule.
 
     Unconditional: it does not consult ``exp.feedback``, because a receipt
     that appears only on one physics tier is a receipt the other tier cannot
     be certified from.  ``receipts`` is the optional receipts-section
     mapping (the spectral seam's run receipts arrive through it).
+
+    Returns the capsule's path AND the moisture-floor fragment it stated,
+    so the run summary can carry to the supervisor exactly what this
+    capsule says.  Built here and handed back rather than rebuilt by the
+    caller: one builder, two documents, no chance of the two disagreeing.
     """
     run_context = {
         "runner_route_and_io_mode": {
@@ -298,10 +370,17 @@ def _emit_front_door_capsule(outdir, *, emission_site: str, exp,
                        wrfout_paths, progress_callback=progress_callback)),
         "trajectory_digest": trajectory_digest,
     }
-    return emit_run_capsule(
+    # The initialization receipts this run's own capsule can state.  Merged
+    # here rather than at each call site so a third emitting route cannot
+    # be the one that forgets them.
+    floors = _run_moisture_floor_receipts(prepared_cases)
+    run_receipts = dict(receipts) if receipts else {}
+    run_receipts.update(floors)
+    capsule = emit_run_capsule(
         outdir, emission_site=emission_site, run_context=run_context,
         run_shape=run_shape, output=output,
-        receipts=dict(receipts) if receipts else None)
+        receipts=run_receipts or None)
+    return capsule, floors
 
 
 def feedback_provenance(exp: ExperimentConfig) -> Mapping[str, object] | None:
@@ -1156,10 +1235,21 @@ def prepare_real_case(cfg: RunConfig, *, grid, geog_root,
         # No state or met array escapes this frame. The caller drops decoded
         # forcing before allocating the pinned store; only setup metadata and
         # the two small resolved surface planes survive beside the cache.
+        #
+        # THE FLOOR NAMES ARE DERIVED, not typed.  Three receipts were
+        # spelled here by hand, and a hand-spelled list of receipt fields
+        # is the same construction that dropped a child's aerosol receipt
+        # in `nest_init`: the moisture floors this initialization applied
+        # were computed, recorded on the result, and then left behind by
+        # this frame -- so a store-backed run reported "not recorded" for
+        # a floor that had actually fired.  Every `*_moisture_floor` field
+        # comes across, so the next floor the ingest grows survives this
+        # boundary with no edit.
         metadata = SimpleNamespace(**{
             name: getattr(initial_result, name, None) for name in (
                 "initial_perturbation", "hydrometeor_initialization",
-                "aerosol_initialization")})
+                "aerosol_initialization",
+                *moisture_floor_field_names(initial_result))})
         return PreparedRealCase(
             cfg=cfg, grid=grid, static_fields=static, initial_result=metadata,
             final_analysis=None, initial_snow_water_kgm2=np.array(
@@ -3888,6 +3978,7 @@ def integrate_prepared_case(
         history_interval_s: float | None = None,
         restart_interval_s: float | None = None, progress_callback=None,
         write_final_output: bool = False,
+        preserved_forcing_prefix: bool = False,
         health_debug: bool = False,
         feedback=None, stepper=None) -> RealCaseRunSummary:
     """Integrate a prepared real case and write its configured outputs.
@@ -4125,7 +4216,8 @@ def integrate_prepared_case(
         # from an unrestored one, and the streamed reader requires the
         # file's member set to BE the store's.
         info = (stepper.restore_restart(last_checkpoint, cfg) if streamed
-                else restore_restart(last_checkpoint, state, cfg))
+                else restore_restart(last_checkpoint, state, cfg,
+                    **({'preserved_forcing_prefix': True} if preserved_forcing_prefix else {})))
         start_outer_step = _resumed_start_step(
             elapsed_seconds=info.elapsed_seconds, dt=cfg.dt,
             outer_steps=outer_steps, run_seconds=run_seconds)
@@ -4277,7 +4369,7 @@ def integrate_prepared_case(
         # clock and its swdown maximum is in the store.
         surface_forcing_updates = domain_call_counts(
             stepper, state)["radiation"]
-        # Once per OUTER step over one 2-D field, so the honest fix for the
+        # Once per OUTER step over one 2-D field, so the accurate fix for the
         # streamed case is to read the store on the host rather than to add
         # another hook inside the sweep: no tile writes swdown's maximum, and
         # a 672x672 float32 plane is 1.8 MB.  Resident runs still take
@@ -4325,7 +4417,8 @@ def integrate_prepared_case(
                     checkpoint_path, cfg, run_trackers=trackers).path
             else:
                 last_checkpoint = write_restart(
-                    checkpoint_path, state, cfg, run_trackers=trackers)
+                    checkpoint_path, state, cfg, run_trackers=trackers,
+                    **({'preserved_forcing_prefix': True} if preserved_forcing_prefix else {}))
         # The state gate completed after the final internal step.  Publish
         # progress only after any due wrfout/checkpoint is durable, so a
         # heartbeat can never advertise unguarded or unpublished work.
@@ -4439,7 +4532,7 @@ def downward_longwave_source(exp: ExperimentConfig, cfg: RunConfig) -> str:
                     "reads or publishes GLW in this suite")
         # Unreachable through build_experiment, whose load guard refuses
         # exactly the consumed/published kinds without the token; stated
-        # honestly anyway for a hand-assembled ExperimentConfig.
+        # accurately anyway for a hand-assembled ExperimentConfig.
         return ("NO SOURCE: ra_lw_physics=0 with no constant declared, "
                 f"yet GLW is {kind} -- this configuration is refused at "
                 "config load and by initialize_physics")
@@ -4627,7 +4720,7 @@ def run_experiment(exp: ExperimentConfig, data: CaseDataConfig, outdir, *,
     # steppers=, so a [tiles] block was read, validated, echoed into the
     # resolved-config report and then dropped.  Both arms wire the builder
     # now (streaming.standalone_domain_builder below, builders_for_tree on
-    # the tree), so the honest answer is the run, not the refusal.
+    # the tree), so the accurate answer is the run, not the refusal.
     #
     # THIS IS THE ROUTE THE UNION HAD TO LAND ON.  Two-way feedback and
     # [tiles] were disjoint: `gpuwm run` refused [tiles] here by name,
@@ -4841,13 +4934,15 @@ def run_experiment(exp: ExperimentConfig, data: CaseDataConfig, outdir, *,
         frame_records = _frame_records(
             summary.wrfout_paths, progress_callback=progress_callback)
         _finalizing_progress(progress_callback, "run-capsule")
-        _emit_front_door_capsule(
+        _, floor_receipts = _emit_front_door_capsule(
             outdir, emission_site="runtime.run_experiment:single-domain",
             exp=exp, data=data, wrfout_paths=summary.wrfout_paths,
             trajectory_digest=summary.trajectory_digest, io_mode="history",
-            frame_records=frame_records)
+            frame_records=frame_records,
+            prepared_cases={int(dc.grid_id): prepared})
         return dataclass_replace(
-            summary, frame_records=tuple(frame_records))
+            summary, frame_records=tuple(frame_records),
+            moisture_floor_receipts=floor_receipts or None)
 
     _preparation_progress(progress_callback, "build-domain-tree")
     from gpuwm.core.model import build_experiment
@@ -5217,13 +5312,14 @@ def _run_built_experiment(exp, data, outdir, model, *, restart=None,
     # Spectral run receipts bind into the capsule; a completed apply run
     # with missing step receipts refuses a clean capsule here.
     from gpuwm.spectral_seam import seam_capsule_receipts
-    _emit_front_door_capsule(
+    _, floor_receipts = _emit_front_door_capsule(
         outdir, emission_site=("runtime.run_experiment:single-domain"
                               if prepared_steppers is not None else
                               "runtime.run_experiment:domain-tree"),
         exp=exp, data=data, wrfout_paths=paths,
         trajectory_digest=trajectory_digest, io_mode="history",
         frame_records=frame_records,
+        prepared_cases=getattr(model, "_prepared_by_grid_id", None),
         receipts=seam_capsule_receipts(model))
     return ExperimentRunSummary(
         wrfout_paths=paths,
@@ -5237,7 +5333,8 @@ def _run_built_experiment(exp, data, outdir, model, *, restart=None,
         feedback_provenance_receipt=feedback_path,
         feedback_provenance_receipt_sha256=feedback_sha,
         trajectory_digest=trajectory_digest,
-        frame_records=tuple(frame_records))
+        frame_records=tuple(frame_records),
+        moisture_floor_receipts=floor_receipts or None)
 
 
 def _submit_tree_history_frame(writers, node, ticks: int) -> None:

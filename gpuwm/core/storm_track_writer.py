@@ -85,7 +85,7 @@ writes no track file at all -- its moving nest prints a centre to
 as post-processing -- so there is no Fortran oracle behind this output
 and it must not borrow credibility from the bitwise claims elsewhere in
 this tree.  Its evidence is structural: the columns and units are what
-the header says, the clock is the valid time, and a row is either honest
+the header says, the clock is the valid time, and a row is either accurate
 or explicitly absent.
 
 CONFIG.  ``[relocation.track]`` under ``[relocation]``: ``path``, and

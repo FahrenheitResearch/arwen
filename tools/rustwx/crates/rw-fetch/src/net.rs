@@ -1,7 +1,7 @@
 //! The networked half of `rw_fetch`.
 //!
 //! Every request in this module goes through `wx_core`'s
-//! [`DownloadClient`], and that is load-bearing rather than merely
+//! [`DownloadClient`], and that is essential rather than merely
 //! convenient.  The client carries four mechanisms this tool exists to
 //! reuse, and reaching around it to `agent()` would silently drop all
 //! four:

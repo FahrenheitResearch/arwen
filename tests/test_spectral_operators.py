@@ -275,7 +275,7 @@ def test_helmholtz_decomposition_reconstructs_and_separates():
     # realized rotational field keeps a small residual divergence -- 6.1%
     # of the input divergence RMS on this white-noise operand.  The
     # damp_divergence receipt recomputes realized divergence and therefore
-    # stays honest about it.  Hold the leakage under 10%.
+    # stays accurate about it.  Hold the leakage under 10%.
     rot_div = spectral_divergence(urot, vrot, dy_m=DY, dx_m=DX)
     original = spectral_divergence(u, v, dy_m=DY, dx_m=DX)
     leakage = (float(np.sqrt(np.mean(rot_div ** 2)))

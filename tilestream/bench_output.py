@@ -795,7 +795,7 @@ def mode_pinned_control(args) -> None:
 def _ooc_frame_from_store(store, state, *, static_cache: dict) -> tuple:
     """Build a wrfout frame from a REAL HostDomainStore, timed, no D2H.
 
-    This is the honest out-of-core accounting the hypothesis needs.  Of the
+    This is the accurate out-of-core accounting the hypothesis needs.  Of the
     eight volume fields a frame carries:
 
       U, V, W, PH   are store.arrays['u','v','w','php'] verbatim -- pinned

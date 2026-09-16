@@ -950,7 +950,7 @@ mod tests {
     fn a_genuinely_misregistered_archive_does_change_the_answer() {
         let topo = GeogDataset::open(&fixture("mis-topo", "continuous", -179.0, 2))
             .expect("topo opens");
-        let honest = GeogDataset::open(&fixture("mis-lu", "categorical", -179.0, 1))
+        let accurate = GeogDataset::open(&fixture("mis-lu", "categorical", -179.0, 1))
             .expect("landuse opens");
         // The same bytes, relabelled as if they started 90 columns later.
         // Nothing shifts them back, so every pixel is read from the wrong
@@ -965,7 +965,7 @@ mod tests {
             .expect("relabel");
             GeogDataset::open(&dir).expect("relabelled landuse opens")
         };
-        let a = run(&topo, &honest, 90);
+        let a = run(&topo, &accurate, 90);
         let b = run(&topo, &lying, 90);
         assert_ne!(
             a.con, b.con,

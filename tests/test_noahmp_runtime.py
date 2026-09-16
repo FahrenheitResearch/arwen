@@ -83,7 +83,7 @@ def _build(*, nx: int = 8, ny: int = 6, nz: int = 40, vegtyp: int = _GRASSLAND,
            snow_depth_m: float = 0.0, xice=0.0, radiation=None,
            ra_physics: int = 0, radt_minutes: float = 12.0,
            mp_physics: int = 6, sf_sfclay_physics: int = 1,
-           bl_pbl_physics: int = 1):
+           bl_pbl_physics: int = 1, **config_overrides):
     from gpuwm.core.grid import make_base_state, make_vertical_coord
     from gpuwm.core.moist import init_moist_balanced
     from gpuwm.core.physics import initialize_physics
@@ -94,7 +94,8 @@ def _build(*, nx: int = 8, ny: int = 6, nz: int = 40, vegtyp: int = _GRASSLAND,
                     sf_sfclay_physics=sf_sfclay_physics,
                     sf_surface_physics=4,
                     bl_pbl_physics=bl_pbl_physics, bldt=0.0,
-                    ra_physics=ra_physics, radt_minutes=radt_minutes)
+                    ra_physics=ra_physics, radt_minutes=radt_minutes,
+                    **config_overrides)
 
     def theta(z):
         z = np.asarray(z, np.float64)
@@ -270,7 +271,7 @@ def test_the_six_step_state_comparison_can_fail(leaf, attribute, ulps,
     state, cfg, driver = _build(**build_kwargs)
     for _ in range(6):
         step(state, cfg)
-    honest = _carried_digest(driver)
+    accurate = _carried_digest(driver)
 
     def nudged(requested, calls):
         out = runtime_module.evaluate_leaf_batch_on_device(requested, calls)
@@ -286,7 +287,7 @@ def test_the_six_step_state_comparison_can_fail(leaf, attribute, ulps,
     for _ in range(6):
         step(nudged_state, nudged_cfg)
 
-    assert _carried_digest(nudged_driver) != honest, (
+    assert _carried_digest(nudged_driver) != accurate, (
         f"a {ulps}-ULP nudge of one {leaf} {attribute} left the six-step "
         "carried state digest unchanged; the gate cannot see a leaf defect")
 
@@ -309,7 +310,7 @@ def test_one_ulp_of_bare_flux_tgb_really_is_absorbed_by_the_tile_average():
     state, cfg, driver = _build(**build_kwargs)
     for _ in range(6):
         step(state, cfg)
-    honest = _carried_digest(driver)
+    accurate = _carried_digest(driver)
 
     previous = runtime_module.LEAF_BATCH_EVALUATOR
 
@@ -326,7 +327,7 @@ def test_one_ulp_of_bare_flux_tgb_really_is_absorbed_by_the_tile_average():
         nudged_state, nudged_cfg, nudged_driver = _build(**build_kwargs)
         for _ in range(6):
             step(nudged_state, nudged_cfg)
-        absorbed = _carried_digest(nudged_driver) == honest
+        absorbed = _carried_digest(nudged_driver) == accurate
     finally:
         runtime_module.LEAF_BATCH_EVALUATOR = previous
 
@@ -409,18 +410,66 @@ def test_the_column_tiling_cannot_change_the_answer(monkeypatch):
 
 @requires_gpu
 def test_out_of_identity_configurations_are_refused_before_the_run():
-    """The gate has to fire at configuration time, not three hours in."""
-    from gpuwm.config import (NOAHMP_OPTION_IDENTITY, RunConfig,
+    """The gate has to fire at configuration time, not three hours in.
+
+    Both verdicts come off the same table.  A row whose other value
+    selects code that was never transcribed is refused, because that
+    code is MISSING.  The rows in ``NOAHMP_OPTIONS_WITHOUT_CONSUMER``
+    reach no gpuwm code at any value, so there is no breakage to name
+    and they are admitted with one warning instead; the seam below
+    proves the run then actually takes its Noah-MP steps.
+    """
+    from gpuwm.config import (NOAHMP_OPTION_IDENTITY,
+                              NOAHMP_OPTIONS_WITHOUT_CONSUMER, RunConfig,
                               validate_run_config)
 
     base = dict(nx=6, ny=4, nz=20, dx=3000.0, dy=3000.0, ztop=12000.0,
                 dt=12.0, run_seconds=0.0, time_step_sound=4, moist=True,
                 sf_sfclay_physics=1, sf_surface_physics=4, bl_pbl_physics=1)
     validate_run_config(RunConfig(**base))
+    refused = 0
     for name, admitted in NOAHMP_OPTION_IDENTITY.items():
         other = (admitted + 1) if isinstance(admitted, int) else admitted + 1.0
+        if name in NOAHMP_OPTIONS_WITHOUT_CONSUMER:
+            validate_run_config(RunConfig(**base, **{name: other}))
+            continue
+        refused += 1
         with pytest.raises(ValueError, match="Noah-MP option identity"):
             validate_run_config(RunConfig(**base, **{name: other}))
+    assert refused == len(NOAHMP_OPTION_IDENTITY) - len(
+        NOAHMP_OPTIONS_WITHOUT_CONSUMER)
+    assert refused, "the refusing half of the table must not be empty"
+
+
+@requires_gpu
+@pytest.mark.parametrize("name,value", [("opt_pedo", 2),
+                                        ("noahmp_output", 0),
+                                        ("noahmp_acc_dt", 900.0)])
+def test_a_knob_with_no_consumer_off_its_pin_still_forecasts(name, value):
+    """The seam, not the door: the scheme runs and nothing moves.
+
+    ``validate_run_config`` admits these three with one warning because
+    they reach no gpuwm code.  This drives the Noah-MP runner itself,
+    which is where a second opinion would fire -- after the first LSM
+    step has already been taken -- and compares every carried array
+    against the same run at the pin.  "Changes nothing this run does"
+    is a bitwise claim, and this is where it is measured.
+    """
+    from gpuwm.core.dycore import step
+
+    pinned_state, pinned_cfg, pinned_driver = _build(nx=5, ny=3,
+                                                     water_columns=1)
+    for _ in range(2):
+        step(pinned_state, pinned_cfg)
+
+    state, cfg, driver = _build(nx=5, ny=3, water_columns=1,
+                                **{name: value})
+    assert getattr(cfg, name) == value
+    for _ in range(2):
+        step(state, cfg)
+
+    assert not bool(cp.isnan(driver.fields["hfx"]).any())
+    assert _carried_digest(driver) == _carried_digest(pinned_driver)
 
 
 @requires_gpu
@@ -939,7 +988,7 @@ def test_the_column_cost_is_what_the_registry_says():
     ms/column at 352, against 3.0 and 2.65 ms with the same leaves forced on
     the host.  Absolute milliseconds are a property of the machine -- the
     figures in the first half of ``docs/noahmp_device_column_report.md`` came
-    off a different box and are three to six times larger -- so the honest
+    off a different box and are three to six times larger -- so the accurate
     always-on gate is an order-of-magnitude bracket, and the paired
     measurement lives in ``tests/test_noahmp_device_column_cost.py`` behind
     ``GPUWM_NOAHMP_WIDTH_SWEEP=1``.
@@ -1059,7 +1108,7 @@ def test_the_write_back_comparison_can_see_a_misrouted_column(monkeypatch):
 
     import gpuwm.core.noahmp_runtime as runtime_module
 
-    honest = _all_written_digest(
+    accurate = _all_written_digest(
         _six_steps(monkeypatch, staged=True, nx=6, ny=4, water_columns=1))
 
     real = runtime_module._write_back_batch
@@ -1073,7 +1122,7 @@ def test_the_write_back_comparison_can_see_a_misrouted_column(monkeypatch):
     monkeypatch.setattr(runtime_module, "_write_back_batch", rolled)
     moved = _all_written_digest(
         _six_steps(monkeypatch, staged=True, nx=6, ny=4, water_columns=1))
-    assert moved != honest, (
+    assert moved != accurate, (
         "rolling every column's result onto its neighbour left the whole "
         "written slab unchanged; the write-back gate cannot see a misroute")
 
@@ -1141,7 +1190,7 @@ def test_the_slab_write_back_comparison_can_see_a_misrouted_column(
     """
     import gpuwm.core.noahmp_runtime as runtime_module
 
-    honest = _all_written_digest(
+    accurate = _all_written_digest(
         _six_steps(monkeypatch, nx=6, ny=4, water_columns=1))
 
     real = runtime_module._write_back_slab
@@ -1154,7 +1203,7 @@ def test_the_slab_write_back_comparison_can_see_a_misrouted_column(
     monkeypatch.setattr(runtime_module, "_write_back_slab", rolled)
     moved = _all_written_digest(
         _six_steps(monkeypatch, nx=6, ny=4, water_columns=1))
-    assert moved != honest, (
+    assert moved != accurate, (
         "rolling every column's slab answer onto its neighbour left the "
         "whole written slab unchanged; the slab write-back gate cannot see "
         "a misroute")

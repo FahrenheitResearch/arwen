@@ -2,11 +2,13 @@
 
 CPU-only coverage of the Level-2 wiring: the config rides the experiment
 TOML into ``ExperimentConfig``, binds the restart identity when present
-(and only then), refuses the loops that cannot honor it, refuses streamed
-domains and false periodic declarations at attach, ledgers receipts per
+(and only then), refuses the loops that cannot honor it, refuses a
+streamed domain at attach (the one door standing) out of a sentence one
+function holds, so the configuration-alone answer beside it cannot drift
+from it, refuses false periodic declarations, ledgers receipts per
 committed step, and blocks a clean completion capsule when apply receipts
-are missing.  The one GPU-shaped line -- the ``execute_experiment`` STEP op
-calling the seam -- is held in place by a source-order gate, because a hook
+are missing.  The one GPU-shaped line -- the ``execute_experiment`` STEP
+op calling the seam -- is held in place by a source-order gate, because a hook
 that drifts out of the commit point (into an acoustic substep, after
 output, or out of the file entirely) is precisely the breakage the
 delivered survey existed to prevent.
@@ -166,6 +168,146 @@ def test_streamed_domain_refuses_an_active_mode():
     seam = SpectralSeam(shadow_config(), "probe")
     with pytest.raises(RuntimeError, match="t=0 attach snapshot"):
         seam.validate_domain(2, _run_cfg(), streamed=True)
+
+
+def test_streamed_refusal_is_one_shared_sentence():
+    """One function holds the sentence, so a second door can read it.
+
+    The text used to be inlined in ``validate_domain``, which made the
+    attach-time raise its DEFINITION.  Any other door could then only
+    restate it, and two restatements of one refusal drift.
+    ``streamed_spectral_refusal`` is the definition now and
+    ``validate_domain`` reads it, so the two are byte-identical by
+    construction rather than by anyone remembering to keep them so.
+
+    RED ON BASE BY ASSERTION, not by a failed import: the attach door
+    exercised first raises at f08085092 exactly as it does here, with the
+    same text, and every assertion about that text passes there too.  The
+    line that fails at base is ``holder is not None`` -- at base the
+    sentence exists with no reader but the method that raises it, which
+    is the defect, and the module is asked for the holder with
+    ``getattr`` so the failure is that defect rather than a collection
+    error standing in for one.
+    """
+    import gpuwm.spectral_seam as seam_module
+
+    config = shadow_config()
+    seam = SpectralSeam(config, "probe")
+    with pytest.raises(RuntimeError) as refusal:
+        seam.validate_domain(2, _run_cfg(), streamed=True)
+    sentence = str(refusal.value)
+    # It names the breakage ...
+    assert "t=0 attach snapshot" in sentence
+    assert "pinned host store" in sentence
+    # ... and both ways out.
+    assert "Run this domain resident" in sentence
+    assert 'set mode = "off"' in sentence
+
+    holder = getattr(seam_module, "streamed_spectral_refusal", None)
+    assert holder is not None, (
+        "the streamed-domain sentence has no holder a second door can "
+        "read: it is inlined in SpectralSeam.validate_domain, so a "
+        "configuration-only door could only restate it")
+    assert holder(config, 2) == sentence
+
+
+def test_config_alone_refuses_spectral_on_a_streamed_grid():
+    """Both halves are legible in the TOML, so the config door can answer.
+
+    ``mode = "on"`` is a declaration that the domain streams.  ``auto`` is
+    a question the planner answers against the machine, so it is NOT
+    refused here: refusing it would refuse a tree the planner would have
+    run resident.
+
+    This is the predicate, not a wired door: nothing calls it, and the
+    strict xfail below carries the three call sites that are owed.  RED
+    ON BASE BY ASSERTION: the tree judged here is built and loaded first,
+    and the loader is byte-identical at f08085092, so the line that fails
+    at base is ``refuse is not None`` -- at base nothing in this module
+    can answer a question both halves of the TOML declare.
+    """
+    import gpuwm.spectral_seam as seam_module
+
+    raw = _experiment_raw(SHADOW_TABLE)
+    raw["tiles"] = {"mode": "on"}
+    exp = build_experiment(raw, source="probe.toml")
+    assert exp.spectral_numerics.mode == "shadow"
+    refuse = getattr(seam_module, "refuse_streamed_spectral_numerics", None)
+    assert refuse is not None, (
+        "nothing answers [spectral_numerics] x a streamed domain from the "
+        "configuration alone, so a combination both halves of the TOML "
+        "declare is met by no door until the run has attached")
+    with pytest.raises(RuntimeError) as refusal:
+        refuse(exp)
+    assert str(refusal.value) == seam_module.streamed_spectral_refusal(
+        exp.spectral_numerics, 1)
+
+    # A caller that already knows which grids stream may say so, and an
+    # empty set is not a refusal: the combination is what is refused.
+    refuse(exp, ())
+
+    # mode = "off" under the same [tiles] passes: off is the absence of
+    # the operator, and nothing about it needs resident planes.
+    off = _experiment_raw({"mode": "off"})
+    off["tiles"] = {"mode": "on"}
+    refuse(build_experiment(off, source="probe.toml"))
+
+    # auto passes, and so does a resident tree with an active mode.
+    auto = _experiment_raw(SHADOW_TABLE)
+    auto["tiles"] = {"mode": "auto"}
+    refuse(build_experiment(auto, source="probe.toml"))
+    refuse(build_experiment(_experiment_raw(SHADOW_TABLE),
+                            source="probe.toml"))
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="HANDED BACK with the deferred half of this fix.  The one "
+           "function exists (gpuwm.spectral_seam."
+           "refuse_streamed_spectral_numerics) but all three doors that "
+           "must call it are outside this lane's boundary: "
+           "gpuwm/runplan.py:1228 _streaming_refusal (after its "
+           "refuse_streamed_nests call at :1266), gpuwm/experiment.py:3639 "
+           "(the shared config-load door) and gpuwm/core/preflight.py "
+           "(gpuwm check).  Until one of them calls it the plan-review "
+           "record carries no refusal for this combination and the "
+           "attach-time raise is still the only door.  STRICT: when that "
+           "wiring lands this fails loudly and the marker must be deleted.")
+def test_plan_review_carries_the_streamed_spectral_sentence():
+    """The marker has to fail on its ASSERTION, not on its fixture.
+
+    A strict xfail accepts any failure, so a tree the loader rejects
+    would keep this reporting ``xfailed`` forever and the marker could
+    never fire when the wiring lands.  The geometry is therefore built
+    to load: ``spec_bdy_width + blend_width`` is 5 + 5 = 10, so a child
+    needs 10 clear parent rows on EVERY side, and the file's 24x20 root
+    cannot give that on either axis.  The root is widened to 48x48 here
+    and the child placed at ``i/j_parent_start = 11`` spanning
+    ``nx // parent_grid_ratio = 12 // 3 = 4`` parent cells, which leaves
+    10 rows low and 34 high on both axes.  Confirmed under ``--runxfail``
+    to reach the last assertion.
+    """
+    from gpuwm import runplan
+    from gpuwm.spectral_seam import streamed_spectral_refusal
+
+    raw = _experiment_raw(SHADOW_TABLE)
+    root = dict(raw["domain"][0], nx=48, ny=48)
+    raw["domain"] = [root, {
+        "grid_id": 2, "parent_id": 1, "i_parent_start": 11,
+        "j_parent_start": 11, "parent_grid_ratio": 3,
+        "parent_time_step_ratio": 3, "nx": 12, "ny": 12,
+        "time_step": 5, "specified": False, "nested": True,
+        "history_interval_s": 3600.0,
+    }]
+    raw["tiles"] = {"mode": "on"}
+    exp = build_experiment(raw, source="probe.toml")
+    # The fixture loads and BOTH grids are declared streamed, so the
+    # only thing left between here and a pass is the missing wiring.
+    assert [int(dc.grid_id) for dc in exp.domains] == [1, 2]
+    decision = runplan.streaming_decision(exp, chain="experiment")
+    assert decision is not None
+    assert streamed_spectral_refusal(exp.spectral_numerics, 1) in (
+        decision["refusal"] or "")
 
 
 def test_false_periodic_declaration_refuses_naming_what_broke_the_wrap():

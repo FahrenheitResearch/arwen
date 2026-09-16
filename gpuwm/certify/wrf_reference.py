@@ -60,7 +60,7 @@ def absent_reference_hashes(manifest: Mapping[str, Any]) -> tuple[str, ...]:
     Absent means any of: the key is missing; its value is null; a scalar group
     is not a SHA-256 digest; a mapping group is empty or carries an entry whose
     value is not a SHA-256 digest.  An ``unavailable`` marker is absent too --
-    an honest admission is still not a hash.
+    an accurate admission is still not a hash.
     """
     absent: list[str] = []
     for key in REQUIRED_HASH_KEYS:

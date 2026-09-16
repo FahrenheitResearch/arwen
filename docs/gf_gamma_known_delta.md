@@ -209,7 +209,7 @@ integer index fields that move            0        <- no branch flips at all
 magnitude is above 1 per cent of that field's own maximum. Taken over ALL
 nonzero words the ratio reaches 130 per cent, which is a small-denominator
 artefact at a level whose tendency is near zero, not a 130 per cent forecast
-change — the honest scale-free statement is that the largest absolute change
+change -- the accurate scale-free statement is that the largest absolute change
 in any tendency field is **2.12 per cent of that field's own maximum**.
 
 Three things in that table are worth stating plainly. The precipitation
@@ -237,7 +237,7 @@ draw) is not measured and cannot be without running the column model:
 The response is a perturbation only while `A * delta << 1`. Past roughly
 20-30 per cent the ensemble closure can change which member controls `xmb`, so
 the bottom-right cell describes a different draw rather than a displaced one.
-**Honest statement: typical impact is a few per cent, the committed real-data
+**Accurate statement: typical impact is a few per cent, the committed real-data
 maximum is ~7 per cent, and on the 1.6 per cent of the reachable set beyond
 that capture's 4-ULP span an individual convecting column can move by tens of
 per cent. No hard ceiling is claimed for the worst corner.**

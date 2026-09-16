@@ -583,7 +583,7 @@ def test_sase_split_step_trajectory_parity_10_steps():
     per field (scale-relative; FP32 drift compounds), per-step growth
     recorded.  Both trajectories start from the same FP32-cast fields;
     the reference feeds its own FP64 fields forward, so the measurement
-    is honest compounding drift, not per-step arithmetic alone."""
+    is accurate compounding drift, not per-step arithmetic alone."""
     import cupy as cp
     from gpuwm.core.sase import launch_sase_step
     from gpuwm.verify.sase_ref import sase_split_step
@@ -2932,7 +2932,7 @@ def test_sase_driver_d02_first_light_moist_50_steps(monkeypatch):
             del atm, n2, n2m
         t0 = time.perf_counter()
         dycore.step(state, cfg)                # physics runs inside
-        cp.cuda.Stream.null.synchronize()      # honest GPU step wall
+        cp.cuda.Stream.null.synchronize()      # accurate GPU step wall
         wall_steps += time.perf_counter() - t0
         e = state.e_sgs
         assert bool(cp.isfinite(e).all()), f"e_sgs NaN at step {step + 1}"
@@ -3336,7 +3336,7 @@ def _run_deck_column_cpu_cast(steps=120, dt=60.0, ust=0.3):
 
 @requires_gpu
 def test_m1b_deck_under_lid_device():
-    """THE G-M3 FIX ON DEVICE (S4-3c; the load-bearing behavior of the
+    """THE G-M3 FIX ON DEVICE (S4-3c; the essential behavior of the
     task brief): on the deck-under-lid column the CPU authority pinned
     the lid-adjacent equilibrium K_h transition 101.9 (pre-M1b free
     fallback, the smoke's measured 1e2 deck class [74, 150]) -> 39.3
@@ -3761,7 +3761,7 @@ def test_m2_plume_vent_device_parity_and_index_agreement():
     them; measured on the authority this session).  Four fire and pin an
     index: rule-KLID (11Z j=70 i=251, k_nb = k_lid = 17 -- termination
     FORCED at the C9 boundary, the class where the ``k < k_lid`` search
-    bound is load-bearing), rule-RH100 (11Z j=22 i=196, whose member run
+    bound is essential), rule-RH100 (11Z j=22 i=196, whose member run
     top k16 is saturated only through the ``qv >= q_s`` limb of
     MOIST_STABILITY_SWITCH, so a device build without that limb diagnoses
     NO run at all here), rule-LOWRUN (11Z j=17 i=164, the corpus's only
@@ -3950,7 +3950,7 @@ def test_m2_plume_vent_device_stand_down_and_identity_bitwise():
     probes: indices bitwise unchanged, device-vs-authority parity holds
     on the SHIFTED state too, the C9 boundary stays bitwise zero, and
     the flux response is bounded rather than assumed bitwise -- the
-    honest claim, since qt enters the entraining parcel.
+    accurate claim, since qt enters the entraining parcel.
     """
     import cupy as cp
     from gpuwm.verify import sase_ref
@@ -5748,7 +5748,7 @@ def test_sase_nan_guard_names_the_domain_and_the_degenerate_producer():
     it: a surface layer that handed over a zero friction velocity, a
     land-surface scheme that handed over a non-finite heat flux, a
     collapsed first layer.  So this refusal makes THREE claims, and all
-    three are load-bearing:
+    three are essential:
 
       1. the rate that failed,
       2. the DOMAIN it failed on -- a nest that diverges while its
@@ -6278,7 +6278,7 @@ def test_sase_step_additive_trajectory_parity_10_steps_stable_limb():
     the CPU engine, with n2 from the model's own brunt_vaisala_n2 so
     the l_s branch and the additive gate are live in the inversion),
     10 fused device split steps with additive_dissipation=True against
-    the FP64 authority fed its own FP64 fields forward -- honest
+    the FP64 authority fed its own FP64 fields forward -- accurate
     compounding drift at the established 5e-5 gate, per-step growth
     recorded.  The OFF trajectory rides along and must DIVERGE from
     the ON trajectory on both engines (the switch does real work on

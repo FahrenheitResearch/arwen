@@ -100,9 +100,11 @@ CLEAN_BASE = _history_base()
 #: module of the `rand` crate's RNG adapters whose FILENAME is one of the
 #: ordinary-English names in Tier 2 below (naming that file here would
 #: trip this module's own diff scan, which is the point of Tier 2).
-#: Nobody edits either tree in this repository.
+#: Nobody edits any of these trees in this repository.  The zarr bridge's
+#: vendored crates (2026-09-08) carry an OpenSSL provider source whose
+#: FILENAME is a Tier-2 word, like the `rand` module above.
 VENDOR = ("tools/rustwx/vendor/", "tools/rw_wps/vendor/",
-          "tools/arwen-ui-vendor/crates-io/")
+          "tools/arwen-ui-vendor/crates-io/", "tools/zarr_bridge/vendor/")
 
 #: The release exclusion manifest, read so this gate's idea of "what a
 #: public release carries" cannot drift from the builder's.
@@ -161,10 +163,18 @@ _MESSAGE_ALLOWANCE = {
     "ccd11d67f31a6a26e9b6490182b046db16e991cb":
         "the 2026-09-01 law commit that sanctioned the private package; "
         "rewording is banned here and the branch is never pushed",
+    "51e604ecc479f57dfe567c934bd1c83bceb2d676":
+        "the 2026-09-02 law commit that restated the no-attribution rule for "
+        "the company-bound package and named the company in its subject; "
+        "rewording is banned here and the branch is never pushed",
 }
 
-#: The innocent English word that contains a Tier-1 token.
-_FALSE_POSITIVE = re.compile("fore" + "cast", re.I)
+#: The innocent English words that contain a Tier-1 token: the noun every
+#: page of this project uses, and the verb in the Creative Commons
+#: licence sentence ("recast, transformed, or adapted") that the vendored
+#: crossbeam crates carry and the generated zarr-binary licence notices
+#: reproduce verbatim.
+_FALSE_POSITIVE = re.compile("fore" + "cast" + "|" + "re" + "cast, transformed", re.I)
 
 _TIER1_RE = re.compile("|".join(re.escape(t) for t in _TIER1), re.I)
 _TIER2_RE = re.compile("|".join(re.escape(t) for t in _TIER2), re.I)

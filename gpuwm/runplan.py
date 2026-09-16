@@ -330,6 +330,22 @@ class StageExitError(RuntimeError):
         super().__init__(message)
 
 
+class ChainInterrupted(RuntimeError):
+    """``gpuwm go`` answered a stop with 130 while running the chain.
+
+    Raised by the prepared route in place of a failure so that
+    :func:`execute_plan` exits 130: the stop is the user's, not a defect
+    of the chain, and the desktop reads the exit code back from the
+    worker's receipt to decide whether the run is "stopped" or "failed".
+    """
+
+    exit_code = 130
+
+    def __init__(self, stage: str):
+        self.stage = stage
+        super().__init__(f"interrupted during {stage}")
+
+
 class PlanError(ValueError):
     """A plan document this front door refuses to execute.
 
@@ -2585,17 +2601,21 @@ class _GoObserver:
         #: reader to a command they did not run.
         self._door = door
         self.failure: dict[str, Any] | None = None
+        #: The chain stage `gpuwm go` most recently opened, so a stop
+        #: can be reported against the stage it landed in.
+        self.current_stage: str | None = None
 
     # -- gpuwm go's chain hooks ---------------------------------------
 
     def stage_begin(self, *, label: str, command) -> None:
+        self.current_stage = label
         self._observer.enter_stage(_GO_STAGES[label], phase=label)
 
     def stage_heartbeat(self, *, label: str, elapsed_seconds: float,
                         progress) -> None:
         # A subprocess stage can only be observed through what it
         # publishes.  The forecast stage runs in process and reports
-        # per step through __call__ below, so this is the honest
+        # per step through __call__ below, so this is the accurate
         # coarse signal for the stages that do not.
         if not isinstance(progress, dict):
             return
@@ -2697,19 +2717,36 @@ def declared_forcing_fetch(payload: Mapping[str, Any], data) -> list[str] | None
         return None
     if not isinstance(hints, dict) or hints.get("source") != "era5":
         return None
-    from gpuwm.fetch import ERA5_COMBINED_NAMES
+    from gpuwm.fetch import (ERA5_COMBINED_NAMES, era5_combined_name,
+                             era5_forcing_name_disagreement)
     provider = hints.get("era5_provider", "cds")
     if provider not in ERA5_COMBINED_NAMES:
-        raise PlanError("[fetch].era5_provider must be 'cds' or 'arco'.")
+        raise PlanError("[fetch].era5_provider must be "
+                        + " or ".join(repr(name) for name in sorted(ERA5_COMBINED_NAMES)) + ".")
     if not hints.get("out"):
         raise PlanError("ERA5 data is missing. Set [fetch].out to the directory containing the declared forcing file.")
     # fetch.out is relative to the launch working directory; the case-data
     # loader has already resolved forcing relative to the configuration.
     out = Path(hints["out"]).expanduser().resolve()
-    expected = (out / ERA5_COMBINED_NAMES[provider]).resolve()
+    expected = (out / era5_combined_name(provider)).resolve()
     from gpuwm.case_data import same_case_data_path
     if len(data.forcing) != 1 or not same_case_data_path(data.forcing[0], expected):
-        raise PlanError("ERA5 data is missing, and [fetch].out does not produce the file named by [case_data].forcing. Keep both paths on the same ERA5 combined file.")
+        # NAME THE FILE.  "Keep both paths on the same ERA5 combined
+        # file" told a reader that two declarations disagreed and left
+        # them to work out which one was wrong -- and the answer is not
+        # symmetric: the provider decides what the fetch publishes, so
+        # the forcing declaration is the side that follows.  The wrong
+        # name is what a config written for the ARCO provider used to
+        # carry, and this refusal was the whole of what a user saw.
+        detail = era5_forcing_name_disagreement(data.forcing, provider=provider)
+        raise PlanError(
+            "ERA5 data is missing, and [fetch].out does not produce the "
+            "file named by [case_data].forcing. "
+            + (detail if detail is not None else
+               f"[fetch].out publishes {str(expected)!r}; [case_data].forcing "
+               f"names {[str(path) for path in data.forcing]}.")
+            + " Re-author the configuration with `gpuwm domain` to bind both "
+              "to the same file.")
     arguments = _fetch_arguments_from_hints(hints, out=out)
     from gpuwm.cli import _join_negative_coordinates
     arguments = _join_negative_coordinates(arguments)
@@ -3241,7 +3278,7 @@ def _hrrr_tree_forecast(*, tree_root: Path, config_path: Path,
     The tool also prints ``preparation_receipt_sha256`` on stdout.  It
     is not read: the tool computes that value as the sha256 of
     ``receipt.json``'s bytes, so hashing the artifact gives the
-    identical digest without making a printed line load-bearing.
+    identical digest without making a printed line essential.
 
     ``[tiles]`` NEEDS NO FLAG HERE, and that is a fact about this argv
     rather than an omission.  ``--experiment-config`` below is the
@@ -3835,6 +3872,14 @@ def _execute_prepared_route(plan: RunPlan, *, exp, data, config_path,
         code = go_main(args, observer=chain_observer)
     finally:
         _PREPARED_PARENT.reset(token)
+    if code == INTERRUPT_EXIT_CODE:
+        # `gpuwm go` answered a stop: it caught its own interrupt, said
+        # so in one sentence and returned 130.  Carried up as the stop
+        # it is, so this front door exits 130 too, instead of as a
+        # failure of the chain (which is what "exited 130" used to
+        # become one frame up, and what the desktop then read back from
+        # the worker's receipt as "failed").
+        raise ChainInterrupted(chain_observer.current_stage or "the chain")
     if code:
         if chain_observer.failure is not None:
             failure = chain_observer.failure
@@ -3851,7 +3896,7 @@ def _execute_prepared_route(plan: RunPlan, *, exp, data, config_path,
             raise PlanError("The native producer exited without its completion summary")
         return relay.summary
     # The chain's own completion signals, from the artifacts it leaves
-    # -- `go`'s standing rule, and the only honest source here: this
+    # -- `go`'s standing rule, and the only accurate source here: this
     # function did not integrate anything, the hosted runner did, and it
     # publishes what it finished.
     #
@@ -4188,6 +4233,7 @@ def execute_plan(plan: RunPlan, *, events: EventStream) -> int:
             **({"render_summary": observer._render_summary} if observer._render_summary is not None else {}))
         return 0
     except BaseException as error:  # noqa: BLE001 - every exit is an event
+        interrupted = _is_interrupt(error)
         if observer is not None:
             stage = observer.stage or stage
             observer.finish_stage(outcome="failed")
@@ -4195,12 +4241,54 @@ def execute_plan(plan: RunPlan, *, events: EventStream) -> int:
         events.emit(
             "failed", stage=stage, error_class=type(error).__name__,
             message=str(error), run_dir=str(run_dir),
-            exit_code=getattr(error, "exit_code", None),
+            exit_code=(INTERRUPT_EXIT_CODE if interrupted
+                       else getattr(error, "exit_code", None)),
+            interrupted=interrupted,
             remedy=_remedy(error),
             receipts=_receipts(run_dir))
-        if isinstance(error, KeyboardInterrupt):
-            return 130
+        if interrupted:
+            return INTERRUPT_EXIT_CODE
         return 1
+
+
+#: The shell's 128 + SIGINT, the exit code every long-running command
+#: here answers a stop with (``gpuwm.go_cli.INTERRUPT_EXIT_CODE`` is the
+#: same number; spelled here so this module does not import that one to
+#: read it).
+INTERRUPT_EXIT_CODE = 130
+
+
+def _is_interrupt(error: BaseException) -> bool:
+    """Whether ``error`` is the user's stop rather than a failure.
+
+    Three spellings of one gesture reach :func:`execute_plan`.  A
+    ``KeyboardInterrupt`` is the Ctrl-C that lands between stages.
+    ``gpuwm.go_cli.GoInterrupted`` is the one that lands while
+    ``run_stage`` is waiting on a stage subprocess, which is where a
+    stop during fetch, prepare, forecast or render always lands: the
+    whole foreground process group received the signal, this process
+    included.  A ``StageExitError`` carrying 130, or the negative of
+    SIGINT, is a stage that answered the same signal itself before this
+    process observed its own.  All three exit 130.
+
+    The breakage this names: only the first spelling used to exit 130,
+    the other two exited 1, and the desktop's saved-run reader calls
+    130 "stopped" and every other nonzero code "failed".  A forecast
+    stopped during its render was therefore offered for downscaling
+    while the launcher still held the job (it knew it had asked for the
+    stop) and withdrawn, with no reason on the row, the next time the
+    desktop opened and read the run back from its receipts.
+    """
+
+    if isinstance(error, KeyboardInterrupt):
+        return True
+    code = getattr(error, "exit_code", None)
+    if not isinstance(code, int):
+        return False
+    if code == INTERRUPT_EXIT_CODE:
+        return True
+    import signal
+    return code < 0 and -code == int(signal.SIGINT)
 
 
 def _cycle_spacing_hours(grid, cycle) -> int | None:

@@ -102,7 +102,7 @@ def test_the_guard_is_qualified_on_o3input_and_not_unconditional():
     """SECOND NEGATIVE CONTROL: o3input=0 must not raise THIS refusal.
 
     The `and cfg.o3input == 2` qualifier is verbatim from 29e9af3f5 and
-    load-bearing -- o3input=0 uses the legacy-RRTMG wrapper's own O3DATA
+    essential -- o3input=0 uses the legacy-RRTMG wrapper's own O3DATA
     profile and needs no parent, so refusing it would over-specify.
 
     o3input=0 cannot be asserted to SUCCEED here, because past the guard

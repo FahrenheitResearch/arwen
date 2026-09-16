@@ -197,7 +197,7 @@ verified ([VERIFICATION.md](VERIFICATION.md)).
 
 ## 3. Get data
 
-Two routes, honestly distinguished (details and disk sizing:
+Two routes, accurately distinguished (details and disk sizing:
 [DATA.md](DATA.md)):
 
 - **ERA5 (the GPU forecast route).** `gpuwm fetch --source era5` emits

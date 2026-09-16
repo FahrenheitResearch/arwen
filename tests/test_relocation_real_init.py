@@ -1,6 +1,6 @@
 """Leg-3 contracts: real-data relocation (statics rebuild + adjustment).
 
-The load-bearing claim (Drew's design ruling): overlap-region statics
+The essential claim (Drew's design ruling): overlap-region statics
 rebuilt from the same source must equal the old ones -- identical source
 + identical cells = identical bytes -- so the bitwise overlap transplant
 survives.  This file proves the mechanism that delivers it (the
@@ -78,7 +78,7 @@ def test_translated_grid_refuses_fractional_cells_and_round_trips():
 
 
 # ---------------------------------------------------------------------------
-# 2. THE LOAD-BEARING PROOF, against the real 30s static build
+# 2. THE ESSENTIAL PROOF, against the real 30s static build
 # ---------------------------------------------------------------------------
 
 def _geog_root():

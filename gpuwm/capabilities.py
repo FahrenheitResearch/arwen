@@ -11,14 +11,14 @@ it.**  The shape is :mod:`gpuwm.obs.dealias`'s front-door refusal, which
 names its install line before decode and gridding rather than an hour
 into a run.
 
-Three properties are load-bearing, and each has a test:
+Three properties are essential, and each has a test:
 
 * **The remedy is DERIVED from what is actually missing**, never keyed
   on the exception's class name.  ``gpuwm run-plan`` used to answer
   every ``ModuleNotFoundError`` with the CuPy remedy, so a missing
   ``scipy`` inside a plan run told the caller to install a GPU wheel.
   Here the missing MODULE selects the remedy, and a module this registry
-  does not know gets no remedy at all -- absence is honest, a wrong
+  does not know gets no remedy at all -- absence is accurate, a wrong
   remedy is not.
 * **Every remedy names something that EXISTS.**  Every extra spelled in
   this file is checked against the distribution's own metadata, and
@@ -406,7 +406,7 @@ def remedy_for_error(error: BaseException) -> str | None:
        product's own re-raises.
 
     ``None`` when the failure names nothing this registry knows.  That
-    is the honest answer and the caller must print no remedy at all --
+    is the accurate answer and the caller must print no remedy at all --
     the nearest available remedy is exactly the defect this replaces.
     """
 

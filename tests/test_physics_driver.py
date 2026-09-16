@@ -161,7 +161,7 @@ def test_wsm6_sr_roundoff_envelope_scales_with_minor_loop_count():
 def test_physics_interval_config_defaults_roundtrip_and_validation(tmp_path):
     """Interval defaults roundtrip, and a negative cudt_minutes is refused.
 
-    ``moist = true`` in the TOML is load-bearing: 573939c moved the
+    ``moist = true`` in the TOML is essential: 573939c moved the
     driver's refusal of a cumulus scheme on a dry state to ``load_config``
     (the same rule validate_run_config has always applied to mp_physics),
     and this test's original TOML -- ``cu_physics = 1`` with no moisture --

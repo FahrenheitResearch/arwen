@@ -19,6 +19,7 @@ from gpuwm.verify.profiles import (
     AnalysisProfile, AnalysisRecipe, HealthProfile, OracleProfile,
     OutputSchema, Threshold, VerificationProfile)
 from tools.derive_persistence_baseline import derive_persistence
+from conftest import requires_wrf_rust
 
 
 FROZEN_GATES_BYTES = (
@@ -67,6 +68,7 @@ def test_extracted_metric_functions_are_the_frozen_case_functions():
     assert real74_d01._dcomputeseaprs is metrics._dcomputeseaprs
 
 
+@requires_wrf_rust
 def test_extracted_metric_arithmetic_has_exact_regression_pins():
     left = np.array(
         [[1.0, 2.0, np.nan], [4.0, 8.0, 16.0]], dtype=np.float64)

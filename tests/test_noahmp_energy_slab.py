@@ -477,7 +477,7 @@ def test_elai_esai_transposition_really_is_unobservable():
 
     If ENERGY ever starts reading ELAI and ESAI separately, this test fails
     and the note in the control beside it stops being true -- which is the
-    only way that note can be kept honest.
+    only way that note can be kept accurate.
     """
     columns = _columns()
     state = _entry_state(columns)

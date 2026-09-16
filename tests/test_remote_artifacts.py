@@ -186,7 +186,7 @@ def test_previous_run_commits_and_missing_manifest_do_not_expose_files(case):
 def test_native_status_reads_bound_progress_and_plain_failure_without_raw_frames(case, monkeypatch):
     from gpuwm.supervisor import HEARTBEAT_SCHEMA
     progress_path = case.output / "run-progress.json"
-    case.record["config_sha256"] = "d" * 64
+    case.record["config_sha256"] = case.record["snapshot_sha256"] = "d" * 64
     case.manifest["progress_path"] = str(progress_path)
     case.manifest_path.write_bytes(encoded(case.manifest))
     progress = {"schema": HEARTBEAT_SCHEMA, "run_id": case.manifest["run_id"], "pid": 123,
@@ -213,7 +213,7 @@ def test_native_status_reads_bound_progress_and_plain_failure_without_raw_frames
 def test_current_native_heartbeat_phase_is_not_replaced_by_an_older_stage_label(case, monkeypatch):
     from gpuwm.supervisor import HEARTBEAT_SCHEMA
     progress_path=case.output/"run-progress.json"
-    case.record["config_sha256"]="d"*64
+    case.record["config_sha256"]=case.record["snapshot_sha256"]="d"*64
     case.manifest["progress_path"]=str(progress_path)
     case.manifest_path.write_bytes(encoded(case.manifest))
     heartbeat={"schema":HEARTBEAT_SCHEMA,"run_id":case.manifest["run_id"],"pid":123,
@@ -587,3 +587,47 @@ def test_pipeline_progress_reports_native_transfer_counts_and_preparation_withou
     result=ra.native_progress(t.case.record,t.case.status)
     assert result["pipeline_progress"]["preparation"]==prep
     assert result["pipeline_progress"]["phase"]=="Preparing domain geography"
+
+
+def test_the_committed_output_set_is_retrieved_with_a_digest_for_every_file(case, monkeypatch, tmp_path):
+    """C-298: one door walks this run's manifest and retrieves everything it committed."""
+    import io
+    from types import SimpleNamespace
+    from gpuwm import remote_cli
+    second = case.output / "wrfout_d01_second"
+    second.write_bytes(case.raw + b" second committed frame")
+    case.events.write_bytes(encoded(case.event) + encoded(
+        {**case.event, "sequence": 2, "path": str(second), "size_bytes": second.stat().st_size,
+         "valid_time": "2026-09-07T18:15:00Z"}))
+    monkeypatch.setattr(remote_cli, "_transport", lambda _command, request, **_kwargs: {
+        "ok": True, **({"artifact_index": ra.catalog(request, case.tmp_path, metadata_only=True)}
+                       if request["action"] == "artifact-index"
+                       else {"artifacts": ra.catalog(request, case.tmp_path)})})
+    def download(_command, request, path, frame, **_kwargs):
+        output = io.BytesIO()
+        ra.stream(request, case.tmp_path, output)
+        path.write_bytes(output.getvalue())
+    monkeypatch.setattr(ra, "_download", download)
+    args = SimpleNamespace(workspace=str(case.tmp_path), job="job-fixture", domain=1,
+                           after_sequence=0, cache_root=str(tmp_path / "outputs"))
+    value = ra.sync_outputs(args, [], [])["committed_outputs"]
+    assert [row["sequence"] for row in value["files"]] == [1, 2]
+    assert [row["state"] for row in value["files"]] == ["transferred", "transferred"]
+    assert value["files"][0]["sha256"] == ra._file_sha(case.frame)
+    assert value["files"][1]["sha256"] == ra._file_sha(second)
+    assert Path(value["files"][1]["path"]).read_bytes() == second.read_bytes()
+    assert value["bytes"] == len(case.raw) + second.stat().st_size
+    assert json.loads(Path(value["receipt_path"]).read_text())["files"] == value["files"]
+    # A retrieval that runs again keeps every file it already proved.
+    again = ra.sync_outputs(args, [], [])["committed_outputs"]
+    assert [row["state"] for row in again["files"]] == ["retained", "retained"]
+    assert again["transferred_bytes"] == 0
+
+
+def test_the_committed_output_door_takes_its_own_cache_and_window():
+    from gpuwm.cli import build_parser
+    options = build_parser().parse_args(["remote", "sync-outputs", "--host", "node", "--python", "/opt/python",
+        "--workspace", "/work", "--job", "job-1", "--domain", "2", "--cache-root", "local outputs",
+        "--after-sequence", "4"])
+    assert options.remote_action == "sync-outputs" and options.domain == 2
+    assert options.cache_root == "local outputs" and options.after_sequence == 4
