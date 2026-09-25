@@ -1723,14 +1723,18 @@ def _run_stage(label: str, command: list[str], *, explain: bool,
         # Carry the same diagnostic into machine-facing failures. Desktop and
         # remote clients cannot rely on a separate terminal's preceding lines.
         diagnostic = (completed.stderr or "").strip() or (completed.stdout or "").strip()
+        # One tail, three readers: the event stream, the exception a
+        # calling door turns into its own refusal, and the terminal
+        # above.  Composed once so they cannot disagree about which
+        # lines the stage's failure was.
+        tail_text = "\n".join(diagnostic.splitlines()[-8:])[-8192:]
         _notify(observer, "stage_failed", label=label,
-                exit_code=completed.returncode,
-                diagnostic="\n".join(diagnostic.splitlines()[-8:])[-8192:])
+                exit_code=completed.returncode, diagnostic=tail_text)
         _notify(observer, "stage_end", label=label,
                 exit_code=completed.returncode, ok=False,
                 elapsed_seconds=time.monotonic() - started,
                 progress=_progress_payload(progress))
-        raise GoStageFailed(completed.returncode)
+        raise GoStageFailed(completed.returncode, tail_text)
     _notify(observer, "stage_end", label=label, exit_code=0, ok=True,
             elapsed_seconds=time.monotonic() - started,
             progress=_progress_payload(progress))
@@ -1773,11 +1777,22 @@ run_stage = _run_stage
 
 
 class GoStageFailed(Exception):
-    """A stage exited nonzero; its output has already been replayed."""
+    """A stage exited nonzero; its output has already been replayed.
 
-    def __init__(self, code: int):
+    "Replayed" means to the TERMINAL.  A door that turns this into its
+    own refusal has no terminal to read -- the desktop's run view shows
+    the refusal and the command, and nothing of the stage's own output
+    -- so the same tail that goes to the terminal and onto the
+    ``stage_failed`` event rides the exception as :attr:`diagnostic`.
+    Without it a reader was handed a render command and an exit code and
+    had to re-run the whole render to learn which product failed.
+    """
+
+    def __init__(self, code: int, diagnostic: str = ""):
         super().__init__(f"stage exited {code}")
         self.code = code
+        #: The stage's own last lines, or ``""`` when it produced none.
+        self.diagnostic = diagnostic
 
 
 def _tree_bytes(root) -> int:

@@ -84,7 +84,7 @@ def main() -> int:
               "--step-hours", str(arguments.step_hours), "--out", str(record)]
     if arguments.min_report_rate is not None:
         decode += ["--min-report-rate", f"{arguments.min_report_rate:g}"]
-    decoded = door.run("decode", decode, schema="gpuwm-obs.asos-surface.v1")
+    decoded = door.run("decode", decode, schema="gpuwm-obs.asos-surface.v2")
     print(f"decoded {decoded['reports']} reports from {decoded['stations']} "
           f"stations over {decoded['valid_times']} valid times")
 

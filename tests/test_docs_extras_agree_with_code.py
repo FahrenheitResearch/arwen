@@ -61,6 +61,16 @@ A sixth rule covers the same defect in configuration: every key
 `output_title` was required at load and appeared in no user-facing page,
 so a reader hand-authoring the table from `CONFIGURATION.md` was refused
 for a key the documentation had never mentioned.
+
+A seventh rule holds the per-domain override list to the tuple the
+loader reads, in both directions.  `CONFIGURATION.md` printed 59 keys
+under a sentence that promised 61: `ra_lw_physics` and `ra_sw_physics`
+became per-domain when every domain got its own radiation driver, and
+the page kept the list it had.  Neither half of that is visible on its
+own -- the tuple is correct, the page is internally consistent prose --
+and the count in the 2.7.5 release note was walked back to match the
+page rather than the code.  So the block is parsed, both differences are
+reported, and the stated count is held to the block it introduces.
 """
 from __future__ import annotations
 
@@ -782,3 +792,86 @@ def test_every_optional_case_data_key_is_documented():
         f"[case_data] accepts these keys and {_CONFIG_REFERENCE} names "
         "none of them, so the feature each one gates is reachable only "
         "by reading the source:\n  " + "\n  ".join(offenders))
+
+
+# --------------------------------------------------------------------------
+# Rule 7: the per-domain override list is the code's list, in both directions.
+# --------------------------------------------------------------------------
+
+#: The literal block in the configuration reference, and the count the
+#: sentence above it states.  Group 1 is the number, group 2 the block.
+_OVERRIDE_BLOCK = re.compile(
+    r"Exactly these (\d+),\s*\n?\s*and no others "
+    r"\(`gpuwm/experiment\.py`'s `_DOMAIN_RUN_OVERRIDES`\):\n\n"
+    r"((?:[ ]{4}\S.*\n)+)")
+
+
+def _documented_domain_overrides() -> tuple[int, list[str]]:
+    """(stated count, keys) as the configuration reference prints them."""
+
+    text = (_repo_root() / _CONFIG_REFERENCE).read_text(encoding="utf-8")
+    match = _OVERRIDE_BLOCK.search(text)
+    assert match is not None, (
+        f"{_CONFIG_REFERENCE} no longer carries the "
+        "'Exactly these N, and no others (_DOMAIN_RUN_OVERRIDES)' block "
+        "this rule reads, so the three assertions below would pass on a "
+        "page that lists nothing. Restore the block or move this rule to "
+        "whatever replaced it.")
+    return int(match.group(1)), match.group(2).split()
+
+
+def test_the_override_block_is_a_real_list():
+    """The instrument first: a blind parse makes rule 7 a silent pass."""
+
+    stated, keys = _documented_domain_overrides()
+    assert len(keys) > 40, keys
+    assert len(set(keys)) == len(keys), (
+        "the documented override list repeats a key: "
+        + ", ".join(sorted({k for k in keys if keys.count(k) > 1})))
+    assert stated == len(keys), (
+        f"{_CONFIG_REFERENCE} says 'Exactly these {stated}' and then lists "
+        f"{len(keys)}. The sentence and the block are the same claim.")
+
+
+def test_every_accepted_domain_override_key_is_documented():
+    """Direction 1, the defect: an accepted key the page never names.
+
+    `ra_lw_physics` and `ra_sw_physics` became per-domain when every
+    domain got its own radiation driver, and the page kept the list it
+    had -- 59 keys under a sentence promising 61 -- while its prose went
+    on saying both keys stay tree-wide.  A reader following the page
+    wrote the two keys into `[shared]` and ran every nest on the parent's
+    radiation, or believed a per-domain selection would be refused and
+    never tried it.  Neither is discoverable from the page; both are one
+    `git grep` from the tuple.
+    """
+
+    from gpuwm.experiment import _DOMAIN_RUN_OVERRIDES
+
+    assert _DOMAIN_RUN_OVERRIDES, "empty tuple -- instrument is blind"
+    _, documented = _documented_domain_overrides()
+    missing = [k for k in _DOMAIN_RUN_OVERRIDES if k not in set(documented)]
+    assert not missing, (
+        "a `[[domain]]` table accepts these keys and "
+        f"{_CONFIG_REFERENCE} does not list them, so the only way to "
+        "learn a per-domain knob exists is to read "
+        "gpuwm/experiment.py:\n  " + "\n  ".join(missing))
+
+
+def test_every_documented_domain_override_key_is_still_accepted():
+    """Direction 2: the page cannot outlive a key moved back to `[shared]`.
+
+    The same failure with the halves swapped.  A key withdrawn from the
+    tuple is REFUSED by name on a `[[domain]]` table, so a page that
+    still lists it hands the reader a config the loader rejects.
+    """
+
+    from gpuwm.experiment import _DOMAIN_RUN_OVERRIDES
+
+    _, documented = _documented_domain_overrides()
+    stale = [k for k in documented if k not in set(_DOMAIN_RUN_OVERRIDES)]
+    assert not stale, (
+        f"{_CONFIG_REFERENCE} lists these as per-domain overrides and "
+        "gpuwm/experiment.py no longer accepts them, so a `[[domain]]` "
+        "table written from the page is refused naming the key:\n  "
+        + "\n  ".join(stale))

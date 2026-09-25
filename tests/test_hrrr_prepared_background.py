@@ -112,7 +112,16 @@ def _write_prepared_cache(cache: Path, identity, forcing_hours, exp,
             "forcing_hours": list(forcing_hours),
             "mapping_reports": {"hrrr": "synthetic-decode-report"},
         },
-        "state_names": [], "coord_arrays": [], "coord_scalars": {},
+        "state_names": [], "coord_arrays": [],
+        # A real cache records the hybrid pair beside the coefficient
+        # arrays it restores (ingest/prepared_cache._coord_metadata dumps
+        # every non-array field of the VerticalCoord), and the runner
+        # holds the coordinate it adopts against exactly these.
+        "coord_scalars": {
+            "hybrid_opt": exp.vertical.hybrid_opt,
+            "etac": exp.vertical.etac,
+            "p_top": exp.vertical.p_top,
+        },
         "base_arrays": [], "base_scalars": {},
         "met_fields": sorted(runner._REQUIRED_MET_FIELDS),
         "surface_fields": sorted(runner._CANONICAL_SURFACE_FIELDS),
@@ -844,7 +853,16 @@ def _run_wrapper(tmp_path, monkeypatch, *, publish: bool):
             "pipeline": {"workers": {"requested": "8", "selected": 8}},
         }), encoding="utf-8")
 
+    def fake_run_keeping_refusal(command, env, cwd=None):
+        # The WRF-arm export is launched through the seam that keeps
+        # what the child said; this case's child says nothing and
+        # succeeds, so the pair is the exit code and an empty text.
+        fake_run(command, env, cwd)
+        return 0, ""
+
     monkeypatch.setattr(prepare, "_run", fake_run)
+    monkeypatch.setattr(prepare, "_run_keeping_refusal",
+                        fake_run_keeping_refusal)
     argv = [
         "--source-root", str(source),
         "--source-manifest", str(source_manifest),

@@ -136,6 +136,13 @@ class SelectedVolume:
     #: none was requested ("give me the newest").
     offset_seconds: float | None
     receipt: dict = field(repr=False)
+    #: When the feed published this volume: the archive object's
+    #: LastModified, or the newest chunk's on the live feed.  The volume's
+    #: own start and end instants live in the decoded pack; this is the
+    #: external clock beside them, kept apart because a volume is complete
+    #: some minutes before anyone can fetch it.  ``None`` when the feed's
+    #: listing did not carry it.
+    availability_time: str | None = None
 
 
 def _archive_lag(record: dict, newest: dict) -> tuple[float | None, str | None]:
@@ -220,6 +227,7 @@ def _acquire_archive(binary, *, site, out_dir, valid_time, bucket, cache_dir,
         "bytes": chosen.get("size_bytes"),
         "clock_skew_seconds": None,
         "volume_id": None,
+        "availability_time": chosen.get("last_modified") or None,
     }
 
 
@@ -309,6 +317,7 @@ def _acquire_live(binary, *, site, out_dir, valid_time, bucket, cache_dir,
         "bytes": chosen.get("bytes"),
         "clock_skew_seconds": record.get("clock_skew_seconds"),
         "volume_id": chosen.get("volume_id"),
+        "availability_time": chosen.get("newest_chunk_last_modified") or None,
     }
 
 
@@ -441,6 +450,11 @@ def acquire_volume(binary, *, site: str, out_dir: Path,
                                  else "unmeasured"),
         "lag_definition": ("seconds from the newest object's S3 LastModified "
                            "to the instant the bucket answered the listing"),
+        "availability_time": served.get("availability_time"),
+        "availability_definition": (
+            "when the feed published the volume: the archive object's "
+            "LastModified, or the newest chunk's on the live feed. The "
+            "volume's own start and end instants are in its decoded pack"),
         "allow_partial": allow_partial,
         "min_chunks": min_chunks,
         "attempts": [attempt.to_payload() for attempt in attempts],
@@ -451,4 +465,5 @@ def acquire_volume(binary, *, site: str, out_dir: Path,
         keys=tuple(served["keys"]), partial=served["partial"],
         chunks=served["chunks"], lag_seconds=served["lag_seconds"],
         observed_at=served["observed_at"],
-        offset_seconds=served["offset_seconds"], receipt=receipt)
+        offset_seconds=served["offset_seconds"], receipt=receipt,
+        availability_time=served.get("availability_time"))

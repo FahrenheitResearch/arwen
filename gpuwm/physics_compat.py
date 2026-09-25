@@ -421,6 +421,19 @@ THOMPSON_PROFILE_ID = "thompson-mp8-ysu-mm5-noah-validation-v1"
 THOMPSON_LEGACY_RRTMG_PROFILE_ID = (
     "thompson-mp8-ysu-mm5-noah-rrtmg-legacy-v1"
 )
+#: The same composition on the other 4/4 radiation engine, and the HRRR
+#: route's default since the owner ruling of 2026-09-19 that RTE+RRTMGP is
+#: the default radiation arm on every route.  It differs from the row
+#: above in ``ra_rrtmg_variant`` and the compatibility token that records
+#: it, and in nothing else: same microphysics, same PBL, same surface
+#: layer, same land surface, cumulus off, same per-domain row.  The
+#: registry ranks it at its composition ceiling,
+#: implemented-unverified, because no receipt covers the composed suite
+#: on this engine; the payer that moves it is this composition's first
+#: stock-WRF-paired t0/case receipt.
+THOMPSON_RTE_RRTMGP_PROFILE_ID = (
+    "thompson-mp8-ysu-mm5-noah-rte-rrtmgp-v1"
+)
 #: The Shin-Hong sibling of the row above: the SAME composition with the
 #: gray-zone PBL in place of YSU (``bl_pbl_physics`` 1 -> 11), which is
 #: the one edge the divergence ledger's L3 entry moves
@@ -1125,6 +1138,68 @@ def downward_longwave_disposition(
     return "unused", None
 
 
+def settings_declared_acknowledgements(settings) -> tuple[str, ...]:
+    """The governance tokens these resolved selectors declare of themselves.
+
+    A suite's own switches can make a claim that is true of every window
+    and every place it is run in.  Exactly one does today: shortwave with
+    ``ra_lw_physics = 0`` means nothing computes the downward longwave,
+    so :data:`DECLARED_CONSTANT_GLW_WM2` is what the land surface
+    integrates -- :func:`downward_longwave_disposition` is asked, so this
+    can never require a token the load guard does not want or omit one it
+    does.
+
+    IT IS NOT THE WINDOW'S CLAIM.  :data:`ASYMMETRIC_RADIATION_NOCTURNAL_ACK`
+    says "I know this run contains local night", which depends on the
+    start time and the reference point rather than on the selectors, so
+    it is never derived here: it stays the operator's, stated at the door
+    that asked for the window.
+
+    ``settings`` is anything :func:`gpuwm.config.radiation_scheme_ids_from_settings`
+    reads -- a runtime switch product or a RunConfig -- so the selection a
+    profile resolves and the selection a configuration carries are
+    classified by one reader.
+    """
+
+    from gpuwm.config import radiation_scheme_ids_from_settings
+
+    lw, sw = radiation_scheme_ids_from_settings(settings)
+    if isinstance(settings, Mapping):
+        surface = int(settings.get("sf_surface_physics", 0) or 0)
+    else:
+        surface = int(getattr(settings, "sf_surface_physics", 0) or 0)
+    kind, _consumer = downward_longwave_disposition(
+        ra_lw_physics=lw, ra_sw_physics=sw, sf_surface_physics=surface)
+    if kind in ("consumed", "published"):
+        return (CONSTANT_DOWNWARD_LONGWAVE_ACK,)
+    return ()
+
+
+def profile_declared_acknowledgements(profile: str | None) -> tuple[str, ...]:
+    """What naming ``profile`` declares, for a route with no TOML to read.
+
+    THE DEFECT THIS CLOSES.  The constant-longwave declaration is written
+    into the case TOML by the configuration door, and a WRF namelist has
+    no field for it -- so a shortwave-only suite ran on the route that
+    reads the TOML and was refused on the route that reads the namelist,
+    although the two routes run the same physics from the same profile.
+    Naming the suite IS the declaration, exactly as it already is when a
+    materialized experiment inherits it, so a namelist-routed run carries
+    it through the profile it names and the same load guard reads it from
+    the same ``[experiment].acknowledgements`` array on both routes.
+
+    An unknown or unnamed profile declares nothing.
+    """
+
+    if profile is None:
+        return ()
+    try:
+        switches = single_domain_runtime_switches(profile)
+    except (KeyError, ValueError):
+        return ()
+    return settings_declared_acknowledgements(switches)
+
+
 def constant_longwave_refusal(
         domains, *, acknowledgements: tuple[str, ...] = ()) -> str | None:
     """Why this real case may not fabricate its downward longwave, or None.
@@ -1576,6 +1651,161 @@ def _selection_value_or_absent(settings: Mapping[str, object] | object,
     return getattr(settings, name, _ABSENT)
 
 
+#: The three keys that spell ONE radiation choice.  ``ra_physics = N``
+#: means "engine N on both streams" and leaves ``ra_lw_physics`` and
+#: ``ra_sw_physics`` at -1, the sentinel for "not stated here"; the split
+#: pair states the two streams and leaves ``ra_physics`` at 0.
+#: gpuwm.config.radiation_scheme_ids is the rule, and every run-path
+#: consumer reaches the resolved pair through it.
+_RADIATION_SPELLING_KEYS = ("ra_physics", "ra_lw_physics", "ra_sw_physics")
+
+
+class _OneSpelling:
+    """``settings``, read with some keys answered from a resolved form.
+
+    A read-through view, never a copy: every other selector, parameter
+    and array on the wrapped object or mapping answers exactly as it
+    did, and only the keys passed in ``resolved`` answer from it.  Used
+    for the radiation pair's two spellings and for the cumulus cadence
+    a cumulus-off configuration carries dead.
+    """
+
+    __slots__ = ("_settings", "_resolved")
+
+    def __init__(self, settings, resolved: Mapping[str, int]):
+        self._settings = settings
+        self._resolved = dict(resolved)
+
+    def __getattr__(self, name: str):
+        resolved = self._resolved
+        if name in resolved:
+            return resolved[name]
+        value = _selection_value_or_absent(self._settings, name)
+        if value is _ABSENT:
+            raise AttributeError(name)
+        return value
+
+    def __repr__(self) -> str:
+        return f"{type(self).__name__}({self._settings!r})"
+
+
+def _one_radiation_spelling(settings: Mapping[str, object] | object):
+    """``settings`` with the two radiation spellings collapsed into one.
+
+    THE DEFECT THIS CLOSES.  A component option is matched on its
+    component's selector keys, and radiation's are ``ra_lw_physics`` and
+    ``ra_sw_physics``.  Read raw, those keys carry -1 whenever the
+    configuration spelled its choice through the aggregate
+    ``ra_physics`` -- which is what the WRF namelist importer emits for
+    a coupled pair (gpuwm/namelist_import.py, ``coupled_legacy``) -- so
+    the registry resolved the SPELLING and not the engine: an imported
+    4/4 configuration matched no option a shipped template declares and
+    could never equal its own profile, while an imported 0/0
+    configuration was refused for not setting ``ra_physics = 4``.  Both
+    spellings run identical radiation, because the engine reaches the
+    pair through gpuwm.config.radiation_scheme_ids.
+
+    So the door reads the pair the same way the engine does, once, here.
+    gpuwm/ingest/prepared_cache.py canonicalizes the same two spellings
+    for cache identity and says so in the same words; this is that rule
+    at the capability door.
+
+    Absence is preserved, because absence is a different statement from
+    a value: a caller that mentions none of the three keys is not
+    selecting radiation at all and is returned unchanged, and a caller
+    that names one half of the split pair is returned unchanged so the
+    "these keys are chosen together" refusal below keeps its own
+    sentence.  A CONTRADICTION -- the aggregate naming one engine while
+    the split pair names another -- raises out of
+    :func:`gpuwm.config.radiation_scheme_ids` with its own message,
+    which is the refusal this door wants for it.
+    """
+
+    from types import SimpleNamespace
+
+    from gpuwm.config import radiation_scheme_ids
+
+    raw = {key: _selection_value_or_absent(settings, key)
+           for key in _RADIATION_SPELLING_KEYS}
+    if all(value is _ABSENT for value in raw.values()):
+        return settings
+    split = (raw["ra_lw_physics"], raw["ra_sw_physics"])
+    if (split[0] is _ABSENT) != (split[1] is _ABSENT):
+        return settings
+    probe = SimpleNamespace(**{key: value for key, value in raw.items()
+                               if value is not _ABSENT})
+    lw, sw = radiation_scheme_ids(probe)
+    if split == (lw, sw) and raw["ra_physics"] in (0, _ABSENT):
+        return settings
+    return _OneSpelling(
+        settings,
+        {"ra_physics": 0, "ra_lw_physics": lw, "ra_sw_physics": sw})
+
+
+def _one_dead_cumulus_cadence(settings: Mapping[str, object] | object):
+    """``settings`` with a cumulus interval no cumulus scheme reads pinned to 0.
+
+    THE DEFECT THIS CLOSES.  ``cudt_minutes`` is the interval between
+    cumulus calls, and at ``cu_physics = 0`` there are none:
+    gpuwm/core/clock.py builds a cumulus calendar only for cu_physics in
+    (1, 3, 16), and gpuwm/core/physics.py takes no cumulus step without
+    one, so the value is dead namelist state that reaches no kernel and
+    changes no number.  Its two producers spell the dead value
+    differently -- the WRF namelist importer omits the key for a
+    cumulus-off suite, deliberately (gpuwm/namelist_import.py), so the
+    configuration inherits RunConfig's live 5.0, while every shipped
+    cumulus-off profile states 0.0 -- and the capability door compared
+    them raw.  So a namelist-routed run of a cumulus-off profile was
+    refused with ``settings={'cudt_minutes': {'selected': 5.0,
+    'expected': 0.0}}``, which is the whole of the difference between
+    the two configurations, on a switch neither of them runs.  That was
+    every HRRR preparation of the nowcast door's own default profile.
+
+    gpuwm/ingest/prepared_cache.py pins the same key for the same reason
+    when it compares two prepared identities, and says so in the same
+    words; this is that rule at the capability door, beside
+    :func:`_one_radiation_spelling`.
+
+    Absence is preserved: a caller that states no ``cu_physics`` is not
+    selecting cumulus at all, and one that states no ``cudt_minutes``
+    has nothing to pin.  A configuration that runs a cumulus scheme is
+    returned untouched, cadence and all, because there the interval is
+    read every step it fires.
+    """
+
+    cu_physics = _selection_value_or_absent(settings, "cu_physics")
+    cadence = _selection_value_or_absent(settings, "cudt_minutes")
+    if cu_physics is _ABSENT or cadence is _ABSENT:
+        return settings
+    if cu_physics != 0 or cadence == 0.0:
+        return settings
+    return _OneSpelling(settings, {"cudt_minutes": 0.0})
+
+
+def selection_values_one_spelling(settings, names):
+    """``names`` read off ``settings`` with the dead spellings resolved.
+
+    THE ONE PLACE the two spellings are reconciled for a comparison
+    against a profile, so a second door cannot reconcile them
+    differently or forget to.  Two rules, each documented on the
+    function that carries it:
+
+    * :func:`_one_radiation_spelling` -- the aggregate ``ra_physics``
+      and the split ``ra_lw_physics``/``ra_sw_physics`` pair are two
+      spellings of one selection, and the engine reaches the pair
+      through :func:`gpuwm.config.radiation_scheme_ids` either way;
+    * :func:`_one_dead_cumulus_cadence` -- ``cudt_minutes`` at
+      ``cu_physics = 0`` is a cumulus interval no cumulus call reads.
+
+    Both were reported as the same defect from the same door: a WRF
+    namelist importer and a shipped profile write the same run in
+    different words, and a key-by-key comparison read the words.
+    """
+
+    view = _one_dead_cumulus_cadence(_one_radiation_spelling(settings))
+    return {name: _selection_value(view, name) for name in names}
+
+
 def _registry_pointer(component_id: str, option_id: str | None = None) -> str:
     pointer = (
         "gpuwm/physics_registry_v2.json#/components/"
@@ -1592,6 +1822,9 @@ def _resolve_physics_component_options(
     """Resolve implemented component options from selectors only."""
     from gpuwm.physics_registry import physics_registry
 
+    # ONE spelling of the radiation choice before anything is matched
+    # against a selector tuple; see :func:`_one_radiation_spelling`.
+    settings = _one_radiation_spelling(settings)
     registry = physics_registry()
     resolved: dict[str, str] = {}
     options_by_component: dict[str, Mapping[str, object]] = {}
@@ -1721,6 +1954,7 @@ def validate_physics_capabilities(
         _conditional_refusal_fires, _conditional_refusals,
         conditional_refusal_sentence, physics_registry)
 
+    settings = _one_radiation_spelling(settings)
     resolved, options_by_component = _resolve_physics_component_options(
         settings)
     parameter_specs = physics_registry().get("parameters", {})
@@ -2056,13 +2290,21 @@ def validate_single_domain_physics_profile(
             f"selected physics differs from profile {profile!r}: "
             f"components={resolved_components}, expected={expected_components}")
     if config is not None:
+        # Compared through the one spelling, for the reason the
+        # capability resolution above uses it: a configuration that
+        # reached this profile's two radiation streams through the
+        # aggregate selector has not asked for different physics, and a
+        # key-by-key comparison refused a run that is bit for bit the
+        # run the profile names.
+        # ... and through the one cumulus cadence, for the same reason:
+        # a cumulus-off configuration that carries RunConfig's live
+        # interval has not asked for different physics, because nothing
+        # reads that interval without a cumulus scheme to call.
+        compared = selection_values_one_spelling(config, expected)
         drift = {
-            name: {
-                "selected": _selection_value(config, name),
-                "expected": value,
-            }
+            name: {"selected": compared[name], "expected": value}
             for name, value in expected.items()
-            if _selection_value(config, name) != value
+            if compared[name] != value
         }
         if drift:
             raise ValueError(
@@ -3229,6 +3471,8 @@ __all__ = [
     "solar_elevation_deg",
     "packaged_thompson_table_root",
     "pending_wrf_physics_components",
+    "profile_declared_acknowledgements",
+    "settings_declared_acknowledgements",
     "thompson_guard_exports",
     "thompson_table_root",
     "require_ready_wrf_physics",

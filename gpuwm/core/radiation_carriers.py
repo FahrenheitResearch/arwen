@@ -299,6 +299,20 @@ class CarrierContract:
         """The record for ``name``; unwritten when nothing declared it."""
         return self.records.get(name, CarrierRecord())
 
+    def unsourced_consumed(self, sf_surface_physics: int) -> tuple[str, ...]:
+        """Carriers this land surface consumes that nothing has written.
+
+        The same question :meth:`check_before_consumption` asks one
+        carrier at a time, asked AHEAD of the consumption so a producer
+        can still be run.  ``PhysicsDriver.compute`` reads it to decide
+        whether the first surface call of a driver needs a radiation
+        call the cadence phase did not make due.
+        """
+
+        return tuple(
+            name for name in consumer_carriers(int(sf_surface_physics))
+            if self.record(name).source == CARRIER_SOURCE_UNWRITTEN)
+
     def source(self, name: str) -> str:
         return self.record(name).source
 

@@ -30,7 +30,8 @@ dropped key runs a default under the name of your value.
 ``<run_dir>/events.jsonl``, mirrored verbatim to stdout.  Every line
 carries ``schema_version``, a monotonic ``sequence``, ``emitted_unix_ms``
 and an ``event`` tag; the event's own fields are flattened alongside.
-The tags are :data:`EVENT_TAGS`.
+The tags are :data:`EVENT_TAGS`, and a ``warning`` event's own ``code``
+is one of :data:`WARNING_CODES`.
 
 ``gpuwm.run-manifest.v1`` -- ``<run_dir>/run-manifest.json``, written
 before any work starts.  It carries this process's pid and the absolute
@@ -152,6 +153,68 @@ EVENT_TAGS = (
     "fetch_started", "fetch_progress", "fetch_completed",
     "warning", "completed", "failed",
 )
+
+#: Every ``code`` a ``warning`` event carries, and what each one means.
+#:
+#: ``warning`` is one tag in :data:`EVENT_TAGS`, and the thing a reader
+#: actually switches on is the code inside it.  That code was a free
+#: string documented nowhere, so a route could invent one and the record
+#: it wrote was a line nothing could key on.  This is the vocabulary:
+#: a new code is added HERE, with its meaning, in the same commit as the
+#: route that emits it, and ``tests/test_runplan.py`` fails a code that
+#: reaches the stream without a line in this table.
+#:
+#: The one family spelled by prefix is the native producer's relay,
+#: ``native_producer_<tag>``: it forwards the inner run's own terminal
+#: tags under this door's stream, so its codes are as open as
+#: :data:`EVENT_TAGS` itself.
+WARNING_CODES = {
+    "chain_stage_failed":
+        "one stage of a chained run failed; the chain's own reader is "
+        "told which stage before the run's terminal event",
+    "early_render_kept":
+        "this run did not finish and the pictures its early render had "
+        "already drawn were KEPT rather than removed; the event carries "
+        "how many are on disk and the path of the banner beside them "
+        "that states where the forecast stopped",
+    "first_products_empty":
+        "the first committed frame produced no picture for the requested "
+        "products, so nothing was published early and the finalize stage "
+        "draws it with the rest",
+    "first_products_failed":
+        "the early render raised; the finalize stage draws every frame "
+        "as it would have without one",
+    "first_products_not_dispatched":
+        "no frame reached the early render before the forecast ended, so "
+        "there was no early picture to publish",
+    "first_products_timeout":
+        "the early render did not finish within its wait, so the "
+        "finalize stage stopped holding a finished forecast for it",
+    "forecast_output_recovery":
+        "an earlier attempt's output remains beside this one's; the "
+        "event names both directories",
+    "inline_config_materialized":
+        "an inline config was written to a file because this route binds "
+        "its configuration by path",
+    "library_warning":
+        "a library this run drives raised a warning; the action and the "
+        "reason are carried verbatim",
+    "native_producer_completed":
+        "the native producer finished and the caller is collecting its "
+        "receipts",
+    "native_producer_failed":
+        "the native producer failed; its own message is carried",
+    "preparation_progress":
+        "a coarse sample from a preparation phase that runs out of "
+        "process",
+    "unmapped_pipeline_phase":
+        "the pipeline reported a preparation phase this door has no "
+        "stage for; it is attributed to the open stage rather than "
+        "dropped",
+}
+
+#: The one code family spelled by prefix rather than in full.
+WARNING_CODE_PREFIXES = ("native_producer_",)
 
 #: Envelope keys an event's own fields may not shadow.
 _ENVELOPE_KEYS = frozenset({
@@ -826,13 +889,9 @@ def _chain_key(route: str, config_source: str | None) -> str:
     """
     if route != "prepared":
         return route
-    source = (config_source or "").strip()
-    if source:
-        verdict = drivability_for(source) or None
-        if verdict is not None and (verdict["chain"] or "").startswith(
-                "prepared:"):
-            return str(verdict["chain"])
-    return "prepared:go"
+    from gpuwm.source_drivability import candidate_route_chain as shared_chain
+
+    return shared_chain(config_source)
 
 
 def prepared_chain_for_source(source: str, *, source_root=None) -> str:
@@ -858,19 +917,35 @@ def prepared_chain_for_source(source: str, *, source_root=None) -> str:
         reason))
 
 
+def candidate_route_chain(source: object) -> str:
+    """The chain a candidate emitted for this source will dispatch to.
+
+    :func:`prepared_chain_for_source` answers the same question for a
+    LAUNCH, and refuses a source no chain can drive.  A door deciding
+    which files to write beside a candidate must not refuse on that, so
+    it asks the shared answer instead -- the same one :func:`_chain_key`
+    above returns for the prepared route, so the companions a candidate
+    is given and the companions its run reads cannot be decided
+    differently.  Kept here under its own name because this module is
+    where a reader of the dispatcher looks for it.
+    """
+    from gpuwm.source_drivability import candidate_route_chain as shared_chain
+
+    return shared_chain(source)
+
+
 def drivability_for(source: object) -> dict[str, Any]:
     """The drivability verdict for a config's own spelling of a source.
 
-    :func:`intent_drivability` is keyed by REGISTRY ID.  A config, a
-    ``--source`` flag and an emitted ``[fetch]`` table may each spell an
-    alias instead, and an alias that missed this lookup read as "no
-    verdict": the local-input admission, which lives in the verdict, was
-    silently skipped and the plan went on to look for a download route
-    that does not exist.  Every door asks through here so an alias
-    cannot admit what its registry id refuses.
+    One derivation, shared with the doors that publish a configuration
+    without importing the dispatcher: see
+    :func:`gpuwm.source_drivability.drivability_for` for why every door
+    asks through it rather than looking a registry id up itself.
     """
 
-    return intent_drivability().get(_canonical_source_id(str(source or "")), {})
+    from gpuwm.source_drivability import drivability_for as shared_verdict
+
+    return shared_verdict(source)
 
 
 def _local_input_hints(hints: Mapping[str, Any]) -> tuple[str, str, Any]:
@@ -1496,7 +1571,7 @@ class EventStream:
                 "event": event,
             }
             record.update(fields)
-            line = json.dumps(record, default=_jsonable)
+            line = _strict_event_line(record)
             self._stream.write(line + "\n")
             self._stream.flush()
             if self._mirror is not None:
@@ -1954,6 +2029,34 @@ def _schema_default_resolutions(raw: Mapping[str, Any]) -> list[dict[str, Any]]:
             "value": _jsonable_scalar(field.default),
             "basis": "schema_default"})
     return resolutions
+
+
+def _strict_event_line(record: dict[str, Any]) -> str:
+    """One event record as a line a strict JSON reader can open.
+
+    WHAT BREAKAGE THIS PREVENTS (gate law).  ``NaN`` is not a JSON token
+    -- RFC 8259 has no spelling for it -- so ``JSON.parse``,
+    ``serde_json``, ``encoding/json`` and ``jq`` all refuse a line
+    carrying one, while Python's ``json`` writes it by default.  This
+    stream is the machine-readable account of a run, and the events most
+    likely to carry a number that went are the ones on the way out of a
+    failure, which is where a reader needs the stream most.
+
+    A REFUSAL would be the wrong outcome: an event that cannot be written
+    is an event that is lost, from a writer that runs inside failure
+    handling.  So the strict spelling is tried first, and a record that
+    still holds a non-finite number is written with ``null`` in its place
+    rather than dropped, which every reader has a value for.
+    """
+
+    try:
+        return json.dumps(record, default=_jsonable, allow_nan=False)
+    except ValueError:
+        # Token-level, so a numpy float resolved by ``default=`` is
+        # covered by the same pass as a plain one.
+        relaxed = json.loads(json.dumps(record, default=_jsonable),
+                             parse_constant=lambda _token: None)
+        return json.dumps(relaxed, allow_nan=False)
 
 
 def _jsonable_scalar(value: object) -> Any:
@@ -2949,8 +3052,17 @@ def _hrrr_chain(plan: RunPlan, *, config_path: Path, exp,
     if absent:
         raise PlanError(
             f"the HRRR route reads {absent} beside {config_path.name}, "
-            "and `gpuwm domain` writes them at emission; this config was "
-            "not emitted for the HRRR route")
+            "and this configuration has them missing. gpuwm domain writes "
+            "them at emission, and since 2.7.6 so does every door that "
+            "saves a configuration: the domain, forcing, schedule and "
+            "saved-setup editors, domain-fit, domain-tiles, "
+            "cyclone-setup, the case-catalog and research creators, the "
+            "local cycling publisher, and a draft retained when memory "
+            "was refused. Before 2.7.6 those doors wrote the TOML and "
+            "its namelist.wps only, which is the known way to get a "
+            "configuration in this state. Next: save it again through the "
+            "door that wrote it on this release, which writes the whole "
+            "set beside it, and run what that door writes")
 
     raw = tomllib.load(io.BytesIO(config_path.read_bytes()))
     hints = dict(raw.get("fetch") or {})
@@ -4632,13 +4744,17 @@ def _estimate_planner_machine(exp, probe, profile=None):
         name="run-plan estimate probe", device_profile=profile)
 
 
-#: The resident itemizer's basis, unchanged: the sentence a plan that
-#: does not stream has always been given for its VRAM figures.
+#: The resident itemizer's basis: the sentence a plan that does not
+#: stream is given for its VRAM figures.  The device half of the
+#: arithmetic is the card's census (device_profile beside it), so the
+#: same plan on the same card is the same figure on every reading and
+#: on every surface that prices it.
 _RESIDENT_VRAM_BASIS = (
     "gpuwm.core.preflight.estimate_phases, whose forecast term is "
     "estimate_experiment -- it sums every domain and shares the scratch "
     "arena across a tree; the envelope is its peak_envelope_bytes (the "
-    "estimator `gpuwm check` reports; no device context is created)")
+    "estimator `gpuwm check` reports on the same device_profile; no "
+    "device context is created in this process)")
 
 #: What a streamed plan is told instead, naming the mechanism rather than
 #: leaving a reader to wonder why the figure shrank.
@@ -4825,13 +4941,26 @@ def estimate_plan(plan: RunPlan) -> dict[str, Any]:
     growing one would move ``peak_envelope_bytes`` under callers who
     compare it against a card.  ``gpuwm check`` is the surface that
     prices both phases.
+
+    ONE FIGURE FOR ONE PLAN ON ONE CARD.  Every input the device
+    contributes is a constant of the card -- its name, shader census,
+    default stack limit, compile platform and capacity -- and the
+    document carries each of them (``device_profile``,
+    ``device_total_bytes``), so a reader can price the same plan through
+    :func:`gpuwm.core.preflight.estimate_experiment` on the stated
+    device and get this figure to the byte, and two readings of one
+    plan on one card are one figure.  The free-memory sample
+    (``device_free_bytes``) is the one thing here that moves between
+    readings; it reaches the ``[tiles]`` planner and nothing else, so a
+    resident plan's figure never follows it, and it is stated so a
+    streamed plan's two readings can be told apart by their receipts.
     """
 
     from gpuwm.core.pace import estimate_pace
     from gpuwm.core.preflight import (
         DEFAULT_FORCING_INTERVAL_SECONDS, case_forcing_schedule,
         device_memory_probe_subprocess, estimate_phases,
-        profile_from_device_probe)
+        profile_from_device_probe, recorded_forcing_interval_seconds)
 
     resolution, exp, data = resolve_plan(plan, require_inputs=False)
     if data is not None:
@@ -4840,14 +4969,23 @@ def estimate_plan(plan: RunPlan) -> dict[str, Any]:
         payload = resolution.get("generated_config")
         if payload is None:
             payload = plan.config_bytes().decode("utf-8")
-        cadence = (tomllib.loads(payload).get("fetch") or {}).get("cadence")
-        forcing_interval = None if cadence is None else float(cadence) * 3600.0
+        # The cadence `gpuwm check` and `gpuwm go` price this file at:
+        # the declared one, else the recorded producer's published one.
+        # Reading only the declared key priced a producer that takes no
+        # cadence flag at the 21,600 s default here while the check
+        # priced the same file at the producer's own cadence.
+        forcing_interval = recorded_forcing_interval_seconds(
+            tomllib.loads(payload))
         intervals = None
     probe = device_memory_probe_subprocess()
     profile = profile_from_device_probe(probe)
     total = None if probe is None else probe.get("total_bytes")
-    capacity = (total / 1024 ** 3 if isinstance(total, int)
-                and not isinstance(total, bool) and total > 0 else None)
+    total = (int(total) if isinstance(total, int)
+             and not isinstance(total, bool) and total > 0 else None)
+    capacity = None if total is None else total / 1024 ** 3
+    free = None if probe is None else probe.get("free_bytes")
+    free = (int(free) if isinstance(free, int) and not isinstance(free, bool)
+            else None)
     machine = _estimate_planner_machine(exp, probe, profile)
     phases = estimate_phases(
         exp, source=None, machine=machine, profile=profile, vram_gib=capacity,
@@ -4895,6 +5033,11 @@ def estimate_plan(plan: RunPlan) -> dict[str, Any]:
                              else "conservative reference; local device unmeasured"),
             "device_profile": (None if profile is None else
                                dataclasses.asdict(profile)),
+            # The two figures the probe read beside the profile: the
+            # capacity the estimate was priced with (vram_gib above)
+            # and the free sample the [tiles] planner was given.
+            "device_total_bytes": total,
+            "device_free_bytes": free,
             "forcing_interval_seconds": (forcing_interval if forcing_interval is not None else
                                          DEFAULT_FORCING_INTERVAL_SECONDS),
             "retained_forcing_intervals": intervals,
@@ -5720,6 +5863,7 @@ __all__ = [
     "PHYSICS_PROFILES_SCHEMA",
     "PLAN_SCHEMA", "PROBE_SCHEMA", "RESOLVE_SCHEMA", "ROUTES",
     "SOURCES_SCHEMA", "STAGES",
+    "WARNING_CODES", "WARNING_CODE_PREFIXES",
     "GENERATED_CONFIG_NAME",
     "EventStream", "PlanError", "Route", "RunObserver", "RunPlan",
     "build_plan", "collect_warnings", "corridor_estimate",

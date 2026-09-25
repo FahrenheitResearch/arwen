@@ -118,23 +118,12 @@ def _micro_run_config():
         bldt=0.0, radt=0.0, cu_physics=0))
 
 
-@pytest.mark.gpu
-@requires_gpu
-def test_off_path_bl1_micro_run_state_hash_is_pinned():
-    """Scheme-11 code is selector-gated: a bl=1 run's bytes are pinned.
+def bl1_micro_run_digest():
+    """The 20-step bl=1 micro run and the SHA-256 over its prognostic bytes.
 
-    20 steps of a tiny YSU dry CBL, SHA-256 over the prognostic bytes.
-    The pin below was recorded WITH the scheme-11 runtime code present
-    in the tree but unselected (lane/shinhong-port, Phase D wiring, RTX
-    5090 -- the card the suite's device goldens and the cross-card
-    determinism receipt sanction byte pins on).  Any future leak of
-    scheme-11 code into the off path -- an allocation in a shared
-    branch, an unconditional launch, a dispatch fall-through -- moves
-    this hash; two in-process runs of the same lane tree agreeing would
-    prove nothing (vacuous), which is why the value is a literal and
-    not a second run.  The pinned-golden mechanism is
-    tests/sase_goldens.py's: numbers recorded at a stated commit, moved
-    only with a rationale.
+    One function, so the pin test below and the recorder that adds a
+    compiler build's row (proof/node-reds-276/record_shinhong_pin.py)
+    run exactly the same bytes.  Opens the device.
     """
     import cupy as cp
 
@@ -157,33 +146,99 @@ def test_off_path_bl1_micro_run_state_hash_is_pinned():
     initialize_physics(state, cfg, landmask=1.0, tsk=305.0)
     run_steps(state, cfg, 20)
 
-    # Structural half of the proof: the e_sgs allocation gate did not
-    # leak into a non-selecting configuration's object graph.
-    assert not hasattr(state, "e_sgs")
-
     digest = hashlib.sha256()
     for name in ("u", "v", "w", "thp", "php", "mup", "qv", "qc"):
         digest.update(name.encode())
         digest.update(cp.asnumpy(getattr(state, name)).tobytes())
+    return state, digest
+
+
+@pytest.mark.gpu
+@requires_gpu
+def test_off_path_bl1_micro_run_state_hash_is_pinned():
+    """Scheme-11 code is selector-gated: a bl=1 run's bytes are pinned.
+
+    20 steps of a tiny YSU dry CBL, SHA-256 over the prognostic bytes.
+    The pin below was recorded WITH the scheme-11 runtime code present
+    in the tree but unselected (lane/shinhong-port, Phase D wiring, RTX
+    5090 -- the card the suite's device goldens and the cross-card
+    determinism receipt sanction byte pins on).  Any future leak of
+    scheme-11 code into the off path -- an allocation in a shared
+    branch, an unconditional launch, a dispatch fall-through -- moves
+    this hash; two in-process runs of the same lane tree agreeing would
+    prove nothing (vacuous), which is why the value is a literal and
+    not a second run.  The pinned-golden mechanism is
+    tests/sase_goldens.py's: numbers recorded at a stated commit, moved
+    only with a rationale.
+
+    The rows are keyed by the NVRTC build AND the card (a byte pin is a
+    property of the compiled image and of the card that ran it: the
+    phase-2 step capture measured 2026-09-17 differs between an RTX
+    5070 Ti and an RTX 4090 at one commit).  An unrecorded compiler
+    fails here naming itself, as the ULP table does; a recorded
+    compiler on a card with no row SKIPS naming both, because a gate
+    that fails for the card and not the code prevents no breakage, and
+    the release card stage names that skip in its receipt.
+    """
+    import cupy as cp
+
+    state, digest = bl1_micro_run_digest()
+
+    # Structural half of the proof: the e_sgs allocation gate did not
+    # leak into a non-selecting configuration's object graph.
+    assert not hasattr(state, "e_sgs")
     # A byte pin is a pin on the COMPILED image, so it is keyed by the NVRTC
     # build the same way the Shin-Hong ULP table is -- see
     # tests/test_shinhong_wrf461_parity.py's GPU_BASELINE_MAX_ULP_BY_NVRTC_-
-    # BUILD for the full account of the 2026-08-04 compiler swap.  The 13.0.48
-    # row is the original: recorded 2026-08-03 on the RTX 5090 at the Phase-D
-    # wiring tip, two independent processes producing identical bytes (the
-    # dual-run comparison that doubles as the no-ECC corruption screen).  The
-    # 12.9.86 row was measured 2026-08-06 on the same card, deterministic over
-    # two runs and identical across four checkouts of this tree.
+    # BUILD for the full account of the 2026-08-04 compiler swap -- and by
+    # the card, because bytes are per card too.  The 13.0.48 row is the
+    # original: recorded 2026-08-03 on the RTX 5090 at the Phase-D wiring
+    # tip, two independent processes producing identical bytes (the
+    # dual-run comparison that doubles as the no-ECC corruption screen).
+    # The 12.9.86 row was measured 2026-08-06 on the same card,
+    # deterministic over two runs and identical across four checkouts of
+    # this tree.  The 13.3.33 row was measured 2026-09-18 on node-1's RTX
+    # 4090 (compute capability 8.9, driver 610.57.04, cupy 14.2.0, NVRTC
+    # build id CL-37862127, library sha256 e51d197b...6750a) at the
+    # lane/2.7.6-pin-gates tip 221f66f14, two independent processes
+    # identical; it was the release card stage's first reading of this
+    # pin, which had failed there naming the unrecorded build (receipts
+    # tests/data/receipts/pin-gates/extra-pin-readings-221f66f14-run1.json
+    # and -run2.json).  Whether the 4090's bytes under 13.3.33 equal the
+    # 5090's under 13.3.33 is not known: no 5090 has run this build.
     #
     # NOTE this run selects bl_pbl_physics=1 (YSU), NOT Shin-Hong: the swap
     # moved YSU's compiled bytes too.  It did not move YSU's ULP table, which
     # is a max over a coarser quantity; bytes are the finer instrument and
     # they saw it.
     pinned = {
-        "13.0.48":
-            "76450502591b84d602b8711d7414d62a3feed17a951212748319878742ed6394",
-        "12.9.86":
-            "ee18e6fbf4d7d0a4a9d6dd5508d2ee78180446192188d0b958fc54ebdcec20e8",
+        "13.0.48": {
+            "NVIDIA GeForce RTX 5090":
+                "76450502591b84d602b8711d7414d62a3feed17a951212748319878742ed6394",
+        },
+        "12.9.86": {
+            "NVIDIA GeForce RTX 5090":
+                "ee18e6fbf4d7d0a4a9d6dd5508d2ee78180446192188d0b958fc54ebdcec20e8",
+        },
+        "13.3.33": {
+            "NVIDIA GeForce RTX 4090":
+                "854866c8c67f9c8ae8c058e7d4e1ba7365237466eaa76ebbbc8c2e188998e6ab",
+        },
+        # 13.4.92 is the build cupy-cuda13x[ctk] 14.2.0 installs beside the
+        # wheel (nvidia-cuda-nvrtc, build id CL-38855100, library sha256
+        # d8f82e70...9a2c), the compiler a fresh `gpuwm[gpu-cu13]` venv
+        # runs.  Measured 2026-09-20 on the Linux release node's RTX 4090
+        # (compute capability 8.9, driver 610.57.04, cupy 14.2.0, numpy
+        # 2.5.3) at the tree the recording names, by
+        # proof/node-reds-276/record_shinhong_pin.py: two independent
+        # processes identical, e_sgs absent from the off path
+        # (proof/node-reds-276/readings/shinhong-13.4.92-recording.log).
+        # The bytes equal the 13.3.33 row's on the same card: this build
+        # moved nothing in the bl=1 off path.
+        "13.4.92": {
+            "NVIDIA GeForce RTX 4090":
+                "854866c8c67f9c8ae8c058e7d4e1ba7365237466eaa76ebbbc8c2e188998e6ab",
+        },
     }
     build = nvrtc_build()
     assert build in pinned, (
@@ -194,11 +249,22 @@ def test_off_path_bl1_micro_run_state_hash_is_pinned():
         "Byte pins are pins on the compiled image; an unmeasured compiler has"
         " no pin to be compared against.  Record this build's bytes with the"
         " attribution, or compile with a recorded one.")
-    assert digest.hexdigest() == pinned[build], (
-        "the off-path bl=1 run's bytes moved under a compiler this pin has"
-        f" already been measured under (NVRTC {build}).  That is a leak of"
-        " scheme-11 code into the off path, or a change to the shared"
-        " dycore -- not the 2026-08-04 NVRTC swap.")
+    props = cp.cuda.runtime.getDeviceProperties(0)
+    card = props["name"]
+    card = card.decode() if isinstance(card, bytes) else str(card)
+    if card not in pinned[build]:
+        pytest.skip(
+            f"the bl=1 run-state hash is per NVRTC build and card, and none is"
+            f" recorded for {card!r} (compute capability {props['major']}."
+            f"{props['minor']}) under NVRTC {build}; cards recorded for this"
+            f" build: {sorted(pinned[build])}.  Record this card's bytes from"
+            " two processes with the attribution.")
+    assert digest.hexdigest() == pinned[build][card], (
+        "the off-path bl=1 run's bytes moved under a compiler and card this"
+        f" pin has already been measured under (NVRTC {build}, {card})."
+        "  That is a leak of scheme-11 code into the off path, or a change to"
+        " the shared dycore -- not the 2026-08-04 NVRTC swap and not the"
+        " card.")
 
 
 # ---------------------------------------------------------------------------

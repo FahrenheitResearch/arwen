@@ -217,11 +217,32 @@ def analytic_base_pressure(height: float,
     caller must be told that rather than handed a fabricated one.
     """
 
+    pressure = float(analytic_base_pressure_field(float(height), base_temp))
+    return None if np.isnan(pressure) else pressure
+
+
+def analytic_base_pressure_field(height, base_temp: float = 290.0):
+    """:func:`analytic_base_pressure` elementwise, over a whole field.
+
+    The same relation, the same lapse, ONE transcription of both.  A
+    caller that prices a coordinate over entire terrain arrays
+    (:mod:`gpuwm.vertical_adaptation`) needs this shape rather than a
+    per-cell Python loop, and carrying its own copy of the expression
+    would let a later correction to the base state move the state while
+    the survey kept pricing the old profile.
+
+    Ground above the profile's own ceiling comes back ``NaN``, the array
+    spelling of the scalar's ``None``: NaN loses every comparison, so a
+    cell the base state refuses cannot win a minimum and be mistaken for
+    representable ground.
+    """
+
+    z = np.asarray(height, dtype=np.float64)
     ratio = float(base_temp) / _BASE_LAPSE_K
-    inner = ratio ** 2 - 2.0 * c.G * float(height) / (_BASE_LAPSE_K * c.RD)
-    if inner < 0.0:
-        return None
-    return float(c.P0 * np.exp(-ratio + np.sqrt(inner)))
+    inner = ratio ** 2 - 2.0 * c.G * z / (_BASE_LAPSE_K * c.RD)
+    with np.errstate(invalid="ignore"):
+        root = np.sqrt(np.where(inner < 0.0, np.nan, inner))
+    return c.P0 * np.exp(-ratio + root)
 
 
 def base_layer_depths(znw: np.ndarray, hybrid_opt: int, etac: float,
@@ -583,6 +604,16 @@ def make_base_state(coord: VerticalCoord, sounding: Sounding,
     else:
         pd_f = (coord.c3f[:, None, None] * mub[None]
                 + coord.c4f[:, None, None] + p_top)
+    #    KEPT, and why (guard sweep for the derived-coordinate fix).  The
+    #    real-data doors no longer reach this line for a representable
+    #    column: they derive the coordinate their terrain can order before
+    #    a base state is built on it (gpuwm.vertical_adaptation).  What
+    #    still reaches it is what that derivation cannot see -- an
+    #    IDEALIZED sounding, whose terrain is an argument rather than a
+    #    static field, and a TILE BUFFER's base state, rebuilt at a
+    #    coordinate the run already chose.  For those callers the
+    #    arithmetic here is the only place the folded coordinate shows,
+    #    so the refusal stays and keeps naming its remedy.
     if not np.all(np.diff(pd_f, axis=0) < 0.0):
         raise ValueError(
             "hybrid reference dry pressure is not monotonically decreasing "

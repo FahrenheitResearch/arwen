@@ -252,7 +252,9 @@ def test_the_detector_finds_a_module_level_skip_it_has_never_seen(
         "would need a manifest entry")
 
 
-def _synthetic_leg(workspace: pathlib.Path, manifest: str, body: str) -> \
+def _synthetic_leg(workspace: pathlib.Path, manifest: str, body: str,
+                   files: dict[str, str] | None = None,
+                   args: list[str] | None = None) -> \
         subprocess.CompletedProcess:
     """One real pytest session, against the shipped guard, on a fake gate.
 
@@ -282,10 +284,33 @@ def _synthetic_leg(workspace: pathlib.Path, manifest: str, body: str) -> \
     tests = workspace / "tests"
     tests.mkdir(exist_ok=True)
     (tests / "test_gate.py").write_text(body, encoding="utf-8")
+    for name, text in (files or {}).items():
+        (workspace / name).write_text(text, encoding="utf-8")
     return subprocess.run(
-        [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider",
-         "tests/test_gate.py"],
+        [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider"]
+        + (args if args is not None else ["tests/test_gate.py"]),
         cwd=str(workspace), capture_output=True, text=True)
+
+
+@pytest.mark.parametrize("workers", [[], ["-n", "2"]],
+                         ids=["in-process", "xdist"])
+def test_the_guard_leaves_a_gate_a_marker_expression_emptied(
+        tmp_path: pathlib.Path, workers: list[str]) -> None:
+    """``-m`` is the operator's selection: a listed gate whose every test
+    the expression excludes is not a silence.  Measured on the release
+    node's card leg, ``-m "gpu and not slow and not network"``: six
+    CPU-only gates the expression emptied turned a leg with zero
+    failures into exit 1 (proof/node-reds-276).  Under xdist the
+    deselection happens on the workers, so that route is held too."""
+    done = _synthetic_leg(
+        tmp_path, "tests/test_gate.py\n",
+        "import pytest\n\n\n@pytest.mark.gpu\ndef test_one():\n"
+        "    assert True\n",
+        files={"tests/test_other.py": "def test_ok():\n    assert True\n"},
+        args=["-m", "not gpu", "tests/test_gate.py", "tests/test_other.py"]
+        + workers)
+    assert "COLLECTED NOTHING" not in done.stdout, done.stdout
+    assert done.returncode == 0, done.stdout + done.stderr
 
 
 def test_the_guard_fails_a_gate_that_skipped_every_test(

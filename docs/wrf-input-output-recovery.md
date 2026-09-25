@@ -17,6 +17,18 @@ one. If the original WPS files are elsewhere, supply their directory:
 gpuwm run --wrfinput WRF_RUN --soil-source ORIGINAL_WPS --outdir FORECAST
 ```
 
+The producing table may declare more soil layers than that cycle actually
+carried, which is the ordinary case for a table that covers every layer its
+source can publish. Each stacked depth is paired with the declared layer whose
+bounds hold it, and converts on that layer's thickness. A depth that no
+declared layer holds, a pairing that would run out of order, and a file that
+stacks more layers than the table declares are refused with the stacked depths
+in centimetres and the declared bounds in metres both printed, beside the
+met_em and the table the run read and the rule that chose each. A source plane
+carrying WRF's one extra staggered row and column keeps its leading mass
+block, admitted only when the leading block of both source coordinates is this
+domain to the bit; any other extent is refused with both extents named.
+
 The original files remain unchanged. Recovery checks the initialization time,
 domain coordinates, source depths, and a forward reconstruction of the bad
 values before using the corrected ones. Already physical input values remain

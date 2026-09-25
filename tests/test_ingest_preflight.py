@@ -822,6 +822,70 @@ def test_real_may1999_native_grib1_catalog_smoke():
         np.testing.assert_array_equal(sst, seaice)
 
 
+def test_both_doors_admit_a_descending_pressure_ladder_identically(
+        synthetic_case):
+    """One admission for the level ordering, read by ``run`` and ``check``.
+
+    ERA5 publishes ``pressure_level`` DESCENDING, 1000 hPa first.  The run
+    door's vertical interpolation takes a source pressure column strictly
+    monotonic in either direction and reverses an ascending one
+    (gpuwm/ingest/cpu_backend.py), so a keyless ARCO window of exactly
+    that shape initialized and ran end to end; the check door refused the
+    same file with "pressure levels must be finite/strictly increasing"
+    and never reached its memory section.  Two more verdicts rode on the
+    same premise: read in file order, a descending ladder makes
+    ``levels[0]`` the deepest level and ``levels[-1]`` the highest, which
+    inverts both the p_top coverage test and the 1000 hPa terrain-column
+    test.
+
+    The doors are pinned EQUAL here: the same forcing published in either
+    order gives one catalog ladder and one report.
+    """
+
+    case = synthetic_case
+    exp = _retime(case.exp, 5400.0)
+    times = (case.exp.start_time,
+             case.exp.start_time + timedelta(seconds=5400))
+    published = (1000.0, 500.0, 200.0, 50.0)
+
+    case.install(times, levels=published)
+    descending_run = build_input_catalog(case.data)      # the run door's gate
+    descending_check = preflight_report(exp, case.data)  # `gpuwm check`
+
+    case.install(times, levels=tuple(reversed(published)))
+    ascending_run = build_input_catalog(case.data)
+    ascending_check = preflight_report(exp, case.data)
+
+    # The check door refuses nothing about the ordering, and reports
+    # exactly what it reports for the ascending publication.
+    assert not [issue for issue in descending_check.failures
+                if issue.code in ("levels", "level-coverage",
+                                  "below-surface-support")],         descending_check.format()
+    assert ([(issue.code, issue.message, issue.severity)
+             for issue in descending_check.failures]
+            == [(issue.code, issue.message, issue.severity)
+                for issue in ascending_check.failures])
+    assert descending_check.ok, descending_check.format()
+
+    # The run door admits both, and the catalog BOTH doors build through
+    # carries one ascending ladder.
+    assert descending_run.levels_hpa == (50.0, 200.0, 500.0, 1000.0)
+    assert descending_run.levels_hpa == ascending_run.levels_hpa
+
+    # A ladder neither door can order is still named, by one function,
+    # and it names the refusal the run would otherwise hit downstream.
+    from gpuwm.ingest.preflight import admitted_pressure_ladder
+    assert admitted_pressure_ladder((1000.0, 500.0, 500.0, 50.0)) is None
+    assert admitted_pressure_ladder((1000.0, 50.0, 500.0)) is None
+    assert admitted_pressure_ladder((1000.0, np.nan)) is None
+    case.install(times, levels=(1000.0, 500.0, 500.0, 50.0))
+    repeated = preflight_report(exp, case.data)
+    refusals = [issue for issue in repeated.failures if issue.code == "levels"]
+    assert len(refusals) == 1
+    assert "strictly monotonic in every column" in refusals[0].message
+    assert "one record per pressure level" in refusals[0].message
+
+
 def test_run_start_refuses_a_forcing_product_missing_required_variables():
     """``gpuwm run`` must name the absent variables, not trip over them.
 

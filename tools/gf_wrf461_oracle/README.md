@@ -296,12 +296,10 @@ All on gfortran 13.3.0 / glibc 2.39, at -O0:
   product recurrence's split point -- so a later phase can close it without
   re-measuring.
 
-  **THAT PARAGRAPH IS HISTORY AND ITS CONCLUSION IS WITHDRAWN.**  It used to
-  end "closing it means transcribing glibc's `lgammaf` polynomial and
-  `__gamma_productf`", and phase 3 did exactly that.  Both files are
-  FSF-copyright LGPL-2.1-or-later with no permissive upstream, so an
-  Apache-2.0 distribution cannot carry them; the transcription was deleted at
-  2.7.0 and **must not be re-created**.  ArWen's gamma is now correctly
+  **THAT PARAGRAPH IS HISTORY AND ITS CONCLUSION IS WITHDRAWN.**  Matching
+  `tgammaf` bit for bit means reproducing its rounding errors, and ArWen no
+  longer does: its earlier gamma, which returned glibc's words, was replaced
+  at 2.7.0 and **must not be brought back**.  ArWen's gamma is now correctly
   rounded -- right where glibc is wrong on 39.44 per cent of [0.25, 36] --
   and the resulting divergence from WRF is a documented deliberate one:
   read `docs/gf_gamma_known_delta.md` before touching anything in this

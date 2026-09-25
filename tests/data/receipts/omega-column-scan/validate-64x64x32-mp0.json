@@ -1,0 +1,159 @@
+{
+  "command": "validate",
+  "elapsed_seconds": 0.7,
+  "environment": {
+    "cuda_runtime": 13020,
+    "cupy": "14.2.0",
+    "driver": 13030,
+    "git_commit": "6880df717622b7bfe113a7081dc13f8d8eccc5d2",
+    "gpu": "NVIDIA GeForce RTX 5070 Ti",
+    "numpy": "2.5.3",
+    "platform": "Linux-7.0.0-29-generic-x86_64-with-glibc2.43",
+    "python": "3.14.4"
+  },
+  "result": {
+    "after_steps": {
+      "mup": {
+        "differing_words": 4096,
+        "max_abs": 0.08035945892333984,
+        "max_abs_in_ulps_of_field_max": 10532.875,
+        "max_abs_of_field": 110.8559799194336,
+        "max_relative_to_field_max": 0.0007248996308700929,
+        "max_ulp": 20689440,
+        "ulp_histogram": {
+          "0": 0,
+          "1": 1,
+          "2": 1,
+          "3_or_more": 4094
+        },
+        "words": 4096
+      },
+      "php": {
+        "differing_words": 126952,
+        "max_abs": 0.014425992965698242,
+        "max_abs_in_ulps_of_field_max": 1890.84375,
+        "max_abs_of_field": 75.39875030517578,
+        "max_relative_to_field_max": 0.0001913293377848991,
+        "max_ulp": 1995694592,
+        "ulp_histogram": {
+          "0": 8216,
+          "1": 43,
+          "2": 55,
+          "3_or_more": 126854
+        },
+        "words": 135168
+      },
+      "thp": {
+        "differing_words": 119675,
+        "max_abs": 0.000762939453125,
+        "max_abs_in_ulps_of_field_max": 6400.0,
+        "max_abs_of_field": 1.668670654296875,
+        "max_relative_to_field_max": 0.0004572139212494742,
+        "max_ulp": 1912602624,
+        "ulp_histogram": {
+          "0": 11397,
+          "1": 0,
+          "2": 0,
+          "3_or_more": 119675
+        },
+        "words": 131072
+      },
+      "u": {
+        "differing_words": 133090,
+        "max_abs": 0.0009291172027587891,
+        "max_abs_in_ulps_of_field_max": 1948.5,
+        "max_abs_of_field": 5.338909149169922,
+        "max_relative_to_field_max": 0.00017402753573794106,
+        "max_ulp": 1921017135,
+        "ulp_histogram": {
+          "0": 30,
+          "1": 43,
+          "2": 44,
+          "3_or_more": 133003
+        },
+        "words": 133120
+      },
+      "v": {
+        "differing_words": 133102,
+        "max_abs": 0.0012036561965942383,
+        "max_abs_in_ulps_of_field_max": 2524.25,
+        "max_abs_of_field": 5.13231897354126,
+        "max_relative_to_field_max": 0.00023452482256061435,
+        "max_ulp": 1901100449,
+        "ulp_histogram": {
+          "0": 18,
+          "1": 53,
+          "2": 52,
+          "3_or_more": 132997
+        },
+        "words": 133120
+      },
+      "w": {
+        "differing_words": 126959,
+        "max_abs": 0.0017082467675209045,
+        "max_abs_in_ulps_of_field_max": 3582.453125,
+        "max_abs_of_field": 5.592615127563477,
+        "max_relative_to_field_max": 0.0003054468667263955,
+        "max_ulp": 1931664330,
+        "ulp_histogram": {
+          "0": 8209,
+          "1": 28,
+          "2": 31,
+          "3_or_more": 126900
+        },
+        "words": 135168
+      }
+    },
+    "fields": [
+      "u",
+      "v",
+      "w",
+      "thp",
+      "php",
+      "mup"
+    ],
+    "grid": {
+      "nx": 64,
+      "ny": 64,
+      "nz": 32
+    },
+    "microphysics": 0,
+    "one_call_omega": {
+      "flat": {
+        "differing_words": 99272,
+        "has_msf": false,
+        "max_abs": 3.0994415283203125e-06,
+        "max_abs_in_ulps_of_field_max": 6.5,
+        "max_abs_of_field": 5.1883063316345215,
+        "max_relative_to_field_max": 5.973898475157819e-07,
+        "max_ulp": 524288,
+        "ulp_histogram": {
+          "0": 35896,
+          "1": 23614,
+          "2": 18294,
+          "3_or_more": 57364
+        },
+        "words": 135168
+      },
+      "map_factor": {
+        "differing_words": 99792,
+        "has_msf": true,
+        "max_abs": 2.6226043701171875e-06,
+        "max_abs_in_ulps_of_field_max": 5.5,
+        "max_abs_of_field": 5.2445502281188965,
+        "max_relative_to_field_max": 5.000627806090928e-07,
+        "max_ulp": 229376,
+        "ulp_histogram": {
+          "0": 35376,
+          "1": 24568,
+          "2": 18386,
+          "3_or_more": 56838
+        },
+        "words": 135168
+      }
+    },
+    "seed": 20260731,
+    "steps": 60
+  },
+  "schema": "gpuwm-omega-column-scan-receipt-v1"
+}

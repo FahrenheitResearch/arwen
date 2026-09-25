@@ -492,9 +492,9 @@ def _scope_header_nodes(node):
     return annotations, base classes and class keywords.  Python evaluates
     every one of them where the definition is written, not inside it.
 
-    Round 4 walked scope *bodies* and nothing else, so each of these was
-    reached by neither the enclosing scope -- which skipped the definition
-    node outright -- nor the definition's own walk, which saw only
+    The earlier walk covered scope *bodies* and nothing else, so each of
+    these was reached by neither the enclosing scope -- which skipped the
+    definition node outright -- nor the definition's own walk, which saw only
     ``body``.  Re-verification #6 measured it at 8 of 8 probes missed,
     including ``def read(leg, name="analysis.npz")``: a complete, working,
     out-of-contract roster consumer needing no import at all.

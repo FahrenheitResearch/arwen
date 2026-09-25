@@ -1203,3 +1203,71 @@ def test_an_admitted_scheme_inferred_from_a_frame_still_needs_no_declaration(
     info = inspect_parent_history_frame(frame)
     assert info.inferred_mp_physics == 10
     assert info.source_mp_physics is None
+
+
+# --- a child that goes non-finite reports it in words ------------------
+
+
+def test_a_non_finite_child_logs_its_health_instead_of_raising(capsys):
+    """The record this log exists for is the one it used to choke on.
+
+    ``decode_stability_record`` computes no CFL from fields that are not
+    finite, so the record's ``cfl`` is ``None`` exactly when ``nan`` is
+    true -- and the step log coerced it with ``float()``, three lines
+    above the refusal that names the breakage.  A blown-up child
+    therefore ended as a ``TypeError`` traceback at exit 1 rather than as
+    the refusal, which reads this record back over the last several
+    checks and prints that ``None`` as "not computed"
+    (tests/test_child_nonfinite_capsule.py).
+
+    AND THE LINE IT WRITES IS JSON.  ``w_max`` is the reading that is not
+    finite on exactly this record, and written as a float it reached the
+    event stream as the token ``NaN``, which RFC 8259 has no spelling
+    for: Python reads it, ``JSON.parse``, ``serde_json``,
+    ``encoding/json`` and ``jq`` do not.  So the one ``child_step`` line
+    that reports a blown-up child was the one line a reader outside
+    Python could not open.
+    """
+    import json
+
+    import numpy as np
+
+    from gpuwm.core.dycore import decode_stability_record
+    from gpuwm.offline_child_run import _log, child_health_log_fields
+
+    blown = decode_stability_record(
+        np.array([np.inf, np.nan, np.nan, 0.0, 0.0, np.nan, 0.0, 0.0],
+                 dtype=np.float64),
+        cfg=None)
+    assert blown["nan"] is True and blown["cfl"] is None
+
+    fields = child_health_log_fields(blown)
+    assert fields["nan"] is True
+    # THE CARRYING SHAPE: null beside a state word, and the two
+    # non-numbers stay distinguishable.
+    assert fields["cfl"] is None
+    assert fields["cfl_state"] == "not computed"
+    assert fields["w_max"] is None
+    assert fields["w_max_state"] == "non-finite"
+
+    def refuse(token):
+        raise ValueError(f"invalid JSON token: {token}")
+
+    _log("child_step", step=6624, total_steps=69120,
+         elapsed_seconds=2760.0, **fields)
+    line = capsys.readouterr().out.strip()
+    assert "NaN" not in line
+    # Parsed as a STRICT reader parses it: Python's default accepts NaN,
+    # and accepting it here is how the defect stayed invisible.
+    record = json.loads(line, parse_constant=refuse)
+    assert record["w_max"] is None
+    assert record["w_max_state"] == "non-finite"
+    assert record["cfl"] is None
+    assert record["cfl_state"] == "not computed"
+
+    # A healthy record still travels as the numbers it is, each one said
+    # to be a measurement rather than one of the two non-numbers.
+    healthy = {"nan": False, "cfl": 0.42, "w_max": 3.5}
+    assert child_health_log_fields(healthy) == {
+        "nan": False, "cfl": 0.42, "cfl_state": "measured",
+        "w_max": 3.5, "w_max_state": "measured"}

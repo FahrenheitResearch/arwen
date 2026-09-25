@@ -997,9 +997,10 @@ def prepared_route_physics_notice(profile: str | None,
         "note: the HRRR route's cold-start evidence contract is keyed "
         "by shipped profile, so it prepares "
         f"{HRRR_DEFAULT_PROFILE} when none is named -- Thompson "
-        "microphysics with RRTMG longwave AND shortwave and no cumulus "
-        "at 3 km, the operational HRRR composition; pass "
-        "--physics-profile <id> to choose another.",
+        "microphysics with RTE+RRTMGP longwave AND shortwave and no "
+        "cumulus at 3 km; pass --physics-profile <id> to choose "
+        "another, the same composition on the legacy RRTMG engines "
+        "included.",
         "  --physics-profile <id> binds the config to a shipped suite "
         "and every runner then enforces it switch for switch.  What "
         "each one ACTUALLY runs:",

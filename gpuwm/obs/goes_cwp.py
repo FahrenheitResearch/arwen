@@ -39,6 +39,8 @@ Units are g m-2 throughout, the pack's own unit and the unit
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import math
+
 import numpy as np
 
 from gpuwm.obs.goes_pack import (CLOUDTOP_SCHEMAS, CWP_SCHEMAS,
@@ -580,6 +582,120 @@ def join_cloud_top(cwp_pack: GoesPack, cloudtop_pack: GoesPack, *,
     return joined, receipt
 
 
+def _ecef_from_geodetic(lat_deg, lon_deg, height_m, a: float, b: float):
+    """Geodetic to Earth-centred, Earth-fixed metres on the (a, b) ellipsoid."""
+
+    lat = np.radians(np.asarray(lat_deg, dtype=np.float64))
+    lon = np.radians(np.asarray(lon_deg, dtype=np.float64))
+    h = np.asarray(height_m, dtype=np.float64)
+    e2 = 1.0 - (b * b) / (a * a)
+    n = a / np.sqrt(1.0 - e2 * np.sin(lat) ** 2)
+    x = (n + h) * np.cos(lat) * np.cos(lon)
+    y = (n + h) * np.cos(lat) * np.sin(lon)
+    z = (n * (1.0 - e2) + h) * np.sin(lat)
+    return x, y, z
+
+
+def _geodetic_from_ecef(x, y, z, a: float, b: float):
+    """The inverse of :func:`_ecef_from_geodetic`, iterated to convergence.
+
+    Six fixed-point iterations bring the latitude to well under a
+    micro-degree for every point near the surface, which is a millimetre
+    on the ground and far below the pixel size this is applied to.
+    """
+
+    e2 = 1.0 - (b * b) / (a * a)
+    lon = np.arctan2(y, x)
+    p = np.hypot(x, y)
+    lat = np.arctan2(z, p * (1.0 - e2))
+    h = np.zeros_like(p)
+    for _ in range(6):
+        n = a / np.sqrt(1.0 - e2 * np.sin(lat) ** 2)
+        h = p / np.cos(lat) - n
+        lat = np.arctan2(z, p * (1.0 - e2 * n / (n + h)))
+    return np.degrees(lat), np.degrees(lon), h
+
+
+def parallax_displacement(lat_deg, lon_deg, height_m, projection: dict):
+    """Where a cloud top seen at a nominal ground point really is.
+
+    A geostationary imager assigns every pixel the ground point its line
+    of sight reaches, the *nominal* location.  A cloud top at height
+    ``height_m`` on that line sits nearer the satellite than the ground
+    point does, so it is displaced from the nominal location toward the
+    sub-satellite point by close to ``height_m * tan(view zenith)``: about
+    a kilometre per kilometre of cloud top over the mid-latitudes.  This
+    returns the ground point directly beneath the cloud top, which is
+    where a column observation of that cloud belongs on a model grid.
+
+    The satellite sits ``perspective_point_height_m`` above the equator
+    at ``longitude_of_projection_origin_deg``; the surface at height
+    ``height_m`` is the reference ellipsoid grown by that height on both
+    axes, which is exact for a sphere and within metres of the geodetic
+    height surface for the Earth.  ``height_m`` is the ACHA cloud-top
+    height, taken as height above the ellipsoid (:data:`CLOUD_TOP_DATUM`:
+    the geoid offset of tens of metres moves the answer by centimetres).
+
+    Every argument broadcasts.  A pixel whose height is not finite or not
+    positive is not moved and its displacement is 0: a clear pixel is
+    where the ground is, and a cloudy pixel without a retrieved height has
+    no support for any other place.
+
+    Returns ``(lat_deg, lon_deg, displacement_m, view_zenith_deg)``: the
+    displaced ground point, how far it moved along the ground (the chord
+    between the two ground points, in metres), and the view zenith angle
+    at the nominal point.
+    """
+
+    a = float(projection["semi_major_axis_m"])
+    b = float(projection["semi_minor_axis_m"])
+    satellite_radius = float(projection["perspective_point_height_m"]) + a
+    sub_lon = float(projection["longitude_of_projection_origin_deg"])
+    lat0 = np.asarray(lat_deg, dtype=np.float64)
+    lon0 = np.asarray(lon_deg, dtype=np.float64)
+    top = np.asarray(height_m, dtype=np.float64)
+    lat0, lon0, top = np.broadcast_arrays(lat0, lon0, top)
+    movable = np.isfinite(lat0) & np.isfinite(lon0) & np.isfinite(top) \
+        & (top > 0.0)
+
+    sx = satellite_radius * math.cos(math.radians(sub_lon))
+    sy = satellite_radius * math.sin(math.radians(sub_lon))
+    sz = 0.0
+    px, py, pz = _ecef_from_geodetic(np.where(movable, lat0, 0.0),
+                                     np.where(movable, lon0, 0.0), 0.0, a, b)
+    # The line of sight, satellite to nominal ground point.
+    dx, dy, dz = px - sx, py - sy, pz - sz
+    # View zenith at the nominal point: the angle between the geodetic
+    # up there and the direction to the satellite.
+    lat_r = np.radians(np.where(movable, lat0, 0.0))
+    lon_r = np.radians(np.where(movable, lon0, 0.0))
+    ux, uy, uz = (np.cos(lat_r) * np.cos(lon_r), np.cos(lat_r) * np.sin(lon_r),
+                  np.sin(lat_r))
+    to_sat = np.sqrt(dx * dx + dy * dy + dz * dz)
+    cos_zenith = -(dx * ux + dy * uy + dz * uz) / np.where(to_sat > 0, to_sat, 1)
+    zenith_deg = np.degrees(np.arccos(np.clip(cos_zenith, -1.0, 1.0)))
+
+    # First intersection of the line of sight with the ellipsoid grown by
+    # the cloud-top height: solve |X|_(a+h, b+h) = 1 for X = S + t * d.
+    ah = a + np.where(movable, top, 0.0)
+    bh = b + np.where(movable, top, 0.0)
+    qa = (dx * dx + dy * dy) / (ah * ah) + (dz * dz) / (bh * bh)
+    qb = 2.0 * (sx * dx + sy * dy) / (ah * ah) + 2.0 * sz * dz / (bh * bh)
+    qc = (sx * sx + sy * sy) / (ah * ah) + (sz * sz) / (bh * bh) - 1.0
+    discriminant = np.maximum(qb * qb - 4.0 * qa * qc, 0.0)
+    t = (-qb - np.sqrt(discriminant)) / (2.0 * np.where(qa > 0, qa, 1))
+    cx, cy, cz = sx + t * dx, sy + t * dy, sz + t * dz
+    lat_c, lon_c, _ = _geodetic_from_ecef(cx, cy, cz, a, b)
+    gx, gy, gz = _ecef_from_geodetic(lat_c, lon_c, 0.0, a, b)
+    moved = np.sqrt((gx - px) ** 2 + (gy - py) ** 2 + (gz - pz) ** 2)
+
+    lat_out = np.where(movable, lat_c, lat0)
+    lon_out = np.where(movable, lon_c, lon0)
+    displacement = np.where(movable, moved, 0.0)
+    zenith = np.where(movable, zenith_deg, np.nan)
+    return lat_out, lon_out, displacement, zenith
+
+
 def no_join_receipt(reason: str) -> dict:
     """The receipt written when no cloud-top pack was supplied.
 
@@ -727,8 +843,17 @@ def grid_cwp(cwp_pack: GoesPack, grid, *, error_model: CwpErrorModel,
              max_derivation_mismatch_fraction: float = 0.0) -> GriddedCwp:
     """Superob one CWP pack onto a :class:`TargetGrid`.
 
-    **On placement.**  CWP is a column integral: it has no height, and the
-    ``obs_level`` this returns is not a claim that it does.  The LETKF
+    **On horizontal placement.**  The pack's ``lat``/``lon`` planes are
+    the ground points the satellite's lines of sight reach, not the ground
+    beneath the clouds it saw.  A cloudy pixel whose joined cloud top is
+    known is moved to the ground beneath that top
+    (:func:`parallax_displacement`), a clear pixel stays where the ground
+    is, and a cloudy pixel with no retrieved top stays at the ground and is
+    counted in the receipt rather than moved by a height nobody measured.
+
+    **On vertical placement.**  CWP is a column integral: it has no
+    height, and the ``obs_level`` this returns is not a claim that it
+    does.  The LETKF
     localises in metres about an observation's gridpoint, so a column
     observation has to be *centred* somewhere, and the centre chosen here
     is the retrieved cloud top where the join supplied one and
@@ -782,8 +907,44 @@ def grid_cwp(cwp_pack: GoesPack, grid, *, error_model: CwpErrorModel,
     classes = phase_class(cwp_pack.plane("phase")).reshape(-1)
 
     geolocated = np.isfinite(lat) & np.isfinite(lon)
-    i_frac, j_frac = grid.mass_index(np.where(geolocated, lat, 0.0),
-                                     np.where(geolocated, lon, 0.0))
+    cloudy = (classes != CLASS_NONE) & (classes != CLASS_CLEAR)
+
+    # -- the joined cloud top -------------------------------------------
+    if cloud_top_m is None:
+        tops = np.full(values.size, np.nan)
+        if join_receipt is None:
+            join_receipt = no_join_receipt("no cloud-top pack was supplied")
+    else:
+        tops = np.asarray(cloud_top_m, dtype=np.float64).reshape(-1)
+        if tops.size != values.size:
+            raise GoesCwpError(
+                f"the joined cloud-top field holds {tops.size} values but "
+                f"the CWP pack's grid holds {values.size}; the join did not "
+                "land on this pack's grid")
+        if join_receipt is None:
+            raise GoesCwpError(
+                "a joined cloud-top field was supplied without the receipt "
+                "join_cloud_top produced. The interpolation is the "
+                "consumer's recorded choice; an unrecorded one is the thing "
+                "the bridge's separate-pack ruling exists to prevent")
+
+    # -- where each pixel's cloud really is ------------------------------
+    # The pack's lat/lon are the ground points the satellite's lines of
+    # sight reach.  A cloud top on such a line sits nearer the satellite
+    # than the ground does, so it is over a point displaced toward the
+    # sub-satellite point by close to height * tan(view zenith): six
+    # kilometres and more for a mid-latitude cloud, which is a cell or two
+    # of a storm-scale grid.  A cloudy pixel with a retrieved top is moved
+    # to the ground beneath its top; a clear pixel is where the ground is;
+    # a cloudy pixel with no height is left at the ground and counted,
+    # because there is no support for any other place.
+    has_height = np.isfinite(tops) & (tops > 0.0)
+    displaced = geolocated & cloudy & has_height
+    placed_lat, placed_lon, moved_m, zenith_deg = parallax_displacement(
+        np.where(geolocated, lat, 0.0), np.where(geolocated, lon, 0.0),
+        np.where(displaced, tops, np.nan), cwp_pack.projection())
+
+    i_frac, j_frac = grid.mass_index(placed_lat, placed_lon)
     i_index = np.rint(i_frac).astype(np.int64)
     j_index = np.rint(j_frac).astype(np.int64)
     on_grid = geolocated & grid.inside(i_index, j_index)
@@ -807,30 +968,24 @@ def grid_cwp(cwp_pack: GoesPack, grid, *, error_model: CwpErrorModel,
     dominant = np.argmax(stacked, axis=0).astype(np.int8)
     dominant_count = stacked.max(axis=0)
 
-    # -- the cloudy cells' retrieved top ----------------------------------
-    if cloud_top_m is None:
-        top_sum = np.zeros(cells)
-        top_count = np.zeros(cells, dtype=np.int64)
-        if join_receipt is None:
-            join_receipt = no_join_receipt("no cloud-top pack was supplied")
+    # -- the cloudy cells' retrieved top, credited where the cloud is ----
+    has_top = valid & (classes != CLASS_CLEAR) & np.isfinite(tops)
+    top_sum = np.bincount(flat[has_top], weights=tops[has_top],
+                          minlength=cells)
+    top_count = np.bincount(flat[has_top], minlength=cells).astype(np.int64)
+
+    displaced_on_grid = displaced & on_grid
+    if np.any(displaced):
+        moved = moved_m[displaced]
+        displacement_stats = {
+            "median": float(np.median(moved)),
+            "p95": float(np.percentile(moved, 95.0)),
+            "max": float(moved.max()),
+            "mean": float(moved.mean()),
+            "view_zenith_deg_median": float(np.median(zenith_deg[displaced])),
+        }
     else:
-        tops = np.asarray(cloud_top_m, dtype=np.float64).reshape(-1)
-        if tops.size != values.size:
-            raise GoesCwpError(
-                f"the joined cloud-top field holds {tops.size} values but "
-                f"the CWP pack's grid holds {values.size}; the join did not "
-                "land on this pack's grid")
-        has_top = valid & (classes != CLASS_CLEAR) & np.isfinite(tops)
-        top_sum = np.bincount(flat[has_top], weights=tops[has_top],
-                              minlength=cells)
-        top_count = np.bincount(flat[has_top],
-                                minlength=cells).astype(np.int64)
-        if join_receipt is None:
-            raise GoesCwpError(
-                "a joined cloud-top field was supplied without the receipt "
-                "join_cloud_top produced. The interpolation is the "
-                "consumer's recorded choice; an unrecorded one is the thing "
-                "the bridge's separate-pack ruling exists to prevent")
+        displacement_stats = None
 
     # -- the gates ---------------------------------------------------------
     with np.errstate(invalid="ignore", divide="ignore"):
@@ -896,6 +1051,12 @@ def grid_cwp(cwp_pack: GoesPack, grid, *, error_model: CwpErrorModel,
         "pixels_liquid": int(np.count_nonzero(
             valid & (classes == CLASS_LIQUID))),
         "pixels_ice": int(np.count_nonzero(valid & (classes == CLASS_ICE))),
+        # Horizontal placement: cloudy pixels moved to the ground beneath
+        # their retrieved top, and cloudy pixels that had no top to move by.
+        "pixels_displaced_to_cloud_top": int(np.count_nonzero(displaced)),
+        "pixels_displaced_on_grid": int(np.count_nonzero(displaced_on_grid)),
+        "pixels_cloudy_without_height_at_ground": int(np.count_nonzero(
+            geolocated & cloudy & ~has_height)),
         "cells_touched": int(np.count_nonzero(landed > 0)),
         "cells_below_min_pixels": int(np.count_nonzero(
             (landed > 0) & ~enough)),
@@ -961,6 +1122,27 @@ def grid_cwp(cwp_pack: GoesPack, grid, *, error_model: CwpErrorModel,
                 "about where the condensate is. The lens radius must span "
                 "the column or the observation is silently truncated"),
             "one_observation_per_column": True,
+            "horizontal": {
+                "rule": (
+                    "a cloudy pixel with a retrieved top is placed at the "
+                    "ground beneath that top, displaced from the pack's "
+                    "nominal ground point toward the sub-satellite point "
+                    "along the satellite's line of sight; a clear pixel "
+                    "stays at the ground; a cloudy pixel without a "
+                    "retrieved top stays at the ground and is counted"),
+                "geometry": {
+                    "sub_satellite_longitude_deg": float(
+                        cwp_pack.projection()[
+                            "longitude_of_projection_origin_deg"]),
+                    "perspective_point_height_m": float(
+                        cwp_pack.projection()["perspective_point_height_m"]),
+                    "height_datum": CLOUD_TOP_DATUM,
+                },
+                "pixels_displaced": int(np.count_nonzero(displaced)),
+                "pixels_cloudy_without_height_at_ground": int(
+                    np.count_nonzero(geolocated & cloudy & ~has_height)),
+                "displacement_m": displacement_stats,
+            },
         },
         "counts": counts,
     }

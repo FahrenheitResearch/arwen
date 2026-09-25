@@ -2234,6 +2234,77 @@ def np_small_step_finish_theta(thp, th_pp, mu_s, mu_new, thb, c1h, c2h,
     return th_num / (c1h * mu_new[None] + c2h) - thb
 
 
+def np_calc_ww_cp(ru, rv, dnw, c1h, rdx, rdy, msft=None, top_residual=None):
+    """WRF ``calc_ww_cp`` in float32 scalars, one rounding per operation.
+
+    The CPU oracle for :func:`gpuwm.core.dycore._omega_ref`: the Fortran
+    loop of dyn_em/module_big_step_utilities_em.F transcribed operator for
+    operator on NumPy float32 scalars, which round every product and sum
+    to single precision with no contraction, so the device kernel is
+    checked against it on the uint32 view rather than with a tolerance.
+    Per column, in the Fortran's order:
+
+    * ``divv(k) = (msftx*dnw(k)) * (rdx*(ru(i+1) - ru(i)) + rdy*(rv(j+1)
+      - rv(j)))``, the map factor and thickness multiplied first;
+    * ``dmdt = dmdt + divv(k)`` sequentially from the surface up;
+    * ``ww(1) = 0``, ``ww(kte) = 0``, and for the interior
+      ``ww(k) = (ww(k-1) - (dnw(k-1)*c1h(k-1))*dmdt) - divv(k-1)``.
+
+    ``ru`` is (nz, ny, nx+1), ``rv`` is (nz, ny+1, nx), ``dnw``/``c1h`` are
+    (nz,), ``msft`` is (ny, nx) or None (WRF with ``msftx = 1``); every
+    array must already be float32 and ``rdx``/``rdy`` float32 scalars (the
+    single-precision ``1./dx`` of solve_em), because a float64 operand would
+    silently widen the chain.  Returns ``ww`` (nz+1, ny, nx) float32.  When
+    ``top_residual`` is an (ny, nx) float32 array it receives what the
+    recurrence WOULD have produced at the top level, the value WRF discards
+    in favour of the exact zero: the column closure, which is zero only to
+    the rounding of the two sums it cancels.
+    """
+    f32 = np.float32
+    arrays = {"ru": ru, "rv": rv, "dnw": dnw, "c1h": c1h}
+    if msft is not None:
+        arrays["msft"] = msft
+    for name, arr in arrays.items():
+        if arr.dtype != np.float32:
+            raise TypeError(f"np_calc_ww_cp: {name} must be float32, "
+                            f"got {arr.dtype}")
+    for name, val in (("rdx", rdx), ("rdy", rdy)):
+        if not isinstance(val, np.float32):
+            raise TypeError(f"np_calc_ww_cp: {name} must be a numpy "
+                            f"float32 scalar, got {type(val).__name__}")
+    nz, ny, nxp = ru.shape
+    nx = nxp - 1
+    if rv.shape != (nz, ny + 1, nx):
+        raise ValueError(f"np_calc_ww_cp: rv shape {rv.shape} does not "
+                         f"match ru shape {ru.shape}")
+    ww = np.zeros((nz + 1, ny, nx), dtype=np.float32)
+    divv = np.empty(nz, dtype=np.float32)
+    zero = f32(0.0)
+    for j in range(ny):
+        for i in range(nx):
+            m = None if msft is None else msft[j, i]
+            dmdt = zero
+            for k in range(nz):
+                du = ru[k, j, i + 1] - ru[k, j, i]
+                dv = rv[k, j + 1, i] - rv[k, j, i]
+                bracket = (rdx * du) + (rdy * dv)
+                weight = dnw[k] if m is None else m * dnw[k]
+                d = weight * bracket
+                divv[k] = d
+                dmdt = dmdt + d
+            w = zero
+            ww[0, j, i] = w
+            for k in range(1, nz):
+                w = w - (dnw[k - 1] * c1h[k - 1]) * dmdt
+                w = w - divv[k - 1]
+                ww[k, j, i] = w
+            if top_residual is not None:
+                t = w - (dnw[nz - 1] * c1h[nz - 1]) * dmdt
+                top_residual[j, i] = t - divv[nz - 1]
+            ww[nz, j, i] = zero
+    return ww
+
+
 def random_acoustic_state(seed=0, nz=8, ny=2, nx=12, stretch=None,
                           hybrid_opt=0, hill_height=0.0,
                           msf_amp=0.0, f_amp=0.0, moist=False,

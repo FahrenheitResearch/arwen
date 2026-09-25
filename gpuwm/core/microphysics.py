@@ -456,6 +456,7 @@ def _apply_thompson(
         launch_graupel_sedimentation,
         launch_hydrometeor_column_mask,
         launch_ice_sedimentation,
+        launch_microphysics_columns,
         launch_rain_evaporation,
         launch_rain_sedimentation,
         launch_snow_sedimentation,
@@ -521,6 +522,39 @@ def _apply_thompson(
     # has no earlier species kernel that resets it before the graupel slice.
     graupelncv.fill(DTYPE(0.0))
     save_pre_mp_theta(state)
+    # WRF's entry rewrite (:1844-1845, :1871-1872, :1900-1901, :1911,
+    # :1941-1942): cloud, ice, rain, snow and graupel whose entry mixing
+    # ratio is at or below R1 are ZEROED, mass and number, before any
+    # process runs, and in every column, because mp_gt_driver copies the
+    # rewritten 1-D arrays back whether or not the column had microphysics.
+    # Classic Thompson reads these the way mp=28 does: a cloud residue joins
+    # whatever the fallout and the melt bring to its level (:3943-3966,
+    # :3975), an orphan number (q <= R1, n > 0, which advection leaves at
+    # cloud edges and an analysis increment anywhere) is read by the
+    # nucleation, the fallout, the terminal numbers and the reflectivity, and
+    # the private graupel number starts from the graupel mass
+    # (launch_classic_graupel_number_init).  Without it the final rain
+    # differed from WRF v4.6.1's own Fortran beyond 1e-2, unexplained by
+    # rounding, at 3,154 levels of two saved real-data analysis states and
+    # the echo by up to 43.9 dB in 3,394 cells of one
+    # (tools/thompson_real_column_parity --mp 8).  The mask is taken before
+    # either array is written; ``cp.where`` writes a +0.0, as WRF does.
+    for mass, number in ((state.qc, None), (state.qi, state.ni),
+                         (state.qr, state.nr), (state.qs, None),
+                         (state.qg, None)):
+        present = mass > DTYPE(1.0e-12)
+        if number is not None:
+            number[...] = cp.where(present, number, DTYPE(0.0))
+        mass[...] = cp.where(present, mass, DTYPE(0.0))
+    # WRF's column exit (:1646, :1827-1990, :2020): a column whose entry
+    # condensate is all at or below R1 and which is nowhere supersaturated
+    # over ice leaves mp_thompson before the source loop, and its vapour is
+    # not floored at 1.E-10 by the terminal apply (:3974).  Taken on the
+    # entry state; read by the phase cleanup, which carries the floor.
+    micro_columns = state.scratch(surface_shape, "mp_thompson_micro_columns")
+    launch_microphysics_columns(
+        state.qc, state.qi, state.qr, state.qs, state.qg,
+        temperature, state.p, state.qv, micro_columns)
     launch_classic_graupel_number_init(
         state.qg, temperature, state.p, state.qv,
         graupel_number_shadow)
@@ -538,27 +572,45 @@ def _apply_thompson(
     # post-source column contains rain.  RAINNCV is not populated until the
     # later ice fallout launch, so it safely carries this held column mask.
     launch_hydrometeor_column_mask(state.qr, rainncv)
-    # Cloud fallout is guarded by the held post-source ANY(L_qc), so cloud
-    # nucleated by the following saturation adjustment in an otherwise empty
-    # column waits until the next microphysics call.  SNOWNCV is overwritten
-    # by ice fallout before it becomes a public current-call diagnostic.
-    launch_hydrometeor_column_mask(state.qc, snowncv)
     # SR is refreshed only after all fallout, so its 2-D buffer safely carries
     # the zero/one column guard until the graupel launch consumes it.
     launch_graupel_fallout_column_mask(
         frozen_reference_temperature, state.qg, sr)
+    # The adjustment writes WRF's L_qc(k) into ``cloud_presence``: set from
+    # the post-source cloud (:3215-3223) and cleared where the adjustment
+    # leaves rc(k) at R1 (:3485), never set by it.  The buffer is the rain
+    # evaporation's density output, which that kernel writes at every
+    # element before anything reads it; the column mask below is the
+    # presence's only reader.
+    cloud_presence = rain_reference_density
     launch_cloud_saturation_adjust(
         temperature, state.p, state.qv, state.qc,
         reference_density=frozen_reference_density,
         reference_temperature=frozen_reference_temperature,
         # Full theta was saved before the source call. This scratch is not
         # read again until the final temperature-to-theta conversion.
-        condensation_marker=th)
+        condensation_marker=th,
+        cloud_presence=cloud_presence)
+    # :3645 ``if (ANY(L_qc .eqv. .true.))`` reads L_qc as the sources set it
+    # and the adjustment cleared it.  A column whose only cloud condensed
+    # this step keeps that cloud where it formed, and a column whose cloud
+    # the adjustment emptied does not sediment; the post-source mask the
+    # adapter took before did both, which moved cloud water that WRF v4.6.1
+    # leaves in place on saved real-data columns
+    # (tools/thompson_real_column_parity --mp 8).  SNOWNCV is overwritten by
+    # ice fallout before it becomes a public current-call diagnostic.
+    launch_hydrometeor_column_mask(cloud_presence, snowncv)
+    # The rain evaporation writes WRF's L_qr (:3236, zero where it failed)
+    # and the :3568 rewrite (negative) into the rain fallout's density, which
+    # the rain and snow fallout read below as mp=28's do: the mixing-ratio
+    # stand-in for L_qr they read before fired where WRF's rr(k) sits at or
+    # below R1 and missed levels whose rain the evaporation had just taken.
     launch_rain_evaporation(
         state.qr, state.nr, temperature, state.p, state.qv, dt,
         reference_density=rain_reference_density,
         graupel_melt_marker=graupel_melt_marker,
-        source_density=frozen_reference_density, condensation_marker=th)
+        source_density=frozen_reference_density, condensation_marker=th,
+        density_carries_rain_presence=True)
     # WRF solve_em passes the physical, full-level grid%w_2 field unchanged
     # through microphysics_driver; Thompson copies w(i,k,j) directly into
     # w1d(k).  gpuwm's matching kts:kte view is the lower full-level slice,
@@ -571,6 +623,9 @@ def _apply_thompson(
         state.qi, state.ni, temperature, state.p, state.qv, dz,
         rainnc, rainncv, snownc, snowncv, dt,
         reference_density=frozen_reference_density)
+    # Melting snow falls at its speed blended with the rain pass's own fall
+    # speed vtrk(k) (:3612-3634, :3722-3724), which a level without rain
+    # inherits from above: the blend reads the rain fallout's density.
     launch_snow_sedimentation(
         state.qs, temperature, state.p, state.qv, dz,
         rainnc, rainncv, snownc, snowncv, dt,
@@ -580,6 +635,8 @@ def _apply_thompson(
         melt_rain_qr=state.qr,
         melt_rain_nr=state.nr,
         velocity_boost=snow_velocity_boost,
+        melt_rain_density=rain_reference_density,
+        melt_rain_density_carries_presence=True,
         accumulate_surface=True)
     launch_graupel_sedimentation(
         state.qg, temperature, state.p, state.qv, dz,
@@ -591,9 +648,10 @@ def _apply_thompson(
     launch_rain_sedimentation(
         state.qr, state.nr, temperature, state.p, state.qv, dz,
         rainnc, rainncv, dt, reference_density=rain_reference_density,
-        accumulate_surface=True)
+        accumulate_surface=True, density_carries_rain_presence=True)
     launch_final_phase_cleanup(
-        state.qc, state.qi, state.ni, temperature, state.p, state.qv)
+        state.qc, state.qi, state.ni, temperature, state.p, state.qv,
+        micro_columns=micro_columns)
     launch_classic_graupel_number_finalize(
         state.qg, temperature, state.p, state.qv,
         graupel_number_shadow)

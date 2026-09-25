@@ -31,7 +31,7 @@ CHANGELOG = REPO / "CHANGELOG.md"
 #: Well above any release note this project has shipped (largest before 1.4.0
 #: was 1,252 words) and far below a pasted development log (5,910). A release
 #: that genuinely needs more prose should link to a document, not inline it.
-MAX_WORDS = 3000
+MAX_WORDS = 3500  # Drew's ruling, 2026-09-21: raised from 3000 for 2.7.6's thirty-nine changes
 
 #: Substrings that mean internal development state reached a public document.
 #: Each is paired with what it leaks, so a failure explains itself.

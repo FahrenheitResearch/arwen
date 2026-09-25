@@ -277,6 +277,8 @@ Use `--polygon study-area.geojson` instead of a point when the full area is requ
 
 Fitting retains scientific settings and reports the new layout. It may refuse a footprint or research minimum area that cannot fit. Inspect the result before preparation.
 
+`--write` creates the configuration, the fit receipt, and every file the configuration's input route reads beside it: the `namelist.wps`, and on the regional route the two namelists and the target-domain document the run reads. They are rendered from the fitted layout, not copied, and each one is named in the printed output and in the receipt's `route_companions`. An existing file of any of those names is preserved and the fit refuses.
+
 ### Make a streaming copy
 
 ```text
@@ -284,7 +286,7 @@ gpuwm domain-tiles CONFIG.toml --out configs/streamed.toml --mode auto
 gpuwm domain-tiles CONFIG.toml --out configs/streamed.toml --mode auto --write
 ```
 
-This preserves configured area, resolution, time, and physics, validates the planner's GPU/host-memory requirements, and creates a new file. Use `on` to force planner-selected streaming. In TOML, the ordinary automatic setting is:
+This preserves configured area, resolution, time, and physics, validates the planner's GPU/host-memory requirements, and creates a new configuration with every file its input route reads beside it, named in the receipt's `route_companions`. Use `on` to force planner-selected streaming. In TOML, the ordinary automatic setting is:
 
 ```toml
 [tiles]
@@ -311,7 +313,7 @@ The packaged catalog contains 114 starting configurations organized into 38 ques
 gpuwm research create RECIPE_ID --point "35.3,-97.5" --source gfs --cycle YYYY-MM-DDTHH --hardware-class auto --out configs/study.toml
 ```
 
-Replace the recipe ID and date. Creation writes a new configuration, plot selection, and research receipt and starts no forecast. It reports actual fitted geometry and memory admission. Omitted duration keeps the recipe's duration. Use `--hours`, `--nz`, or `--physics-profile` only for changes you intend to review.
+Replace the recipe ID and date. Creation writes a new configuration, every file that configuration's input route reads beside it, a plot selection, and a research receipt, and starts no forecast. It reports actual fitted geometry and memory admission. Omitted duration keeps the recipe's duration. Use `--hours`, `--nz`, or `--physics-profile` only for changes you intend to review.
 
 For a declared 8 GiB target, use `--hardware-class 8 --vram-gib 8`. Without `--vram-gib`, hardware selection measures current capacity and free memory. The class chooses a resource profile; it does not create memory or validate the requested study. If a larger class loses the minimum study area, retry the same question with `auto` or the suggested smaller class and keep the true capacity.
 
@@ -495,7 +497,9 @@ Replace `runs/case` with the actual run directory. Review the selection before d
 | `--barbs` / `--streamlines` | Choose a wind overlay style. |
 | `--heavy` | Compute additional heavy ECAPE diagnostics at import, with extra CPU cost; this does not supply every absent diagnostic. |
 | `--theme dark` | Use the built-in dark theme. |
-| `--products var:FIELD` | Plot a stored generic field offered by the actual catalog. |
+| `--products var:FIELD` | Plot a stored generic field offered by the actual catalog. A field stored in kg kg-1 is drawn in g kg-1. |
+| `--products isotherm_height_0c,supercooled_water_path_0_3km,cloud_water_column_max` | Column products the wrfout import derives from its native levels: the height of the 0, -10 and -20 C isotherms (metres above sea level, the lowest crossing above the ground, blank where the column never reaches it), the supercooled liquid water path (`supercooled_water_path` for the whole column, `_0_3km` and `_3_6km` for those layers above ground, in g m-2, on the model's own dry-air mass per level), the column maximum of each hydrometeor mixing ratio (`cloud_water_`, `rain_water_`, `cloud_ice_`, `snow_` and `graupel_column_max`, g kg-1) and `simulated_ir_satellite`, a brightness temperature from the column's cloud optical depth. |
+| `--products xsec:QCLOUD=0.01,0.1/wa` | A vertical cut whose fill is drawn on the named range (0.01 to 0.1 g kg-1 on every frame); `xsec:QCLOUD~log` draws the fill in log10 with the bar labelled in the field's own numbers, 0.1, 1, 10. |
 
 The default native engine needs its matching executable and map assets. If they are absent, automatic rendering refuses and names the remedy. `--engine matplotlib` is an explicitly requested limited workaround; it is not an automatic substitute for the native product set.
 
@@ -528,6 +532,23 @@ gpuwm resume CONFIG.toml --outdir runs/direct-case --from latest
 ```
 
 This locates the newest valid complete checkpoint set in the interrupted run's output directory. To select an explicit checkpoint, replace `latest` with its real path. `resume` uses the same direct-run restart contract; it does not accept a different scientific configuration merely because the filenames match.
+
+The configuration argument is resolved against the run directory as well as
+the working directory. An argument that is not a readable file is tried with
+the `.toml` extension a file manager hides, then against `--outdir`, and last
+against the configuration the run in `--outdir` recorded for itself:
+`child.toml` for a downscaled child, `experiment.toml` for a prepared
+forecast, `captured-config-<run id>.toml` for a supervised run. `--explain`
+prints which of those answered and which did not; when none of them is a
+readable configuration file the refusal names every path it tried.
+
+A downscaled child's run directory is refused instead of resumed. A child is
+integrated by `gpuwm downscale` from an archived parent, and no door
+continues one from its own checkpoint. A child that reached its last frame is
+told there is nothing to resume and given the render line for the frames it
+left; one that stopped inside its forecast is re-run with `gpuwm downscale`.
+Its checkpoints remain useful: they are what the next downscale reads as
+parent evidence.
 
 The explicit direct-run form is:
 

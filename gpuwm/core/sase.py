@@ -1020,8 +1020,11 @@ def launch_sase_step(u, v, w, theta, e, *, dx: float, dy: float, dz: float,
     it already holds, with l_ref = delta**f * l_B(z+z0)**(1-f) blended
     from the :func:`launch_blackadar_length` field at the l_d blend's
     own endpoint branches.  The two switches COMPOSE exactly as the
-    authority's do (S3-6k selects the base, S3-12 adds to it).  With
-    the default False the kernel gate ``has_ced == 0`` adds NOTHING --
+    authority's do (S3-6k selects the base, S3-12 adds to it).  The
+    model driver sets it from ``RunConfig.sase_additive_dissipation``,
+    whose shipped default is True (1a0e8a7f8); this argument's own
+    default is False, so a bare launcher call is the un-channeled step.
+    With it False the kernel gate ``has_ced == 0`` adds NOTHING --
     bitwise the pre-S3-12 step, no l_B field allocated or launched (the
     lb slot rides the gated-dummy idiom); with it True the one new
     device field is the state-independent l_B (geometry only, computed

@@ -771,6 +771,97 @@ def test_the_refusal_fires_through_compute_with_no_preseeded_contract(
     assert reached == [], "Noah ran before the contract refused"
 
 
+def test_a_leg_that_begins_off_the_radiation_cadence_runs_its_producer(
+        monkeypatch):
+    """THE CYCLE LEG.  A driver's first step is not always itimestep 1.
+
+    WRF's mandatory itimestep == 1 radiation call is what seeds GLW
+    before the land surface consumes it, and ``itimestep`` inside
+    ``compute`` is reconstructed from the domain's own elapsed model
+    time.  A DA cycle leg is built fresh on an analysis state that is
+    already some way into the run, so its first step lands at whatever
+    phase of the radiation cadence that time falls on -- here model
+    second 900 against a 12 minute cadence and a 60 s step, which is
+    step 16 of a 12-step interval and not due.  The carriers are seeded
+    unwritten because radiation is their producer, so the contract
+    refused at the leg's first surface call and every cycle under a
+    both-streams profile died there.
+
+    The producer runs instead.  The refusal is untouched for the
+    configurations that have no producer: the test above still meets it
+    with radiation off.
+    """
+    physics, state, cfg, driver, reached = _hand_built_compute_driver(
+        monkeypatch, carriers=CarrierContract())
+    state.elapsed_seconds = 900.0
+    cfg.ra_lw_physics = 4
+    cfg.ra_sw_physics = 4
+    driver.carriers.declare("glw", source=CARRIER_SOURCE_UNWRITTEN)
+    driver.carriers.declare("swdown", source=CARRIER_SOURCE_UNWRITTEN)
+    driver._refresh_surface_diagnostics = lambda atmosphere: None
+
+    def _radiation(atmosphere, state, cfg):
+        reached.append("radiation")
+        for name in ("glw", "swdown"):
+            driver.carriers.declare(
+                name, source=CARRIER_SOURCE_RADIATION_SCHEME,
+                model_time=float(state.elapsed_seconds))
+
+    driver._run_radiation = _radiation
+    driver.compute(state, cfg)
+    assert reached == ["radiation", "noah"], reached
+    assert driver.carriers.record("glw").source == (
+        CARRIER_SOURCE_RADIATION_SCHEME)
+    assert driver.carriers_need_producer_refresh is False
+    # And it is once: the second step of the leg is on cadence and the
+    # carriers now have a producer, so nothing forces another call.
+    reached.clear()
+    state.elapsed_seconds = 960.0
+    driver.compute(state, cfg)
+    assert reached == ["noah"], reached
+
+
+def test_the_same_leg_meets_the_refusal_when_nothing_asks_for_a_producer(
+        monkeypatch):
+    """RED ON REVERT for the branch above, in one file with it.
+
+    The only thing standing between this leg and the refusal it used to
+    die on is the driver asking the contract which consumed carriers
+    have no source.  Stub that question empty -- the state of the tree
+    before the fix, where nobody asked -- and the same leg, the same
+    profile and the same model time meet ``has no producer`` again.
+    """
+    physics, state, cfg, driver, reached = _hand_built_compute_driver(
+        monkeypatch, carriers=CarrierContract())
+    state.elapsed_seconds = 900.0
+    cfg.ra_lw_physics = 4
+    cfg.ra_sw_physics = 4
+    driver._refresh_surface_diagnostics = lambda atmosphere: None
+    driver._run_radiation = lambda *_: reached.append("radiation")
+    monkeypatch.setattr(CarrierContract, "unsourced_consumed",
+                        lambda self, sf_surface_physics: ())
+    with pytest.raises(CarrierContractError, match="has no producer"):
+        driver.compute(state, cfg)
+    assert reached == [], reached
+
+
+def test_the_contract_reports_which_consumed_carriers_have_no_source():
+    """The question the driver asks ahead of the consumption check."""
+    contract = CarrierContract()
+    # A contract with no records at all is every carrier unwritten, the
+    # same answer an explicitly unwritten record gives: nothing has
+    # written them either way.
+    assert set(contract.unsourced_consumed(2)) == {"glw", "swdown"}
+    contract.declare("glw", source=CARRIER_SOURCE_UNWRITTEN)
+    contract.declare("swdown", source=CARRIER_SOURCE_UNWRITTEN)
+    assert set(contract.unsourced_consumed(2)) == {"glw", "swdown"}
+    contract.declare("glw", source=CARRIER_SOURCE_RADIATION_SCHEME,
+                     model_time=0.0)
+    assert contract.unsourced_consumed(2) == ("swdown",)
+    # No land-surface scheme consumes nothing, and asks for nothing.
+    assert contract.unsourced_consumed(0) == ()
+
+
 def test_compute_refuses_a_driver_assembled_without_any_contract(
         monkeypatch):
     """The None arm of the same seam: skipping the contract is refused."""

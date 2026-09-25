@@ -71,6 +71,30 @@ NON_NEGATIVE_FIELDS = (
     "nc", "nr", "ni", "ns", "ng",
     "qnr", "qni", "qns", "qng", "qnh", "qnn",
     "qvolg", "qvolh",
+    # The number concentrations the prognostic contract grew after this
+    # list was first written, and the reason this line exists: a real
+    # mp_physics=28 radar cycle analysed the aerosol-aware tracers with
+    # the rest of the scheme's state, the filter put nwfa at
+    # -1.005e8 kg^-1 in one cell, the policy had no opinion about the
+    # field so it passed through untouched, and the next leg's health
+    # check refused the state.  A concentration below zero is not a
+    # state any of these schemes has: Thompson's own bounds on the pair
+    # are MAX(11.1e6, MIN(9999e6, nwfa*rho)) and MAX(5.0e3, MIN(9999e6,
+    # nifa*rho)) at module_mp_thompson.F:1805-1806 and :3980-3982, and
+    # both floors are far above zero.
+    "nwfa", "nifa",     # mp 28 water- and ice-friendly aerosol number
+    "nh",               # mp 9 (Milbrandt-Yau) hail number
+    "nn",               # mp 16 (WDM6) CCN number
+    # mp 50 (P3) rime mass and rime volume, found by the same question
+    # asked of the moment tables instead of of this list: they are
+    # prognostic, the restart contract carries them, a full-moment
+    # analysis moves them, and the sentence above already claimed to
+    # cover "the two-moment volume variables" -- it reached NSSL's qvolg
+    # and qvolh and stopped there.  The scheme's own authority settles
+    # the sign: gpuwm/core/p3.py:1310-1312 zeroes BOTH the moment the
+    # rime mass goes negative, so a negative rime moment is not a state
+    # P3 has.
+    "qir", "qib",
 )
 
 

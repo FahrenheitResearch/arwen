@@ -73,7 +73,8 @@ gpuwm doctor
 ```
 
 `gpuwm doctor` checks CuPy, the render extra, the rust render engine,
-all five Rust bridge executables, the CPU library, the packaged physics
+every Rust bridge executable this release declares, the CPU library, the
+packaged physics
 tables, and your data-root layout, and prints the exact command that
 fixes anything missing. Run it until it is clean; everything downstream
 assumes it is.

@@ -19,6 +19,11 @@ import numpy as np
 
 from gpuwm.config import soil_layer_count
 from gpuwm.core.grid import make_vertical_coord
+from gpuwm.explain import warn
+from gpuwm.vertical_adaptation import (
+    adapt_experiment_for_statics,
+    vertical_coordinate_receipt as _vertical_coordinate_receipt,
+)
 from gpuwm.experiment import load_experiment, validate_boundary_timing
 from gpuwm.ingest.horiz import interpolate_era5_to_lambert
 from gpuwm.ingest.soil_downscale import (
@@ -458,6 +463,30 @@ def _decoder_inventory_refusal(message, formats, *, missing=(), extra=()):
     else:
         remedy = DecoderInventoryRefusal.remedy
     return DecoderInventoryRefusal(text, remedy=remedy)
+
+
+def _announce_adaptation(sentence: str) -> None:
+    """Say, once, that the run is not on the configured vertical coordinate."""
+
+    warn(sentence,
+         "WRF v4.6.1 dyn_em/nest_init_utils.F:1158-1182 calls this column "
+         "fatal and names reducing etac as the remedy; the remedy is "
+         "derived here from the terrain this run can actually touch and "
+         "applied, so the prepared inputs, their receipt and the forecast "
+         "all carry the same coordinate.  p_top is untouched.")
+
+
+def _survey_static_catalog(exp, wps_namelist, geog_root):
+    """The WPS_GEOG catalog the terrain survey needs, or None."""
+
+    if geog_root is None or len(exp.domains) < 2:
+        return None
+    from gpuwm.hrrr_native_static import verified_static_catalog
+
+    catalog, _ = verified_static_catalog(
+        Path(wps_namelist), Path(geog_root),
+        [domain.grid_id for domain in exp.domains])
+    return catalog
 
 
 def prepare_mapped_wrf(
@@ -917,6 +946,15 @@ def prepare_mapped_wrf(
             baseline_receipt=root_static_receipt)
     static_seconds = time.perf_counter() - static_started
 
+    # THE COORDINATE, BEFORE ANYTHING IS BUILT ON IT.  The same call the
+    # other source doors make, in the same place: root terrain in hand,
+    # nothing yet built on a vertical coordinate.
+    exp, vertical_adaptation = adapt_experiment_for_statics(
+        exp, grids, root_terrain=static["HGT_M"],
+        static_catalog=_survey_static_catalog(exp, wps_namelist, geog_root),
+        static_highres=static_highres, announce=_announce_adaptation)
+    cfg = exp.root.run
+
     preprocess = resolve_preprocess_backend(
         preprocess_backend, workers=preprocess_workers,
         cpu_bridge=cpu_bridge,
@@ -1234,6 +1272,8 @@ def prepare_mapped_wrf(
                 "status": "READY_NOT_YET_STOCK_WRF_GATED",
                 "stock_wrf_export": stock_wrf_export,
                 "domain_count": len(exp.domains),
+                "vertical_coordinate": _vertical_coordinate_receipt(
+                    exp, vertical_adaptation),
                 "forcing_times": [value.isoformat() for value in times],
                 # The soil-state SOURCE resolution and whether the
                 # sub-source-cell reconstitution ran on it.
@@ -1387,6 +1427,8 @@ def prepare_mapped_wrf(
             "schema": PROOF_SCHEMA,
             "status": "READY_NOT_YET_STOCK_WRF_GATED",
             "stock_wrf_export": stock_wrf_export,
+            "vertical_coordinate": _vertical_coordinate_receipt(
+                exp, vertical_adaptation),
             "forcing_times": [value.isoformat() for value in times],
             # The soil-state SOURCE resolution and whether the
             # sub-source-cell reconstitution ran on it.

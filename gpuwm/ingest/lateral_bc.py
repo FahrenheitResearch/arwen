@@ -1754,7 +1754,30 @@ def apply_state_boundary_values(state, cfg, elapsed_seconds=None) -> None:
     # five coupled 3-D arrays.
     old_mup_frame = _launch_mu_boundary_values(
         state, device_interval.fields["mu"], dtbc, cfg.spec_zone)
-    names = (("u", "v", "theta", "phi", "qv") if cfg.specified else
+    # WHICH FIELDS spec_bdy_final forces back.  Every SPECIFIED prognostic
+    # -- the four dry ones plus every supplied external scalar.  The scalar
+    # half is read off the BOUND TABLE (the inventory
+    # ``_coupled_device_fields`` wrote from
+    # ``state._external_scalar_boundary_fields``) rather than spelled here,
+    # so a stream that supplies a further scalar is table work and not a new
+    # branch.  ``mu`` is excluded because ``_launch_mu_boundary_values``
+    # above already installed it and handed back the pre-install frame, and
+    # ``w`` because a specified root takes the zero-gradient w of
+    # ``apply_specified_w_zero_gradient``, not a table.
+    #
+    # THE BREAKAGE A HARDCODED ("u", "v", "theta", "phi", "qv") CAUSED.  An
+    # mp=28 domain forced from the monthly WIF climatology supplies nwfa and
+    # nifa as specified scalars (WRF v4.6.1 solve_em.F:2904-2930, the
+    # inventory in gpuwm/boundary_fields.py).  Their spec zone therefore
+    # integrated a boundary TENDENCY every step and was never forced back to
+    # the boundary VALUE, so the relax zone's Davies term and the spec row
+    # fed each other: the aerosol number at the outermost corner grew
+    # geometrically, 74x in the first forecast hour, while qv in that same
+    # cell moved 1.2 percent over that hour, and the full-state health gate
+    # stopped the forecast on ``nwfa`` at the corner cell.
+    scalars = tuple(name for name in device_interval.fields
+                    if name in COUPLED_SCALAR_STATE_FIELDS)
+    names = (("u", "v", "theta", "phi", *scalars) if cfg.specified else
              tuple(name for name in device_interval.fields if name != "mu"))
     for name in names:
         if name not in device_interval.fields or (

@@ -147,6 +147,76 @@ extern "C" __global__ void thompson_aa_entry_snapshot(
 
 
 // ---------------------------------------------------------------------------
+// 1a. THE NO-MICROPHYSICS COLUMN -- module_mp_thompson.F:1646, :1827-1943,
+//     :1990 and the early return at :2020.
+// ---------------------------------------------------------------------------
+//
+// mp_thompson starts every column with no_micro = .true. (:1646) and clears
+// it where any entry mixing ratio of cloud, ice, rain, snow or graupel
+// exceeds R1 (:1827-1943) or where the entry air is supersaturated over ice,
+// ssati > 0 (:1990, with qvsi = rsif at or below 0 C and rslf above,
+// :1978-1982, and |ssati| < eps written as zero, :1989).  A column that
+// keeps it returns at :2020, before the source loop: nothing after the
+// entry block runs, neither a process nor the terminal apply
+// (:3972-4082).  Such a column
+// leaves mp_thompson with its entry rewrite and nothing else: vapour NOT
+// floored at 1.E-10 (:3974 never runs, so a level at exactly zero stays at
+// zero) and the aerosol numbers NOT clamped (:3979-3982).  Everywhere else
+// :3974 floors every level's vapour at 1.E-10.
+//
+// This kernel writes 1.0 per column where the column has microphysics and
+// 0.0 where WRF returns at :2020, from the ENTRY state (after the entry
+// rewrite, before any process), one thread per column.  The terminal apply
+// below reads it.  Without it the port floored no vapour anywhere and
+// clamped every column's aerosol: on saved real-data frames against WRF
+// v4.6.1's own Fortran, 1 to 71 vapour cells per 19,600-column frame at
+// exactly 0 where WRF has 1.E-10, and the aerosol clamp applied in columns
+// WRF leaves alone (up to 1.5 percent of nwfa at one analysis cell).
+extern "C" __global__ void thompson_aa_micro_columns(
+    const float* __restrict__ qc,
+    const float* __restrict__ qi,
+    const float* __restrict__ qr,
+    const float* __restrict__ qs,
+    const float* __restrict__ qg,
+    const float* __restrict__ temperature,
+    const float* __restrict__ pressure,
+    const float* __restrict__ qv,
+    float* __restrict__ micro_columns,
+    int nz, int ncol)
+{
+    const int column = blockDim.x * blockIdx.x + threadIdx.x;
+    if (column >= ncol) return;
+    float micro = 0.0f;
+    for (int k = 0; k < nz; ++k) {
+        const size_t idx = (size_t)k * (size_t)ncol + (size_t)column;
+        // :1827, :1851, :1878, :1906, :1915.
+        if (qc[idx] > THOMPSON_AA_R1 || qi[idx] > THOMPSON_AA_R1
+                || qr[idx] > THOMPSON_AA_R1 || qs[idx] > THOMPSON_AA_R1
+                || qg[idx] > THOMPSON_AA_R1) {
+            micro = 1.0f;
+            break;
+        }
+        // :1800, :1975-1990.  qv(k) = MAX(1.E-10, qv1d(k)); qvsi is rsif
+        // where tempc <= 0 and qvs = rslf otherwise; sati = qv/qvsi and
+        // ssati = sati - 1, each rounded to REAL(4).
+        const float temp = temperature[idx];
+        const float qv_local = fmaxf(1.0e-10f, qv[idx]);
+        const float tempc = thompson_aa_sub(temp, 273.15f);
+        const float qvsi = tempc <= 0.0f
+            ? thompson_rsif(pressure[idx], temp)
+            : thompson_rslf(pressure[idx], temp);
+        float ssati = thompson_aa_sub(thompson_aa_div(qv_local, qvsi), 1.0f);
+        if (fabsf(ssati) < THOMPSON_AA_STATE_EPS) ssati = 0.0f;
+        if (ssati > 0.0f) {
+            micro = 1.0f;
+            break;
+        }
+    }
+    micro_columns[column] = micro;
+}
+
+
+// ---------------------------------------------------------------------------
 // 1b. ENTRY CLOUD-DROPLET DIAGNOSIS -- module_mp_thompson.F:1826-1842.
 // ---------------------------------------------------------------------------
 //
@@ -384,25 +454,49 @@ extern "C" __global__ void thompson_aa_working_cloud(
 // Recomputing it later -- e.g. at the finalize call itself -- is 5.39e-05
 // off, because ArWen's temperature keeps absorbing the melt/freeze cleanup's
 // tten while WRF's temp(k) snapshot does not.
-extern "C" __global__ void thompson_aa_state_finalize(
-    float* __restrict__ qc,              // final per-kg qc, zeroed if <= R1
-    const float* __restrict__ nc,        // ENTRY per-kg nc, READ-ONLY
-    const float* __restrict__ nwfa,      // ENTRY per-kg nwfa, READ-ONLY
-    const float* __restrict__ nifa,      // ENTRY per-kg nifa, READ-ONLY
+//
+// ---------------------------------------------------------------------------
+// THE COLUMN EXIT AND THE VAPOUR FLOOR (:2020, :3974).
+// ---------------------------------------------------------------------------
+// thompson_aa_state_finalize_with_columns also takes the column flag
+// thompson_aa_micro_columns wrote at entry and the vapour.  In a column WRF
+// returned from at :2020 the terminal apply never ran: nc, nwfa and nifa
+// leave as they entered (nc is already zero there: every level's cloud was
+// at or below R1, and the entry diagnosis zeroed it), qc stays at the zero
+// the entry rewrite left, and the vapour is not floored.  In every other
+// column :3974 writes qv1d = MAX(1.E-10, qv1d + qvten*DT) at every level;
+// the port's vapour already holds qv1d + qvten*DT, so the floor is the whole
+// of it.  The plain entry point keeps the old contract for the unit gates
+// that drive the terminal apply alone.
+__device__ __forceinline__ void thompson_aa_state_finalize_impl(
+    float* __restrict__ qc,
+    const float* __restrict__ nc,
+    const float* __restrict__ nwfa,
+    const float* __restrict__ nifa,
     const float* __restrict__ ncten,
     const float* __restrict__ nwfaten,
     const float* __restrict__ nifaten,
-    // TAU+1 density as of :3972 -- :3193/:3490/:3572, whichever ran last at
-    // this level.  NOT the :1802 entry density; see the block above.
     const float* __restrict__ rho,
     float dt,
     float* __restrict__ nc_out,
     float* __restrict__ nwfa_out,
     float* __restrict__ nifa_out,
-    int n)
+    float* __restrict__ qv,
+    const float* __restrict__ micro_columns,
+    int ncol, int idx)
 {
-    const int idx = blockDim.x * blockIdx.x + threadIdx.x;
-    if (idx >= n) return;
+    if (micro_columns != nullptr) {
+        if (micro_columns[idx % ncol] == 0.0f) {
+            // :2020.  Each output may alias its input; write it anyway so a
+            // non-aliased caller still receives the entry value.
+            nc_out[idx] = nc[idx];
+            nwfa_out[idx] = nwfa[idx];
+            nifa_out[idx] = nifa[idx];
+            return;
+        }
+        // :3974.
+        qv[idx] = fmaxf(1.0e-10f, qv[idx]);
+    }
 
     const float rho_local = rho[idx];
 
@@ -497,6 +591,57 @@ extern "C" __global__ void thompson_aa_state_finalize(
             * pow(lamc, (double)THOMPSON_AA_BM_R),
         (double)THOMPSON_AA_NT_C_MAX / (double)rho_local);
     nc_out[idx] = nc_new;
+}
+
+extern "C" __global__ void thompson_aa_state_finalize(
+    float* __restrict__ qc,              // final per-kg qc, zeroed if <= R1
+    const float* __restrict__ nc,        // ENTRY per-kg nc, READ-ONLY
+    const float* __restrict__ nwfa,      // ENTRY per-kg nwfa, READ-ONLY
+    const float* __restrict__ nifa,      // ENTRY per-kg nifa, READ-ONLY
+    const float* __restrict__ ncten,
+    const float* __restrict__ nwfaten,
+    const float* __restrict__ nifaten,
+    // TAU+1 density as of :3972 -- :3193/:3490/:3572, whichever ran last at
+    // this level.  NOT the :1802 entry density; see the block above.
+    const float* __restrict__ rho,
+    float dt,
+    float* __restrict__ nc_out,
+    float* __restrict__ nwfa_out,
+    float* __restrict__ nifa_out,
+    int n)
+{
+    const int idx = blockDim.x * blockIdx.x + threadIdx.x;
+    if (idx >= n) return;
+    thompson_aa_state_finalize_impl(
+        qc, nc, nwfa, nifa, ncten, nwfaten, nifaten, rho, dt,
+        nc_out, nwfa_out, nifa_out, nullptr, nullptr, 1, idx);
+}
+
+// The production entry point: the terminal apply of a column with
+// microphysics, including the :3974 vapour floor, and nothing at all in a
+// column WRF returned from at :2020 (micro_columns[column] == 0).
+extern "C" __global__ void thompson_aa_state_finalize_with_columns(
+    float* __restrict__ qc,
+    const float* __restrict__ nc,
+    const float* __restrict__ nwfa,
+    const float* __restrict__ nifa,
+    const float* __restrict__ ncten,
+    const float* __restrict__ nwfaten,
+    const float* __restrict__ nifaten,
+    const float* __restrict__ rho,
+    float dt,
+    float* __restrict__ nc_out,
+    float* __restrict__ nwfa_out,
+    float* __restrict__ nifa_out,
+    float* __restrict__ qv,
+    const float* __restrict__ micro_columns,
+    int ncol, int n)
+{
+    const int idx = blockDim.x * blockIdx.x + threadIdx.x;
+    if (idx >= n) return;
+    thompson_aa_state_finalize_impl(
+        qc, nc, nwfa, nifa, ncten, nwfaten, nifaten, rho, dt,
+        nc_out, nwfa_out, nifa_out, qv, micro_columns, ncol, idx);
 }
 
 

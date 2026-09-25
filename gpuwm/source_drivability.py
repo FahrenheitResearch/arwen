@@ -2,6 +2,60 @@
 from __future__ import annotations
 from typing import Any
 
+
+def drivability_for(source: object) -> dict[str, Any]:
+    """The drivability verdict for a configuration's own spelling.
+
+    :func:`intent_drivability` is keyed by REGISTRY ID.  A configuration,
+    a ``--source`` flag and an emitted ``[fetch]`` table may each spell
+    an alias instead, and an alias that missed this lookup read as "no
+    verdict": the local-input admission, which lives in the verdict, was
+    silently skipped and the plan went on to look for a download route
+    that does not exist.  Every door asks through here so an alias
+    cannot admit what its registry id refuses.
+    """
+
+    from gpuwm.source_adapters import get_source_adapter
+
+    name = str(source or "")
+    try:
+        canonical = get_source_adapter(name).source_id
+    except ValueError:
+        # A future source stays a name: selection explains its lack of a
+        # native adapter rather than discarding the question.
+        canonical = name
+    return intent_drivability().get(canonical, {})
+
+
+def candidate_route_chain(source: object) -> str:
+    """The chain a configuration naming SOURCE will dispatch to.
+
+    The prepared route is three chains wearing one name, and which one a
+    configuration reaches is decided by its source's registry row rather
+    than by a list of model names.  This is that decision, and it lives
+    here rather than in the dispatcher because two callers need it: the
+    dispatcher itself (``gpuwm.runplan._chain_key``, which turns a plan
+    into a chain) and every door that publishes a candidate and has to
+    write the files that chain reads beside it
+    (:func:`gpuwm.hrrr_route_inputs.candidate_companions`).  One
+    function, so the files a candidate is given and the files its run
+    reads cannot be decided differently -- and a preprocessing install
+    that carries those doors without the forecast dispatcher can still
+    ask.
+
+    Unlike a LAUNCH, this refuses nothing: a door has not been asked to
+    start anything, and a configuration whose source has no launch route
+    still has to be editable.
+    """
+
+    name = (str(source) if source is not None else "").strip()
+    if name:
+        chain = str((drivability_for(name) or {}).get("chain") or "")
+        if chain.startswith("prepared:"):
+            return chain
+    return "prepared:go"
+
+
 def intent_drivability() -> dict[str, dict[str, Any]]:
     """Derive chain availability from the prep dispatcher and source facts.
 

@@ -92,6 +92,34 @@ def test_theta_bound_admits_legal_wk82_class_upper_state():
     assert not runaway.ok
 
 
+def test_aerosol_moment_bound_admits_an_emitting_surface_and_refuses_a_runaway():
+    """The moment ceiling is the instrument, not the thing that was wrong.
+
+    ``nwfa``'s lowest level sits ABOVE WRF's own terminal clamp by design:
+    the surface emission at module_mp_thompson.F:1310-1327 runs after that
+    clamp and is deliberately unclamped, so a legal value decades above
+    9999.E6 must pass.  The value a specified domain reached at its
+    outermost boundary corner while its spec zone was not being forced back
+    onto the boundary table -- five decades above the clamp -- must not, and
+    a negative number concentration must not either.
+    """
+    emitting = validate_fields_cpu({
+        "nwfa": np.array([1.0e11], dtype=np.float32),
+    })
+    runaway = validate_fields_cpu({
+        "nwfa": np.array([1011411111116800.0], dtype=np.float32),
+    })
+    negative = validate_fields_cpu({
+        "nifa": np.array([-1.0], dtype=np.float32),
+    })
+    assert emitting.ok
+    assert not runaway.ok
+    assert runaway.first_bad_field == "nwfa"
+    assert set(runaway.failing_classes) == {"moment"}
+    assert not negative.ok
+    assert negative.first_bad_field == "nifa"
+
+
 def test_health_error_is_terminal_and_carries_report():
     report = validate_fields_cpu({"p": np.array([0.0], dtype=np.float32)},
                                  phase="post-sync")

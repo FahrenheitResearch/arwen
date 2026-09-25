@@ -265,7 +265,12 @@ def test_create_only_publication_rolls_back_on_racing_companion(tmp_path, monkey
         return original_link(source, destination)
     monkeypatch.setattr(research.os, "link", racing_link)
     with pytest.raises(FileExistsError):
-        research._publish_bundle(stage, tmp_path / "new.toml")
+        # No route and no experiment: the staged bytes here are a
+        # fixture for the rollback, not a configuration, and a
+        # configuration with no fetch source is read by a route that
+        # reads the configuration itself.
+        research._publish_bundle(stage, tmp_path / "new.toml",
+                                 exp=None, source=None)
     assert not (tmp_path / "new.namelist.wps").exists()
     assert (tmp_path / "new.toml").read_bytes() == b"another creator"
 
@@ -341,7 +346,13 @@ def test_native_sources_preserve_companions_and_labels_are_not_data_paths(tmp_pa
     assert raw["experiment"]["name"] == "Research: local / coast"
     assert receipt["source"] == source
     if "fetch" in raw:
-        assert Path(raw["fetch"]["out"]) == tmp_path / "data" / "new"
+        # A source prepared from bytes already on disk carries no `out`
+        # (266621445: nothing downloads, so the key would be read and
+        # then have nothing to write); the directory that matters for it
+        # is `source_root`, the same one the download sources call `out`.
+        fetch = raw["fetch"]
+        staged = fetch["source_root"] if "source_root" in fetch else fetch["out"]
+        assert Path(staged) == tmp_path / "data" / "new"
     assert ".arwen-research-" not in config.read_text()
     if source == "era5":
         case = raw["case_data"]

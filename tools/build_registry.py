@@ -1376,8 +1376,10 @@ def _surface_coupling_warnings(registry: dict) -> None:
 #:     absolute difference.
 #:   * ``wp08-freeze`` and ``wp08-nusweep`` were published for the first time.
 #:
-#: THE UNEXCEPTIONED CLEAN SET.  17 of 22: sixteen of the nineteen spec'd
-#: ``aero-*`` fixtures plus ``wp08-melt``.  The 1.4.1 merge did NOT change
+#: THE UNEXCEPTIONED CLEAN SET.  18 of 22: sixteen of the nineteen spec'd
+#: ``aero-*`` fixtures plus ``wp08-freeze`` and ``wp08-melt``.  ``wp08-freeze``
+#: joined on 2026-09-23 when the rain fallout was handed WRF's L_qr (see the
+#: note on MP28_G3_RESIDUALS).  The 1.4.1 merge did NOT change
 #: this set -- ``aero-reduces-to-classic`` still needs level 6 taken in ULPs
 #: -- but it did retire the OTHER allowance that fixture rested on, so the
 #: gated count of 18 now costs one allowance instead of two.  This tuple is asserted EQUAL to
@@ -1390,11 +1392,12 @@ MP28_G3_CLEAN = (
     "aero-ice-demott-dep", "aero-ice-demott-idxin", "aero-ice-koop",
     "aero-init-profile", "aero-nc-accrete", "aero-nc-auto", "aero-nc-cap",
     "aero-nc-effrad", "aero-nc-sed", "aero-scav-frozen", "aero-scav-rain",
-    "aero-sfc-emit", "aero-warm-overlap", "wp08-melt",
+    "aero-sfc-emit", "aero-warm-overlap", "wp08-freeze", "wp08-melt",
 )
 
 #: Fixtures that do NOT clear 2e-6 on every field, with every field that
-#: misses and its measured maximum relative difference.  FOUR of twenty-two.
+#: misses and its measured maximum relative difference.  THREE of
+#: twenty-two.
 #:
 #: ``aero-cold-overlap``'s 1.000e+00 rows are the accurate publication of a
 #: sub-ulp disagreement and are recorded rather than allowanced.  MEASURED
@@ -1453,15 +1456,22 @@ MP28_G3_CLEAN = (
 #: for the value :3236 tested, while :3501's evaporation block subtracts
 #: from qrten in between.  Instrumented WRF records L_qr = .true. there.
 #: cb765336 did not move the residual because it reconciled the
-#: sedimentation DENSITY, not the gate's UNITS.  NOT FIXED: thompson.cu is
-#: byte-frozen and mp=8 shares it, so the correction owes 92 classic
-#: fixtures a re-measurement and is not mp=28's to make.
+#: sedimentation DENSITY, not the gate's UNITS.
+#:
+#: CLOSED 2026-09-23: the mp=28 rain evaporation writes WRF's L_qr into
+#: its reference density (zero where :3236 failed) and the adapter launches
+#: the fallout's ``_with_presence`` entry points, which read it; the plain
+#: entry points keep the mixing-ratio stand-in, and the classic rain
+#: evaporation and the mp=8 adapter carry the same hand-off since
+#: 7727fda3c.
+#: Level 0 nr went 2.724e-06 (34 ulp) to 4.006e-07 (5 ulp) on a card (RTX
+#: 4090 and RTX 5090 alike; 8.012e-08, 1 ulp, on the host build of the
+#: kernels) and the fixture left this table.
 MP28_G3_RESIDUALS: dict[str, dict[str, float]] = {
     "aero-cloud-freeze-nc": {"qc": 4.926e-06},
     "aero-cold-overlap": {
         "qc": 1.000e+00, "nc_per_kg": 1.000e+00, "effc_m": 8.102e-01,
         "qr": 4.443e-05, "nr_per_kg": 1.261e-04},
-    "wp08-freeze": {"nr_per_kg": 2.724e-06},
     "wp08-nusweep": {"qr": 4.642e-06},
 }
 
@@ -1748,13 +1758,14 @@ def _thompson_aerosol_mp28(registry: dict) -> None:
                 ],
                 # The two counts, stated separately, because conflating them
                 # is how a port claims a clean number it did not earn.
-                "clean_unexceptioned": 17,
-                "clean_as_gated": 18,
+                "clean_unexceptioned": 18,
+                "clean_as_gated": 19,
                 "clean_counts_note": (
-                    "17 of 22 clear a FLAT 2.0e-6 relative / 2.0e-4 dB gate "
+                    "18 of 22 clear a FLAT 2.0e-6 relative / 2.0e-4 dB gate "
                     "on all 23 quantities with no bounds dict, no excluded "
                     "level and no per-fixture carve-out -- 16 of the 19 "
-                    "spec'd aero-* fixtures plus wp08-melt. 18 of 22 clear "
+                    "spec'd aero-* fixtures plus wp08-freeze and wp08-melt. "
+                    "19 of 22 clear "
                     "it with the ONE allowance above applied; that allowance "
                     "buys exactly one fixture, aero-reduces-to-classic, and "
                     "is required for it. The second allowance this note used "
@@ -2128,17 +2139,18 @@ def _thompson_aerosol_mp28(registry: dict) -> None:
             "THE COLUMN EVIDENCE IS NOT CLEAN, and the numbers are published "
             "rather than summarised. Driven end to end through the shipped "
             "adapter, 22 fixtures x 23 quantities, at a flat 2.0e-6 relative "
-            "/ 2.0e-4 dB gate with nothing held out: 17 of 22 clear every "
-            "quantity (16 of the 19 spec'd aero-* fixtures, plus wp08-melt). "
+            "/ 2.0e-4 dB gate with nothing held out: 18 of 22 clear every "
+            "quantity (16 of the 19 spec'd aero-* fixtures, plus wp08-freeze "
+            "and wp08-melt). "
             "aero-reduces-to-classic clears only through the port's ONE "
             "surviving named allowance -- 0-based level 6 held to 32 ulps of "
             "its entry value instead of the relative metric, measured 0.585 "
-            "(qr) and 0.159 (nr) -- taking the gated count to 18 of 22. The "
+            "(qr) and 0.159 (nr) -- taking the gated count to 19 of 22. The "
             "relative bound that used to sit beside it was RETIRED at the "
             "1.4.1 merge: the mp=8 lane's two rain sedimentation "
             "reconciliations (5e4af4e3, cb765336), inherited in the frozen "
             "kernel mp=28 shares for fallout, took level 5's nr from "
-            "5.700e-06 to 4.146e-07, inside the flat gate. FOUR MISS "
+            "5.700e-06 to 4.146e-07, inside the flat gate. THREE MISS "
             "OUTRIGHT -- aero-cold-overlap qc 1.000e+00 / nc 1.000e+00 / "
             "effc 8.102e-01 (all three are ONE branch flip at 0-based level "
             "4, where WRF ends with 1.4551915228366852e-11 kg/kg of cloud "
@@ -2148,9 +2160,10 @@ def _thompson_aerosol_mp28(registry: dict) -> None:
             "the two implementations down opposite arms and a relative "
             "metric reports full scale on a one-ulp difference) plus "
             "nr 1.261e-04 / qr 4.443e-05 at level 6; "
-            "aero-cloud-freeze-nc qc 4.926e-06; wp08-freeze nr "
-            "2.724e-06 (1.4x the "
-            "gate); wp08-nusweep qr 4.642e-06 (2.3x the gate). Every one of "
+            "aero-cloud-freeze-nc qc 4.926e-06; wp08-nusweep qr 4.642e-06 "
+            "(2.3x the gate). wp08-freeze, which missed at nr 2.724e-06, "
+            "left the list on 2026-09-23 when the rain fallout was handed "
+            "WRF's L_qr (level 0 now 1 ulp from WRF). Every one of "
             "the surviving residuals now sits where the field is either "
             "CREATED FROM ZERO inside the step or driven to near-total "
             "consumption; after the aero-ice-koop withdrawal recorded at the "
@@ -2806,6 +2819,39 @@ def _composition_exemptions() -> dict:
 MP9_OPTION_ID = "milbrandt2mom-mp9"
 
 
+def _composition_ceiling(registry: dict, components: dict) -> str:
+    """Clause C2 as a function: the highest rung a composition may carry.
+
+    A composed suite is only as conformant as its weakest member, so the
+    ceiling is the lowest-ranked maturity among the option rows the
+    composition selects.  Nothing here reads a declared TEMPLATE maturity:
+    the rung order is :data:`_MATURITY_RUNGS`, the one ordering of maturity
+    names in this repository, and the option rows are the ones being built,
+    so a template minted at this value states what the tree holds and
+    cannot outrank it.
+
+    Called from inside :func:`build`, before :func:`_rename_maturities`
+    runs, so the raw option values are mapped through
+    :data:`MATURITY_RENAMES` here rather than read as written.
+    """
+
+    order = [name for name, _tier, _definition in _MATURITY_RUNGS]
+    selected = []
+    for component_id, option_id in sorted(components.items()):
+        option = registry["components"][component_id]["options"][option_id]
+        maturity = option.get("maturity")
+        maturity = MATURITY_RENAMES.get(maturity, maturity)
+        if maturity not in order:
+            raise SystemExit(
+                f"component {component_id}.{option_id} carries maturity "
+                f"{maturity!r}, which is not a rung of the ladder "
+                f"({order}): a composition ceiling cannot be computed from "
+                "a value the ladder does not define, and a template minted "
+                "from it would carry an unreadable rank")
+        selected.append(maturity)
+    return min(selected, key=order.index)
+
+
 def _milbrandt2mom_mp9(registry: dict) -> None:
     """Register Milbrandt-Yau two-moment at the maturity its evidence earns.
 
@@ -3236,8 +3282,8 @@ def _rte_rrtmgp_cloud_optics_constraints(registry: dict) -> None:
 
     DERIVED, not transcribed, in all three of its parts: which schemes need
     the rule comes from ``_MP_CLOUD_OPTICS_SCHEME`` itself, the radiation
-    clause from the options' resolved selectors (including the legacy
-    aggregate selector landing on 4/4), and the variant clause from the shipped
+    clause from the options' resolved selectors, and the variant clause
+    from the shipped
     ``ra_rrtmg_variant`` enum minus the legacy value.  A new scheme, a new
     radiation option resolving to the same adapter, or a third adapter each
     force a decision here instead of silently widening the admission.
@@ -3357,10 +3403,6 @@ _STOCK_CALLABLE_CLASSES: dict[str, dict[str, object]] = {
             "rte-rrtmgp": "gpuwm.core.rrtmgp.RRTMGPRadiation",
             "rrtmg_legacy": "gpuwm.core.rrtmg_legacy.RRTMGLegacyRadiation",
         },
-        "rte-rrtmgp-legacy-aggregate": {
-            "rte-rrtmgp": "gpuwm.core.rrtmgp.RRTMGPRadiation",
-            "rrtmg_legacy": "gpuwm.core.rrtmg_legacy.RRTMGLegacyRadiation",
-        },
     },
 }
 
@@ -3418,6 +3460,12 @@ _VERTICAL_BOUND_SOURCES: dict[str, dict[str, tuple[str, str]]] = {
 #: prose (gpuwm.da.moments._REPAIR_AUTHORITIES), because the prose carries a
 #: WRF citation the registry's citation checker cannot resolve.
 _MORRISON_REPAIR_AUTHORITY = "morrison-psd-limiter"
+#: Thompson's own entry moment-consistency block
+#: (module_mp_thompson.F:1827-1899), which sets a number moment from the
+#: mass under the scheme's assumed distribution and zeroes both moments
+#: below its activity gate R1.  ``zero_number_below_threshold`` records
+#: that second half: a scheme that does not state it does not get it.
+_THOMPSON_REPAIR_AUTHORITY = "thompson-entry-block"
 _MOMENT_ROWS: dict[int, dict | None] = {
     0: None,
     1: {"name": "Kessler", "mass_only": ["qv", "qc", "qr"], "pairs": [],
@@ -3425,10 +3473,15 @@ _MOMENT_ROWS: dict[int, dict | None] = {
     6: {"name": "WSM6", "mass_only": ["qv", "qc", "qr", "qi", "qs", "qg"],
         "pairs": [], "unpaired": [], "repair_authority": None,
         "q_threshold": 1.0e-14},
+    # Thompson's entry block is its repair authority, and R1
+    # (module_mp_thompson.F:183) is the activity gate that block compares
+    # every mass against -- two orders of magnitude above the table's own
+    # default, which stood here until the scheme's threshold was read.
     8: {"name": "Thompson", "mass_only": ["qv", "qc", "qs", "qg"],
         "pairs": [{"species": "rain", "mass": "qr", "number": "nr"},
                   {"species": "ice", "mass": "qi", "number": "ni"}],
-        "unpaired": [], "repair_authority": None, "q_threshold": 1.0e-14},
+        "unpaired": [], "repair_authority": _THOMPSON_REPAIR_AUTHORITY,
+        "q_threshold": 1.0e-12, "zero_number_below_threshold": True},
     # Milbrandt-Yau: every one of the six hydrometeors carries a number
     # moment (module_microphysics_driver.F:1857-1862 binds
     # qnc/qnr/qni/qns/qng/qnh INOUT); gpuwm/core/state.py's mp=9 arm
@@ -3465,8 +3518,9 @@ _MOMENT_ROWS: dict[int, dict | None] = {
          "pairs": [{"species": "cloud", "mass": "qc", "number": "nc"},
                    {"species": "rain", "mass": "qr", "number": "nr"},
                    {"species": "ice", "mass": "qi", "number": "ni"}],
-         "unpaired": ["nwfa", "nifa"], "repair_authority": None,
-         "q_threshold": 1.0e-14},
+         "unpaired": ["nwfa", "nifa"],
+         "repair_authority": _THOMPSON_REPAIR_AUTHORITY,
+         "q_threshold": 1.0e-12, "zero_number_below_threshold": True},
     # P3 one-category: rain and the single ice category are two-moment; the
     # rime pair rides with the ice mass and has no number partner.
     50: {"name": "P3 one-category", "mass_only": ["qv", "qc"],
@@ -3905,12 +3959,14 @@ def _consumer_rows(registry: dict) -> None:
         if option.get("implemented") is not True:
             option.pop(CONSUMER_ROWS_KEY, None)
             continue
+        # Every radiation option is keyed on the pair its engine runs.
+        # One row was keyed on (-1, -1) instead -- the sentinel for "the
+        # split pair is not stated here" -- and had to be translated back
+        # to 4/4 right here.  It is retired: a selector tuple that is an
+        # absence matched every configuration written in the aggregate
+        # spelling, whatever engine that spelling named.
         lw = int(selector(option, "ra_lw_physics"))
         sw = int(selector(option, "ra_sw_physics"))
-        if (lw, sw) == (-1, -1):
-            # The legacy aggregate selector resolves to the 4/4 pair through
-            # ra_physics=4 (gpuwm.config.radiation_scheme_ids).
-            lw, sw = 4, 4
         rows = {
             "restart_algorithm_identity": {
                 "longwave": ci.LONGWAVE_ALGORITHM_IDENTITIES[lw],
@@ -4735,11 +4791,10 @@ def build(registry: dict) -> dict:
             "against a 113-bit oracle over all 59,768,833 float32 of "
             "[0.25, 36], it is wrong on 23,575,230 (39.4440 per cent), "
             "worst 6 ULP; tgammaf(4.0f) returns 6.00000048, not 6. "
-            "Through 2.6.5 ArWen reproduced those words by transcribing "
-            "glibc's e_gammaf_r.c and gamma_productf.c; both are "
-            "FSF-copyright LGPL-2.1-or-later with no permissive upstream, "
-            "so an Apache-2.0 distribution cannot carry them and they are "
-            "deleted. gfk_tgamma is now ArWen's own correctly rounded "
+            "Through 2.6.5 ArWen's earlier gamma returned those same "
+            "words; it is replaced, and like its replacement it was this "
+            "project's own work under the project's licence. "
+            "gfk_tgamma is now ArWen's own correctly rounded "
             "gamma (0 of 59,768,833 arguments wrong) and the SHIPPED "
             "forecast path computes it, so fzu is no longer WRF's word: "
             "it changes on 68.1707 per cent of the reachable set, 98.390 "
@@ -5083,8 +5138,7 @@ def build(registry: dict) -> dict:
         # It is the only registered longwave-on pairing that is not the
         # coupled RRTMG adapter, which is the point of listing it here.
         "radiation": [
-            "off", "dudhia-shortwave", "wrf-rrtm-dudhia", "rte-rrtmgp",
-            "rte-rrtmgp-legacy-aggregate"],
+            "off", "dudhia-shortwave", "wrf-rrtm-dudhia", "rte-rrtmgp"],
     }
     # Grell-Freitas is selectable per domain on the tree route, the same
     # terms as shinhong/sase above; off and kain-fritsch are listed so the
@@ -5209,11 +5263,7 @@ def build(registry: dict) -> dict:
              "the 4/4 pair is spelled by ra_lw_physics/ra_sw_physics on "
              "this option and the aggregate ra_physics selector stays 0, so "
              "the two spellings of one radiation choice cannot disagree"),
-            ("rte-rrtmgp-legacy-aggregate",
-             "this option is the aggregate spelling of the 4/4 pair: "
-             "ra_physics=4 with the longwave/shortwave selectors left "
-             "unset, so any other aggregate value names a different "
-             "radiation choice")):
+            ):
         constraints = radiation_options[option_id].setdefault("constraints", {})
         if constraints.get("required_settings"):
             constraints["required_settings_reasons"] = {
@@ -5524,9 +5574,9 @@ def build(registry: dict) -> dict:
         "Shin-Hong carries the component-level warnings of its option "
         "(components.pbl.options.shinhong): the entrainment-flux guard "
         "where WRF reads one element past its array, WRF's own 0/0 NaN "
-        "column reproduced rather than repaired, and the sm_120 "
-        "subnormal-tendency flush.  Selecting this template selects "
-        "those.",
+        "column reproduced rather than repaired, and the "
+        "subnormal-tendency flush on CuPy's -ftz=true compile route.  "
+        "Selecting this template selects those.",
     ]
     registry["templates"][shinhong_legacy_id] = shinhong_legacy
     # HRRR-only, on the same Kessler rule as its sibling: the arm that
@@ -5604,6 +5654,11 @@ def build(registry: dict) -> dict:
         declared = registry["runner_routes"][route_id][
             "source_template_ids"]["hrrr"]
         declared.insert(declared.index(nssl2_legacy_id) + 1, p3_legacy_id)
+
+    # The radiation-arm siblings of the rows above.  Minted here, after
+    # every base they copy exists and before the route declarations are
+    # audited, from the table beside _SUITELESS_TEMPLATES.
+    _radiation_arm_siblings(registry)
 
     # Owner-ratified declaration: the GFS runner has always advertised this
     # profile and retains the existing Noah-MP route acknowledgement.
@@ -6413,8 +6468,10 @@ def _phase2c_route_declarations(registry: dict) -> None:
     # contradicts it, and plan review then refuses a configuration
     # gpuwm.config.validate_run_config admits -- two doors disagreeing about
     # one file.  ``ra_physics`` is the live case, the pre-split spelling of
-    # the radiation pair, which every radiation option states; asking for
-    # the aggregate spelling is selecting the OPTION that carries it.
+    # the radiation pair, which every radiation option states as 0: the
+    # aggregate spelling of a pair resolves to that pair at the capability
+    # door (gpuwm.physics_compat._one_radiation_spelling), so no option is
+    # selected by the aggregate key.
     # Derived rather than listed, so a second alias is excluded the day it
     # is registered.
     identity_keys: set[str] = set()
@@ -6596,6 +6653,91 @@ def _phase2c_soil_geometry(registry: dict) -> None:
         )
         for warning in spec.get("warnings", [])
     ]
+
+
+#: Radiation-arm siblings: the SAME registered composition with the
+#: radiation ENGINE moved and nothing else.  Both 4/4 engines live on ONE
+#: registry option (``components.radiation.options.rte-rrtmgp``) and are
+#: chosen by a SETTING, ``ra_rrtmg_variant``, so a sibling that swaps
+#: engines moves no component at all and the suite-less table below --
+#: which is keyed on component moves -- cannot express it.
+#:
+#: Each row is minted by copying its base and applying the settings
+#: written here, so the pair differs in the radiation engine and in
+#: nothing else and a paired run isolates it.  The maturity is NOT written
+#: here: :func:`_composition_ceiling` derives it from the option rows the
+#: composition selects, which is clause C2 of the ratified composition
+#: rule.  A row here therefore cannot claim evidence the tree does not
+#: hold and needs no entry in ``composition_exemptions``.
+_RADIATION_ARM_SIBLINGS = (
+    # (new id, base id, settings moved, label, warnings)
+    (
+        "thompson-mp8-ysu-mm5-noah-rte-rrtmgp-v1",
+        "thompson-mp8-ysu-mm5-noah-rrtmg-legacy-v1",
+        {
+            "ra_rrtmg_variant": "rte-rrtmgp",
+            "wrf_rrtmg_compatibility": "wrf-rrtmg-4-4-to-rte-rrtmgp-v2",
+        },
+        "Thompson + YSU + classic MM5 + Noah + cumulus off + RTE+RRTMGP",
+        (
+            "Composition candidate: every component is individually "
+            "verified (Thompson mp8 is wrf-matched-run; the RTE+RRTMGP "
+            "longwave and shortwave engines are the shipped 4/4 radiation "
+            "arm) and no receipt covers the composed suite, so this "
+            "template sits AT its composition ceiling rather than above "
+            "it.  The upgrade payer is named: this composition's first "
+            "stock-WRF-paired t0/case receipt is what moves the label.",
+            "This template differs from "
+            "thompson-mp8-ysu-mm5-noah-rrtmg-legacy-v1 in exactly ONE "
+            "setting, the radiation engine, so the pair is a controlled "
+            "engine comparison; every component and every other parameter, "
+            "including the per-domain row, is transcribed from that "
+            "template.",
+            "radt 12.0 at dx 3000 m is transcribed from the base template "
+            "and deliberately diverges from the KF template family's "
+            "per-domain ladder (radt 3.0 at 3 km); every value in the "
+            "per-domain row equals this template's own parameters "
+            "(diff_6th_factor 0.12, epssm 0.5, radt 12.0), so the row "
+            "changes no resolved setting at any grid spacing.",
+        ),
+    ),
+)
+
+
+def _radiation_arm_siblings(registry: dict) -> None:
+    """Mint every row of :data:`_RADIATION_ARM_SIBLINGS`.
+
+    Idempotent, exactly as the sibling blocks around it are: a minted id is
+    removed from every route list before it is inserted, so a second build
+    produces the same bytes.
+
+    A sibling is declared on precisely the routes and sources its BASE is
+    declared on, immediately after it.  The base's route set is the
+    statement of where this composition can run at all, and swapping the
+    radiation engine neither widens nor narrows it -- so the sibling
+    inherits the set rather than asserting one of its own.
+    """
+
+    templates = registry["templates"]
+    routes = registry["runner_routes"]
+    for template_id, base_id, settings, label, warnings in (
+            _RADIATION_ARM_SIBLINGS):
+        template = copy.deepcopy(templates[base_id])
+        template["parameters"].update(settings)
+        template["label"] = label
+        template["maturity"] = _composition_ceiling(
+            registry, template["components"])
+        template["warnings"] = list(warnings)
+        templates[template_id] = template
+        for route in routes.values():
+            for declared in route.get("source_template_ids", {}).values():
+                if template_id in declared:
+                    declared.remove(template_id)
+        for route in routes.values():
+            for declared in route.get("source_template_ids", {}).values():
+                if base_id in declared:
+                    declared.insert(
+                        declared.index(base_id) + 1, template_id)
 
 
 #: Audit R-067.  Eleven implemented options had no shipped template at all,

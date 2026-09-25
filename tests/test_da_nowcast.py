@@ -171,18 +171,74 @@ class TestBackgroundSelection:
         assert plan.background_cycle == plan.init
         assert plan.forecast_start_hour == 0
 
-    def test_a_window_past_the_hrrr_horizon_is_refused(self):
-        with pytest.raises(SystemExit):
+    def test_a_window_the_extended_cycles_still_reach_is_not_refused(self):
+        """The boundary, read rather than assumed.
+
+        This case was pinned at 30 hours as "past the horizon" when the
+        planner only walked the hourly cycles, whose horizon is f18.  It
+        walks the extended 00/06/12/18Z cycles too, and a 30 hour run
+        from a 05Z init is leads 5..35 of the 00Z cycle, inside that
+        cycle's 48 hour horizon -- so the old literal stopped denoting a
+        refusable window and the case passed on nothing.  Measured at
+        this commit: 30 and 40 hours are served by the 00Z cycle at lead
+        5, and 50 hours is the first of the four whole-hour lengths read
+        that is not.
+        """
+
+        for run_hours in (30, 40):
+            plan = plan_window(utc(2026, 8, 5, 5, 30), cycles=2,
+                               cycle_seconds=900, free_legs=6,
+                               now=utc(2026, 8, 5, 5, 45), source="hrrr",
+                               run_hours=run_hours)
+            assert plan.background_source == "hrrr"
+            assert plan.background_cycle == utc(2026, 8, 5, 0)
+            assert plan.forecast_start_hour == 5
+
+    def test_a_window_past_every_reachable_horizon_is_refused(self):
+        """And the refusal names the frame and the horizon it exceeds."""
+
+        with pytest.raises(SystemExit) as refusal:
             plan_window(utc(2026, 8, 5, 5, 30), cycles=2,
                         cycle_seconds=900, free_legs=6,
                         now=utc(2026, 8, 5, 5, 45), source="hrrr",
-                        run_hours=30)
+                        run_hours=50)
+        sentence = str(refusal.value)
+        assert "2026-08-05T05:00:00" in sentence
+        assert "f62" in sentence and "f18" in sentence
+
+    def test_a_source_the_roster_has_gained_is_selected(self):
+        """Re-pinned, with the reading.
+
+        ``rrfs`` was an unregistered source when this pinned its
+        refusal; it is in the registry the door projects its roster
+        from now, so the door plans on it like any other member.  The
+        refusal below is the one that was actually being tested: a
+        source the roster does not carry.
+        """
+        plan = plan_window(utc(2026, 8, 5, 5, 30), cycles=2,
+                           cycle_seconds=900, free_legs=6,
+                           now=utc(2026, 8, 5, 5, 45), source="rrfs")
+        assert plan.background_source == "rrfs"
+        assert plan.background_cycle == utc(2026, 8, 5, 0)
 
     def test_an_unregistered_source_is_refused_with_the_roster(self):
-        with pytest.raises(SystemExit):
+        """The name has to be one the roster does not carry.
+
+        This case named a source that was unregistered when it was
+        written and has since joined the roster, at which point it
+        measured a registered source planning normally.  The refusal
+        itself never moved: an unknown name is refused and the sentence
+        lists what is available, which is what is asserted here.
+        """
+
+        with pytest.raises(SystemExit) as refusal:
             plan_window(utc(2026, 8, 5, 5, 30), cycles=2,
                         cycle_seconds=900, free_legs=6,
-                        now=NOW, source="rrfs")
+                        now=NOW, source="no-such-source")
+        sentence = str(refusal.value)
+        assert "no-such-source" in sentence
+        assert "available sources:" in sentence
+        assert "hrrr" in sentence and "gfs" in sentence
 
     def test_payload_carries_both_spellings_of_the_cycle(self):
         payload = plan_window(
@@ -1693,3 +1749,159 @@ class TestRadarLabelling:
         from tools.da_nowcast_render import radar_ids
 
         assert radar_ids(self.char_rows("QQQQ", width=12)) == ["QQQQ"]
+
+
+# ---------------------------------------------------------------------------
+# the fine nest over the free forecast, asked for at this door
+# ---------------------------------------------------------------------------
+class TestTheNestReachesTheCycleFromTheFrontDoor:
+    """The nest belongs to the cycle driver; this door forwards it.
+
+    The prepared cycle driver has carried ``--nest-*`` all along, and
+    the gallery has drawn nest composites all along.  What was missing
+    was the wire between them: a run launched from this front door --
+    which is every run a user launches -- could not ask for one, and its
+    receipt said ``nested_free_forecast: false`` whatever had happened.
+    """
+
+    def plan(self) -> WindowPlan:
+        return plan_window(utc(2026, 8, 5, 5, 30), cycles=6,
+                           cycle_seconds=900, free_legs=6, now=NOW)
+
+    def base(self) -> dict:
+        return dict(
+            prepared_root=Path("p"), authority_dir=Path("a"),
+            profile="prof", plan=self.plan(), members=8,
+            obs_files=[Path("o")], grid_wrfouts=[Path("g")],
+            cycle_out=Path("c"), proof_sha="x", manifest_sha="y",
+            content_sha="z", seed=1, solve_device="cuda",
+            horizontal_loc_m=12000.0, vertical_loc_m=3000.0,
+            length_scale_km=50.0, source="hrrr")
+
+    def parse(self, *extra: str):
+        return build_parser().parse_args(
+            ["run", "--site", "QQQQ", "--window-end", "latest",
+             "--out", "case", *extra])
+
+    def test_a_run_that_asks_for_no_nest_builds_the_argv_it_always_did(self):
+        from tools.da_nowcast import NestChoice
+
+        nest = NestChoice.from_args(self.parse())
+        assert not nest.requested
+        assert nest.argv_tail() == []
+        argv = cycle_cmd(**self.base(), nest=nest)
+        assert not [token for token in argv if token.startswith("--nest")]
+        assert argv == cycle_cmd(**self.base())
+
+    def test_an_extent_turns_it_on_and_is_forwarded_flag_for_flag(self):
+        from tools.da_nowcast import NestChoice
+
+        nest = NestChoice.from_args(self.parse(
+            "--nest-half-width-km", "60", "--nest-members", "2",
+            "--nest-history-interval-s", "300"))
+        assert nest.requested
+        argv = cycle_cmd(**self.base(), nest=nest)
+        assert argv[argv.index("--nest-half-width-km") + 1] == "60.0"
+        assert argv[argv.index("--nest-members") + 1] == "2"
+        assert argv[argv.index("--nest-history-interval-s") + 1] == "300.0"
+        # the ratio is always spelled out once a nest is asked for, so a
+        # receipt replay cannot inherit a different default later
+        assert argv[argv.index("--nest-ratio") + 1] == "3"
+
+    def test_cells_are_an_extent_too(self):
+        from tools.da_nowcast import NestChoice
+
+        nest = NestChoice.from_args(
+            self.parse("--nest-nx", "120", "--nest-ny", "120"))
+        assert nest.requested
+        argv = cycle_cmd(**self.base(), nest=nest)
+        assert argv[argv.index("--nest-nx") + 1] == "120"
+        assert argv[argv.index("--nest-ny") + 1] == "120"
+
+    def test_the_ratio_default_is_the_nest_geometrys_own(self):
+        from gpuwm.da.nested_forecast import NestGeometry
+        from tools.da_nowcast import default_nest_ratio
+
+        assert default_nest_ratio() == NestGeometry.ratio
+
+    def test_an_admissibility_acknowledgement_is_carried(self):
+        from tools.da_nowcast import NestChoice
+
+        nest = NestChoice.from_args(self.parse(
+            "--nest-half-width-km", "60",
+            "--nest-acknowledge", "nested-forecast:sub-gray-zone-pbl"))
+        argv = cycle_cmd(**self.base(), nest=nest)
+        assert argv[argv.index("--nest-acknowledge") + 1] \
+            == "nested-forecast:sub-gray-zone-pbl"
+
+    def test_the_three_cli_refusals_are_met_before_the_card(self):
+        from tools.da_nowcast import validate_analysis_flags
+
+        with pytest.raises(SystemExit):
+            # the nest runs over the free legs; without them there is
+            # nothing for it to refine
+            validate_analysis_flags(
+                self.parse("--nest-half-width-km", "60",
+                           "--free-legs", "0"))
+        with pytest.raises(SystemExit):
+            validate_analysis_flags(self.parse("--nest-members", "2"))
+        with pytest.raises(SystemExit):
+            validate_analysis_flags(
+                self.parse("--nest-half-width-km", "60",
+                           "--members", "2", "--nest-members", "4"))
+        # and the asked-for shape passes
+        validate_analysis_flags(
+            self.parse("--nest-half-width-km", "60", "--members", "4",
+                       "--nest-members", "2"))
+
+    def test_the_receipt_names_the_frames_and_the_free_legs(self):
+        """The forecast is an output, so the receipt names where it is.
+
+        The frames were always written.  Nothing named them, so a
+        reader who wanted the forecast rather than the gallery had to
+        find them by listing directories.
+        """
+        from tools.da_nowcast import forecast_frames_block
+
+        block = forecast_frames_block(Path("case") / "cycle",
+                                      cycles=2, free_legs=2)
+        assert block["free_legs"] == ["leg02", "leg03"]
+        assert block["dir"].endswith("composites")
+        assert "wrfout_legNN" in block["wrfout"]
+        assert forecast_frames_block(Path("c"), cycles=6,
+                                     free_legs=0)["free_legs"] == []
+        # The driver's numbering has ONE author.  This door pins the
+        # offset to zero; the receipt follows whatever it is given
+        # rather than re-deriving a second convention beside the
+        # driver's own (tools/da_nowcast_auto.py passes one).
+        from tools.da_nowcast import CYCLE_LEG_NUMBER_OFFSET
+
+        assert CYCLE_LEG_NUMBER_OFFSET == 0
+        assert block["leg_number_offset"] == CYCLE_LEG_NUMBER_OFFSET
+        assert forecast_frames_block(
+            Path("c"), cycles=2, free_legs=2,
+            leg_number_offset=5)["free_legs"] == ["leg07", "leg08"]
+        # the nest writes beside the parent frames, so the block names
+        # that pair too or a reader finds only half the run's output
+        assert "_dNN" in block["nested"]
+        # and the block says WHAT the frame is.  The wrfout is a
+        # one-level surface snapshot of the composite; a reader of the
+        # receipt alone would otherwise take it for the leg's full
+        # state, which is the state this door does not keep.
+        assert "one-level" in block["vertical"]
+        assert "three-dimensional leg state is not kept" in block["vertical"]
+        assert "da_cycle_prepared.py" in block["vertical"]
+        # one measured field, and the rest of the file is structure
+        assert block["measured_field"].startswith("composite reflectivity")
+        assert "surface_wrfout.py" in block["measured_field"]
+
+    def test_the_payload_tells_a_reader_what_was_asked_for(self):
+        from tools.da_nowcast import NestChoice
+
+        off = NestChoice.from_args(self.parse()).to_payload()
+        assert off == {"requested": False}
+        on = NestChoice.from_args(
+            self.parse("--nest-half-width-km", "45")).to_payload()
+        assert on["requested"] is True
+        assert on["half_width_km"] == 45.0
+        assert on["ratio"] == 3

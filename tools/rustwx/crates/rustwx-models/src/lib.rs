@@ -63,6 +63,11 @@ pub enum GribLevelKind {
     IsobaricHpa,
     EntireAtmosphere,
     NominalTop,
+    /// The surface at a named temperature (the 0 C isotherm and its
+    /// colder siblings).
+    Isotherm,
+    /// One number per column, the largest on any model level.
+    ColumnMaximum,
     Unknown,
 }
 
@@ -98,6 +103,15 @@ pub enum RenderStyle {
     /// for orography would produce a plot of the wind over a field that
     /// does not vary.
     WeatherTerrain,
+    /// The height of an isotherm in metres, on a sequential ramp whose
+    /// cold end is a low level.
+    WeatherIsothermHeight,
+    /// A supercooled liquid water path in g m-2, sequential, masked
+    /// below the lowest level an icing reader cares about.
+    WeatherSupercooledWaterPath,
+    /// A hydrometeor mixing ratio in g kg-1, sequential, masked below a
+    /// hundredth of a gram.
+    WeatherHydrometeorMixingRatio,
 }
 
 fn recipe_lineage(slug: &str, family: ProductFamily) -> ProductLineage {
@@ -3578,6 +3592,116 @@ const FIELD_SIMULATED_IR: GribFieldSpec = field_spec(
     &["SBT113:top of atmosphere"],
 );
 
+const FIELD_ISOTHERM_HEIGHT_0C: GribFieldSpec = field_spec(
+    "isotherm_height_0c",
+    "0 C Isotherm Height",
+    ProductFamily::Native,
+    GribLevelKind::Isotherm,
+    Some(0),
+    Some(FieldSelector::isotherm_celsius(CanonicalField::GeopotentialHeight, 0)),
+    &["HGT:0C isotherm"],
+);
+
+const FIELD_ISOTHERM_HEIGHT_MINUS10C: GribFieldSpec = field_spec(
+    "isotherm_height_minus10c",
+    "-10 C Isotherm Height",
+    ProductFamily::Native,
+    GribLevelKind::Isotherm,
+    Some(-10),
+    Some(FieldSelector::isotherm_celsius(CanonicalField::GeopotentialHeight, -10)),
+    &[],
+);
+
+const FIELD_ISOTHERM_HEIGHT_MINUS20C: GribFieldSpec = field_spec(
+    "isotherm_height_minus20c",
+    "-20 C Isotherm Height",
+    ProductFamily::Native,
+    GribLevelKind::Isotherm,
+    Some(-20),
+    Some(FieldSelector::isotherm_celsius(CanonicalField::GeopotentialHeight, -20)),
+    &[],
+);
+
+const FIELD_SUPERCOOLED_WATER_PATH: GribFieldSpec = field_spec(
+    "supercooled_water_path",
+    "Supercooled Liquid Water Path",
+    ProductFamily::Native,
+    GribLevelKind::EntireAtmosphere,
+    None,
+    Some(FieldSelector::entire_atmosphere(CanonicalField::SupercooledLiquidWaterPath)),
+    &[],
+);
+
+const FIELD_SUPERCOOLED_WATER_PATH_0_3KM: GribFieldSpec = field_spec(
+    "supercooled_water_path_0_3km",
+    "Supercooled Liquid Water Path, 0 to 3 km AGL",
+    ProductFamily::Native,
+    GribLevelKind::HeightAboveGroundLayer,
+    None,
+    Some(FieldSelector::height_layer_agl(CanonicalField::SupercooledLiquidWaterPath, 0, 3000)),
+    &[],
+);
+
+const FIELD_SUPERCOOLED_WATER_PATH_3_6KM: GribFieldSpec = field_spec(
+    "supercooled_water_path_3_6km",
+    "Supercooled Liquid Water Path, 3 to 6 km AGL",
+    ProductFamily::Native,
+    GribLevelKind::HeightAboveGroundLayer,
+    None,
+    Some(FieldSelector::height_layer_agl(CanonicalField::SupercooledLiquidWaterPath, 3000, 6000)),
+    &[],
+);
+
+const FIELD_CLOUD_WATER_COLUMN_MAX: GribFieldSpec = field_spec(
+    "cloud_water_column_max",
+    "Cloud Water Mixing Ratio, Column Maximum",
+    ProductFamily::Native,
+    GribLevelKind::ColumnMaximum,
+    None,
+    Some(FieldSelector::column_maximum(CanonicalField::CloudWaterMixingRatio)),
+    &[],
+);
+
+const FIELD_RAIN_WATER_COLUMN_MAX: GribFieldSpec = field_spec(
+    "rain_water_column_max",
+    "Rain Water Mixing Ratio, Column Maximum",
+    ProductFamily::Native,
+    GribLevelKind::ColumnMaximum,
+    None,
+    Some(FieldSelector::column_maximum(CanonicalField::RainWaterMixingRatio)),
+    &[],
+);
+
+const FIELD_CLOUD_ICE_COLUMN_MAX: GribFieldSpec = field_spec(
+    "cloud_ice_column_max",
+    "Cloud Ice Mixing Ratio, Column Maximum",
+    ProductFamily::Native,
+    GribLevelKind::ColumnMaximum,
+    None,
+    Some(FieldSelector::column_maximum(CanonicalField::CloudIceMixingRatio)),
+    &[],
+);
+
+const FIELD_SNOW_COLUMN_MAX: GribFieldSpec = field_spec(
+    "snow_column_max",
+    "Snow Mixing Ratio, Column Maximum",
+    ProductFamily::Native,
+    GribLevelKind::ColumnMaximum,
+    None,
+    Some(FieldSelector::column_maximum(CanonicalField::SnowMixingRatio)),
+    &[],
+);
+
+const FIELD_GRAUPEL_COLUMN_MAX: GribFieldSpec = field_spec(
+    "graupel_column_max",
+    "Graupel Mixing Ratio, Column Maximum",
+    ProductFamily::Native,
+    GribLevelKind::ColumnMaximum,
+    None,
+    Some(FieldSelector::column_maximum(CanonicalField::GraupelMixingRatio)),
+    &[],
+);
+
 const FIELD_2M_THETA_E: GribFieldSpec = field_spec(
     "theta_e_2m_agl",
     "2m AGL Theta-e",
@@ -5536,6 +5660,108 @@ const PLOT_RECIPES: &[PlotRecipe] = &[
         barbs_v: None,
         style: RenderStyle::WeatherSatellite,
     },
+    // Column planes the wrfout import derives from its native levels
+    // (rw-wrfbatch wrf_column_planes.rs); no GRIB source in the catalog
+    // carries them, so a fetch plan for one is a table row still to write.
+    PlotRecipe {
+        slug: "isotherm_height_0c",
+        title: "0 C Isotherm Height",
+        filled: FIELD_ISOTHERM_HEIGHT_0C,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherIsothermHeight,
+    },
+    PlotRecipe {
+        slug: "isotherm_height_minus10c",
+        title: "-10 C Isotherm Height",
+        filled: FIELD_ISOTHERM_HEIGHT_MINUS10C,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherIsothermHeight,
+    },
+    PlotRecipe {
+        slug: "isotherm_height_minus20c",
+        title: "-20 C Isotherm Height",
+        filled: FIELD_ISOTHERM_HEIGHT_MINUS20C,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherIsothermHeight,
+    },
+    PlotRecipe {
+        slug: "supercooled_water_path",
+        title: "Supercooled Liquid Water Path",
+        filled: FIELD_SUPERCOOLED_WATER_PATH,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherSupercooledWaterPath,
+    },
+    PlotRecipe {
+        slug: "supercooled_water_path_0_3km",
+        title: "Supercooled Liquid Water Path, 0 to 3 km AGL",
+        filled: FIELD_SUPERCOOLED_WATER_PATH_0_3KM,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherSupercooledWaterPath,
+    },
+    PlotRecipe {
+        slug: "supercooled_water_path_3_6km",
+        title: "Supercooled Liquid Water Path, 3 to 6 km AGL",
+        filled: FIELD_SUPERCOOLED_WATER_PATH_3_6KM,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherSupercooledWaterPath,
+    },
+    PlotRecipe {
+        slug: "cloud_water_column_max",
+        title: "Cloud Water, Column Maximum",
+        filled: FIELD_CLOUD_WATER_COLUMN_MAX,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherHydrometeorMixingRatio,
+    },
+    PlotRecipe {
+        slug: "rain_water_column_max",
+        title: "Rain Water, Column Maximum",
+        filled: FIELD_RAIN_WATER_COLUMN_MAX,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherHydrometeorMixingRatio,
+    },
+    PlotRecipe {
+        slug: "cloud_ice_column_max",
+        title: "Cloud Ice, Column Maximum",
+        filled: FIELD_CLOUD_ICE_COLUMN_MAX,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherHydrometeorMixingRatio,
+    },
+    PlotRecipe {
+        slug: "snow_column_max",
+        title: "Snow, Column Maximum",
+        filled: FIELD_SNOW_COLUMN_MAX,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherHydrometeorMixingRatio,
+    },
+    PlotRecipe {
+        slug: "graupel_column_max",
+        title: "Graupel, Column Maximum",
+        filled: FIELD_GRAUPEL_COLUMN_MAX,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherHydrometeorMixingRatio,
+    },
     PlotRecipe {
         slug: "lightning_flash_density",
         title: "Lightning Flash Density",
@@ -6138,8 +6364,26 @@ pub fn selector_supported_for_model(selector: FieldSelector, model: ModelId) -> 
                 | ModelId::WrfGdex
         ),
         (CanonicalField::SimulatedInfraredBrightnessTemperature, VerticalSelector::NominalTop) => {
-            matches!(model, ModelId::Hrrr | ModelId::HrrrAk)
+            matches!(model, ModelId::Hrrr | ModelId::HrrrAk | ModelId::WrfGdex)
         }
+        // The column planes the wrfout import derives itself.  A GRIB
+        // source that carries one (HRRR's HGT at the 0 C isotherm) joins
+        // this arm when its message mapping is written.
+        (CanonicalField::GeopotentialHeight, VerticalSelector::IsothermCelsius(_)) => {
+            matches!(model, ModelId::WrfGdex)
+        }
+        (
+            CanonicalField::SupercooledLiquidWaterPath,
+            VerticalSelector::EntireAtmosphere | VerticalSelector::HeightAboveGroundLayerMeters { .. },
+        ) => matches!(model, ModelId::WrfGdex),
+        (
+            CanonicalField::CloudWaterMixingRatio
+            | CanonicalField::RainWaterMixingRatio
+            | CanonicalField::CloudIceMixingRatio
+            | CanonicalField::SnowMixingRatio
+            | CanonicalField::GraupelMixingRatio,
+            VerticalSelector::ColumnMaximum,
+        ) => matches!(model, ModelId::WrfGdex),
         _ => false,
     }
 }

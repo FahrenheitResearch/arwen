@@ -676,9 +676,45 @@ kind of refusal: the forecast keeps its `PASS`, `report.json` gains a
 the door exits 2 with the sentence rather than a traceback. A computer
 with no staged Rust renderer is turned away before the child is
 integrated rather than after, with `--render-products none` named as the
-way to run the forecast anyway. A child that does not pass publishes no
-picture at all: what the early render had already drawn is withdrawn, and
-the event stream and the report say so.
+way to run the forecast anyway.
+
+**A child that does not finish keeps the pictures it drew.** A run that
+stops partway through -- non-finite, a refusal raised mid-run, an
+interrupt -- leaves every picture its early render had already published
+exactly where it published them, and adds the verdict those pictures
+cannot carry themselves:
+
+* `DID-NOT-FINISH.txt` at the top of `<out>/png/` says where the forecast
+  stopped (model second and step, of how many), why it stopped, how many
+  pictures are in the folder, which frames were written before the stop,
+  and that everything there was drawn before it.
+* `render-summary.json` beside them carries `status: did-not-finish`
+  with `pictures_on_disk` and the banner's path, so a run browser that
+  reads that file finds the pictures rather than an absent folder.
+* The event stream carries a `warning` with code `early_render_kept`
+  naming the same count and banner.
+* `report.json` is published for this outcome too, whatever stopped the
+  run: `result` is `FAIL`, `failure` is the capsule naming what stopped
+  it -- or, for a stop that composed no capsule, such as an interrupt,
+  an `OSError` from a mount that dropped or a contract error raised
+  mid-run, the sentence the banner carries (`summary`) with the whole of
+  what was raised (`message`) and its class (`error_type`) -- and the
+  `products` block reads `status: KEPT` with `pictures_on_disk`, the
+  banner's path, and a next step that is the pictures rather than
+  redrawing them. The banner, the render summary, the event stream and
+  the report are one account of one run.
+* A picture folder that cannot be listed -- a permission wall, a dropped
+  mount, a path that is a file -- says so and carries the error, in the
+  banner, in `render-summary.json` (`pictures_on_disk` null beside
+  `pictures_on_disk_error`) and in the report. It is not counted as
+  zero: a tree nobody could read is not a tree with nothing in it, and
+  reading it as one is what tells somebody who still has their pictures
+  that they have none.
+
+The frames and the checkpoints are kept too, so the run can still be
+drawn in full by hand at any time. Earlier releases removed the pictures
+instead, which left a child that stopped part way through its forecast
+with nothing to look at.
 
 `gpuwm render` handles the child's wrfouts like any other run's, and
 sub-hourly cadences render exactly: every frame carries its precise
@@ -689,6 +725,68 @@ and the child into separate directories and compose labeled pair sheets:
 ```bash
 gpuwm render --pair out/parent/png out/child/png --out out/compare
 ```
+
+## When a child stops being finite
+
+A child's own health check samples the state every
+`--health-interval-seconds` of model time (60 s by default) and refuses the
+forecast the first time a field is not finite. That refusal is a capsule,
+not a step number. The climb in the example below is a real child's, read
+off its own health record; the cell and the count are whatever the survey
+finds in the run you are reading about:
+
+```
+The child blew up: w_max ran 10.73, 13.22, 15.77, 18.12, 21.05, 22.97 m/s
+over the 300 model seconds before W went non-finite at cell
+(k=12, j=401, i=388), at model second 2760 of 28800 and step 6624 of 69120.
+Non-finite carriers at that check:
+  W: 4,812 cells of 31,840,200, first at (k=12, j=401, i=388), all inside
+  k 10-14, j 398-404, i 385-391
+The last 7 health checks, 60 model seconds apart:
+  step 5760  model second 2400  w_max 10.73 m/s  CFL 0.1903
+  ...
+  step 6624  model second 2760  w_max non-finite  CFL not computed
+Next: every frame the run did reach is on disk and can be drawn by hand:
+  gpuwm render <out> --series ...
+```
+
+Four things are in there on purpose. The **carriers** say whether the
+dynamics went first or a moisture species did. The **cell** is one bad
+cell when there is one, and a count with the box it falls inside when
+there are many, which is the difference between a single point, a column
+and a field that has gone entirely. The **model second** says where in the
+forecast it happened, which the step alone does not. The **trend** is the
+health record read back over the window: a CFL that never left its band
+while `w_max` doubled says plainly that the time step was not what ran out.
+
+Every document this outcome writes is JSON a strict reader can open.
+`NaN` is not a JSON token, so a reading that went travels as `null` beside
+a state word rather than as a number: `"w_max": null, "w_max_state":
+"non-finite"` for a field that stopped being finite, and `"not computed"`
+for a reading nothing ever produced, such as the CFL, which is not
+computed at all from fields that are not finite. That is the shape in
+`report.json`, on the `child_step` event line and in the run-plan event
+stream alike, and it is why the table above prints the state word where
+the number would be, with no unit after it.
+
+`report.json` is written for this outcome too, with `"result": "FAIL"`, the
+same capsule under `failure`, and a `products` block reading `"status":
+"KEPT"` with `pictures_on_disk` and the path of the `DID-NOT-FINISH.txt`
+banner standing over those pictures: nothing is removed from the picture
+folder on any failure path. The run-plan `failed` event carries
+the capsule's first sentence, which is the line a run browser shows. The
+frames and checkpoints written before the refusal stay on disk and render
+like any other run's, and `gpuwm resume` reads that `"result"` rather than
+the presence of the file: a directory holding a `FAIL` report is told to
+run `gpuwm downscale` again on a fresh `--out`, with the capsule's first
+sentence quoted back as the reason it did not finish.
+
+Which directories that reading applies to is decided by what the run
+wrote in them, not by the configuration file beside them. `child.toml`
+lands in `--out` only when `--point` derived it, so a run given its
+configuration with `--child-config` records none; the route is named by
+`downscale-plan.json`, or by `report.json` naming its pipeline, counting
+its steps or carrying the failure capsule.
 
 ## Giving the child its own vertical levels
 
@@ -716,6 +814,54 @@ rebinning rather than interpolation. Measured on a prepared child: water
 substance drifts 1.2e-16 relative, potential temperature 0.0, the column's dry
 mass closes to 0.0 Pa, and the child's model top lands on the parent's exactly.
 
+### The LES case is stated at the door
+
+A child at or below **250 m** horizontal spacing is in a different regime
+from the mesoscale run its parent's configuration was written for, and the
+door says so before the run starts. 250 m is this tree's own number:
+`docs/public/LES.md` ships its nested LES child at that spacing and calls it
+coarse LES at the gray-zone edge.
+
+The statement fires when the child is at or below that spacing **and**
+any of the following is true of it:
+
+- it inherits the parent's vertical ladder, which it does whenever
+  `--child-levels` is absent and its configuration names no ladder of its
+  own, or names one of the same depth as the parent tape's;
+- it runs a 1-D boundary-layer scheme (`bl_pbl_physics` other than 0) with
+  no 3-D closure (`km_opt` other than 2 or 3); or
+- nothing mixes heat or moisture vertically at all, which is
+  `bl_pbl_physics = 0` with `km_opt` 1 or 4: those two compute no vertical
+  exchange pair of their own, and the scheme that would otherwise do it is
+  off. (`km_opt = 0` is not in this list: this tree admits it only behind
+  an acknowledgement written out in full, so that child was already told.)
+
+It names the spacing, the threshold, which of the three it found, and the
+shape that goes with it: a boundary-layer-scheme child at LES spacing
+tends to grow vertical velocity check after check until the field goes
+non-finite; a child with no vertical mixing has nothing but the motion it
+resolves carrying heat and moisture between its levels; a child on a
+ladder chosen for a coarser grid leaves more of its turbulence to the
+subgrid model than a resolved column does, 12.7 percent against 7.9
+(`docs/public/LES.md`). The ways out are named too: `--child-levels N,STRETCH` for the ladder,
+`km_opt = 3` (3-D Smagorinsky) or `km_opt = 2` (prognostic TKE) with
+`bl_pbl_physics = 0` in the `--child-config` TOML for the closure, and
+`--child-surface-from` for the geography a grid this fine can resolve and
+the parent's cannot. `--explain` adds why.
+
+It is a **statement, not a refusal**: the shipped nested LES child is itself
+a 250 m child on its grandparent's ladder, nothing about the run changes,
+and the command still exits 0 with its plan. `downscale-plan.json` carries
+the same numbers as fields under `les_regime`, `null` when the child is not
+in that regime.
+
+There is no downscale flag for the closure. `--child-config` is how a child
+gets one, because the TOML is where `km_opt` and `bl_pbl_physics` live; a
+`--point`-derived child takes the parent's physics verbatim
+(`gpuwm/downscale.py`, `_derive_child_run_config`), which is exactly how a
+child arrives at LES spacing still running its parent's boundary-layer
+scheme.
+
 Two things it will refuse, both by name: a bare level count with no stretch
 (a uniform ladder under a stretched parent is a different atmosphere, not a
 finer sampling of one), and a ladder whose depth its own radiation cannot run
@@ -727,16 +873,43 @@ Those three coordinate parameters stay shared with the parent deliberately: they
 are what make the endpoints coincide, and a per-domain `p_top` would leave the
 remap extrapolating above the model top with no state to extrapolate from.
 
+## Ozone on the child
+
+A child under legacy RRTMG (`ra_lw_physics = 4`, `ra_sw_physics = 4`,
+`ra_rrtmg_variant = "rrtmg_legacy"`) with `o3input = 2`, which is the
+RunConfig default and the pairing a downscale of a default forecast
+inherits, evaluates the packaged CAM ozone climatology on its own grid. It
+has no parent in memory to take a field from, and it is configured as a WRF
+root (`specified = true`, `nested = false`, lateral boundaries read from the
+archive), which is the domain WRF hands its own `oznini` and `ozn_p_int`
+evaluation; only a resident nest is given the parent's field. `report.json`
+says which under `child_ozone_routing`: `child-grid-climatology` here,
+`wrapper-o3data` under `o3input = 0`, and `null` when the child's radiation
+carries no ozone routing at all. Earlier releases refused this pairing on
+the offline route and named two exits the desktop cannot take; the refusal
+is gone and a bare downscale runs.
+
+What the choice is worth was measured on an RTX 4090 against the field a
+resident nest would be given (the parent's climatology carried onto the
+child grid by the same SINT operator the nest transfer uses), on a 72 x 72 x
+30 parent at 3 km and its 60 x 60 x 30 ratio-3 child at 1 km, three parent
+frames at 900 s: per-layer relative difference at most 1.29e-2 (mean
+5.9e-3, the widest column at the child's corner), column-integrated ozone
+1.3635e-3 against 1.3675e-3 kg m-2 (relative difference at most 2.96e-3),
+and two 10-minute runs of that child differing in nothing but the ozone
+field end 0.0086 K apart in potential temperature at the widest point
+(mean 1.5e-4 K, RMS 2.2e-4 K, the widest layer near 350 hPa). That is the
+nest-interpolation seam the legacy port already documents, not a different
+atmosphere, so the parent's history is not read for ozone and needs no
+`o3rad` in it. The receipts are under
+`receipts/` (`ozone-field-reading.json`,
+`ozone-heating-reading.json`) with the scripts that wrote them beside them.
+
 ## Known limits
 
 - **Terrain is SINT-inherited** from the parent rather than rebuilt at the
   child's resolution. Downscaling a coarse-terrain source gives the child
   that coarse terrain at a fine grid spacing.
-- **Legacy RRTMG with `o3input = 2` needs a resident parent's initialized
-  ozone.** Standalone child physics refuses that dependency. A successful
-  config plan or CPU boundary preparation does not establish radiation
-  initialization; any alternative ozone treatment must be explicit in the
-  reviewed child physics.
 - **The child's eta ladder is its own only if you ask for one.** Without
   `--child-levels` the child keeps the parent's levels, exactly as before.
   With it the child is built on its own ladder through a conservative

@@ -43,7 +43,9 @@ from gpuwm.case_data import (PerDomainSourceOrography, SourceOrography,
                              resolve_source_orography)
 from gpuwm.core import constants as c
 from gpuwm.core.diagnostics import update_diagnostics
-from gpuwm.core.grid import BaseState, VerticalCoord, make_vertical_coord
+from gpuwm.core.grid import (BaseState, VerticalCoord,
+                            hybrid_column_ordering_refusal,
+                            make_vertical_coord)
 from gpuwm.core.nest_interp import (adjust_tempqv, blend_terrain,
                                     register_nest, sint)
 from gpuwm.core.microphysics_transition import (
@@ -658,7 +660,19 @@ def _base_from_blended(state: DomainState, cfg, coord: VerticalCoord,
     pb = (coord.c3h[:, None, None] * mub[None]
           + coord.c4h[:, None, None] + float(p_top))
     if np.any(pb <= 0.0) or not np.all(np.diff(pb, axis=0) < 0.0):
-        raise ValueError("blended hybrid base pressure is not monotonic")
+        # The BLENDED terrain, which is neither the parent's nor the
+        # child's: start_domain_em.F recomputes the base state from the
+        # already-blended MUB, so this column exists only after the
+        # blend.  The preparation door derives the coordinate from every
+        # terrain field the run can touch (gpuwm.vertical_adaptation),
+        # and a weighted blend of two representable terrains is itself
+        # representable -- so reaching here means the blend, not either
+        # input, is the unrepresentable ground, and the reader needs the
+        # same numbers the door's refusal carries rather than four words.
+        raise ValueError(hybrid_column_ordering_refusal(
+            coord, float(p_top), mub + float(p_top), terrain=terrain,
+            quantity="blended hybrid base pressure")
+            or "blended hybrid base pressure is not monotonic")
     lapse = 50.0
     temperature = np.maximum(
         200.0, cfg.base_temp + lapse * np.log(pb / c.P0))

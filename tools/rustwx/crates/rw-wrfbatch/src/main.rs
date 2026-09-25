@@ -30,6 +30,7 @@ mod wrf_process;
 #[path = "wrf_volumes.rs"]
 mod wrf_volumes;
 mod wrf_chart_planes;
+mod wrf_column_planes;
 #[path = "mesh.rs"]
 mod mesh;
 #[path = "section.rs"]
@@ -78,7 +79,9 @@ const DEFAULT_SOURCE_LABEL: &str = "ArWen";
 ///
 /// * the five tab-separated `PRODUCT` fields and the `CATALOG` tally
 ///   line `gpuwm.rustwx.list_products` reads;
-/// * the `RENDERED` / `SKIPPED` / `FAILED` event words
+/// * the `RENDERED` / `SKIPPED` / `FAILED` event words, and the
+///   `SECTIONFILL` line that says which range a vertical cut's fill was
+///   drawn over and the rule that set it
 ///   `gpuwm.rustwx.run_renderer` reads;
 /// * the generic `var:` family and the `selectable_slugs` count of the
 ///   store-independent catalog -- the lane whose ABSENCE from a stale
@@ -110,6 +113,7 @@ const DEFAULT_SOURCE_LABEL: &str = "ArWen";
 const ABI_MARKER: &str = "gpuwm-rw-wrfbatch-catalog-v1\tPRODUCT\tslug\tkind\tstatus\tdetail\tcode\tCATALOG\t\
 gpuwm-rw-wrfbatch-requirements-v1\tNEEDS\tslug\tselector\tPLANNED\tstore_field\t\
 gpuwm-rw-wrfbatch-events-v1\tRENDERED\tSKIPPED\tFAILED\t\
+gpuwm-rw-wrfbatch-sections-v1\tSECTIONFILL\tslug\tlo\thi\tabsence\trule\t\
 gpuwm-rw-wrfbatch-vocabulary-v1\tgeneric\tvar:\txsec:\tmesh:\tmeshdiff:\tselectable_slugs";
 
 #[derive(Debug)]
@@ -1295,7 +1299,25 @@ fn render_section_products(
         theme: rustwx_render::active_theme(),
     };
     section::render_sections(products, &config, |outcome| match outcome.result {
-        Ok(path) => println!("RENDERED {} {}", outcome.slug, path.display()),
+        Ok(path) => {
+            println!("RENDERED {} {}", outcome.slug, path.display());
+            // The bar a cut is drawn on is fitted to the frame at both
+            // ends, so the picture cannot say which bar it is.  The
+            // caller records this beside the ceiling, and two cuts of
+            // one line an hour apart are compared through the receipt.
+            if let Some(drawn) = outcome.drawn {
+                if drawn.lo.is_finite() && drawn.hi.is_finite() {
+                    println!(
+                        "SECTIONFILL {} lo={} hi={} absence={} rule={}",
+                        outcome.slug,
+                        drawn.lo,
+                        drawn.hi,
+                        u8::from(drawn.absence),
+                        drawn.rule.label()
+                    );
+                }
+            }
+        }
         Err(err) => eprintln!("FAILED {} {err}", outcome.slug),
     })
 }

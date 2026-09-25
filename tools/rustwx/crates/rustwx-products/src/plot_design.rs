@@ -335,6 +335,9 @@ pub fn operational_fill_scale_for_recipe_in(
             mask_below: Some(0.0),
         },
         RenderStyle::WeatherTerrain => terrain_elevation_scale(),
+        RenderStyle::WeatherIsothermHeight => isotherm_height_scale(),
+        RenderStyle::WeatherSupercooledWaterPath => supercooled_water_path_scale(),
+        RenderStyle::WeatherHydrometeorMixingRatio => hydrometeor_mixing_ratio_scale(),
         RenderStyle::WeatherCloudCover => cloud_cover_scale(),
         RenderStyle::WeatherPrecipitableWater => precipitable_water_inches_scale(),
         RenderStyle::WeatherQpf => crate::qpf::qpf_inches_scale(),
@@ -702,6 +705,77 @@ fn precipitable_water_inches_scale() -> DiscreteColorScale {
         extend: ExtendMode::Both,
         mask_below: None,
     }
+}
+
+/// The height of an isotherm, metres above sea level, 0 to 9 km in
+/// 500 m bands: a -20 C surface reaches 8 km over summer ground and a
+/// 0 C surface sits on the ground in winter.  Fixed, like every other
+/// operational scale here, so two frames of one run compare.
+fn isotherm_height_scale() -> DiscreteColorScale {
+    let levels = range_step(0.0, 9001.0, 500.0);
+    let colors = resampled_palette(
+        &weather_palette(WeatherPalette::IsothermHeight),
+        levels.len().saturating_sub(1),
+    );
+    DiscreteColorScale {
+        levels,
+        colors,
+        extend: ExtendMode::Max,
+        mask_below: None,
+    }
+}
+
+/// A supercooled liquid water path, g m-2.  Ten g m-2 is the floor an
+/// icing reader cares about and is masked below; the bands
+/// widen upward because a kilogram per square metre is a rare column.
+fn supercooled_water_path_scale() -> DiscreteColorScale {
+    let levels = vec![10.0, 20.0, 50.0, 100.0, 150.0, 200.0, 300.0, 400.0, 500.0, 750.0, 1000.0];
+    let colors = weather_palette(WeatherPalette::SupercooledWater);
+    debug_assert_eq!(colors.len() + 1, levels.len());
+    DiscreteColorScale {
+        levels,
+        colors,
+        extend: ExtendMode::Max,
+        mask_below: Some(10.0),
+    }
+}
+
+/// A hydrometeor mixing ratio, g kg-1, a hundredth of a gram to five
+/// grams, masked below the lowest band: the range a column maximum of
+/// cloud water, rain, ice, snow or graupel spans in a resolved storm.
+fn hydrometeor_mixing_ratio_scale() -> DiscreteColorScale {
+    let levels = vec![0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1.0, 2.0, 3.0, 5.0];
+    let colors = weather_palette(WeatherPalette::Hydrometeor);
+    debug_assert_eq!(colors.len() + 1, levels.len());
+    DiscreteColorScale {
+        levels,
+        colors,
+        extend: ExtendMode::Max,
+        mask_below: Some(0.01),
+    }
+}
+
+/// `n` bands linearly interpolated through `anchors`, so a level set has
+/// exactly one colour per interval whatever its length.
+fn resampled_palette(anchors: &[Color], n: usize) -> Vec<Color> {
+    if n == 0 || anchors.is_empty() {
+        return Vec::new();
+    }
+    if anchors.len() == 1 || n == 1 {
+        return vec![anchors[0]; n];
+    }
+    (0..n)
+        .map(|index| {
+            let t = index as f64 / (n - 1) as f64;
+            let position = t * (anchors.len() - 1) as f64;
+            let lower = (position.floor() as usize).min(anchors.len() - 2);
+            let fraction = position - lower as f64;
+            let a = anchors[lower];
+            let b = anchors[lower + 1];
+            let mix = |x: u8, y: u8| (f64::from(x) + (f64::from(y) - f64::from(x)) * fraction).round() as u8;
+            Color::rgba(mix(a.r, b.r), mix(a.g, b.g), mix(a.b, b.b), mix(a.a, b.a))
+        })
+        .collect()
 }
 
 /// Surface elevation in metres, on a hypsometric ramp.

@@ -95,6 +95,30 @@ def _host(value) -> np.ndarray:
 HRRR_ANALYZED_HYDROMETEORS = ("QC", "QR", "QI", "QS", "QG")
 DECLARED_ANALYZED_HYDROMETEORS = (*HRRR_ANALYZED_HYDROMETEORS, "QH")
 
+#: Vertical velocity at a real-data cold start: exact zero, on every route,
+#: whether or not the source publishes one.  WRF real never interpolates a
+#: source W: v4.6.1 ``dyn_em/module_initialize_real.F`` (sha256
+#: b4199371567369fa93471f66eef60cb63a55407718b828d724e43587bc4dc82e)
+#: contains no assignment to ``grid%w_1`` or ``grid%w_2`` at all, so the W
+#: real.exe writes is the allocation zero, and the first thing the model
+#: does with it is diagnose the terrain-following lower boundary
+#: (``dyn_em/start_em.F:1519-1530``, ``set_w_surface``).  The regular-source
+#: join drops a carried ``vertical_velocity`` by name
+#: (gpuwm.mapped_source.REGULAR_JOIN_DROPPED_FIELDS) and the hrrr-prs
+#: mapping zeroes it by policy, so the five hydrometeor masses are carried
+#: from the analysis while W is not.  The receipt says so rather than
+#: leaving it to be inferred from an absence.
+WRF_REAL_VERTICAL_VELOCITY_POLICY = {
+    "state_field": "w",
+    "policy": "exact-fp32-zero",
+    "wrf_version": "v4.6.1",
+    "wrf_commit": "d66e442fccc04111067e29274c9f9eaccc3cef28",
+    "real_citation": (
+        "dyn_em/module_initialize_real.F assigns neither grid%w_1 nor "
+        "grid%w_2; dyn_em/start_em.F:1519-1530 diagnoses the lower boundary"),
+    "source_vertical_velocity": "not interpolated on any route",
+}
+
 HRRR_HYDROMETEOR_CORRESPONDENCE_SCHEMA_V1 = (
     "gpuwm-real-hydrometeor-correspondence-v1")
 HRRR_HYDROMETEOR_CORRESPONDENCE_SCHEMA_V2 = (
@@ -300,7 +324,10 @@ WRF_REAL_MP28_AEROSOL_SOURCE_POLICY = {
         "gpuwm.core.physics.initialize_physics -> "
         "gpuwm.core.microphysics.microphysics_init"),
     "not_initialized_here": ("nwfa", "nifa", "nwfa2d", "nifa2d"),
-    "zeroed_here": ("nc", "nr", "ni"),
+    "number_moments": (
+        "nc, nr, ni: zero, then closed over the analyzed mass through the "
+        "scheme's entry block (hydrometeor_initialization."
+        "cold_start_moment_closure)"),
 }
 
 
@@ -357,6 +384,88 @@ def _resolved_mp28_aerosol_source(cfg) -> str:
     return str(getattr(cfg, "mp28_aerosol_source", "auto") or "auto")
 
 
+COLD_START_MOMENT_CLOSURE_SCHEMA = "gpuwm-real-cold-start-moment-closure-v1"
+
+
+def _thompson_cold_start_moment_closure(state, state_xp, cfg: RunConfig,
+                                        inverse_density) -> dict[str, object]:
+    """Close the scheme's number moments over the analyzed mass, once.
+
+    The scheme's own entry block (:mod:`gpuwm.core.thompson_entry`, the
+    authority :func:`gpuwm.da.moments.repair_moments` applies after an
+    analysis) evaluated on the initial state at the density the
+    initializer formed (``rho = 1/alt``), with the receipt the repair
+    writes.  Only cells carrying mass above the scheme's activity gate
+    with a number at or below zero are written; every other cell is left
+    exactly as real.exe leaves it.  A written array is validated finite
+    and non-negative before it reaches the state, and a state that fails
+    that is a refusal, not a clip.  The block is called here rather than
+    through the assimilation repair because this module ships in the
+    preparation-only distribution and that repair's module does not.
+    """
+    from gpuwm.core.thompson_entry import (
+        R1, THOMPSON_ENTRY_AUTHORITY, THOMPSON_ENTRY_SOURCE,
+        np_thompson_entry_numbers,
+    )
+
+    alt = np.asarray(_host(inverse_density), dtype=np.float32)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        density = 1.0 / np.asarray(alt, dtype=np.float64)
+    if not np.all(np.isfinite(density)):
+        raise ValueError(
+            "the initializer's inverse density is zero or not finite in "
+            f"{int(np.count_nonzero(~np.isfinite(density)))} cell(s), so the "
+            "density Thompson's entry block works in cannot be formed there")
+    species: list[dict[str, object]] = []
+    written: list[str] = []
+    total = 0
+    for name, mass_field, number_field in (
+            ("cloud", "qc", "nc"), ("rain", "qr", "nr"), ("ice", "qi", "ni")):
+        mass = _host_float32(getattr(state, mass_field))
+        number = _host_float32(getattr(state, number_field))
+        offenders = (mass > R1) & (number <= 0.0)
+        count = int(np.count_nonzero(offenders))
+        entry = {
+            "species": name, "mass_field": mass_field,
+            "number_field": number_field, "offending_cells": count,
+            "repaired_cells": 0,
+        }
+        if count:
+            closed = np_thompson_entry_numbers(name, mass, number, density)
+            fixed = np.array(number, dtype=np.float32)
+            fixed[offenders] = np.asarray(closed, dtype=np.float32)[offenders]
+            if not np.isfinite(fixed).all() or bool((fixed < 0.0).any()):
+                raise ValueError(
+                    f"the cold-start moment closure produced a non-finite or "
+                    f"negative {number_field}; the analyzed {mass_field} it "
+                    "was closed over is not a state the scheme can start from")
+            getattr(state, number_field)[...] = state_xp.asarray(
+                fixed, dtype=state_xp.float32)
+            entry["repaired_cells"] = count
+            entry["repaired_number_min"] = float(fixed[offenders].min())
+            entry["repaired_number_max"] = float(fixed[offenders].max())
+            total += count
+            written.append(number_field)
+        species.append(entry)
+    return {
+        "schema": COLD_START_MOMENT_CLOSURE_SCHEMA,
+        "repaired": True,
+        "repaired_cells_total": total,
+        "authority": THOMPSON_ENTRY_AUTHORITY,
+        "mp_physics": int(cfg.mp_physics),
+        "q_threshold_kg_kg": float(R1),
+        "species": species,
+        "note": ("cells with mass above the scheme's activity threshold "
+                 "and a number moment at or below zero were written; "
+                 "every other cell keeps the value real.exe writes"),
+        "written_state_fields": written,
+        "density": "initializer moist specific volume, rho = 1/alt",
+        "entry_block": THOMPSON_ENTRY_SOURCE
+                       + " through gpuwm.core.thompson_entry",
+        "cells_without_mass": "exact FP32 zero, as real.exe writes them",
+    }
+
+
 def _mp28_aerosol_source_policy(cfg: RunConfig, state) -> dict[str, object]:
     """Receipt for the mp=28 half of the source-absent initialization.
 
@@ -376,9 +485,13 @@ def _mp28_aerosol_source_policy(cfg: RunConfig, state) -> dict[str, object]:
         "wif_input_opt": int(cfg.wif_input_opt),
         "awaiting_profile_fill": True,
     }
+    # The four aerosol fields only: the three number moments are no longer
+    # source-absent zeros once the cold-start closure has run over the
+    # analyzed mass, and their receipt is
+    # hydrometeor_initialization["cold_start_moment_closure"].
     receipt["source_absent_state_fields"] = {
         name: array_correspondence_fingerprint(getattr(state, name))
-        for name in ("nc", "nr", "ni", "nwfa", "nifa", "nwfa2d", "nifa2d")
+        for name in ("nwfa", "nifa", "nwfa2d", "nifa2d")
     }
     return receipt
 
@@ -1504,26 +1617,75 @@ def _cap_stratospheric_qv(qv, pressure, *, column_workers=1):
     return output
 
 
+#: The overlapping-parabolic operator's undershoot envelope for a source
+#: this process did not map itself: WPS's own SPECHUMD, gated to 0..0.1
+#: upstream, mapped by metgrid into a met_em file.  It is
+#: :data:`gpuwm.ingest.horiz.WPS_PARABOLIC_NEGATIVE_WEIGHT` evaluated at
+#: that gate -- ``-9/32 * 0.1 = -0.028125`` -- plus one micro-unit for
+#: FP32 evaluation rounding.  A snapshot that mapped SPFH ITSELF carries
+#: the envelope of the source it actually saw
+#: (``HorizontalSnapshot.specific_humidity_undershoot_floor``), which is
+#: tighter for every source drier than that gate, and this constant is
+#: then not used.
 _WPS_SPFH_UNDERSHOOT_LOWER_BOUND = -0.028126
 
 
+def _specific_humidity_undershoot_bound(
+        allow_wps_undershoot, undershoot_floor):
+    """The lower bound this call admits, and the text that names it."""
+    if not allow_wps_undershoot:
+        return 0.0, "[0, 1)"
+    if undershoot_floor is None:
+        bound = _WPS_SPFH_UNDERSHOOT_LOWER_BOUND
+    else:
+        bound = float(undershoot_floor)
+        if not np.isfinite(bound) or bound > 0.0:
+            raise ValueError(
+                "undershoot_floor must be a finite, non-positive value")
+    return bound, f"[{bound:g}, 1)"
+
+
 def _specific_humidity_to_mixing_ratio_serial(
-        specific_humidity, *, allow_wps_undershoot=False):
-    """Convert and validate one contiguous specific-humidity chunk."""
+        specific_humidity, *, allow_wps_undershoot=False,
+        undershoot_floor=None, axis0_span=None):
+    """Convert and validate one contiguous specific-humidity chunk.
+
+    ``axis0_span`` is the half-open axis-0 range this array occupies in
+    the field it came from, present exactly when the caller split that
+    field across workers.  The counts and the extremes a refusal quotes
+    are this array's, so the text says which array that is: a reader
+    told "48 of 2246320" and given a minimum to go and find has to be
+    able to find it, and on a split field those numbers were one chunk's
+    while the sentence called them the field's.
+    """
     specific = np.asarray(specific_humidity, dtype=np.float64)
-    lower = (_WPS_SPFH_UNDERSHOOT_LOWER_BOUND
-             if allow_wps_undershoot else 0.0)
-    if (not np.isfinite(specific).all() or np.any(specific < lower)
-            or np.any(specific >= 1.0)):
-        interval = (f"[{_WPS_SPFH_UNDERSHOOT_LOWER_BOUND}, 1)"
-                    if allow_wps_undershoot else "[0, 1)")
-        raise ValueError(f"specific humidity must be finite in {interval}")
+    lower, interval = _specific_humidity_undershoot_bound(
+        allow_wps_undershoot, undershoot_floor)
+    finite = np.isfinite(specific)
+    outside = ~finite | (specific < lower) | (specific >= 1.0)
+    if outside.any():
+        scope = ("field" if axis0_span is None else
+                 f"levels {int(axis0_span[0])}..{int(axis0_span[1]) - 1}")
+        extremes = ("none finite" if not finite.any() else
+                    f"{scope} minimum {float(specific[finite].min())!r}, "
+                    f"{scope} maximum {float(specific[finite].max())!r}")
+        raise ValueError(
+            f"specific humidity must be finite in {interval} | observed: "
+            f"outside_cells={int(np.count_nonzero(outside))} of "
+            f"{specific.size} in the {scope}, of which "
+            f"non_finite={int(np.count_nonzero(~finite))}, "
+            f"below={int(np.count_nonzero(finite & (specific < lower)))}, "
+            f"at_or_above_one="
+            f"{int(np.count_nonzero(finite & (specific >= 1.0)))}; "
+            f"{extremes}; the bound is the overlapping-parabolic "
+            "operator's own undershoot envelope for the source it was "
+            "handed, so a value past it is not one that operator made")
     return specific / (1.0 - specific)
 
 
 def _specific_humidity_to_mixing_ratio(
         specific_humidity, *, allow_wps_undershoot=False,
-        column_workers=1):
+        undershoot_floor=None, column_workers=1):
     """Convert HRRR/WPS specific humidity to dry-air mixing ratio.
 
     This is WRF ``module_initialize_real.F``'s ``flag_sh`` branch:
@@ -1535,8 +1697,23 @@ def _specific_humidity_to_mixing_ratio(
     ``qv_gc`` for ``integ_moist`` even when ``use_sh_qv = .false.``.  HRRR
     SPFH is gated to 0..0.1 upstream; the 2-D sixteen-point operator's most
     negative coefficient sum is -9/32, so -0.028125 is its exact lower
-    envelope.  One extra micro-unit covers FP32 evaluation rounding without
-    weakening the explicit direct-qv lane's physical-range check.
+    envelope for that gate.  ``undershoot_floor`` supplies that envelope
+    for the source THIS process mapped instead of assuming WPS's gate:
+    the mapper records what that operator could have made from the array
+    it was about to map
+    (:func:`gpuwm.ingest.horiz.parabolic_undershoot_floor`), which is
+    tighter than the constant for every source drier than 0.1 and correct
+    for one that is wetter.
+
+    This IS the physical-range check on specific humidity, and every
+    initialization passes through it.  It is made here, on the mapped
+    field, rather than on the source: a mapped value below zero is made
+    by the horizontal operator, and the only thing that tells that
+    undershoot from bad forcing is the envelope of the operator that made
+    it.  The bound applies on BOTH lanes, because real.exe's FLAG_SH
+    branch converts what metgrid handed it with no range test at all;
+    refusing it on the direct-qv lane alone refused a window for the
+    shape of the ground it covered.
     """
     if not isinstance(allow_wps_undershoot, (bool, np.bool_)):
         raise TypeError("allow_wps_undershoot must be boolean")
@@ -1544,7 +1721,8 @@ def _specific_humidity_to_mixing_ratio(
     specific = np.asarray(specific_humidity, dtype=np.float64)
     if (workers == 1 or specific.ndim == 0 or specific.shape[0] < 2):
         return _specific_humidity_to_mixing_ratio_serial(
-            specific, allow_wps_undershoot=allow_wps_undershoot)
+            specific, allow_wps_undershoot=allow_wps_undershoot,
+            undershoot_floor=undershoot_floor)
 
     chunks = _axis0_chunks(specific.shape[0], workers)
     output = np.empty(specific.shape, dtype=np.float64)
@@ -1554,7 +1732,9 @@ def _specific_humidity_to_mixing_ratio(
                 _fill_axis0_chunk, output, start, stop,
                 _specific_humidity_to_mixing_ratio_serial,
                 (specific[start:stop],),
-                {"allow_wps_undershoot": allow_wps_undershoot})
+                {"allow_wps_undershoot": allow_wps_undershoot,
+                 "undershoot_floor": undershoot_floor,
+                 "axis0_span": (start, stop)})
             for start, stop in chunks
         ]
         for future in futures:
@@ -1705,13 +1885,15 @@ _PROGNOSTIC_QV_FLOOR_WRF_REFERENCE = {
         "level, the column and the value"),
     "gpuwm_divergence_reason": (
         "a negative vapour mixing ratio is not a state any scheme "
-        "integrates, and the source column was validated non-negative "
-        "before the operator ran (_specific_humidity_to_mixing_ratio "
-        "refuses this lane's source below zero), so a negative here is the "
-        "interpolating polynomial's own undershoot and not evidence about "
-        "the forcing; refusing the whole domain for it halted real-data "
-        "initializations at the first sharp mid-tropospheric dry slot the "
-        "forcing carried"),
+        "integrates, and what reaches this operator was admitted against "
+        "the horizontal operator's own undershoot envelope for the source "
+        "it mapped (horiz.parabolic_undershoot_floor, applied to the "
+        "MAPPED field at _specific_humidity_to_mixing_ratio), so a "
+        "negative here is an interpolating polynomial's own undershoot -- "
+        "this vertical one, or the horizontal one carried into it within "
+        "that envelope -- and not evidence about the forcing; refusing the "
+        "whole domain for it halted real-data initializations at the first "
+        "sharp mid-tropospheric dry slot the forcing carried"),
 }
 
 
@@ -1728,9 +1910,9 @@ def _refuse_non_finite_prognostic_qv(qv):
         f"non_finite_cells={int(bad.shape[0])}, first at level {k} row {j} "
         f"column {i} value {float(qv[k, j, i])!r}, levels "
         f"{sorted({int(v) for v in bad[:, 0]})}; the vertical operator was "
-        "handed a finite, non-negative source column, so this is a defect "
-        "in the pressures the column was interpolated on, not a value to "
-        "floor")
+        "handed a finite column, admitted against the horizontal "
+        "operator's own undershoot envelope, so this is a defect in the "
+        "pressures the column was interpolated on, not a value to floor")
 
 
 def _floor_sh_vertical_undershoot(qv, pressure):
@@ -1752,13 +1934,15 @@ def _floor_sh_vertical_undershoot(qv, pressure):
     receipted.  Cells the operator left at or above zero are untouched, so
     no artifact that passed before this floor existed moves.
 
-    The source column is validated non-negative BEFORE the operator runs
-    (``_specific_humidity_to_mixing_ratio`` refuses this lane's source
-    below zero; the surface pseudo-level alone may carry WPS's admitted
-    undershoot), so a negative here is the operator's own -- either its
-    undershoot or that surface undershoot carried up one layer -- and not
-    evidence about the forcing.  A negative at or above ``qv_min_p_safe``,
-    where WRF's rule does not reach, is refused by name.
+    What reaches this function has passed the horizontal operator's own
+    bounded undershoot envelope for the source it mapped
+    (:func:`gpuwm.ingest.horiz.parabolic_undershoot_floor`, applied to
+    the MAPPED field at :func:`_specific_humidity_to_mixing_ratio`), so a
+    negative here is an interpolating polynomial's own -- this vertical
+    operator's undershoot, the horizontal one's carried into it, or the
+    surface undershoot carried up one layer -- and not evidence about the
+    forcing.  A negative at or above ``qv_min_p_safe``, where WRF's rule
+    does not reach, is refused by name.
     """
     qv = np.asarray(qv, dtype=np.float64)
     pressure = np.asarray(pressure, dtype=np.float64)
@@ -3022,8 +3206,26 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
         surface_qv = _specific_humidity_to_mixing_ratio(
             surface_specific, allow_wps_undershoot=True,
             column_workers=column_workers)
+        # The same envelope on both use_sh_qv lanes, because the SAME
+        # operator makes the undershoot whether or not the source claims
+        # specific-humidity authority.  The surface conversion above keeps
+        # the WPS gate constant instead: its operand is bilinear-mapped
+        # Q2, which carries no negative weights and cannot undershoot, so
+        # there is no envelope of its own to record.  This used to be
+        # `not use_sh_qv`, which refused the direct-qv lane any horizontal
+        # undershoot at all -- and the undershoot is ours:
+        # `fields["SPFH"]` is already mapped onto the model grid by WPS's
+        # overshooting sixteen_pt.  Whether a window met one was a
+        # question of how much ground it covered, so an ERA5 window sized
+        # for a 16 GiB card refused in initialization while the same
+        # centre sized for an 8 GiB card ran.  Everything below zero is
+        # floored at WRF's own qv_min before it is published, by
+        # _floor_sh_vertical_undershoot and
+        # _floor_flag_sh_surface_mixing_ratio.
         source_qv = _specific_humidity_to_mixing_ratio(
-            fields["SPFH"], allow_wps_undershoot=not use_sh_qv,
+            fields["SPFH"], allow_wps_undershoot=True,
+            undershoot_floor=getattr(
+                snapshot, "specific_humidity_undershoot_floor", None),
             column_workers=column_workers)
     else:
         pressure = np.broadcast_to(
@@ -3206,11 +3408,13 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
     if use_sh_qv:
         qv_h = _host(qv).astype(np.float64)
         _refuse_non_finite_prognostic_qv(qv_h)
-        # The source column was validated non-negative before the plan
-        # ran, so what the second-order operator hands back below zero is
-        # its own undershoot at a sharp dry slot; WRF's qv_min floor, the
-        # one the RH lane gets from rh_to_mxrat1, is applied here and
-        # receipted (_PROGNOSTIC_QV_FLOOR_WRF_REFERENCE).
+        # What reaches the plan was admitted against the horizontal
+        # operator's own undershoot envelope for the source it mapped, so
+        # a negative here is a polynomial's own: this vertical one's at a
+        # sharp dry slot, or the horizontal one's carried into it, within
+        # that envelope.  WRF's qv_min floor, the one the RH lane gets
+        # from rh_to_mxrat1, is applied here and receipted
+        # (_PROGNOSTIC_QV_FLOOR_WRF_REFERENCE).
         qv_h, prognostic_qv_floor = _floor_sh_vertical_undershoot(
             qv_h, total_pressure_h)
     else:
@@ -3310,6 +3514,14 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
             hydrometeors,
             operator_replay=replay_hydrometeor_support,
         ) if retained_names and not supplied_mass_surfaces else {}
+        # Which regular-grid operator carried each retained species to the
+        # mass grid, read off the snapshot that mapped it (the mapped
+        # profiles, ERA5 and GFS publish it; the native HRRR decoder and a
+        # met_em file do not).  It is a receipt for the four_pt owner: a
+        # parabolic entry here is the overshoot the initializer's
+        # non-negativity check above would have refused.
+        horizontal_operators = getattr(
+            snapshot, "horizontal_operators", None) or {}
         hydrometeor_initialization = {
             "schema": HRRR_HYDROMETEOR_CORRESPONDENCE_SCHEMA_V2,
             "source": "native-hrrr-horizontal-decoder-output",
@@ -3318,8 +3530,13 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
             "retained_correspondence": {
                 name: name.lower() for name in retained_names
             },
+            "horizontal_operator": {
+                name: horizontal_operators.get(name, "unrecorded")
+                for name in retained_names
+            },
             "discarded_source_species": discarded,
             "vertical_disposition": vertical_disposition,
+            "vertical_velocity": dict(WRF_REAL_VERTICAL_VELOCITY_POLICY),
         }
         if supplied_mass_surfaces:
             hydrometeor_initialization["schema"] = "gpuwm-metgrid-hydrometeor-initialization-v1"
@@ -3552,19 +3769,39 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
         # scalars, not about analyzed condensate.  It splits into two
         # halves that must not be confused.
         #
-        # (a) THE NUMBER MOMENTS -- exact FP32 zero, mp=8's reasoning with
-        # nc added.  mp=28 promotes cloud droplet number from the constant
-        # Nt_c to a prognostic scalar, so nc joins ni and nr as a
-        # transported moment the analysis does not carry and the scheme
-        # owns from its first step.  These are written explicitly rather
-        # than left to the allocator: the value is a policy, and a policy
-        # that is only ever an allocation default is one nobody can find.
-        # qnbca is not a gpuwm state field. WRF's mp=28 Registry package
-        # writes it, but Thompson consumes it only at wif_input_opt=2;
-        # that black-carbon operation remains unimplemented here.
+        # (a) THE NUMBER MOMENTS -- zero, then CLOSED over the analyzed
+        # mass.  mp=28 promotes cloud droplet number from the constant Nt_c
+        # to a prognostic scalar, so nc joins ni and nr as a transported
+        # moment the analysis does not carry.  real.exe leaves all three at
+        # exact zero and Thompson's entry block (module_mp_thompson.F:
+        # 1827-1899) sets them from the mass on the first call; between the
+        # cold start and that call the state carried mass with no number in
+        # every cloudy cell, and anything that read it there -- the
+        # between-step reflectivity operator, an analysis at the start time,
+        # a picture of the initial frame -- read a rain number at the
+        # scheme's R2 floor and diagnosed a reflectivity burst.  So the same
+        # entry block runs ONCE here, through the repair authority every DA
+        # door already carries (gpuwm.core.thompson_entry, the block
+        # gpuwm.da.moments.repair_moments applies), on the density this
+        # initializer just formed; cells without mass keep the exact zero
+        # real.exe writes.  The closure is the scheme's own answer, not a
+        # clip: nothing here bounds a number the scheme would not, and the
+        # health limits are untouched.  Where WRF leaves the initial state
+        # undefined between real and the first step, the tree defines it
+        # and the receipt says so.  qnbca is not a gpuwm state field. WRF's
+        # mp=28 Registry package writes it, but Thompson consumes it only
+        # at wif_input_opt=2; that black-carbon operation remains
+        # unimplemented here.
         state.ni[...] = state_xp.float32(0.0)
         state.nr[...] = state_xp.float32(0.0)
         state.nc[...] = state_xp.float32(0.0)
+        # Only a lane that installed analyzed mass has anything to close;
+        # the RH lane carries no condensate and keeps real.exe's zeros and
+        # its empty hydrometeor receipt.
+        if hydrometeors:
+            hydrometeor_initialization["cold_start_moment_closure"] = (
+                _thompson_cold_start_moment_closure(
+                    state, state_xp, cfg, alpha))
         # (b) THE AEROSOLS -- deliberately NOT written here, and the
         # deliberateness is the whole point.  WRF's own initializer, with
         # aer_init_opt=0, sets QNWFA and QNIFA to 0.0 and nothing else
@@ -3974,6 +4211,8 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
         u, v = _host_float32(u), _host_float32(v)
     state.u[...] = state_xp.asarray(u, dtype=state_xp.float32)
     state.v[...] = state_xp.asarray(v, dtype=state_xp.float32)
+    # WRF_REAL_VERTICAL_VELOCITY_POLICY: W starts at exact zero on every
+    # route, and the hydrometeor receipt above says so.
     state.w[...] = 0.0
     total_phi = _host(state.phb + state.php)
     mark_timing("remaining_state_upload_and_geopotential_readback")

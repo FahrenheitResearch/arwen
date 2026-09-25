@@ -1519,6 +1519,17 @@ fn overlay_only_rule_only_catches_height_products() {
         FieldSelector::surface(CanonicalField::Visibility),
         false
     ));
+    // The height of an isotherm is a scalar map with a fill of its own,
+    // not a contour analysis: overlay-only it was drawn as decametre
+    // contours on a blank map.
+    assert!(!should_render_overlay_only(
+        FieldSelector::isotherm_celsius(CanonicalField::GeopotentialHeight, 0),
+        false
+    ));
+    assert!(!should_render_overlay_only(
+        FieldSelector::surface(CanonicalField::GeopotentialHeight),
+        false
+    ));
 }
 
 #[test]

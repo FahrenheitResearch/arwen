@@ -1020,3 +1020,128 @@ def test_d01_met_em_oracle_rmse_gates_and_wind_inverse():
     }
     assert inverse_level_rmse["U"].max() <= 0.025
     assert inverse_level_rmse["V"].max() <= 0.025
+
+
+# ---------------------------------------------------------------------------
+# Hydrometeor mass takes METGRID.TBL's four_pt owner, not the parabolic one
+# ---------------------------------------------------------------------------
+#
+# WPS routes QC/QR/QI/QS/QG through ``four_pt+average_4pt`` (METGRID.TBL)
+# because the sixteen-point overlapping parabola overshoots beside a
+# compact cloud: a single positive source cell becomes a ring of negative
+# mixing ratio around it on the target grid.  The native HRRR decoder
+# already applied the bilinear owner to the five; the regular-source pass
+# that every mapped profile, ERA5 and GFS reach sent every 3-D field,
+# hydrometeors included, through the parabola.
+
+HYDROMETEOR_LEGACY = ("QC", "QR", "QI", "QS", "QG")
+
+
+class _NumpyRegularBackend:
+    """The preprocessing ABI on NumPy, through the float64 mirrors.
+
+    Not the packaged Rust bridge and not CuPy: this test is about WHICH
+    operator the pass picks per field, and must not skip on a box without
+    either.
+    """
+
+    name = "numpy-reference-test"
+    array_module = np
+
+    @staticmethod
+    def float32(value):
+        return np.asarray(value, dtype=np.float32)
+
+    @staticmethod
+    def bool_array(value):
+        return np.asarray(value, dtype=bool)
+
+    @staticmethod
+    def regular_plan(latitude, longitude, target_lat, target_lon):
+        from gpuwm.verify.npref import interpolate_regular_np
+
+        class _Plan:
+            source_shape = (len(latitude), len(longitude))
+            target_shape = np.shape(target_lat)
+
+            @staticmethod
+            def apply(field, method="parabolic", *, source_support=False):
+                return np.asarray(interpolate_regular_np(
+                    field, latitude, longitude, target_lat, target_lon,
+                    method=method), dtype=np.float32)
+
+        return _Plan()
+
+    @staticmethod
+    def masked_nearest(*args, **kwargs):
+        return masked_nearest_np(*args, **kwargs)
+
+    @staticmethod
+    def rotate_earth_to_grid(*args):
+        return rotate_earth_to_grid_np(*args)
+
+    @staticmethod
+    def era5_rh_to_water(*args):
+        return era5_rh_to_water_np(*args)
+
+    @staticmethod
+    def prepare_wrf_vertical(*args):
+        raise AssertionError("vertical preprocessing is unused here")
+
+    @staticmethod
+    def receipt():
+        return {"backend": "numpy-reference-test"}
+
+
+def _one_cloud_snapshot():
+    """A regular 0.25 degree source with ONE cloudy cell per species."""
+    latitude = np.linspace(30.0, 35.0, 21)
+    longitude = np.linspace(-100.0, -94.0, 25)
+    levels = np.array([850.0, 700.0], dtype=np.float64)
+    shape = (levels.size, latitude.size, longitude.size)
+    fields = {"T": np.full(shape, 280.0, dtype=np.float64)}
+    for index, name in enumerate(HYDROMETEOR_LEGACY):
+        plane = np.zeros(shape, dtype=np.float64)
+        plane[:, 10, 12] = 1.0e-3 * (index + 1)
+        fields[name] = plane
+    return Era5Snapshot(
+        valid_time=datetime(2026, 7, 20, 6), levels_hpa=levels,
+        latitude=latitude, longitude=longitude, fields=fields)
+
+
+def _small_lambert():
+    return LambertGrid(
+        ref_lat=32.5, ref_lon=-97.0, truelat1=32.5, truelat2=32.5,
+        stand_lon=-97.0, dx=9000.0, dy=9000.0, e_we=21, e_sn=21)
+
+
+def test_regular_horizontal_method_routes_hydrometeor_mass_through_four_pt():
+    from gpuwm.ingest.horiz import regular_horizontal_method
+
+    for name in HYDROMETEOR_LEGACY:
+        assert regular_horizontal_method(name, 3) == "bilinear", name
+    # Everything else keeps the operator it had.
+    assert regular_horizontal_method("T", 3) == "parabolic"
+    assert regular_horizontal_method("Z", 3) == "parabolic"
+    assert regular_horizontal_method("RH", 3) == "parabolic"
+    assert regular_horizontal_method("PMSL", 2) == "parabolic"
+    assert regular_horizontal_method("SNOW", 2) == "bilinear"
+
+
+def test_hydrometeor_mass_keeps_non_negativity_and_compact_support():
+    snapshot = _one_cloud_snapshot()
+    met = interpolate_era5_to_lambert(
+        snapshot, _small_lambert(), backend=_NumpyRegularBackend())
+    operators = met.horizontal_operators
+    assert operators["TT"] == "parabolic"
+    for name in HYDROMETEOR_LEGACY:
+        assert operators[name] == "bilinear", (name, operators[name])
+        mapped = np.asarray(met.fields[name], dtype=np.float64)
+        source = np.asarray(snapshot.fields[name])
+        assert mapped.min() >= 0.0, (
+            f"{name}: the parabola made {int((mapped < 0).sum())} negative "
+            f"cell(s), minimum {mapped.min():.3e}")
+        # The bilinear stencil never exceeds the source maximum and keeps
+        # the cloud where the file put it.
+        assert mapped.max() <= source.max() * (1.0 + 1.0e-6)
+        assert int((mapped > 0.0).sum()) > 0

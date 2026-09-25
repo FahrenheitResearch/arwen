@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import codecs
+import contextlib
+import contextvars
 import io
 import os
 import subprocess
@@ -70,7 +72,42 @@ class DiagnosticLog:
         return False
 
 
-def run_streamed(command, stdout, stderr):
+#: Where a host that owns a diagnostic log parks the two streams the
+#: children it launches must be delivered to.
+#:
+#: It lives HERE, beside the draining implementation, and not in the
+#: front door that opens it, because a front door is also a program:
+#: ``python -m gpuwm.source_cli`` executes that file once as
+#: ``__main__`` and a second time under its package name when a library
+#: imports it, and the two copies then hold two registries.  The copy
+#: that launches the preparation read its own empty one, fell back to an
+#: inherited-handle launch, and the log the run had already advertised
+#: on screen ("Details: ...") stayed zero bytes for the whole run, with
+#: the child's refusal on the terminal instead of in the file the
+#: message named.  A module nothing runs as a program has one copy, so
+#: both copies of any door share this.
+ADAPTER_OUTPUT = contextvars.ContextVar("adapter_output", default=None)
+
+
+@contextlib.contextmanager
+def redirect_adapter_output(stdout, stderr):
+    """Deliver the output of launched children to these two streams."""
+    token = ADAPTER_OUTPUT.set((stdout, stderr))
+    try:
+        yield
+    finally:
+        ADAPTER_OUTPUT.reset(token)
+
+
+def run_adapter_command(command, *, env=None, cwd=None):
+    """Launch a child, streamed to the host's log when one is open."""
+    streams = ADAPTER_OUTPUT.get()
+    if streams is None:
+        return subprocess.run(command, check=False, env=env, cwd=cwd)
+    return run_streamed(command, *streams, env=env, cwd=cwd)
+
+
+def run_streamed(command, stdout, stderr, *, env=None, cwd=None):
     """Drain both pipes concurrently; deliver flushed chunks before child exit.
 
     Receipts can be large or contain no newlines. Fixed-size reads and an
@@ -78,10 +115,11 @@ def run_streamed(command, stdout, stderr):
     A failing destination is remembered while both pipes continue draining.
     """
     failures = []
-    environment = os.environ.copy()
+    environment = os.environ.copy() if env is None else dict(env)
     environment["PYTHONIOENCODING"] = "utf-8"
     with subprocess.Popen(command, stdout=subprocess.PIPE,
-                          stderr=subprocess.PIPE, env=environment) as process:
+                          stderr=subprocess.PIPE, env=environment,
+                          cwd=cwd) as process:
         def drain(pipe, destination):
             decoder = io.IncrementalNewlineDecoder(
                 codecs.getincrementaldecoder("utf-8")("replace"), translate=True)

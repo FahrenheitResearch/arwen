@@ -125,21 +125,26 @@ with their SHA-256. Section 7.
 These are the specific reasons "same answer on a different stack" is not
 promised. Each is a property of ArWen as built, not a hypothetical.
 
-1. **Library-owned reduction order.** The vertical mass-flux
-   construction in the dynamical core uses CuPy's `sum` and `cumsum`
-   over the vertical axis, and the RRTMGP solar-spectrum normalization
-   uses a NumPy float64 sum on the host. Those orders belong to CuPy and
-   NumPy. They are fixed for a fixed build, shape, and device; neither
-   library publishes a cross-device or cross-version bit-reproducibility
-   contract, and reduction tuning is known to change with toolkit and
-   architecture.
+1. **Library-owned reduction order.** The RRTMGP solar-spectrum
+   normalization uses a NumPy float64 sum on the host, an order that
+   belongs to NumPy. It is fixed for a fixed build, shape, and device;
+   NumPy publishes no cross-version bit-reproducibility contract for it.
+   The vertical mass-flux construction in the dynamical core (WRF
+   `calc_ww_cp`) used CuPy's `sum` and `cumsum` over the vertical axis
+   through 2.7.5; since 2.7.6 it is one thread per column in the
+   Fortran's own operation order, compiled with `-fmad=false` and
+   explicit round-to-nearest intrinsics and checked bit-for-bit against
+   a float32 scalar transcription, so that order is the project's and no
+   longer part of this item.
 2. **FMA contraction and CUDA math functions.** Kernels are compiled
    with `-std=c++17` and no contraction restriction, so the compiler may
    fuse a multiply-add — a different operation sequence, not a different
    rounding of the same one. Live kernels call `expf`, `powf`, `logf`,
    `sinf`, `sqrtf`, `cbrtf`, and `tgammaf`, which carry ULP bounds
-   rather than a correctly-rounded result. (Nest interpolation is the
-   deliberate exception: it compiles with `-fmad=false`.)
+   rather than a correctly-rounded result. (Nest interpolation and the
+   fused dycore column kernels, couple-momentum, the scalar update and
+   the Omega column scan, are the deliberate exceptions: they compile
+   with `-fmad=false`.)
 3. **FP32 subnormal flushing.** Subnormal handling is a property of
    the compile route rather than of the device, and the mitigations
    ArWen applies are per-route. See
@@ -371,9 +376,10 @@ dual-run PASS is not mistaken for evidence outside the detector's scope.
   staging directory, so its digest cannot. The content digests inside it
   (`prepared_cache.content_sha256`, the input-manifest digest) do repeat
   and are the surface a preparation screen would be built on.
-- **Project-owned reduction order.** Replacing the dycore `sum`/`cumsum`
-  and the host solar normalization with fixed-order implementations
-  would move those two items out of the library-version pin.
+- **Project-owned reduction order.** The dycore's vertical mass-flux
+  construction left the library-version pin in 2.7.6 (section 3,
+  mechanism 1); replacing the host solar normalization with a
+  fixed-order implementation would move the last such item out of it.
 - **A detector-scope state digest.** A scope that additionally hashes
   live setup and LBC bytes and the full child-duty buffers, emitted at
   every history and checkpoint boundary rather than at stop.

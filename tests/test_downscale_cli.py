@@ -1887,6 +1887,57 @@ def test_a_product_the_catalog_does_not_carry_is_refused_at_plan_review(
     assert go_cli.unknown_render_products("xsec:wa=1,2,bogus") == ["bogus"]
 
 
+def test_a_storeless_term_is_dropped_at_this_door_and_the_rest_is_kept(
+        tmp_path, monkeypatch, capsys):
+    """The plan carries what will be drawn, not what was asked for.
+
+    This chain's render stage IS ``gpuwm render``, and that door drops a
+    ``mesh:``, ``meshdiff:`` or line-less ``xsec:`` term and draws the
+    rest.  A plan that recorded the term would promise a picture the
+    finalize render never makes; a door that refused the whole request
+    would refuse a child whose own render stage completes.
+    """
+
+    import gpuwm.go_cli as go_cli
+    import gpuwm.runplan as runplan
+
+    monkeypatch.setattr(go_cli, "render_extra_missing", lambda: None)
+    monkeypatch.setattr(runplan, "render_catalog", lambda: {
+        "engine": "rust",
+        "products": [{"name": "composite_reflectivity"}],
+        "group_keywords": ["severe"]})
+    plan = _dry_run_plan(
+        tmp_path / "dropped", capsys,
+        ["--accept-parent-cadence", "--render-products",
+         "composite_reflectivity,mesh:cell_area"])
+    assert plan["render_products"] == "composite_reflectivity"
+    said = " ".join(record["action"] for record in plan["warnings"])
+    assert "mesh:cell_area" in said
+    assert "cell boundaries" in said and "--mesh-grid" in said
+
+
+def test_a_request_of_nothing_but_storeless_terms_is_refused_here(
+        tmp_path, monkeypatch, capsys):
+    """The one case that still refuses: the child would draw nothing.
+
+    Before the parent archive is opened, because the alternative is a
+    full-length forecast whose render stage has no product left.
+    """
+
+    import gpuwm.go_cli as go_cli
+
+    monkeypatch.setattr(go_cli, "render_extra_missing", lambda: None)
+    door = _child_door(tmp_path)
+    opened = _count_frame_opens(monkeypatch)
+    assert cli_main(door + ["--render-products", "mesh:cell_area"]) == 2
+    err = capsys.readouterr().err
+    assert "mesh:cell_area" in err and "--mesh-grid" in err
+    assert "nothing left to draw" in err
+    assert "Traceback" not in err
+    assert opened == []
+    assert not (tmp_path / "child-run").exists()
+
+
 def test_early_pictures_are_counted_from_the_receipt_the_early_render_writes():
     """The receipt lists what was published under ``written``; the count
     the failure sentence carries reads that list, bounded by the same
@@ -1953,7 +2004,7 @@ def _fake_render_runner(monkeypatch, *, pictures=1):
 
 
 def _downscale_drawing(tmp_path, monkeypatch, *, result="PASS",
-                       stage_failure=None, extra=()):
+                       stage_failure=None, stop=None, extra=()):
     """``gpuwm downscale`` with a real early render and a stub forecast.
 
     The child's receipts, its armed early render and its report are
@@ -1990,6 +2041,14 @@ def _downscale_drawing(tmp_path, monkeypatch, *, result="PASS",
         progress.output_committed(
             domain=2, valid_time="1974-04-03T12:00:00Z",
             path=str(frame), bytes=frame.stat().st_size)
+        if stop is not None:
+            # A real child's own progress sample, through the same
+            # emit every step takes, so the banner's stop point is read
+            # off the stream rather than handed to it by the test.
+            progress.emit("model_progress", domain=2, model_seconds=2700.0,
+                          run_seconds=3600.0, outer_step=900,
+                          total_steps=1200, wall_seconds=12.5)
+            raise stop
         report = {"result": result, "outputs": [str(frame)]}
         offline_child_run._publish_report(report, outdir)
         return report
@@ -2005,7 +2064,12 @@ def _downscale_drawing(tmp_path, monkeypatch, *, result="PASS",
         _json.loads(line) for line
         in (out / "events.jsonl").read_text(encoding="utf-8").splitlines()
         if line.strip()]
-    report = _json.loads((out / "report.json").read_text(encoding="utf-8"))
+    # A child that stopped mid-run publishes its report from the stop
+    # arm when the refusal carries a capsule, and publishes none when it
+    # does not, so this is read only if it is there.
+    report_path = out / "report.json"
+    report = (_json.loads(report_path.read_text(encoding="utf-8"))
+              if report_path.is_file() else None)
     return code, out, calls, events, report
 
 
@@ -2027,42 +2091,234 @@ def test_the_early_render_leaves_the_picture_tree_and_nothing_else(
     assert report["products"]["status"] == "DRAWN"
 
 
-def test_a_child_that_did_not_pass_publishes_no_picture(
+def test_a_child_that_did_not_pass_keeps_its_pictures(
         tmp_path, monkeypatch, capsys):
-    """THE DECISION: a child that does not pass draws nothing.
+    """THE DECISION: a child that does not finish KEEPS what it drew.
 
     The early render draws the analysis frame while the run still looks
-    healthy; a run that then refuses itself must not leave pictures as
-    its only artifact that does not carry the verdict.  So what the
-    early render published is withdrawn -- and the withdrawal waits for
-    it, which is also what stops the render subprocess outliving the
-    process that armed it.
+    healthy.  A run that then stops used to have those pictures removed,
+    which left its reader an empty directory at the exact moment the
+    pictures became the thing they wanted.  They stay, under a banner
+    that carries the verdict the pictures themselves cannot -- and the
+    keep still waits for the render, which is what stops the render
+    subprocess outliving the process that armed it.
     """
 
-    from gpuwm.first_products import FIRST_PRODUCTS_RECEIPT
+    from gpuwm.first_products import (DID_NOT_FINISH_BANNER,
+                                      DID_NOT_FINISH_STATUS,
+                                      FIRST_PRODUCTS_RECEIPT)
 
     code, out, calls, events, report = _downscale_drawing(
         tmp_path, monkeypatch, result="FAIL")
     capsys.readouterr()
     assert code == 1
-    # The finalize render never ran; the early one was undone.
+    # The finalize render never ran; the early one's output is untouched.
     assert calls == []
-    assert not (out / "png").exists()
-    assert not (out / "png" / FIRST_PRODUCTS_RECEIPT).exists()
+    assert sorted(path.name for path in (out / "png").rglob("*.png")) == [
+        "picture-0.png"]
+    assert (out / "png" / FIRST_PRODUCTS_RECEIPT).is_file()
+    banner = out / "png" / DID_NOT_FINISH_BANNER
+    assert banner.is_file()
+    assert "DID NOT FINISH" in banner.read_text(encoding="utf-8")
     # The frames and the report are evidence and stay.
     assert (out / "wrfout_d02_1974-04-03_12_00_00").is_file()
     assert report["result"] == "FAIL"
-    assert report["products"]["status"] == "WITHDRAWN"
-    assert "did not pass" in report["products"]["reason"]
-    withdrawn = [event for event in events
-                 if event.get("code") == "early_render_withdrawn"]
-    assert len(withdrawn) == 1 and withdrawn[0]["pictures"] == 1
-    assert "publishes no picture" in withdrawn[0]["message"]
+    assert report["products"]["status"] == "KEPT"
+    assert report["products"]["run_status"] == DID_NOT_FINISH_STATUS
+    assert report["products"]["pictures_on_disk"] == 1
+    assert report["products"]["banner"] == str(banner)
+    # The capsule's Next points at the pictures, not at redrawing them.
+    reason = report["products"]["reason"]
+    assert f"Next: open {out / 'png'}" in reason
+    assert DID_NOT_FINISH_BANNER in reason
+    kept = [event for event in events
+            if event.get("code") == "early_render_kept"]
+    assert len(kept) == 1
+    assert kept[0]["pictures"] == 1
+    assert kept[0]["banner"] == str(banner)
+    assert kept[0]["status"] == DID_NOT_FINISH_STATUS
+    # The message is what a run view puts on screen, so it agrees with
+    # itself on number the way the banner and the capsule do.
+    assert ("the 1 picture the early render had already drawn is kept"
+            in kept[0]["message"])
+    assert "(s)" not in kept[0]["message"]
     assert events[-1]["event"] == "completed"
     # Nothing is still drawing when the door returns.
     assert [thread for thread in threading.enumerate()
             if thread.name == "gpuwm-first-products"
             and thread.is_alive()] == []
+
+
+def test_a_child_that_stopped_mid_run_keeps_its_pictures(
+        tmp_path, monkeypatch, capsys):
+    """The arm the reader who lost a forecast is actually on.
+
+    A child that stops raises out of the forecast loop, so it never
+    reaches the line that publishes a report at the END of a run.  A
+    refusal carrying a capsule publishes one from the stop arm instead
+    (the test below); one that carries none, as this ``RuntimeError``
+    does, leaves the banner and the render summary as the whole record,
+    which is why they carry the stop in full.
+    """
+
+    from gpuwm import render_receipts
+    from gpuwm.first_products import (DID_NOT_FINISH_BANNER,
+                                      DID_NOT_FINISH_STATUS)
+
+    with pytest.raises(RuntimeError):
+        _downscale_drawing(
+            tmp_path, monkeypatch,
+            stop=RuntimeError("offline child became non-finite at step 900"))
+    capsys.readouterr()
+    out = tmp_path / "child-run"
+    assert sorted(path.name for path in (out / "png").rglob("*.png")) == [
+        "picture-0.png"]
+    text = (out / "png" / DID_NOT_FINISH_BANNER).read_text(encoding="utf-8")
+    assert "model second 2,700 of 3,600" in text
+    assert "step 900 of 1,200" in text
+    assert "offline child became non-finite at step 900" in text
+    assert "wrfout_d02_1974-04-03_12_00_00" in text
+    summary = render_receipts.read_summary(out / "png")
+    assert summary["status"] == DID_NOT_FINISH_STATUS
+    assert summary["pictures_on_disk"] == 1
+    events = [
+        json.loads(line) for line
+        in (out / "events.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()]
+    kept = [event for event in events
+            if event.get("code") == "early_render_kept"]
+    assert len(kept) == 1 and kept[0]["pictures"] == 1
+    assert ("the 1 picture the early render had already drawn is kept"
+            in kept[0]["message"])
+    assert kept[0]["why"] == "offline child became non-finite at step 900"
+    assert events[-1]["event"] == "failed"
+    assert [thread for thread in threading.enumerate()
+            if thread.name == "gpuwm-first-products"
+            and thread.is_alive()] == []
+
+
+def _nonfinite_survey():
+    """The survey shape `nonfinite_field_survey` returns, as it returns it."""
+
+    return {
+        "surveyed": ["W", "U", "V", "T"],
+        "fields": [{
+            "field": "W", "carrier": "w", "shape": [8, 24, 24],
+            "size": 4608, "count": 1,
+            "first_cell": {"k": 3, "j": 4, "i": 5},
+            "bounding_box": {"k": [3, 3], "j": [4, 4], "i": [5, 5]},
+        }],
+    }
+
+
+def test_a_child_driven_non_finite_keeps_its_pictures_and_says_so_in_its_report(
+        tmp_path, monkeypatch, capsys):
+    """WHAT BREAKAGE THIS PINS (gate law).  Two changes rewrote this one
+    arm: one removed the pictures and published the report, the other
+    kept the pictures and published nothing.  Taken apart, a reader who
+    lost a forecast either opened an empty folder or found a report
+    telling them pictures had been removed that are sitting beside it.
+    The arm does both and agrees with itself: the pictures stay, the
+    banner stands over them, and the report names the same count, the
+    same banner and the same stop.
+    """
+
+    from gpuwm import render_receipts
+    from gpuwm.first_products import (DID_NOT_FINISH_BANNER,
+                                      DID_NOT_FINISH_STATUS)
+    from gpuwm.offline_child_run import (OfflineChildNonFinite,
+                                         describe_nonfinite_child)
+
+    trend = [{"step": 898, "model_seconds": 2696.0, "w_max": 21.047,
+              "cfl": 0.20257},
+             {"step": 900, "model_seconds": 2700.0,
+              "w_max": float("nan"), "cfl": None}]
+    capsule = describe_nonfinite_child(
+        step=900, total_steps=1200, model_seconds=2700.0,
+        run_seconds=3600.0, cadence_seconds=4.0, trend=trend,
+        survey=_nonfinite_survey())
+
+    code, out, calls, events, report = _downscale_drawing(
+        tmp_path, monkeypatch, stop=OfflineChildNonFinite(capsule))
+    printed = capsys.readouterr()
+
+    # ONE SENTENCE at the boundary, no traceback: the refusal is a
+    # ValueError, which this CLI prints at exit 2.
+    assert code == 2
+    assert "Traceback" not in printed.err
+    assert calls == []
+
+    banner = out / "png" / DID_NOT_FINISH_BANNER
+    assert sorted(path.name for path in (out / "png").rglob("*.png")) == [
+        "picture-0.png"]
+    assert banner.is_file()
+    text = banner.read_text(encoding="utf-8")
+    assert "THIS FORECAST DID NOT FINISH" in text
+    assert "model second 2,700 of 3,600" in text
+    # The banner's reason is the capsule's OWN sentence, not the first
+    # sentence of its whole text run together.
+    assert capsule["summary"] in text
+
+    # STRICT JSON, because a reading that went is null beside a state
+    # word rather than the token NaN.
+    def refuse(token):
+        raise ValueError(f"invalid JSON token: {token}")
+
+    raw = (out / "report.json").read_text(encoding="utf-8")
+    assert "NaN" not in raw
+    report = json.loads(raw, parse_constant=refuse)
+    assert report["result"] == "FAIL"
+    assert report["failure"]["summary"] == capsule["summary"]
+    assert report["products"]["status"] == "KEPT"
+    assert report["products"]["run_status"] == DID_NOT_FINISH_STATUS
+    assert report["products"]["pictures_on_disk"] == 1
+    assert report["products"]["banner"] == str(banner)
+    assert "were removed" not in report["products"]["reason"]
+
+    summary = render_receipts.read_summary(out / "png")
+    assert summary["status"] == DID_NOT_FINISH_STATUS
+    assert summary["pictures_on_disk"] == 1
+    assert summary["banner_path"] == str(banner)
+
+    kept = [event for event in events
+            if event.get("code") == "early_render_kept"]
+    assert len(kept) == 1 and kept[0]["pictures"] == 1
+    assert events[-1]["event"] == "failed"
+    assert events[-1]["message"] == (
+        "OfflineChildNonFinite: " + capsule["summary"])
+
+
+def test_a_stopped_child_is_sent_back_to_the_door_that_makes_one(
+        tmp_path, monkeypatch, capsys):
+    """The reader's next step, from the directory the stop left.
+
+    `gpuwm resume` reads that report's verdict rather than the report
+    existing, so the directory a stopped child leaves is answered with
+    the capsule's first sentence and the door that can run it again.
+    """
+
+    from gpuwm.offline_child_run import (OfflineChildNonFinite,
+                                         describe_nonfinite_child)
+    from gpuwm.resume import (offline_child_resume_refusal,
+                              offline_child_run_at)
+
+    capsule = describe_nonfinite_child(
+        step=900, total_steps=1200, model_seconds=2700.0,
+        run_seconds=3600.0, cadence_seconds=4.0,
+        trend=[{"step": 900, "model_seconds": 2700.0,
+                "w_max": float("nan"), "cfl": None}],
+        survey=_nonfinite_survey())
+
+    code, out, _calls, _events, _report = _downscale_drawing(
+        tmp_path, monkeypatch, stop=OfflineChildNonFinite(capsule))
+    capsys.readouterr()
+    assert code == 2
+
+    run = offline_child_run_at(out)
+    assert run is not None and not run.finished
+    refusal = offline_child_resume_refusal(run)
+    assert "gpuwm downscale" in refusal
+    assert capsule["summary"] in refusal
 
 
 def test_a_render_stage_that_exited_nonzero_is_this_doors_refusal(

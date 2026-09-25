@@ -35,6 +35,7 @@ from gpuwm.case_data import (
 )
 from gpuwm.config import soil_layer_count
 from gpuwm.experiment import ExperimentConfig, load_experiment
+from gpuwm.explain import warn
 from gpuwm.ingest.grib import (
     cached_era5_snapshots,
     canonical_units,
@@ -86,6 +87,10 @@ from gpuwm.static.build import (build_static_for_domain,
                                 geog_selection_from_catalog)
 from gpuwm.wrf_direct import export_prepared_wrf
 from gpuwm.vertical_contract import validate_explicit_eta_grid
+from gpuwm.vertical_adaptation import (
+    adapt_experiment_for_statics,
+    vertical_coordinate_receipt as _vertical_coordinate_receipt,
+)
 
 
 INPUT_MANIFEST_SCHEMA = "gpuwm-era5-direct-input-manifest-v1"
@@ -209,6 +214,28 @@ def _water_temperature_statics(static, landuse_attrs, policy):
         route=_WATER_ROUTE, policy=policy,
         landmask=static["LANDMASK"], lu_index=static["LU_INDEX"],
         landuse_attrs=landuse_attrs)
+
+
+def _announce_adaptation(sentence: str) -> None:
+    """Say, once, that the run is not on the configured vertical coordinate."""
+
+    warn(sentence,
+         "WRF v4.6.1 dyn_em/nest_init_utils.F:1158-1182 calls this column "
+         "fatal and names reducing etac as the remedy; the remedy is "
+         "derived here from the terrain this run can actually touch and "
+         "applied, so the prepared inputs, their receipt and the forecast "
+         "all carry the same coordinate.  p_top is untouched.")
+
+
+def _survey_static_catalog(exp, wps_namelist, geog_root):
+    """The WPS_GEOG catalog the terrain survey needs, or None."""
+
+    if geog_root is None or len(exp.domains) < 2:
+        return None
+    catalog, _ = verified_static_catalog(
+        Path(wps_namelist), Path(geog_root),
+        [domain.grid_id for domain in exp.domains])
+    return catalog
 
 
 def _load_static(path: Path, grid, ny: int, nx: int) -> dict[str, np.ndarray]:
@@ -494,6 +521,15 @@ def prepare_era5_wrf(
         static, grid, config=static_highres, domain_id=1,
         case_date=exp.start_time.date(), landuse_attrs=landuse_attrs,
         baseline_receipt=root_static_receipt)
+    # THE COORDINATE, BEFORE ANYTHING IS BUILT ON IT.  The same call the
+    # other source doors make, in the same place: root terrain in hand,
+    # nothing yet built on a vertical coordinate.
+    exp, vertical_adaptation = adapt_experiment_for_statics(
+        exp, grids, root_terrain=static["HGT_M"],
+        static_catalog=_survey_static_catalog(
+            exp, paths["wps_namelist"], geog_root),
+        static_highres=static_highres, announce=_announce_adaptation)
+    cfg = exp.root.run
     source_terrain = (
         None if source_orography is None
         else _load_source_orography(
@@ -847,6 +883,8 @@ def prepare_era5_wrf(
                 "schema": "gpuwm-era5-native-hierarchy-proof-v1",
                 "status": "READY_NOT_YET_STOCK_WRF_GATED",
                 "domain_count": len(exp.domains),
+                "vertical_coordinate": _vertical_coordinate_receipt(
+                    exp, vertical_adaptation),
                 "forcing_times": [value.isoformat() for value in times],
                 "forcing_hours": forcing_hours,
                 "boundary_interval_seconds": boundary_interval_seconds,
@@ -970,6 +1008,8 @@ def prepare_era5_wrf(
         proof = {
             "schema": "gpuwm-era5-direct-wrf-proof-v2",
             "status": "READY_NOT_YET_STOCK_WRF_GATED",
+            "vertical_coordinate": _vertical_coordinate_receipt(
+                exp, vertical_adaptation),
             "forcing_times": [value.isoformat() for value in times],
             "forcing_hours": forcing_hours,
             "boundary_interval_seconds": boundary_interval_seconds,

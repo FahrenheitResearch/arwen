@@ -1017,3 +1017,74 @@ def test_superob_params_are_revalidated_at_every_point_of_use(tmp_path):
         assert not (tmp_path / f"{field}.nc").exists(), (
             "a file must not be published with parameters that could not "
             "have produced it")
+
+
+# ---------------------------------------------------------------------------
+# when each radar's volume was scanned, and when it could be had
+# ---------------------------------------------------------------------------
+
+
+def test_per_radar_collection_instants_round_trip(tmp_path):
+    """The file carries each radar's volume span and availability.
+
+    ``valid_time`` per radar is the header start; the first and last
+    radial instants and the feed's publication time ride beside it, so a
+    reader can tell how far a radar's gates sit from the analysis time
+    instead of dating every sweep to the header.
+    """
+
+    from dataclasses import replace
+
+    grid = _grid()
+    volume = replace(
+        _volume(grid, reflectivity=np.linspace(5.0, 55.0, 40),
+                velocity=np.linspace(-20.0, 20.0, 40)),
+        start_time="2026-07-28T20:03:16.232Z",
+        end_time="2026-07-28T20:09:56.232Z",
+        key_time="2026-07-28T20:03:16Z", complete=True,
+        sweeps_in_volume=12, sweeps_incomplete=0)
+    params = SuperobParams(dealias=None)
+    contribution = superob_volume(volume, grid, params=params)
+    assert contribution.start_time == "2026-07-28T20:03:16.232Z"
+    assert contribution.end_time == "2026-07-28T20:09:56.232Z"
+    # The acquisition stage alone knows when the feed published it.
+    contribution.availability_time = "2026-07-28T20:10:41.000Z"
+    observations = merge_contributions([contribution], grid, params=params)
+    assert observations.radars[0]["start_time"] == "2026-07-28T20:03:16.232Z"
+    assert observations.radars[0]["availability_time"] \
+        == "2026-07-28T20:10:41.000Z"
+    assert observations.provenance[0]["end_time"] \
+        == "2026-07-28T20:09:56.232Z"
+    assert observations.provenance[0]["sweeps_in_volume"] == 12
+
+    path = tmp_path / "radar-grid.nc"
+    write_radar_grid(path, observations, grid,
+                     valid_time="2026-07-28T20:15:00Z", params=params)
+    read = read_radar_grid(path, expected_grid_identity=grid.identity_sha256())
+    radar = read["radars"][0]
+    assert radar["valid_time"] == "2026-07-28T20:03:16Z"
+    assert radar["start_time"] == "2026-07-28T20:03:16.232Z"
+    assert radar["end_time"] == "2026-07-28T20:09:56.232Z"
+    assert radar["availability_time"] == "2026-07-28T20:10:41.000Z"
+    assert read["valid_time"] == "2026-07-28T20:15:00Z"
+
+
+def test_a_volume_that_did_not_say_when_it_was_scanned_reads_as_unknown(
+        tmp_path):
+    """Blank rows read as None, never as the start time standing in."""
+
+    grid = _grid()
+    volume = _volume(grid, reflectivity=np.linspace(5.0, 55.0, 40),
+                     velocity=np.linspace(-20.0, 20.0, 40))
+    assert volume.start_time is None and volume.end_time is None
+    observations, params = _gridded(grid, volume)
+    assert observations.radars[0]["end_time"] is None
+    path = tmp_path / "radar-grid.nc"
+    write_radar_grid(path, observations, grid,
+                     valid_time="2026-07-28T20:03:16Z", params=params)
+    read = read_radar_grid(path, expected_grid_identity=grid.identity_sha256())
+    radar = read["radars"][0]
+    assert radar["valid_time"] == "2026-07-28T20:03:16Z"
+    assert radar["start_time"] is None
+    assert radar["end_time"] is None
+    assert radar["availability_time"] is None

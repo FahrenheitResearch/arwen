@@ -15,6 +15,16 @@ def _args(tmp_path, *flags):
     return parser.parse_args(["check", str(tmp_path / "config.toml"), *flags])
 
 
+@pytest.fixture
+def _no_card(monkeypatch):
+    """The CPU-only route reads the card's census through the estimate's
+    probe subprocess; these tests are about the refusal and the report's
+    shape, so the probe answers as a machine with no card."""
+    monkeypatch.setattr(pf, "device_memory_probe_subprocess", lambda **_: None)
+    monkeypatch.setattr(pf, "device_memory_probe_reason",
+                        lambda **_: "no CUDA device answered")
+
+
 @pytest.mark.parametrize("alloc", [False, True])
 @pytest.mark.parametrize("payload,expected", [
     ({"self_contained": "ok", "toolkit_headers": "Failed to find CUDA headers"}, 1),
@@ -23,7 +33,7 @@ def _args(tmp_path, *flags):
     ({"devices": 0}, 2),
 ])
 def test_unusable_or_unverified_gpu_refuses_before_allocation(
-        tmp_path, monkeypatch, capsys, alloc, payload, expected):
+        tmp_path, monkeypatch, capsys, _no_card, alloc, payload, expected):
     from test_check_host_memory import _fetch_only_config
     from tilestream.autoplan import Machine
 
@@ -49,13 +59,16 @@ def test_unusable_or_unverified_gpu_refuses_before_allocation(
     assert required["domains"]["d01"]["by_category"]["state"] > 0
     assert required["budget_bytes"] is None and required["measured_free_bytes"] is None
     assert required["memory_verdict"] == "unavailable"
+    assert required["device_read"] is False
+    assert required["local_memory_profile"] == pf.MEASURED_LOCAL_MEMORY_PROFILE.name
+    assert "no CUDA device answered" in required["device_basis"]
     assert report["cpu_planning"]["command"] == [
         "gpuwm", "check", str(config), "--free-gib", "FREE_GIB", "--vram-gib", "CAPACITY_GIB"]
     if "toolkit_headers" in payload:
         assert report["gpu_readiness"]["action"]
 
 
-def test_failure_is_concise_and_uses_existing_remedy(tmp_path, monkeypatch, capsys):
+def test_failure_is_concise_and_uses_existing_remedy(tmp_path, monkeypatch, capsys, _no_card):
     from test_check_host_memory import _fetch_only_config
     config = _fetch_only_config(tmp_path)
     monkeypatch.setattr(pf, "_warn_unstaged_physics_tables", lambda *_: None)
@@ -69,6 +82,7 @@ def test_failure_is_concise_and_uses_existing_remedy(tmp_path, monkeypatch, caps
     assert len(output.splitlines()) <= 7
     assert "toolkit headers missing" in output and "cupy-cuda13x[ctk]" in output
     assert "CPU required-memory estimate" in output
+    assert "on the reference card, none read here" in output
     assert "Budget and fit judgment: unavailable" in output
     assert "--free-gib FREE_GIB --vram-gib CAPACITY_GIB" in output
     assert "long compiler detail" not in output
@@ -86,7 +100,7 @@ def test_declared_estimate_does_not_probe_gpu(tmp_path, monkeypatch, capsys):
 
 
 def test_unverified_report_does_not_turn_declared_capacity_into_free_memory(
-        tmp_path, monkeypatch, capsys):
+        tmp_path, monkeypatch, capsys, _no_card):
     from test_check_host_memory import _fetch_only_config
     monkeypatch.setattr(doctor, "no_local_gpu", lambda: True)
     args = _args(tmp_path, "--vram-gib", "8", "--json")
@@ -100,7 +114,7 @@ def test_unverified_report_does_not_turn_declared_capacity_into_free_memory(
 
 
 def test_unavailable_cpu_estimate_keeps_readiness_and_the_portable_route(
-        tmp_path, monkeypatch, capsys):
+        tmp_path, monkeypatch, capsys, _no_card):
     from test_check_host_memory import _fetch_only_config
     monkeypatch.setattr(doctor, "no_local_gpu", lambda: True)
     def unavailable(*args, **kwargs):

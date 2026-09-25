@@ -44,8 +44,33 @@ def resolve_root_experiment(*, target, vertical, namelist_input, start_time,
         for domain in raw.get("domain", ()):
             domain.pop("tiles", None)
     else:
-        variant = (single_domain_runtime_switches(physics_profile).get("ra_rrtmg_variant")
-                   if physics_profile is not None else None)
+        # WHAT THE NAMED SUITE CARRIES THAT A WRF NAMELIST CANNOT SPELL.
+        # Two facts, both gpuwm's own, both read off the profile the
+        # caller named rather than guessed from the selectors:
+        #
+        #   ra_rrtmg_variant -- which 4/4 implementation serves the pair;
+        #   wrf_rrtmg_compatibility -- which WRF RRTMG lineage the run
+        #   reproduces, which the RTE+RRTMGP arm READS to choose its snow
+        #   treatment and stamps into its restart identity.
+        #
+        # And the governance declaration the suite makes about itself: a
+        # shortwave-only suite integrates the land surface against a
+        # declared constant downward longwave, which the configuration
+        # route states in [experiment].acknowledgements and a WRF namelist
+        # has no field for.  Naming the profile IS that declaration, so it
+        # travels with the profile here and the same load guard reads it
+        # from the same array on both routes.
+        profile_switches = (single_domain_runtime_switches(physics_profile)
+                            if physics_profile is not None else {})
+        variant = profile_switches.get("ra_rrtmg_variant")
+        compatibility = profile_switches.get("wrf_rrtmg_compatibility")
+        from gpuwm.physics_compat import profile_declared_acknowledgements
+        declared = profile_declared_acknowledgements(physics_profile)
+        # A SEPARATE NAME from the caller's own list: `acknowledgements`
+        # stays what the operator stated, which is what the expert-tuple
+        # check below is asking about.
+        imported_acknowledgements = tuple(acknowledgements) + tuple(
+            token for token in declared if token not in acknowledgements)
         with tempfile.TemporaryDirectory(prefix="gpuwm-namelist-root-") as scratch:
             if wps_namelist is None:
                 # The native source door already owns the projection/target.
@@ -73,7 +98,8 @@ def resolve_root_experiment(*, target, vertical, namelist_input, start_time,
                 wps_namelist.write_text(wps, encoding="utf-8")
             text, _ = import_namelists(wps_namelist, namelist_input,
                 name=target.name, rrtmg_variant=variant,
-                acknowledgements=tuple(acknowledgements))
+                rrtmg_compatibility=compatibility,
+                acknowledgements=imported_acknowledgements)
         raw = tomllib.loads(text)
         authority = str(namelist_input)
     full = build_experiment_from_config_tables(

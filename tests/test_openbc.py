@@ -541,12 +541,30 @@ def test_advection_periodic_path_bitwise_regression():
     # The periodic path of the extended kernels must be BITWISE unchanged:
     # compare against outputs captured from the pre-change kernels on a
     # fixed seed (tests/data/advection_periodic_regression.npz).
+    #
+    # PER CARD since 2026-09-17 (tests/_card_pins.py).  The original
+    # capture (2026-07-19, card unrecorded) against the same launchers on
+    # node-1's RTX 4090 (compute capability 8.9, driver 610.57.04):
+    # tend_scalar differs in 446 of 1536 words, max 1.953e-03 on a field of
+    # scale 1.5e+04 (max relative 4.4e-06, about one ULP), which is the
+    # reading the 2026-09-03 recapture note (962c068da) took on an RTX 3080
+    # against the same file: the 3080 and the 4090 agree with each other
+    # and not with the box that made the original.  advection.cu was not
+    # edited between the capture and either reading.  The 4090 file
+    # (tests/data/advection_periodic_regression.rtx4090.npz) was written by
+    # tools/recapture_card_pins.py --pin advection_periodic_regression with
+    # its per-entry reading beside it in tests/data/receipts/pin-gates/;
+    # the inputs are the original file's.  A card with no file skips.
     import cupy as cp
+    import _card_pins
     from gpuwm.core.advection import (launch_flux_div_scalar,
                                       launch_flux_div_u, launch_flux_div_v,
                                       launch_flux_div_w)
     from gpuwm.core.grid import make_vertical_coord
-    ref = np.load(_DATA / "advection_periodic_regression.npz")
+    reason = _card_pins.skip_reason("advection_periodic_regression")
+    if reason is not None:
+        pytest.skip(reason)
+    ref = np.load(_card_pins.path("advection_periodic_regression"))
     nz, ny, nx = ref["q"].shape
     coord = make_vertical_coord(nz)
     d = {k: cp.asarray(ref[k]) for k in ("q", "u", "v", "w", "ru", "rv", "rw")}

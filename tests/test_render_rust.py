@@ -1133,7 +1133,7 @@ def test_list_products_reports_the_full_catalog(wrfout, tmp_path, capsys):
     assert rc == 0
     out = capsys.readouterr().out
     # The complete catalog is enumerated, not just what renders.
-    # 348 = 152 + the standalone 10 m wind chart + this fixture's 23
+    # 359 = 163 + the standalone 10 m wind chart + this fixture's 23
     # generic ``var:`` rows (stored 2-D planes no named product claims;
     # the generic family is store-dependent, so the count is the
     # FIXTURE's, not the build's) + the 172 ensemble/probabilistic
@@ -1144,14 +1144,37 @@ def test_list_products_reports_the_full_catalog(wrfout, tmp_path, capsys):
     # stored ``(Time, south_north, west_east)`` plane -- the eight rows
     # that added are this fixture's own surface planes, which the two
     # fixed catalogs did not name and which therefore used to be
-    # unrenderable.
-    assert "total=348" in out
+    # unrenderable.  The named rows went from 152 to 163 when the
+    # wrfout import gained the eleven column products (three isotherm
+    # heights, three supercooled water paths, five hydrometeor column
+    # maxima); ``rw_wrfbatch --list-products`` counts the same eleven,
+    # ``selectable_slugs`` 322 to 333.
+    assert "total=359" in out
     assert "renderable" in out and "excluded" in out
     # The generic rows are part of the catalog, not a side channel: every
     # stored plane without a named product renders as ``var:<name>``.
+    #
+    # Twenty-nine rows print where the engine's own catalog holds
+    # twenty-three of them.  The other six are the planes that ARE a
+    # named product's sole source: the engine leaves those out of its
+    # catalog, because listing one would draw the same grid twice under
+    # two slugs, and prints each on stderr as ``GENERIC_EXCLUDED ...
+    # already rendered by a named product``.  The door folds them back
+    # into the listing as renderable (``generic-deduped``) so that a
+    # request for a spelling this build accepts is not refused by the
+    # listing that describes it.  They are also why ``total=`` still
+    # says 359 while 365 rows print: the total is the ENGINE's catalog
+    # and these six are the door's addition to it.
     generic_rows = [line for line in out.splitlines()
                     if " generic " in line and " var:" in line]
-    assert len(generic_rows) == 23, out
+    deduped = [line for line in generic_rows
+               if "already rendered by a named product" in line]
+    assert len(generic_rows) == 29, out
+    assert len(deduped) == 6, deduped
+    assert sorted(re.search(r"var:(\S+)", line).group(1)
+                  for line in deduped) == [
+        "apcp", "composite_reflectivity", "dewpoint_2m", "orography",
+        "relative_humidity_2m", "temperature_2m"], deduped
     assert all("renderable" in line for line in generic_rows), generic_rows
     # The fixture's fields prove out the reflectivity composite ...
     assert any("composite_reflectivity" in line and "renderable" in line
@@ -1835,6 +1858,189 @@ def test_theme_and_section_are_on_the_render_parser(monkeypatch, tmp_path):
             parser.parse_args(
                 ["render", str(wrfout), "--engine", "rust",
                  "--section-size", bad, "--out", str(tmp_path / "png")])
+
+
+def test_the_section_top_reaches_the_renderer_and_stays_absent_by_default(
+        monkeypatch, tmp_path):
+    """The ceiling of a section's height axis is a front-door flag.
+
+    The engine has taken ``--section-top-km`` from the start and no door
+    forwarded it, so every published cut was fitted to the engine's
+    14 km whatever was in it -- a one-kilometre feature drawn in the
+    bottom fourteenth of the frame.  Saying nothing still sends no flag,
+    so a render that never mentions the ceiling is byte-identical to
+    every earlier release.
+    """
+
+    from gpuwm import render as render_module
+
+    seen = _renderer_spy(monkeypatch, tmp_path)
+
+    render_module.render_wrfouts_rust(
+        [tmp_path / "wrfout_d02_x.nc"], products="xsec:tk",
+        timeidx=0, outdir=tmp_path / "png", size=(800, 600),
+        section="38.32,-99.0,38.32,-98.4")
+    assert "--section-top-km" not in seen[-1]
+
+    render_module.render_wrfouts_rust(
+        [tmp_path / "wrfout_d02_x.nc"], products="xsec:tk",
+        timeidx=0, outdir=tmp_path / "png", size=(800, 600),
+        section="38.32,-99.0,38.32,-98.4", section_top_km=3)
+    argv = seen[-1]
+    assert argv[argv.index("--section-top-km") + 1] == "3.0"
+
+    # The series lane is the same door and forwards the same flag.
+    render_module.render_series_rust(
+        [tmp_path / "wrfout_d02_x.nc"], products="xsec:tk",
+        timeidx=None, outdir=tmp_path / "png-series", size=(800, 600),
+        section="38.32,-99.0,38.32,-98.4", section_top_km=2.5)
+    argv = seen[-1]
+    assert argv[argv.index("--section-top-km") + 1] == "2.5"
+
+
+def test_the_section_top_is_refused_outside_the_engine_range(monkeypatch,
+                                                            tmp_path):
+    """Out of 1-40 km the door answers in the engine's own sentence,
+    before a render launches rather than after the frames are open."""
+
+    from gpuwm import render as render_module
+
+    seen = _renderer_spy(monkeypatch, tmp_path)
+    wrfout = tmp_path / "wrfout_d02_2026-08-19_00_00_00"
+    wrfout.write_bytes(b"")
+
+    parser = cli.build_parser()
+    args = parser.parse_args(
+        ["render", str(wrfout), "--engine", "rust",
+         "--section", "38.32,-99.0,38.32,-98.4",
+         "--section-top-km", "3", "--out", str(tmp_path / "png")])
+    assert args.section_top_km == 3.0
+
+    args = parser.parse_args(
+        ["render", str(wrfout), "--engine", "rust",
+         "--out", str(tmp_path / "png")])
+    assert args.section_top_km is None
+
+    for bad in ("0.5", "0", "41", "-3", "abc", "nan", "inf"):
+        with pytest.raises(SystemExit):
+            parser.parse_args(
+                ["render", str(wrfout), "--engine", "rust",
+                 "--section-top-km", bad, "--out", str(tmp_path / "png")])
+
+    # The same refusal on the in-process lane, in the same words, and no
+    # render is launched with the value that was refused.
+    with pytest.raises(ValueError) as excinfo:
+        render_module.render_wrfouts_rust(
+            [tmp_path / "wrfout_d02_x.nc"], products="xsec:tk",
+            timeidx=0, outdir=tmp_path / "png", size=(800, 600),
+            section="38.32,-99.0,38.32,-98.4", section_top_km=0.5)
+    assert "--section-top-km '0.5' is not within 1-40 km" in str(excinfo.value)
+    assert not any("--section-top-km" in argv for argv in seen)
+
+
+def test_the_render_receipt_records_how_tall_the_cut_was(tmp_path):
+    """Two cuts of one line differ only by their ceiling, so a receipt
+    that does not carry it cannot tell the reader which is which."""
+
+    from gpuwm import render_receipts
+
+    root = tmp_path / "png"
+    root.mkdir()
+    summary = render_receipts.publish_invocation(
+        root=root, engine="rust", requested_spec="xsec:tk", written=[],
+        failures=[], skipped=[], layout="nested", section_top_km=3.0)
+    assert summary["section_tops_km"] == [3.0]
+
+    summary = render_receipts.publish_invocation(
+        root=root, engine="rust", requested_spec="xsec:tk", written=[],
+        failures=[], skipped=[], layout="nested", section_top_km=14.0)
+    assert summary["section_tops_km"] == [3.0, 14.0]
+
+    # A render that drew no section records no ceiling and leaves the
+    # list exactly as it was.
+    summary = render_receipts.publish_invocation(
+        root=root, engine="rust", requested_spec="2m_temperature",
+        written=[], failures=[], skipped=[], layout="nested")
+    assert summary["section_tops_km"] == [3.0, 14.0]
+    assert summary["additional_section_tops_km"] == 0
+
+    # Past eight distinct ceilings the list is capped, like every other
+    # capped list in the summary, and the count of what was dropped is
+    # what tells the reader the list is not the whole of it.
+    for top in (2.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0):
+        summary = render_receipts.publish_invocation(
+            root=root, engine="rust", requested_spec="xsec:tk", written=[],
+            failures=[], skipped=[], layout="nested", section_top_km=top)
+    assert len(summary["section_tops_km"]) == 8
+    assert summary["additional_section_tops_km"] == 2
+
+
+def test_the_render_receipt_records_the_range_each_cut_was_drawn_on():
+    """A cut's colour bar is fitted to its own frame at BOTH ends.
+
+    The ceiling moved with the frame before this lane's work and the
+    bottom moves with it now, so two cuts of one line an hour apart can
+    be drawn on two different bars.  The receipt is the only place that
+    can say which bar, so it carries the range and the rule that set it.
+    """
+
+    from gpuwm import render_receipts
+
+    line = ("SECTIONFILL xsec_tk lo=286.05 hi=310.2 absence=0 "
+            "rule=own-minimum")
+    assert rustwx.parse_section_fill(line) == {
+        "family": "xsec_tk", "lo": 286.05, "hi": 310.2,
+        "absence": False, "rule": "own-minimum"}
+    # The event word is part of the handshake: a build predating it
+    # answers the old grammar and is refused rather than drawing cuts
+    # whose bars go unrecorded.
+    assert "\tSECTIONFILL\t" in rustwx.RENDERER_ABI_MARKER
+    # A line the engine spells differently is dropped, not raised on: a
+    # receipt is metadata beside a picture that was drawn.
+    assert rustwx.parse_section_fill("RENDERED xsec_tk /tmp/a.png") is None
+    assert rustwx.parse_section_fill("SECTIONFILL xsec_tk lo=x hi=2") is None
+    assert rustwx.parse_section_fill("SECTIONFILL  lo=1 hi=2") is None
+
+
+def test_the_render_summary_carries_and_caps_the_drawn_fill_rows(tmp_path):
+    """The same treatment every other list in the summary gets."""
+
+    from gpuwm import render_receipts
+
+    root = tmp_path / "png"
+    root.mkdir()
+    kelvin = {"family": "xsec_tk", "lo": 286.05, "hi": 310.2,
+              "absence": False, "rule": "own-minimum"}
+    mixing = {"family": "xsec_qv", "lo": 0.0, "hi": 0.012,
+              "absence": True, "rule": "zero-anchor"}
+    summary = render_receipts.publish_invocation(
+        root=root, engine="rust", requested_spec="xsec:tk,xsec:qv",
+        written=[], failures=[], skipped=[], layout="nested",
+        section_top_km=3.0, section_fills=[kelvin, mixing])
+    assert summary["section_fills"] == [kelvin, mixing]
+    assert summary["additional_section_fills"] == 0
+
+    # The same cut drawn again on the same bar is one row, exactly as a
+    # repeated ceiling is one entry.
+    summary = render_receipts.publish_invocation(
+        root=root, engine="rust", requested_spec="xsec:tk", written=[],
+        failures=[], skipped=[], layout="nested", section_top_km=3.0,
+        section_fills=[kelvin])
+    assert summary["section_fills"] == [kelvin, mixing]
+
+    # A render that drew no section leaves the list alone.
+    summary = render_receipts.publish_invocation(
+        root=root, engine="rust", requested_spec="2m_temperature",
+        written=[], failures=[], skipped=[], layout="nested")
+    assert summary["section_fills"] == [kelvin, mixing]
+
+    for index in range(8):
+        summary = render_receipts.publish_invocation(
+            root=root, engine="rust", requested_spec="xsec:tk", written=[],
+            failures=[], skipped=[], layout="nested",
+            section_fills=[dict(kelvin, lo=float(index))])
+    assert len(summary["section_fills"]) == 8
+    assert summary["additional_section_fills"] == 2
 
 
 def test_the_abi_marker_and_product_parser_carry_the_section_family():

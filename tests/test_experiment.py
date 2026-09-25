@@ -19,6 +19,7 @@ import numpy as np
 import pytest
 
 import gpuwm.cli as cli
+from conftest import requires_cupy
 from gpuwm.experiment import (ExperimentConfig, ProjectionConfig,
                               VerticalConfig, _assert_derived_copies,
                               experiment_from_run_config,
@@ -1191,6 +1192,17 @@ def test_is_experiment_toml_sniff(tmp_path):
     assert is_experiment_toml(exp_only)
 
 
+# NEEDS CUPY INSTALLED, and opens no device.  This test asserts the
+# routing message the command line prints for a configuration with no
+# [case_data] table; on an install without cupy the command line meets its
+# own cupy refusal first and prints that instead, so the assertion fails on
+# a message that is correct for that install.  The conftest's runtime skip
+# cannot see it: no ModuleNotFoundError escapes -- the refusal is the door
+# working as designed.  NOT marked gpu: no device is opened, and gpu
+# implies a skip wherever local GPU work is banned, which would retire
+# this on the machine that runs the CPU battery.  Measured on node-1,
+# 2026-09-17.
+@requires_cupy
 def test_cli_routes_experiment_toml_to_experiment_path(tmp_path, capsys):
     """A valid experiment TOML routes to the Task-2 experiment runtime,
     which requires declared [case_data] inputs; an INVALID one surfaces
@@ -1212,6 +1224,17 @@ def test_cli_routes_experiment_toml_to_experiment_path(tmp_path, capsys):
     assert "[case_data]" in err
 
 
+# NEEDS CUPY INSTALLED, and opens no device.  This test asserts the
+# routing message the command line prints for a configuration with no
+# [case_data] table; on an install without cupy the command line meets its
+# own cupy refusal first and prints that instead, so the assertion fails on
+# a message that is correct for that install.  The conftest's runtime skip
+# cannot see it: no ModuleNotFoundError escapes -- the refusal is the door
+# working as designed.  NOT marked gpu: no device is opened, and gpu
+# implies a skip wherever local GPU work is banned, which would retire
+# this on the machine that runs the CPU battery.  Measured on node-1,
+# 2026-09-17.
+@requires_cupy
 def test_cli_single_domain_summary_needs_no_transition_fields(
         tmp_path, monkeypatch, capsys):
     from types import SimpleNamespace

@@ -18,7 +18,7 @@ use crate::pack::{
     self, ArrayEntry, DecodeParams, Framing, MomentEntry, PackMeta, PayloadBuilder, SiteEntry,
     SweepEntry, VolumeEntry, SWEEPS_SCHEMA, SWEEPS_SCHEMA_CENSOR,
 };
-use crate::s3::{boxed_error, hex_sha256, iso8601};
+use crate::s3::{boxed_error, hex_sha256, iso8601, iso8601_ms, parse_volume_key};
 
 /// Volume start time from the Archive-II header: `volume_date` counts days
 /// since 1970-01-01 with the epoch day numbered 1, `volume_time` is
@@ -29,6 +29,63 @@ pub fn volume_time(volume_date: u16, volume_time_ms: u32) -> Option<DateTime<Utc
     let seconds = (volume_time_ms / 1000) as i64;
     let naive = date.and_hms_opt(0, 0, 0)? + Duration::seconds(seconds);
     Some(Utc.from_utc_datetime(&naive))
+}
+
+/// One radial's collection instant from its Message-31 header words, kept
+/// to the millisecond the RDA recorded.
+///
+/// The same day numbering as [`volume_time`].  `None` for a word pair that
+/// is not a time: day 0 (the ICD numbers the epoch day 1, so 0 is an unset
+/// word) or a millisecond count at or past midnight.  A caller that dates a
+/// volume from these must refuse such a radial by name rather than date the
+/// volume from a value that is not a time.
+pub fn radial_instant(collection_date: u16, collection_time_ms: u32) -> Option<DateTime<Utc>> {
+    if collection_date == 0 || collection_time_ms >= 86_400_000 {
+        return None;
+    }
+    let epoch = NaiveDate::from_ymd_opt(1970, 1, 1)?;
+    let date = epoch.checked_add_signed(Duration::days(collection_date as i64 - 1))?;
+    let naive = date.and_hms_opt(0, 0, 0)? + Duration::milliseconds(collection_time_ms as i64);
+    Some(Utc.from_utc_datetime(&naive))
+}
+
+/// The earliest and latest collection instant among one cut's radials.
+///
+/// Min and max rather than first and last: a cut's radials arrive in scan
+/// order on every volume seen, but the span is a statement about when the
+/// cut was scanned and must not depend on the order the bytes happen to be
+/// in.
+pub fn cut_instants(sweep: &Level2Sweep) -> Result<(DateTime<Utc>, DateTime<Utc>), String> {
+    let mut first: Option<DateTime<Utc>> = None;
+    let mut last: Option<DateTime<Utc>> = None;
+    for (row, radial) in sweep.radials.iter().enumerate() {
+        let when = radial_instant(radial.collection_date, radial.collection_time_ms).ok_or_else(
+            || {
+                format!(
+                    "corrupt Level-II volume: sweep {} radial {row} carries collection date {} / \
+                     time {} ms, which is not a calendar instant. The pack dates every cut and \
+                     the whole volume from these words, so a value that is not a time cannot be \
+                     let through as one. The file is corrupt at that radial: fetch the volume \
+                     again or decode another one",
+                    sweep.sweep_index, radial.collection_date, radial.collection_time_ms
+                )
+            },
+        )?;
+        first = Some(first.map_or(when, |f| f.min(when)));
+        last = Some(last.map_or(when, |l| l.max(when)));
+    }
+    match (first, last) {
+        (Some(first), Some(last)) => Ok((first, last)),
+        _ => Err(format!(
+            "corrupt Level-II volume: sweep {} has no radials to date",
+            sweep.sweep_index
+        )),
+    }
+}
+
+/// Whether a cut both started and ended on a radial-status marker.
+pub fn cut_complete(sweep: &Level2Sweep) -> bool {
+    matches!(sweep.start_status, 0 | 3 | 5) && matches!(sweep.end_status, 2 | 4)
 }
 
 /// Coordinates for a site, and the accurate record of where they came from.
@@ -312,13 +369,40 @@ pub fn build_pack(request: &DecodeRequest<'_>) -> Result<(PackMeta, Vec<u8>), Bo
         ))
     })?;
 
+    // When the volume was scanned, from the radials' own clocks and over
+    // EVERY cut the file carries: a cut the caller's elevation ceiling drops
+    // was still scanned, and the moment the volume was complete is the last
+    // radial of the last cut whether or not that cut is packed.  Computed
+    // before the filters for exactly that reason.
+    let mut instants = Vec::with_capacity(file.sweeps.len());
+    let mut volume_start: Option<DateTime<Utc>> = None;
+    let mut volume_end: Option<DateTime<Utc>> = None;
+    let mut sweeps_incomplete = 0usize;
+    for sweep in &file.sweeps {
+        let (first, last) = cut_instants(sweep).map_err(boxed_error)?;
+        volume_start = Some(volume_start.map_or(first, |v| v.min(first)));
+        volume_end = Some(volume_end.map_or(last, |v| v.max(last)));
+        if !cut_complete(sweep) {
+            sweeps_incomplete += 1;
+        }
+        instants.push((first, last));
+    }
+    let volume_complete = sweeps_incomplete == 0
+        && file.sweeps.first().is_some_and(|s| s.start_status == 3)
+        && file.sweeps.last().is_some_and(|s| s.end_status == 4);
+    let key_time = request
+        .volume_path
+        .file_name()
+        .and_then(|name| parse_volume_key(&name.to_string_lossy()))
+        .map(|key| iso8601(key.valid_time));
+
     let mut builder = PayloadBuilder::new();
     let mut sweeps = Vec::new();
     let mut dropped_sweeps = 0usize;
     let mut dropped_moments = 0usize;
     let mut trimmed_gates = 0usize;
 
-    for sweep in &file.sweeps {
+    for (sweep, &(cut_start, cut_end)) in file.sweeps.iter().zip(&instants) {
         if sweep.elevation_angle as f64 > request.max_elevation_deg {
             dropped_sweeps += 1;
             continue;
@@ -453,12 +537,13 @@ pub fn build_pack(request: &DecodeRequest<'_>) -> Result<(PackMeta, Vec<u8>), Bo
             start_status: sweep.start_status,
             end_status: sweep.end_status,
             cut_sector: sweep.cut_sector,
-            complete: matches!(sweep.start_status, 0 | 3 | 5)
-                && matches!(sweep.end_status, 2 | 4),
+            complete: cut_complete(sweep),
             radial_count,
             azimuth_array: azimuth_key,
             elevation_array: elevation_key,
             nyquist_by_radial_array: nyquist_by_radial_key,
+            start_time: Some(iso8601_ms(cut_start)),
+            end_time: Some(iso8601_ms(cut_end)),
             moments: moment_entries,
         });
     }
@@ -506,6 +591,12 @@ pub fn build_pack(request: &DecodeRequest<'_>) -> Result<(PackMeta, Vec<u8>), Bo
             valid_time: iso8601(valid_time),
             volume_date: file.volume_date,
             volume_time_ms: file.volume_time,
+            key_time,
+            start_time: volume_start.map(iso8601_ms),
+            end_time: volume_end.map(iso8601_ms),
+            complete: Some(volume_complete),
+            sweeps_in_volume: Some(file.sweeps.len()),
+            sweeps_incomplete: Some(sweeps_incomplete),
             framing: Some(request.framing.clone()),
             // An Archive-II volume is one file; there is nothing to assemble
             // and nothing accurate to write here.
@@ -567,6 +658,9 @@ mod tests {
                     azimuth_spacing: 1.0,
                     nyquist_velocity: Some(32.0),
                     radial_status: if row == 0 { 3 } else { 1 },
+                    // One second per radial from the header's own instant.
+                    collection_time_ms: 72_196_232 + 1000 * row as u32,
+                    collection_date: 20663,
                     moments,
                 })
                 .collect(),
@@ -731,7 +825,7 @@ mod tests {
         }
 
         let mut msg31 = Vec::from(&b"KTLX"[..]);
-        msg31.extend_from_slice(&0u32.to_be_bytes());
+        msg31.extend_from_slice(&72_196_232u32.to_be_bytes()); // collection time: the header's own
         msg31.extend_from_slice(&20663u16.to_be_bytes());
         msg31.extend_from_slice(&1u16.to_be_bytes());
         msg31.extend_from_slice(&90.0f32.to_be_bytes());
@@ -1102,16 +1196,46 @@ mod tests {
             nyquist_hundredths.len() >= 2,
             "a cut fixture needs a start radial and an end radial"
         );
-        let mut stream = Vec::new();
         let last = nyquist_hundredths.len() - 1;
-        for (index, nyquist) in nyquist_hundredths.iter().enumerate() {
-            let status = match index {
-                0 => 3u8,        // start of volume
-                i if i == last => 2, // end of elevation
-                _ => 1,
-            };
+        let radials: Vec<TimedRadial> = nyquist_hundredths
+            .iter()
+            .enumerate()
+            .map(|(index, nyquist)| TimedRadial {
+                nyquist_hundredths: *nyquist,
+                status: match index {
+                    0 => 3u8,            // start of volume
+                    i if i == last => 2, // end of elevation
+                    _ => 1,
+                },
+                // One second per radial from the header's own instant.
+                collection_time_ms: 72_196_232 + 1000 * index as u32,
+                collection_date: 20663,
+                elevation_number: 1,
+                elevation_deg: 0.5,
+            })
+            .collect();
+        volume_of_radials(&radials)
+    }
+
+    /// One Message-31 radial of a fixture volume, with the words a test
+    /// wants to choose: its Nyquist, its status, its clock and its cut.
+    #[derive(Clone, Copy)]
+    struct TimedRadial {
+        nyquist_hundredths: u16,
+        status: u8,
+        collection_time_ms: u32,
+        collection_date: u16,
+        elevation_number: u8,
+        elevation_deg: f32,
+    }
+
+    /// The unframed pre-2016 layout again, one message per radial, each
+    /// radial carrying exactly the header words the caller chose.
+    fn volume_of_radials(radials: &[TimedRadial]) -> Vec<u8> {
+        let mut stream = Vec::new();
+        for (index, radial) in radials.iter().enumerate() {
             let mut rad_body = vec![0u8; 10];
-            rad_body.extend_from_slice(&nyquist.to_be_bytes());
+            rad_body.extend_from_slice(&radial.nyquist_hundredths.to_be_bytes());
             let mut rad = Vec::from(&b"RRAD"[..]);
             rad.extend_from_slice(&28u16.to_be_bytes());
             rad.extend_from_slice(&rad_body);
@@ -1140,18 +1264,18 @@ mod tests {
             }
 
             let mut msg31 = Vec::from(&b"KTLX"[..]);
-            msg31.extend_from_slice(&0u32.to_be_bytes());
-            msg31.extend_from_slice(&20663u16.to_be_bytes());
+            msg31.extend_from_slice(&radial.collection_time_ms.to_be_bytes());
+            msg31.extend_from_slice(&radial.collection_date.to_be_bytes());
             msg31.extend_from_slice(&(index as u16 + 1).to_be_bytes()); // azimuth number
             msg31.extend_from_slice(&(index as f32).to_be_bytes()); // azimuth angle
             msg31.push(0); // compression
             msg31.push(0); // spare
             msg31.extend_from_slice(&(running as u16).to_be_bytes()); // radial length
             msg31.push(1); // azimuth resolution: half a degree
-            msg31.push(status);
-            msg31.push(1); // elevation number
+            msg31.push(radial.status);
+            msg31.push(radial.elevation_number);
             msg31.push(0); // cut sector
-            msg31.extend_from_slice(&0.5f32.to_be_bytes());
+            msg31.extend_from_slice(&radial.elevation_deg.to_be_bytes());
             msg31.push(0);
             msg31.push(0);
             msg31.extend_from_slice(&(blocks.len() as u16).to_be_bytes());
@@ -1180,6 +1304,190 @@ mod tests {
         raw[20..24].copy_from_slice(b"KTLX");
         raw.extend_from_slice(&stream);
         raw
+    }
+
+    /// A three-cut volume scanned over 6 min 40 s: the header's own instant
+    /// 20:03:16.232, then cut 1 at 0.5 deg over three radials, cut 2 at
+    /// 0.9 deg, cut 3 at 19.5 deg ending 400 s after the first radial.
+    /// `last_status` is the last radial's status: 4 (end of volume) makes
+    /// the volume whole, anything else cuts it short.
+    fn three_cut_volume(last_status: u8) -> Vec<u8> {
+        let t0 = 72_196_232u32;
+        let radial = |offset_s: u32, status: u8, cut: u8, elevation: f32| TimedRadial {
+            nyquist_hundredths: 2384,
+            status,
+            collection_time_ms: t0 + 1000 * offset_s,
+            collection_date: 20663,
+            elevation_number: cut,
+            elevation_deg: elevation,
+        };
+        volume_of_radials(&[
+            radial(0, 3, 1, 0.5),
+            radial(10, 1, 1, 0.5),
+            radial(20, 2, 1, 0.5),
+            radial(60, 0, 2, 0.9),
+            radial(70, 1, 2, 0.9),
+            radial(80, 2, 2, 0.9),
+            radial(380, 0, 3, 19.5),
+            radial(390, 1, 3, 19.5),
+            radial(400, last_status, 3, 19.5),
+        ])
+    }
+
+    #[test]
+    fn every_cut_and_the_whole_volume_are_dated_by_the_radials_own_clocks() {
+        // The header says 20:03:16 and the archive key says the same; the
+        // radials say the volume was not complete until 20:09:56.232.
+        let raw = three_cut_volume(4);
+        let (meta, payload) = build_pack(&pack_request(&raw)).unwrap();
+        let volume = &meta.volume;
+        assert_eq!(volume.valid_time, "2026-07-28T20:03:16Z");
+        assert_eq!(volume.key_time.as_deref(), Some("2026-07-28T20:03:16Z"));
+        assert_eq!(volume.start_time.as_deref(), Some("2026-07-28T20:03:16.232Z"));
+        assert_eq!(volume.end_time.as_deref(), Some("2026-07-28T20:09:56.232Z"));
+        assert_eq!(volume.complete, Some(true));
+        assert_eq!(volume.sweeps_in_volume, Some(3));
+        assert_eq!(volume.sweeps_incomplete, Some(0));
+
+        // 19.5 deg is under the request's 20 deg ceiling, so all three cuts
+        // are packed and each carries its own span.
+        assert_eq!(meta.sweeps.len(), 3);
+        assert_eq!(meta.sweeps[0].start_time.as_deref(), Some("2026-07-28T20:03:16.232Z"));
+        assert_eq!(meta.sweeps[0].end_time.as_deref(), Some("2026-07-28T20:03:36.232Z"));
+        assert_eq!(meta.sweeps[1].start_time.as_deref(), Some("2026-07-28T20:04:16.232Z"));
+        assert_eq!(meta.sweeps[1].end_time.as_deref(), Some("2026-07-28T20:04:36.232Z"));
+        assert_eq!(meta.sweeps[2].start_time.as_deref(), Some("2026-07-28T20:09:36.232Z"));
+        assert_eq!(meta.sweeps[2].end_time.as_deref(), Some("2026-07-28T20:09:56.232Z"));
+        assert!(meta.sweeps.iter().all(|s| s.complete));
+
+        // The pack's own reader accepts what the builder wrote.
+        let bytes = crate::pack::encode_pack(&meta, &payload).unwrap();
+        let (round, _) = crate::pack::decode_pack(&bytes).unwrap();
+        assert_eq!(round.volume.end_time, volume.end_time);
+        assert_eq!(round.sweeps[2].end_time, meta.sweeps[2].end_time);
+    }
+
+    #[test]
+    fn a_cut_the_elevation_ceiling_drops_still_dates_the_end_of_the_volume() {
+        // Asking for cuts under 10 deg packs two of the three; the volume
+        // was nevertheless complete only when the 19.5 deg cut finished.
+        let raw = three_cut_volume(4);
+        let mut request = pack_request(&raw);
+        request.max_elevation_deg = 10.0;
+        let (meta, _) = build_pack(&request).unwrap();
+        assert_eq!(meta.sweeps.len(), 2);
+        assert_eq!(meta.dropped_sweeps, 1);
+        assert_eq!(meta.volume.end_time.as_deref(), Some("2026-07-28T20:09:56.232Z"));
+        assert_eq!(meta.volume.sweeps_in_volume, Some(3));
+    }
+
+    #[test]
+    fn a_volume_the_feed_cut_short_says_so_by_count() {
+        // The last radial is intermediate (1), not end-of-volume (4): the
+        // top cut never ended on a marker and the volume is not whole.
+        let raw = three_cut_volume(1);
+        let (meta, _) = build_pack(&pack_request(&raw)).unwrap();
+        assert_eq!(meta.volume.complete, Some(false));
+        assert_eq!(meta.volume.sweeps_incomplete, Some(1));
+        assert!(!meta.sweeps[2].complete);
+        assert!(meta.sweeps[0].complete && meta.sweeps[1].complete);
+        // Its span is still what the radials say; incompleteness is a
+        // statement about markers, not about clocks.
+        assert_eq!(meta.volume.end_time.as_deref(), Some("2026-07-28T20:09:56.232Z"));
+    }
+
+    #[test]
+    fn a_radial_whose_clock_is_not_an_instant_refuses_the_volume_by_name() {
+        let t0 = 72_196_232u32;
+        let mut radials = vec![
+            TimedRadial {
+                nyquist_hundredths: 2384,
+                status: 3,
+                collection_time_ms: t0,
+                collection_date: 20663,
+                elevation_number: 1,
+                elevation_deg: 0.5,
+            };
+            3
+        ];
+        radials[1].status = 1;
+        radials[2].status = 4;
+        radials[1].collection_time_ms = 90_000_000; // past midnight
+        let raw = volume_of_radials(&radials);
+        let err = build_pack(&pack_request(&raw)).unwrap_err().to_string();
+        assert!(err.contains("sweep 0 radial 1"), "{err}");
+        assert!(err.contains("90000000 ms"), "{err}");
+        assert!(err.contains("not a calendar instant"), "{err}");
+
+        radials[1].collection_time_ms = t0;
+        radials[1].collection_date = 0; // an unset day word
+        let raw = volume_of_radials(&radials);
+        let err = build_pack(&pack_request(&raw)).unwrap_err().to_string();
+        assert!(err.contains("collection date 0"), "{err}");
+    }
+
+    #[test]
+    fn a_pack_whose_instants_contradict_each_other_is_refused_on_read_back() {
+        let raw = three_cut_volume(4);
+        let (meta, payload) = build_pack(&pack_request(&raw)).unwrap();
+
+        // A volume that ends before it starts.
+        let mut backwards = meta.clone();
+        backwards.volume.end_time = Some("2026-07-28T20:00:00.000Z".to_string());
+        let bytes = crate::pack::encode_pack(&backwards, &payload).unwrap();
+        let err = crate::pack::decode_pack(&bytes).unwrap_err().to_string();
+        assert!(err.contains("ends at 2026-07-28T20:00:00.000Z before it starts"), "{err}");
+
+        // A cut outside the volume's span.
+        let mut outside = meta.clone();
+        outside.sweeps[2].end_time = Some("2026-07-28T20:30:00.000Z".to_string());
+        let bytes = crate::pack::encode_pack(&outside, &payload).unwrap();
+        let err = crate::pack::decode_pack(&bytes).unwrap_err().to_string();
+        assert!(err.contains("sweep 2 spans"), "{err}");
+        assert!(err.contains("outside the volume's own"), "{err}");
+
+        // A complete flag that contradicts the statuses it is defined by.
+        let mut lying = meta.clone();
+        lying.sweeps[0].complete = false;
+        let bytes = crate::pack::encode_pack(&lying, &payload).unwrap();
+        let err = crate::pack::decode_pack(&bytes).unwrap_err().to_string();
+        assert!(err.contains("says complete=false"), "{err}");
+
+        // Half a statement: an end with no start.
+        let mut half = meta.clone();
+        half.volume.start_time = None;
+        let bytes = crate::pack::encode_pack(&half, &payload).unwrap();
+        let err = crate::pack::decode_pack(&bytes).unwrap_err().to_string();
+        assert!(err.contains("without the other"), "{err}");
+
+        // And a pack that says nothing about instants at all is the pack
+        // this build's predecessor wrote, and still reads.
+        let mut silent = meta.clone();
+        silent.volume.start_time = None;
+        silent.volume.end_time = None;
+        for sweep in &mut silent.sweeps {
+            sweep.start_time = None;
+            sweep.end_time = None;
+        }
+        let bytes = crate::pack::encode_pack(&silent, &payload).unwrap();
+        crate::pack::decode_pack(&bytes).unwrap();
+        let json = serde_json::to_string(&silent).unwrap();
+        assert!(!json.contains("end_time"), "{json}");
+    }
+
+    #[test]
+    fn a_radial_instant_keeps_its_milliseconds_and_refuses_non_times() {
+        let when = radial_instant(20663, 72_196_232).unwrap();
+        assert_eq!(iso8601_ms(when), "2026-07-28T20:03:16.232Z");
+        assert_eq!(iso8601(when), "2026-07-28T20:03:16Z");
+        assert!(radial_instant(0, 1000).is_none());
+        assert!(radial_instant(20663, 86_400_000).is_none());
+        assert!(radial_instant(20663, 86_399_999).is_some());
+        assert_eq!(
+            crate::s3::parse_iso8601_ms("2026-07-28T20:03:16.232Z").unwrap(),
+            when
+        );
+        assert!(crate::s3::parse_iso8601_ms("2026-07-28T20:03:16+02:00").is_err());
     }
 
     /// The per-radial Nyquist array of sweep 0, as the pack carries it.
@@ -1268,9 +1576,10 @@ mod tests {
     fn a_cut_no_radial_reported_for_packs_exactly_as_it_did_before() {
         // Every RAD block carries a zero Nyquist word, so there is nothing
         // to carry.  An all-NaN array would assert the originals were kept;
-        // the key is absent instead, the scalar stays None as it always was,
-        // and the metadata JSON is the one the previous build wrote -- which
-        // is what keeps those packs' digests reproducible.
+        // the key is absent instead and the scalar stays None as it always
+        // was, so a reader built before the array existed reads the cut it
+        // always read.  (The collection instants are a separate, always
+        // present statement about the same cut; see the tests above.)
         let raw = cut_with_radial_nyquists(&[0, 0, 0]);
         let (meta, _payload) = build_pack(&pack_request(&raw)).unwrap();
         assert!(meta.sweeps[0].nyquist_velocity_ms.is_none());

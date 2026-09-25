@@ -17,6 +17,8 @@ from gpuwm import __version__
 from gpuwm.gfs_direct import _git_source_identity
 from gpuwm.native_wrf_distribution import (
     BRIDGE_NAMES,
+    BRIDGE_WORKSPACES,
+    BUNDLED_BRIDGES,
     CPU_BACKEND_LIBRARY,
     CUDA_KERNEL_SOURCES,
     HRRR_HELPERS,
@@ -24,10 +26,13 @@ from gpuwm.native_wrf_distribution import (
     RUNTIME_SCHEMA,
     WINDOWS_CPU_BACKEND_LIBRARY,
     _BRIDGE_ABI_MARKERS,
+    _BRIDGE_USAGE_MARKERS,
     _cpu_backend_self_test,
     _numeric_version,
     _runtime_dependency_modules,
+    add_bridge_options,
     bridge_identity,
+    bridge_inputs,
     cpu_backend_library_name,
     distribution_contract,
 )
@@ -1018,3 +1023,191 @@ def test_a_freshly_written_prepared_cache_stamps_this_release(tmp_path):
 
     header = {CACHE_WRITER_KEY: {"gpuwm_version": __version__}}
     assert cache_writer_version(header) == metadata.version("gpuwm")
+
+
+# ---------------------------------------------------------------------------
+# The standalone rw-wps bundle's declaration
+# ---------------------------------------------------------------------------
+
+
+def test_the_standalone_bundle_carries_every_bridge_a_shipped_source_names():
+    """A route that names a binary must be a route the bundle can run.
+
+    THE defect this file is here to stop from recurring.  2.7.5 added the
+    icosahedral remapper ``gdt101_remap`` to the bridge bundle for ICON
+    global, and the standalone rw-wps bundle did not grow it, because its
+    contents were a hand-kept tuple with no tie to the routes that need
+    them.  It shipped as a known limit: ``gpuwm doctor`` reported
+    ``MISSING bridge gdt101_remap: not staged`` on an install carrying
+    exactly what the bundle declares, and ``rw-wps --source icon-global``
+    refused rather than falling back.
+
+    The binding is to the packaged authorities, not to a literal, so it
+    is the arbitrary test and not a patch: a producer on a new native
+    grid arrives as a normalization document naming the binary that
+    reads it, and this fails the moment that binary is outside the
+    bundle -- before a release can ship a source the bundle cannot run.
+    """
+
+    from gpuwm import source_authorities, source_normalization
+
+    named = {
+        source_normalization.load_normalization(name).bridge
+        for name in source_authorities.packaged_normalizer_ids()
+    }
+    assert named, "no packaged source declares an input-normalization binary"
+    assert "gdt101_remap" in named
+    assert named <= set(BRIDGE_NAMES), (
+        "the standalone rw-wps bundle does not carry "
+        f"{sorted(named - set(BRIDGE_NAMES))}, which a packaged source's "
+        "input normalization resolves and refuses without")
+
+
+def test_every_declared_bridge_is_one_row_and_nothing_is_written_per_bridge():
+    """One row is the whole declaration: name, workspace, option, env, probe.
+
+    The five-places shape this replaces lost two bridges.  These are the
+    surfaces a row must reach, checked together so none of them can go
+    stale on its own again.
+    """
+
+    from gpuwm.bridges import BRIDGE_ENV
+    from gpuwm.rustwx_fetch import FETCH_ENV, FETCH_NAME
+
+    # The row's environment variable must be the one the module that
+    # RESOLVES that bridge actually reads.  Both launchers are checked
+    # against the row below, so a row holding its own copy of the name
+    # would let the variable move in the resolver while the row, the
+    # launchers and every test stayed green and agreed with each other
+    # about a variable nothing reads.
+    resolver_env = {**BRIDGE_ENV, FETCH_NAME: FETCH_ENV}
+    assert BRIDGE_NAMES == tuple(b.name for b in BUNDLED_BRIDGES)
+    assert len(set(BRIDGE_NAMES)) == len(BRIDGE_NAMES)
+    assert BRIDGE_WORKSPACES == ("tools/grib1_bridge", "tools/rustwx")
+    for bridge in BUNDLED_BRIDGES:
+        assert bridge.name in resolver_env, (
+            f"{bridge.name} is declared bundled but no module resolves it "
+            "from an environment variable, so the launchers would bind a "
+            "name nothing reads")
+        assert bridge.env_var == resolver_env[bridge.name], (
+            f"{bridge.name}'s row binds {bridge.env_var} and its resolver "
+            f"reads {resolver_env[bridge.name]}")
+        assert bridge.workspace in BRIDGE_WORKSPACES
+        assert bridge.option.startswith("--")
+        assert bridge.dest == bridge.option[2:].replace("-", "_")
+        assert bridge.env_var.startswith("GPUWM_")
+        assert bridge.usage_marker == f"usage: {bridge.name}"
+        assert _BRIDGE_USAGE_MARKERS[bridge.name] == bridge.usage_marker
+        assert bridge.consumer.strip() == bridge.consumer and bridge.consumer
+
+    remapper, = [b for b in BUNDLED_BRIDGES if b.name == "gdt101_remap"]
+    assert remapper.workspace == "tools/grib1_bridge"
+    assert remapper.env_var == "GPUWM_GDT101_REMAP"
+    assert _BRIDGE_ABI_MARKERS["gdt101_remap"] \
+        == b"arwen.gdt101-regional-remap.v1"
+
+
+def test_the_declared_bridges_are_the_ones_both_builders_take_and_stage():
+    """The builders' option surface is generated, so it cannot drift.
+
+    ``tools/build_rw_wps_release.py`` handed the packager a namespace
+    that never named ``rw_fetch``; the packager read ``args.rw_fetch``
+    and died with an ``AttributeError`` after the wheel and the Rust had
+    already been built.  Both builders now take their options from the
+    table, and a namespace missing a row is refused by name.
+    """
+
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    add_bridge_options(parser)
+    parsed = parser.parse_args([
+        argument
+        for bridge in BUNDLED_BRIDGES
+        for argument in (bridge.option, f"/built/{bridge.name}")
+    ])
+    resolved = bridge_inputs(parsed)
+    assert list(resolved) == list(BRIDGE_NAMES)
+    assert resolved["gdt101_remap"].name == "gdt101_remap"
+
+    short = argparse.Namespace(**{
+        bridge.dest: Path(f"/built/{bridge.name}")
+        for bridge in BUNDLED_BRIDGES if bridge.name != "gdt101_remap"
+    })
+    with pytest.raises(ValueError, match="gdt101_remap"):
+        bridge_inputs(short)
+
+
+@pytest.mark.parametrize(
+    ("script", "staging", "cpu_backend"),
+    (
+        ("build_rw_wps_release.py",
+         "**{bridge.dest: native / bridge.name",
+         "native / CPU_BACKEND_LIBRARY"),
+        ("build_rw_wps_windows_release.py",
+         '**{bridge.dest: native / f"{bridge.name}.exe"',
+         "native / WINDOWS_CPU_BACKEND_LIBRARY"),
+    ),
+)
+def test_the_release_builder_compiles_every_workspace_the_table_names(
+        script, staging, cpu_backend):
+    """rw_fetch builds in the renderer workspace, not the decoder one.
+
+    The shipped builders compiled ``tools/grib1_bridge`` only, so even a
+    namespace that had named ``rw_fetch`` would have pointed at a file
+    cargo never produced.  The build plan is the table's workspace
+    column, read at build time.
+
+    BOTH release builders, because there are two and only one of them
+    was mended first: the Linux command was read off the table while
+    ``tools/build_rw_wps_windows_release.py`` kept its single manifest
+    and its five hand-written literals, and the new refusal in
+    :func:`bridge_inputs` then stopped the Windows archive from being
+    cut at all.  A guard that reads one of two files bans the shape in
+    one of two files.
+    """
+
+    root = Path(__file__).resolve().parents[1]
+    source = (root / "tools" / script).read_text(encoding="utf-8")
+    assert "for workspace in BRIDGE_WORKSPACES:" in source
+    assert staging in source
+    assert cpu_backend in source
+    for literal in ("grib1_bridge=native /", "gfs_bridge=native /",
+                    "hrrr_bridge=native /", "grib2_dump=native /"):
+        assert literal not in source, (
+            f"a per-bridge literal is back in tools/{script}; that is "
+            "the shape that dropped rw_fetch and then the remapper")
+    for literal in ('"grib1_bridge" / "Cargo.toml"',
+                    '"gpuwm_preprocess_cpu.dll"',
+                    '"libgpuwm_preprocess_cpu.so"'):
+        assert literal not in source, (
+            f"tools/{script} hard-codes {literal} instead of reading the "
+            "declaration, which is how one workspace and five bridges "
+            "became the whole build plan")
+    for workspace in BRIDGE_WORKSPACES:
+        manifest = root / workspace / "Cargo.toml"
+        assert manifest.is_file(), f"declared workspace has no {manifest}"
+
+
+def test_both_installed_launchers_bind_every_declared_bridge():
+    """The bundle's Python lives under ``runtime/``, so the ladder needs these.
+
+    ``<root>/libexec/bridges`` is resolved beside the PACKAGE, which in
+    an installed bundle is ``<root>/runtime``; the launcher's explicit
+    environment binding is what actually reaches ``<root>/libexec``.
+    Both launchers bound five of the six bridges before this, so a
+    ``rw-wps`` run resolved the fetch backbone through some other rung
+    or not at all.
+    """
+
+    tools = Path(__file__).resolve().parents[1] / "tools"
+    posix = (tools / "gpuwm_native_wrf_launcher.sh").read_text(encoding="utf-8")
+    windows = (tools / "gpuwm_native_wrf_launcher_windows.ps1").read_text(
+        encoding="utf-8")
+    for bridge in BUNDLED_BRIDGES:
+        assert f'export {bridge.env_var}="$root/libexec/bridges/' \
+            f'{bridge.name}"' in posix, bridge.name
+        separator = chr(92)
+        assert (f'$env:{bridge.env_var} = Join-Path $Root '
+                f'"libexec{separator}bridges{separator}'
+                f'{bridge.name}.exe"') in windows, bridge.name

@@ -71,6 +71,7 @@ from gpuwm.physics_compat import (SINGLE_DOMAIN_PHYSICS_PROFILES,
                                   RUC_PROFILE_ID,
                                   THOMPSON_LEGACY_RRTMG_PROFILE_ID,
                                   THOMPSON_PROFILE_ID,
+                                  THOMPSON_RTE_RRTMGP_PROFILE_ID,
                                   THOMPSON_SHINHONG_LEGACY_RRTMG_PROFILE_ID,
                                   WSM6_PROFILE_ID)
 
@@ -95,15 +96,23 @@ _BOUND_PROBE_LEVELS = 40
 #: THE ORDER CARRIES MEANING: the nocturnally valid suites come first, so
 #: :func:`default_profile_for` taking the head of an admissible set gets
 #: both radiation streams without knowing what "nocturnal" means.  The
-#: legacy-RRTMG Thompson twins and the P3 composition are the only
+#: cumulus-off Thompson suites and the P3 composition are the only
 #: full-radiation suites the nested HRRR route's physics gate admits --
 #: every other 4/4 profile carries ``cu_physics = 1``, which that route
 #: refuses because its 3 km grid is convection permitting -- so a list
 #: without them could only default that route to a
-#: shortwave-on/longwave-off suite.  P3 sits AFTER the Thompson twins
-#: deliberately: the head of the HRRR-admissible set is that route's
-#: default, and the default stays the Thompson legacy suite (what the
-#: operational HRRR itself runs); P3 is chosen, never inherited.
+#: shortwave-on/longwave-off suite.  P3 sits AFTER them deliberately:
+#: the head of the HRRR-admissible set is what a source with no adapter
+#: recommendation inherits, so it has to be the arm the product
+#: defaults to; P3 is chosen, never inherited.
+#:
+#: The RTE+RRTMGP Thompson suite therefore leads its legacy twin, which
+#: it did not until the modern radiation arm became the default on every
+#: route (owner ruling, 2026-09-19).  While the legacy twin led, a
+#: source whose adapter named no recommendation would have inherited the
+#: legacy engines from this order alone, which is the opposite of that
+#: ruling.  ``--source hrrr`` never read it either way: that adapter's
+#: own recommendation binds its answer.
 #:
 #: IT LIVES HERE, not in the wizard door that used to own it, and the
 #: reason is a wheel: :func:`gpuwm.physics_compat.nocturnal_radiation_refusal`
@@ -125,6 +134,7 @@ _WIZARD_PROFILE_RANKING = (
     MORRISON_PROFILE_ID,
     NSSL2_PROFILE_ID,
     NSSL2_LEGACY_RRTMG_PROFILE_ID,
+    THOMPSON_RTE_RRTMGP_PROFILE_ID,
     THOMPSON_LEGACY_RRTMG_PROFILE_ID,
     THOMPSON_SHINHONG_LEGACY_RRTMG_PROFILE_ID,
     P3_LEGACY_RRTMG_PROFILE_ID,
@@ -667,11 +677,17 @@ __all__ = [
 # the Kessler probe is an HRRR-only ratification product, and audit R-068
 # covers templates with no single-domain runtime product. The three
 # Noah-MP expert templates remain selectable with advisory metadata.
-_TEMPLATES_OUTSIDE_THE_WIZARD_MENU = {
-    "kessler-mp1-ysu-mm5-noah-dudhia-v1": (
-        "native-HRRR Kessler ratification probe; its evidence is bound to "
-        "the HRRR route and it is deliberately not offered as a wizard suite"),
-}
+#
+# RETIRED HERE, with the defect it produced: the Kessler ratification
+# probe's citation read "deliberately not offered as a wizard suite",
+# which names no breakage -- and the nowcast front door offers every
+# suite the single-domain runner resolves, so it offered a profile the
+# configuration door it calls first would not accept.  Both of its rows
+# died in argument parsing before any physics ran.  A template the
+# single-domain door resolves a runtime product for is offered by every
+# door that reaches that runner; a template it does not is cited below,
+# by measurement.
+_TEMPLATES_OUTSIDE_THE_WIZARD_MENU: dict[str, str] = {}
 # The remaining omissions are named through the registry's own records --
 # a composition, or the set difference against the door's own menu --
 # rather than as id literals, the same way gpuwm/physics_compat.py cites

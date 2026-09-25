@@ -1,0 +1,36 @@
+{
+  "parent_frame": "wrfout_d01_2026-04-03_18:00:00",
+  "child_frame": "wrfout_d02_2026-04-03_18_00_00",
+  "parent_shape": [
+    30,
+    72,
+    72
+  ],
+  "child_shape": [
+    30,
+    60,
+    60
+  ],
+  "parent_latitude_span_deg": [
+    34.0,
+    35.91340255737305
+  ],
+  "child_latitude_span_deg": [
+    34.66474533081055,
+    35.19475555419922
+  ],
+  "layer_relative_difference": {
+    "max": 0.012869491762388326,
+    "mean": 0.005939884333115698,
+    "worst_column_jk": [
+      0,
+      0
+    ]
+  },
+  "column_ozone_kg_m2": {
+    "child_grid_climatology_mean": 0.0013634784670316198,
+    "parent_interpolated_mean": 0.0013674771994599884,
+    "relative_difference_max": 0.002962040480788764,
+    "relative_difference_mean": 0.0029328024435700275
+  }
+}

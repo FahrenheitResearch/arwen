@@ -224,12 +224,21 @@ __device__ __forceinline__ void thompson_cloud_saturation_adjust_impl(
     float* __restrict__ reference_density,
     float* __restrict__ reference_temperature,
     float* __restrict__ condensation_marker,
-    int idx)
+    int idx,
+    float* __restrict__ cloud_presence = nullptr)
 {
     const float temp0 = temperature[idx];
     const float qv0 = fmaxf(1.0e-10f, qv[idx]);
     const float qc0 = qc[idx];
     if (condensation_marker != nullptr) condensation_marker[idx] = 0.0f;
+    // :3215-3223 and :3485.  WRF's L_qc(k) as the cloud fallout's
+    // ANY(L_qc) gate reads it (:3645): set from the post-source cloud, and
+    // cleared below where the adjustment leaves rc(k) at R1.  Never set by
+    // the adjustment, so cloud that only condensed this step does not open
+    // the gate.  Written at every level, as 1 or 0.
+    if (cloud_presence != nullptr) {
+        cloud_presence[idx] = qc0 > 1.0e-12f ? 1.0f : 0.0f;
+    }
     const float rho = 0.622f * pressure[idx]
         / (287.04f * temp0 * (qv0 + 0.622f));
     if (reference_density != nullptr) reference_density[idx] = rho;
@@ -263,8 +272,17 @@ __device__ __forceinline__ void thompson_cloud_saturation_adjust_impl(
     if (condensation_marker != nullptr) {
         condensation_marker[idx] = clap > 0.0f ? 1.0f : 0.0f;
     }
-    qv[idx] = fmaxf(1.0e-10f, qv0 - clap);
+    // :3479 and :3488.  The vapour WRF carries is qv1d + DT*qvten, floored
+    // only for the working value each block reads (every reader here floors
+    // it again) and once at the terminal apply (:3974, in a column with
+    // microphysics: thompson_final_phase_cleanup_with_columns).
+    qv[idx] = qv[idx] - clap;
     qc[idx] = fmaxf(0.0f, qc0 + clap);
+    // :3484-3485.  rc(k) = MAX(R1, (qc1d + DT*qcten)*rho(k)) on the density
+    // before :3490 refreshes it, and L_qc(k) goes false where that is R1.
+    if (cloud_presence != nullptr && !(qc[idx] * rho > 1.0e-12f)) {
+        cloud_presence[idx] = 0.0f;
+    }
     temperature[idx] = temp0 + lvap * ocp * clap;
 }
 
@@ -326,6 +344,27 @@ extern "C" __global__ void thompson_cloud_saturation_adjust_with_history(
     thompson_cloud_saturation_adjust_impl(
         temperature, pressure, qv, qc, reference_density,
         reference_temperature, condensation_marker, idx);
+}
+
+// The production entry point: the history outputs plus WRF's L_qc(k) as the
+// adjustment leaves it (:3485), which the cloud fallout's column gate reads
+// (:3645).
+extern "C" __global__ void thompson_cloud_saturation_adjust_with_presence(
+    float* __restrict__ temperature,
+    const float* __restrict__ pressure,
+    float* __restrict__ qv,
+    float* __restrict__ qc,
+    float* __restrict__ reference_density,
+    float* __restrict__ reference_temperature,
+    float* __restrict__ condensation_marker,
+    float* __restrict__ cloud_presence,
+    int n)
+{
+    const int idx = blockDim.x * blockIdx.x + threadIdx.x;
+    if (idx >= n) return;
+    thompson_cloud_saturation_adjust_impl(
+        temperature, pressure, qv, qc, reference_density,
+        reference_temperature, condensation_marker, idx, cloud_presence);
 }
 
 extern "C" __global__ void thompson_effective_radius(
@@ -405,7 +444,11 @@ extern "C" __global__ void thompson_effective_radius(
 #define THOMPSON_KMAX_SHALLOW 64
 #define THOMPSON_KMAX_GENERIC 256
 
-template <int KMAX>
+// DENSITY_CARRIES_LQR: the caller's reference density is zero exactly where
+// WRF's L_qr failed at :3236 (the mp=28 rain evaporation writes it so, see
+// thompson_aerosol_sat.cu).  The plain entry points keep the state's mixing
+// ratio as the stand-in for L_qr.
+template <int KMAX, bool DENSITY_CARRIES_LQR = false>
 __device__ __forceinline__ void thompson_rain_sediment_impl(
     float* __restrict__ qr,
     float* __restrict__ nr,
@@ -449,8 +492,9 @@ __device__ __forceinline__ void thompson_rain_sediment_impl(
         const float qvk = fmaxf(1.0e-10f, qv[idx]);
         const float rho = 0.622f * pressure[idx]
             / (287.04f * temperature[idx] * (qvk + 0.622f));
-        const float rain_density = reference_density == nullptr
+        const float rain_density_carried = reference_density == nullptr
             ? rho : reference_density[idx];
+        const float rain_density = fabsf(rain_density_carried);
         density[k] = rho;
         qr_initial[k] = qr[idx];
         nr_initial[k] = nr[idx];
@@ -460,17 +504,34 @@ __device__ __forceinline__ void thompson_rain_sediment_impl(
         // WRF's rain-presence branch at module_mp_thompson.F:3616 tests the
         // working rain MASS CONCENTRATION, rr(k) > R1, not a mixing ratio.
         // rr(k) is formed as q*rho at :3237 only inside the TAU+1 test on the
-        // mixing ratio at :3236, and is floored to R1 at :3252 when that test
-        // fails; the post-evaporation rewrite at :3568 is itself inside the
-        // L_qr(k) gate opened at :3501.  Both halves are load-bearing, so
-        // both are transcribed here.  Testing the mixing ratio alone fired
-        // this branch on levels where WRF's rr(k) sits at or below R1 because
-        // rho < 1 -- 13 634 level-visits of a 2 h 12 km forecast.  Dropping
-        // the R1 floor instead of adding it would have fired on 56 839
-        // level-visits WRF leaves alone, four times as much divergence as it
-        // removes.
-        const float rr = qr[idx] > 1.0e-12f
-            ? qr[idx] * rain_density : 1.0e-12f;
+        // mixing ratio at :3236 (L_qr), and is floored to R1 at :3252 when that
+        // test fails; the post-evaporation rewrite at :3568 is itself inside
+        // the L_qr(k) gate opened at :3501, and FLOORS rr(k) at R1 where
+        // :3237 did not.  All three are essential.
+        // L_qr and the rewrite are statements about the POST-SOURCE rain and
+        // the evaporation gate, which this kernel no longer sees, so the rain
+        // evaporation carries them in the reference density: zero where L_qr
+        // failed, negative where :3568 rewrote the pair, positive otherwise.
+        // Where L_qr held, rr(k) is the level's own q*rho WHATEVER its mixing
+        // ratio is now: rain evaporation can take the mixing ratio to R1 or
+        // below while q*rho stays above it (rho > 1), and WRF then gives that
+        // level its own fall speed; where it took the mass away entirely, the
+        // floor still sends R1.
+        // Testing the post-evaporation mixing ratio instead sent such a level
+        // the faster speed from above (5.4 times the number outflow at
+        // wp08-freeze level 1).  Testing the mixing ratio of the state was a
+        // stand-in for L_qr: it fired this branch on levels where WRF's rr(k)
+        // sits at or below R1 because rho < 1 (13 634 level-visits of a 2 h
+        // 12 km forecast), and dropping it without a real L_qr fired on
+        // 56 839 level-visits WRF leaves alone.  The entry points that are
+        // not told the density carries L_qr keep the stand-in.
+        const bool l_qr = DENSITY_CARRIES_LQR
+            ? rain_density_carried != 0.0f : qr[idx] > 1.0e-12f;
+        const bool rewritten = DENSITY_CARRIES_LQR
+            && rain_density_carried < 0.0f;
+        const float rr = !l_qr ? 1.0e-12f
+            : rewritten ? fmaxf(1.0e-12f, qr[idx] * rain_density)
+            : qr[idx] * rain_density;
         if (rr > 1.0e-12f) {
             const float nn = fmaxf(1.0e-6f, nr[idx] * rain_density);
             const float lambda_arg = am_r * 6.0f * nn / rr;
@@ -499,8 +560,20 @@ __device__ __forceinline__ void thompson_rain_sediment_impl(
             number_velocity[k] = (float)((double)number_prefix
                 * pow(lambda, 2.5) * pow(lambda + 195.0, -3.5));
         } else {
-            rain_mass[k] = 1.0e-12f;
-            rain_number[k] = 1.0e-6f;
+            // At or below R1 as a concentration the level takes the fall
+            // speed from above (:3630-3631) but sediments its OWN working
+            // pair: rr(k) as formed at :3237 (R1 where the mixing ratio
+            // failed, :3252), and nr(k) = MAX(R2, nr*rho).  The number is not
+            // the R2 sentinel when rain evaporation has just taken the mass:
+            // pnr_rev stops at 99 percent of the number (:3559), L_qr stays
+            // set from :3236, and :3570 rewrites nr(k) from the survivor,
+            // which then falls into the level below.  Sending R2 instead
+            // moved the rain reflectivity under evaporating shafts by up to
+            // 3.9 dB against WRF v4.6.1 on saved real-data columns.  Where L_qr
+            // failed at :3236 both codes send the R1/R2 sentinels.
+            rain_mass[k] = rr;
+            rain_number[k] = l_qr
+                ? fmaxf(1.0e-6f, nr[idx] * rain_density) : 1.0e-6f;
             mass_velocity[k] = velocity_above_mass;
             number_velocity[k] = velocity_above_number;
         }
@@ -634,6 +707,23 @@ extern "C" __global__ void thompson_rain_sediment_256_with_density(
         rainnc, rainncv, accumulate_surface, dt, nz, ny, nx);
 }
 
+// The reference density also carries WRF's L_qr (zero where it failed).
+extern "C" __global__ void thompson_rain_sediment_64_with_presence(
+    THOMPSON_RAIN_SEDIMENT_DENSITY_PARAMETERS)
+{
+    thompson_rain_sediment_impl<THOMPSON_KMAX_SHALLOW, true>(
+        qr, nr, temperature, pressure, qv, reference_density, dz,
+        rainnc, rainncv, accumulate_surface, dt, nz, ny, nx);
+}
+
+extern "C" __global__ void thompson_rain_sediment_256_with_presence(
+    THOMPSON_RAIN_SEDIMENT_DENSITY_PARAMETERS)
+{
+    thompson_rain_sediment_impl<THOMPSON_KMAX_GENERIC, true>(
+        qr, nr, temperature, pressure, qv, reference_density, dz,
+        rainnc, rainncv, accumulate_surface, dt, nz, ny, nx);
+}
+
 template <int KMAX>
 __device__ __forceinline__ void thompson_ice_sediment_impl(
     float* __restrict__ qi,
@@ -686,12 +776,21 @@ __device__ __forceinline__ void thompson_ice_sediment_impl(
         qi_tendency[k] = 0.0f;
         ni_tendency[k] = 0.0f;
 
-        if (qi[idx] > 1.0e-12f) {
+        // :3668, `if (ri(k).gt. R1)`: WRF opens the fall-speed branch on the
+        // working ice CONCENTRATION.  Below it the level takes the speed from
+        // above but keeps its own ri/ni, formed at :3230-3232 whenever the
+        // MIXING RATIO passed.  Opening on the mixing ratio alone gave a fall
+        // speed to ice WRF moves at the speed from above, and the sentinels
+        // replaced mass the level really held: ice number, effective radius
+        // and up to 13 dB of reflectivity differed from WRF v4.6.1 on saved
+        // real-data columns.
+        const float ice_state_rho = reference_density == nullptr
+            ? rho : reference_density[idx];
+        if (qi[idx] > 1.0e-12f && qi[idx] * ice_state_rho > 1.0e-12f) {
             // Ice mass/number were formed with the pre-evaporation density,
             // while WRF uses the updated environment for the fallspeed and
             // conversion back to mixing-ratio tendencies.
-            const float state_rho = reference_density == nullptr
-                ? rho : reference_density[idx];
+            const float state_rho = ice_state_rho;
             const float ri = qi[idx] * state_rho;
             float nn = fmaxf(1.0e-6f, ni[idx] * state_rho);
             if (nn <= 1.0e-6f) {
@@ -727,8 +826,10 @@ __device__ __forceinline__ void thompson_ice_sediment_impl(
             number_velocity[k] = (float)((double)number_prefix
                                           * inverse_lambda);
         } else {
-            ice_mass[k] = 1.0e-12f;
-            ice_number[k] = 1.0e-6f;
+            const bool l_qi = qi[idx] > 1.0e-12f;
+            ice_mass[k] = l_qi ? qi[idx] * ice_state_rho : 1.0e-12f;
+            ice_number[k] = l_qi
+                ? fmaxf(1.0e-6f, ni[idx] * ice_state_rho) : 1.0e-6f;
             mass_velocity[k] = velocity_above_mass;
             number_velocity[k] = velocity_above_number;
         }
@@ -789,8 +890,18 @@ __device__ __forceinline__ void thompson_ice_sediment_impl(
         float ni_new = fmaxf(1.0e-6f / density[k],
                              ni_initial[k] + ni_tendency[k] * dt);
         if (qi_new <= 1.0e-12f) {
-            qi[idx] = 0.0f;
-            ni[idx] = 0.0f;
+            // :3943-3953 melts ANY positive ice above 0 C into cloud water,
+            // and only the terminal apply after it (:4023-4027) removes ice
+            // at or below R1.  So ice at or below R1 is carried to the phase
+            // cleanup, which melts it or removes it there.  Removing it here
+            // took it out of the melt: cloud that WRF keeps at 1.6e-12 to
+            // 2.0e-12 kg/kg, with its droplets, came back as zero on saved
+            // real-data columns (tools/thompson_real_column_parity).  The
+            // number goes with it unfloored, ni1d + niten*DT: WRF's R2/rho
+            // floor (:4022) belongs to ice the terminal apply keeps, and a
+            // level that held no ice keeps no number.
+            qi[idx] = qi_new;
+            ni[idx] = ni_initial[k] + ni_tendency[k] * dt;
             continue;
         }
         const float lambda_arg = am_i * 6.0f * ni_new / qi_new;
@@ -1058,8 +1169,11 @@ __device__ __forceinline__ void thompson_cloud_sediment_held_density_impl(
 
     for (int k = 0; k < nz; ++k) {
         const size_t idx = IDX3(k, j, i);
-        const float qc_new = qc_initial[k] + qc_tendency[k] * dt;
-        qc[idx] = qc_new <= 1.0e-12f ? 0.0f : qc_new;
+        // Cloud at or below R1 is carried to the phase cleanup: WRF freezes
+        // any positive cloud below HGFR and adds melted ice to it above 0 C
+        // (:3943-3966) before the terminal apply removes what is left at or
+        // below R1 (:4007-4009).  thompson_final_phase_cleanup removes it.
+        qc[idx] = qc_initial[k] + qc_tendency[k] * dt;
     }
 }
 
@@ -1148,7 +1262,12 @@ thompson_cloud_sediment_256_with_density_and_masks(
         THOMPSON_CLOUD_SEDIMENT_DENSITY_MASKS_ARGUMENTS);
 }
 
-template <int KMAX>
+// melt_rain_density is the rain fallout's own reference density (the rain
+// evaporation writes it), from which the melting-snow blend forms WRF's rr(k)
+// and vtrk(k) exactly as thompson_rain_sediment_impl does; null keeps the
+// snow's reference density as the stand-in.  RAIN_PRESENCE says that density
+// carries L_qr and the :3568 rewrite (DENSITY_CARRIES_LQR there).
+template <int KMAX, bool RAIN_PRESENCE = false>
 __device__ __forceinline__ void thompson_snow_sediment_impl(
     float* __restrict__ qs,
     const float* __restrict__ snow_melt_marker,
@@ -1165,7 +1284,8 @@ __device__ __forceinline__ void thompson_snow_sediment_impl(
     float* __restrict__ rainncv,
     float* __restrict__ snownc,
     float* __restrict__ snowncv,
-    int accumulate_surface, float dt, int nz, int ny, int nx)
+    int accumulate_surface, float dt, int nz, int ny, int nx,
+    const float* __restrict__ melt_rain_density = nullptr)
 {
     const int column = blockIdx.x * blockDim.x + threadIdx.x;
     if (column >= ny * nx) return;
@@ -1183,6 +1303,7 @@ __device__ __forceinline__ void thompson_snow_sediment_impl(
     int sediment_top = 0;
     int nstep = 0;
     float velocity_above = 0.0f;
+    float rain_velocity_above = 0.0f;
 
     for (int k = nz - 1; k >= 0; --k) {
         const size_t idx = IDX3(k, j, i);
@@ -1193,9 +1314,50 @@ __device__ __forceinline__ void thompson_snow_sediment_impl(
         qs_initial[k] = qs[idx];
         qs_tendency[k] = 0.0f;
 
-        if (qs[idx] > 1.0e-12f) {
-            const float state_rho = reference_density == nullptr
-                ? rho : reference_density[idx];
+        // WRF's rain fall-speed pass (:3612-3634) as the melting-snow blend
+        // reads it: rr(k) as the rain fallout forms it, and vtrk(k), which a
+        // level whose rr(k) is at or below R1 inherits from the level above
+        // (:3630) and which is zero in a column where no level has L_qr (the
+        // pass never runs, :3597-3607).  Same arithmetic as
+        // thompson_rain_sediment_impl's mass velocity.
+        float rain_rr = 1.0e-12f;
+        float rain_velocity = 0.0f;
+        if (melt_rain_qr != (const float*)0) {
+            const float rain_density_carried = melt_rain_density == nullptr
+                ? (reference_density == nullptr ? rho : reference_density[idx])
+                : melt_rain_density[idx];
+            const float rain_density = fabsf(rain_density_carried);
+            const bool l_qr = RAIN_PRESENCE
+                ? rain_density_carried != 0.0f : melt_rain_qr[idx] > 1.0e-12f;
+            const bool rewritten = RAIN_PRESENCE
+                && rain_density_carried < 0.0f;
+            rain_rr = !l_qr ? 1.0e-12f
+                : rewritten ? fmaxf(1.0e-12f, melt_rain_qr[idx] * rain_density)
+                : melt_rain_qr[idx] * rain_density;
+            if (rain_rr > 1.0e-12f) {
+                const float am_r = 3.1415926536f * 1000.0f / 6.0f;
+                const float rain_number = fmaxf(
+                    1.0e-6f, melt_rain_nr[idx] * rain_density);
+                const double rain_lambda = (double)powf(
+                    am_r * 6.0f * rain_number / rain_rr, 1.0f / 3.0f);
+                const float rain_rhof = sqrtf(rho_not / rho);
+                rain_velocity = (float)(
+                    (double)(rain_rhof * 4854.0f * 24.0f * (1.0f / 6.0f))
+                    * pow(rain_lambda, 4.0)
+                    * pow(rain_lambda + 195.0, -5.0));
+            } else {
+                rain_velocity = rain_velocity_above;
+            }
+            rain_velocity_above = rain_velocity;
+        }
+
+        // :3699, `if (rs(k).gt. R1)`: the same concentration gate as ice.
+        // Below it the level takes the speed from above and sediments its
+        // own rs(k), formed at :3257 whenever the mixing ratio passed.
+        const float snow_state_rho = reference_density == nullptr
+            ? rho : reference_density[idx];
+        if (qs[idx] > 1.0e-12f && qs[idx] * snow_state_rho > 1.0e-12f) {
+            const float state_rho = snow_state_rho;
             const float rs = qs[idx] * state_rho;
             const float smob = rs * (1.0f / 0.069f);
             const float state_temperature = reference_temperature == nullptr
@@ -1240,29 +1402,25 @@ __device__ __forceinline__ void thompson_snow_sediment_impl(
             if (velocity_boost != (const float*)0) {
                 snow_velocity *= velocity_boost[idx];
             }
+            // :3722-3724: melting snow (prr_sml > 0) falls at its speed
+            // blended with vtrk(k) by SR = rs/(rs+rr), whatever the level's
+            // own rain: the rain speed a level without rain inherits from
+            // above, R1 for its rr.  Blending only where the level itself
+            // held rain gave melting snow its unblended speed there and moved
+            // snow by up to 2.3e-9 kg/kg against WRF v4.6.1 on saved
+            // real-data columns (tools/thompson_real_column_parity).
             if (snow_melt_marker != (const float*)0
                     && snow_melt_marker[idx] != 0.0f
-                    && melt_rain_qr != (const float*)0
-                    && melt_rain_qr[idx] > 1.0e-12f) {
-                const float rain_mass = melt_rain_qr[idx] * state_rho;
-                const float rain_number = fmaxf(
-                    1.0e-6f, melt_rain_nr[idx] * state_rho);
-                const float am_r = 3.1415926536f * 1000.0f / 6.0f;
-                const double rain_lambda = (double)powf(
-                    am_r * 6.0f * rain_number / rain_mass,
-                    1.0f / 3.0f);
-                const float rain_velocity = (float)(
-                    (double)(rhof * 4854.0f * 24.0f * (1.0f / 6.0f))
-                    * pow(rain_lambda, 4.0)
-                    * pow(rain_lambda + 195.0, -5.0));
-                const float solid_fraction = rs / (rs + rain_mass);
+                    && melt_rain_qr != (const float*)0) {
+                const float solid_fraction = rs / (rs + rain_rr);
                 snow_velocity = snow_velocity * solid_fraction
                     + rain_velocity * (1.0f - solid_fraction);
             }
             mass_velocity[k] = snow_velocity;
             snow_mass[k] = rs;
         } else {
-            snow_mass[k] = 1.0e-12f;
+            snow_mass[k] = qs[idx] > 1.0e-12f
+                ? qs[idx] * snow_state_rho : 1.0e-12f;
             mass_velocity[k] = velocity_above;
         }
         velocity_above = mass_velocity[k];
@@ -1587,6 +1745,62 @@ thompson_snow_sediment_256_with_melt_rain_and_state_and_boost(
         THOMPSON_SNOW_SEDIMENT_MELT_STATE_BOOST_ARGUMENTS);
 }
 
+// The production snow fallout: the held state, the boost and the melting
+// blend with the rain fallout's own profile, formed from its reference
+// density.  _and_presence when that density carries L_qr (mp=28).
+#define THOMPSON_SNOW_SEDIMENT_RAIN_PROFILE_PARAMETERS                  \
+    float* __restrict__ qs,                                              \
+    const float* __restrict__ snow_melt_marker,                          \
+    const float* __restrict__ melt_rain_qr,                              \
+    const float* __restrict__ melt_rain_nr,                             \
+    const float* __restrict__ melt_rain_density,                        \
+    const float* __restrict__ temperature,                              \
+    const float* __restrict__ pressure, const float* __restrict__ qv,   \
+    const float* __restrict__ reference_density,                        \
+    const float* __restrict__ reference_temperature,                    \
+    const float* __restrict__ velocity_boost,                           \
+    const float* __restrict__ dz, float* __restrict__ rainnc,           \
+    float* __restrict__ rainncv, float* __restrict__ snownc,            \
+    float* __restrict__ snowncv, int accumulate_surface, float dt,      \
+    int nz, int ny, int nx
+
+#define THOMPSON_SNOW_SEDIMENT_RAIN_PROFILE_ARGUMENTS                   \
+    qs, snow_melt_marker, melt_rain_qr, melt_rain_nr,                   \
+    temperature, pressure, qv,                                          \
+    reference_density, reference_temperature, velocity_boost, dz,      \
+    rainnc, rainncv, snownc, snowncv, accumulate_surface, dt, nz, ny,  \
+    nx, melt_rain_density
+
+extern "C" __global__ void thompson_snow_sediment_64_with_rain_profile(
+    THOMPSON_SNOW_SEDIMENT_RAIN_PROFILE_PARAMETERS)
+{
+    thompson_snow_sediment_impl<THOMPSON_KMAX_SHALLOW>(
+        THOMPSON_SNOW_SEDIMENT_RAIN_PROFILE_ARGUMENTS);
+}
+
+extern "C" __global__ void thompson_snow_sediment_256_with_rain_profile(
+    THOMPSON_SNOW_SEDIMENT_RAIN_PROFILE_PARAMETERS)
+{
+    thompson_snow_sediment_impl<THOMPSON_KMAX_GENERIC>(
+        THOMPSON_SNOW_SEDIMENT_RAIN_PROFILE_ARGUMENTS);
+}
+
+extern "C" __global__ void
+thompson_snow_sediment_64_with_rain_profile_and_presence(
+    THOMPSON_SNOW_SEDIMENT_RAIN_PROFILE_PARAMETERS)
+{
+    thompson_snow_sediment_impl<THOMPSON_KMAX_SHALLOW, true>(
+        THOMPSON_SNOW_SEDIMENT_RAIN_PROFILE_ARGUMENTS);
+}
+
+extern "C" __global__ void
+thompson_snow_sediment_256_with_rain_profile_and_presence(
+    THOMPSON_SNOW_SEDIMENT_RAIN_PROFILE_PARAMETERS)
+{
+    thompson_snow_sediment_impl<THOMPSON_KMAX_GENERIC, true>(
+        THOMPSON_SNOW_SEDIMENT_RAIN_PROFILE_ARGUMENTS);
+}
+
 extern "C" __global__ void thompson_graupel_fallout_column_mask(
     const float* __restrict__ entry_active,
     const float* __restrict__ qg,
@@ -1627,6 +1841,57 @@ extern "C" __global__ void thompson_hydrometeor_column_mask(
         }
     }
     active_columns[column] = active;
+}
+
+// WRF's no-microphysics column, module_mp_thompson.F:1646, :1827-1990 and
+// the early return at :2020, for classic mp=8 (the aerosol twin is
+// thompson_aa_micro_columns in thompson_aerosol_state.cu).  mp_thompson
+// clears no_micro where any ENTRY cloud, ice, rain, snow or graupel mixing
+// ratio exceeds R1 (:1827, :1851, :1878, :1906, :1915) or where the entry
+// air is supersaturated over ice (:1990; qvsi = rsif at or below 0 C and
+// qvs above, :1978-1982; |ssati| < eps is zero, :1989).  A column that keeps
+// it returns before the source loop and never reaches the terminal apply,
+// so its vapour is not floored at 1.E-10 (:3974).  1.0 where the column has
+// microphysics, 0.0 where WRF returns; read by
+// thompson_final_phase_cleanup_with_columns.  Take it on the entry state.
+extern "C" __global__ void thompson_microphysics_columns(
+    const float* __restrict__ qc,
+    const float* __restrict__ qi,
+    const float* __restrict__ qr,
+    const float* __restrict__ qs,
+    const float* __restrict__ qg,
+    const float* __restrict__ temperature,
+    const float* __restrict__ pressure,
+    const float* __restrict__ qv,
+    float* __restrict__ micro_columns,
+    int nz, int ny, int nx)
+{
+    const int column = blockIdx.x * blockDim.x + threadIdx.x;
+    if (column >= ny * nx) return;
+    const int j = column / nx;
+    const int i = column - j * nx;
+
+    float micro = 0.0f;
+    for (int k = 0; k < nz; ++k) {
+        const size_t idx = IDX3(k, j, i);
+        if (qc[idx] > 1.0e-12f || qi[idx] > 1.0e-12f || qr[idx] > 1.0e-12f
+                || qs[idx] > 1.0e-12f || qg[idx] > 1.0e-12f) {
+            micro = 1.0f;
+            break;
+        }
+        const float temp = temperature[idx];
+        const float qv_local = fmaxf(1.0e-10f, qv[idx]);
+        const float qvsi = temp - 273.15f <= 0.0f
+            ? thompson_rsif(pressure[idx], temp)
+            : thompson_rslf(pressure[idx], temp);
+        float ssati = qv_local / qvsi - 1.0f;
+        if (fabsf(ssati) < 1.0e-15f) ssati = 0.0f;
+        if (ssati > 0.0f) {
+            micro = 1.0f;
+            break;
+        }
+    }
+    micro_columns[column] = micro;
 }
 
 // Classic mp=8 does not carry qng in the Registry.  mp_gt_driver diagnoses a
@@ -1682,8 +1947,17 @@ extern "C" __global__ void thompson_classic_graupel_number_init(
 // sedimentation tendency is complete (module_mp_thompson.F:4059-4077).
 // Keep the shadow raw between operators, then reproduce that single final
 // lower bound / MVD reconstruction immediately before calc_refl10cm.
+//
+// It is also the last writer of the graupel MASS in every column, so it
+// carries :4058-4063 for the mass as well: `if (qg1d(k) .le. R1)` writes
+// qg1d = 0 with ng1d = 0.  The graupel fallout applies that zero only in the
+// columns whose fallout runs (its ANY(L_qg) gate); a column whose graupel the
+// sources took to a residue at or below R1 without any level keeping L_qg
+// used to leave the residue in the state (188,969 cells of one saved
+// 19,600-column history frame carry 0 < qg <= 1e-12), where every
+// between-step reader and the history saw graupel WRF does not return.
 extern "C" __global__ void thompson_classic_graupel_number_finalize(
-    const float* __restrict__ qg,
+    float* __restrict__ qg,
     const float* __restrict__ temperature,
     const float* __restrict__ pressure,
     const float* __restrict__ qv,
@@ -1693,6 +1967,7 @@ extern "C" __global__ void thompson_classic_graupel_number_finalize(
     const int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= size) return;
     if (qg[idx] <= 1.0e-12f) {
+        qg[idx] = 0.0f;
         graupel_number_per_kg[idx] = 0.0f;
         return;
     }
@@ -2192,7 +2467,7 @@ __device__ __forceinline__ void thompson_rain_evaporation_impl(
     const float* __restrict__ graupel_melt_marker,
     const float* __restrict__ source_density,
     const float* __restrict__ condensation_marker,
-    float dt, int size)
+    float dt, int size, bool density_carries_presence = false)
 {
     const int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= size) return;
@@ -2214,7 +2489,16 @@ __device__ __forceinline__ void thompson_rain_evaporation_impl(
     if (reference_temperature != nullptr) {
         reference_temperature[idx] = temp0;
     }
-    if (qr[idx] <= 1.0e-12f) return;
+    if (qr[idx] <= 1.0e-12f) {
+        // :3236, L_qr.  Where it fails WRF formed no working rain pair:
+        // rr(k) = R1 and nr(k) = R2 (:3252-3253).  With
+        // density_carries_presence a ZERO density tells the rain fallout
+        // and the melting-snow blend exactly that (DENSITY_CARRIES_LQR).
+        if (density_carries_presence && reference_density != nullptr) {
+            reference_density[idx] = 0.0f;
+        }
+        return;
+    }
     // WRF retains prw_vcd > 0 from cloud adjustment, even when a small
     // post-adjustment saturation residual has the opposite sign.
     if (condensation_marker != nullptr && condensation_marker[idx] != 0.0f) return;
@@ -2322,9 +2606,15 @@ __device__ __forceinline__ void thompson_rain_evaporation_impl(
     const float temperature_tendency = (float)(
         -(double)thermal_factor * evaporation_rate);
 
-    if (reference_density != nullptr) reference_density[idx] = rho;
+    // :3568-3570 rebuild the working rain pair from this density, FLOORED
+    // at R1 / R2 where :3237-3238 did not: with density_carries_presence
+    // a NEGATIVE density marks the rewrite, its magnitude the density.
+    if (reference_density != nullptr) {
+        reference_density[idx] = density_carries_presence ? -rho : rho;
+    }
     qr[idx] += qr_tendency * dt;
-    qv[idx] = fmaxf(1.0e-10f, qv0 + qv_tendency * dt);
+    // :3563 and :3569: the running vapour, unfloored (see the adjustment).
+    qv[idx] = qv[idx] + qv_tendency * dt;
     nr[idx] += nr_tendency * dt;
     temperature[idx] = temp0 + temperature_tendency * dt;
 }
@@ -2402,6 +2692,29 @@ extern "C" __global__ void thompson_rain_evaporation_with_density_history(
     thompson_rain_evaporation_impl(
         qr, nr, temperature, pressure, qv, reference_density, nullptr,
         graupel_melt_marker, source_density, condensation_marker, dt, size);
+}
+
+// The production entry point: the history form, and the reference density
+// also carries WRF's L_qr (zero where :3236 failed) and the :3568 rewrite
+// (negative), which the rain fallout's and the snow fallout's _presence
+// entry points read, as thompson_aa_rain_evaporation writes them for mp=28.
+extern "C" __global__ void
+thompson_rain_evaporation_with_density_history_and_presence(
+    float* __restrict__ qr,
+    float* __restrict__ nr,
+    float* __restrict__ temperature,
+    const float* __restrict__ pressure,
+    float* __restrict__ qv,
+    float* __restrict__ reference_density,
+    const float* __restrict__ graupel_melt_marker,
+    const float* __restrict__ source_density,
+    const float* __restrict__ condensation_marker,
+    float dt, int size)
+{
+    thompson_rain_evaporation_impl(
+        qr, nr, temperature, pressure, qv, reference_density, nullptr,
+        graupel_melt_marker, source_density, condensation_marker, dt, size,
+        true);
 }
 
 extern "C" __global__ void thompson_snow_sublimation(
@@ -3232,6 +3545,15 @@ extern "C" __global__ void thompson_warm_frozen_source_network(
     const float rain_mass = fmaxf(0.0f, qr[idx] * rho);
     const float snow_mass = fmaxf(0.0f, qs[idx] * rho);
     const float graupel_mass = fmaxf(0.0f, qg[idx] * rho);
+    // Presence is WRF's L_qc / L_qs / L_qg / L_qr, the MIXING RATIO tests
+    // of the entry block (:1827-1949), not the concentration q*rho: in thin
+    // air (rho < 1) a mixing ratio just above R1 is a concentration at or
+    // below it, and WRF still forms that species' distribution and rates
+    // (:2029, :2169, :2194, :2783, :2803) and applies its conservation limit
+    // (:2893-2934) there.  The mp=28 networks test the mixing ratio too.
+    const bool l_qc = qc[idx] > 1.0e-12f;
+    const bool l_qs = qs[idx] > 1.0e-12f;
+    const bool l_qg = qg[idx] > 1.0e-12f;
 
     const float cloud_number = 100.0e6f;
     const float gamma_mass = 1.30767389e12f;
@@ -3240,7 +3562,7 @@ extern "C" __global__ void thompson_warm_frozen_source_network(
     const float inverse_gamma_mass = 7.64716632e-13f;
     float cloud_lambda = 0.0f;
     float cloud_mvd = 1.0e-6f;
-    if (cloud_mass > 1.0e-12f) {
+    if (l_qc) {
         cloud_lambda = powf(
             cloud_number * am_r * gamma_mass * inverse_gamma_number
                 / cloud_mass,
@@ -3255,13 +3577,13 @@ extern "C" __global__ void thompson_warm_frozen_source_network(
     const bool rain_active = thompson_prepare_entry_rain_distribution(
         qr[idx], nr[idx], rho, &rain_number, &rain_lambda, &rain_mvd);
 
-    float graupel_number = graupel_mass > 1.0e-12f
+    float graupel_number = l_qg
         ? fmaxf(1.0e-6f, graupel_number_per_kg[idx] * rho) : 0.0f;
-    double graupel_lambda = graupel_mass > 1.0e-12f
+    double graupel_lambda = l_qg
         ? (double)powf(am_g * 6.0f * graupel_number / graupel_mass,
                        1.0f / 3.0f)
         : 1.0;
-    if (graupel_mass > 1.0e-12f) {
+    if (l_qg) {
         float diameter = (float)(3.672 / graupel_lambda);
         if (diameter > 25.4e-3f) {
             graupel_lambda = 3.672 / 25.4e-3;
@@ -3313,7 +3635,7 @@ extern "C" __global__ void thompson_warm_frozen_source_network(
             rain_self_number_rate = (double)(
                 efficiency * 2.0f * rain_number * rain_mass);
         }
-        if (cloud_mass > 1.0e-12f && rain_mvd > 50.0e-6f
+        if (l_qc && rain_mvd > 50.0e-6f
                 && cloud_mvd > 1.0e-6f) {
             const double first = 5.1164649614037726e-05;
             const double last = 0.004886186104779057;
@@ -3341,7 +3663,7 @@ extern "C" __global__ void thompson_warm_frozen_source_network(
     float snow_number = 0.0f;
     float snow_first_moment = 0.0f;
     float snow_ventilation_moment = 0.0f;
-    if (snow_mass > 1.0e-12f) {
+    if (l_qs) {
         const float tc0 = fminf(-0.1f, tempc);
         snow_second_moment = snow_mass * (1.0f / 0.069f);
         snow_number = thompson_field_a(tc0, 0.0f)
@@ -3353,7 +3675,7 @@ extern "C" __global__ void thompson_warm_frozen_source_network(
         const float snow_moment_3 = thompson_field_a(tc0, 3.0f)
             * powf(snow_second_moment, thompson_field_b(tc0, 3.0f));
         const float snow_diameter = snow_moment_3 / snow_second_moment;
-        if (cloud_mass > 1.0e-12f && cloud_mvd > 1.0e-6f
+        if (l_qc && cloud_mvd > 1.0e-6f
                 && snow_diameter > 300.0e-6f) {
             const double diameter_ratio = 0.02 / 300.0e-6;
             const double log_ratio = log(diameter_ratio);
@@ -3379,7 +3701,7 @@ extern "C" __global__ void thompson_warm_frozen_source_network(
     }
 
     double graupel_cloud_rate = 0.0;
-    if (cloud_mass > 1.0e-12f && cloud_mvd > 1.0e-6f
+    if (l_qc && cloud_mvd > 1.0e-6f
             && graupel_mass >= 1.0e-6f) {
         const double inverse_lambda = 1.0 / graupel_lambda;
         const double intercept = (double)graupel_number * graupel_lambda;
@@ -3528,7 +3850,7 @@ extern "C" __global__ void thompson_warm_frozen_source_network(
 
     double snow_melt_rate = 0.0;
     double snow_melt_number_rate = 0.0;
-    if (snow_mass > 1.0e-12f) {
+    if (l_qs) {
         const float melt_moment =
             (pi * 4.0f * 0.15f * inverse_fusion * 0.86f)
                 * snow_first_moment
@@ -3556,7 +3878,7 @@ extern "C" __global__ void thompson_warm_frozen_source_network(
 
     double graupel_melt_rate = 0.0;
     double graupel_melt_number_rate = 0.0;
-    if (graupel_mass > 1.0e-12f) {
+    if (l_qg) {
         const double inverse_lambda = 1.0 / graupel_lambda;
         const double graupel_intercept =
             (double)graupel_number * graupel_lambda;
@@ -3621,7 +3943,7 @@ extern "C" __global__ void thompson_warm_frozen_source_network(
                + 2.0f * alpha2 * xsat2
                - 5.0f * alpha2 * alpha * xsat2 * ssati)
             / (1.0f + gamma);
-        if (snow_mass > 1.0e-12f && snow_melt_rate <= 0.0) {
+        if (l_qs && snow_melt_rate <= 0.0) {
             const float ventilation = 0.28f * schmidt_cuberoot
                 * sqrtf(40.0f) * rho_factor_sqrt * viscosity_factor;
             snow_vapor_rate = (double)(0.15f * geometry * diffusivity
@@ -3631,7 +3953,7 @@ extern "C" __global__ void thompson_warm_frozen_source_network(
             snow_vapor_rate = fmax(
                 (double)(-snow_mass * inverse_dt), snow_vapor_rate);
         }
-        if (graupel_mass > 1.0e-12f && graupel_melt_rate <= 0.0) {
+        if (l_qg && graupel_melt_rate <= 0.0) {
             const double inverse_lambda = 1.0 / graupel_lambda;
             const double graupel_intercept =
                 (double)graupel_number * graupel_lambda;
@@ -3685,7 +4007,7 @@ extern "C" __global__ void thompson_warm_frozen_source_network(
     }
 
     double rain_sum = rain_snow_rain_rate + rain_graupel_rain_rate;
-    if (rain_mass > 1.0e-12f
+    if (rain_active
             && rain_sum < (double)(-rain_mass * inverse_dt)) {
         const double ratio =
             (double)(-rain_mass * inverse_dt) / rain_sum;
@@ -3695,7 +4017,7 @@ extern "C" __global__ void thompson_warm_frozen_source_network(
 
     double snow_sum = snow_vapor_rate
         + rain_snow_snow_rate - snow_melt_rate;
-    if (snow_mass > 1.0e-12f
+    if (l_qs
             && snow_sum < (double)(-snow_mass * inverse_dt)) {
         const double ratio = (double)(-snow_mass * inverse_dt) / snow_sum;
         snow_vapor_rate *= ratio;
@@ -3705,7 +4027,7 @@ extern "C" __global__ void thompson_warm_frozen_source_network(
     double graupel_sum =
         graupel_vapor_rate + rain_graupel_graupel_rate
         - graupel_melt_rate;
-    if (graupel_mass > 1.0e-12f
+    if (l_qg
             && graupel_sum < (double)(-graupel_mass * inverse_dt)) {
         const double ratio =
             (double)(-graupel_mass * inverse_dt) / graupel_sum;
@@ -3749,6 +4071,14 @@ extern "C" __global__ void thompson_warm_frozen_source_network(
         + rain_snow_number_rate - rain_graupel_number_rate
         - graupel_melt_number_rate;
 
+    // Entry rain and graupel as WRF holds them after :1878-1905 and
+    // :1915-1949 (zero where the mixing ratio is at or below R1), for the
+    // source-stage removals at :3088-3091 and :3157-3159 below.
+    const float qr_entry_wrf = qr[idx] > 1.0e-12f ? qr[idx] : 0.0f;
+    const float nr_entry_wrf = qr[idx] > 1.0e-12f ? nr[idx] : 0.0f;
+    const float qg_entry_wrf = qg[idx] > 1.0e-12f ? qg[idx] : 0.0f;
+    const float ng_entry_wrf = qg[idx] > 1.0e-12f
+        ? graupel_number_per_kg[idx] : 0.0f;
     qc[idx] = fmaxf(0.0f,
         qc[idx] - (float)(cloud_sink * (double)orho) * dt);
     qr[idx] = fmaxf(0.0f,
@@ -3765,9 +4095,58 @@ extern "C" __global__ void thompson_warm_frozen_source_network(
     graupel_number_per_kg[idx] +=
         (float)(graupel_number_rate * (double)orho) * dt;
     const double vapor_rate = snow_vapor_rate + graupel_vapor_rate;
-    qv[idx] = fmaxf(1.0e-10f,
-        qv0 - (float)(vapor_rate * (double)orho) * dt);
+    // The entry vapour plus the tendency, unfloored: WRF floors the running
+    // vapour once, at the terminal apply (:3974).  Adding the tendency to the
+    // floored working value put 1.E-10 kg/kg into every level that entered
+    // at zero, and floored levels WRF returns untouched at :2020.
+    qv[idx] = qv[idx] - (float)(vapor_rate * (double)orho) * dt;
     thompson_bound_rain_number(qr[idx] * rho, rho, &nr[idx]);
+    // :3067-3091.  Where the post-source rain concentration is at or below R1
+    // WRF discards the call's rain sources and removes the entry rain:
+    // qrten = -qr1d*odts, nrten = -nr1d*odts.  The number bound above zeroes
+    // only the number; the mass has to go too.
+    if (!(qr[idx] * rho > 1.0e-12f)) {
+        qr[idx] = qr_entry_wrf + (-qr_entry_wrf * inverse_dt) * dt;
+        nr[idx] = nr_entry_wrf + (-nr_entry_wrf * inverse_dt) * dt;
+    }
+    // :3118-3160, the graupel mass/number balance, which WRF runs for
+    // non-hail-aware Thompson too.  At or below R1 the graupel and its
+    // private number are removed; otherwise the private number is reset so
+    // the median volume diameter stays in [D0r, 25.4 mm].  The fallout and
+    // calc_refl10cm read that number (the mp=28 source networks carry the
+    // same balance).
+    {
+        const float xrg = qg[idx] * rho;
+        if (!(xrg > 1.0e-12f)) {
+            qg[idx] = qg_entry_wrf + (-qg_entry_wrf * inverse_dt) * dt;
+            graupel_number_per_kg[idx] =
+                ng_entry_wrf + (-ng_entry_wrf * inverse_dt) * dt;
+        } else {
+            // REAL(4) throughout except lamg, which is DOUBLE (:1597).
+            const float am_g = 3.1415926536f * 400.0f / 6.0f;
+            const float mvd_numerator = 3.0f + 0.0f + 0.672f;
+            const float xng = fmaxf(1.0e-6f, graupel_number_per_kg[idx] * rho);
+            double lamg = (double)powf(
+                am_g * 6.0f * xng / xrg, 1.0f / 3.0f);
+            const float mvd_g = (float)((double)mvd_numerator / lamg);
+            bool bounded = false;
+            if (mvd_g > 25.4e-3f) {
+                lamg = (double)(mvd_numerator / 25.4e-3f);
+                bounded = true;
+            } else if (mvd_g < 50.0e-6f) {
+                lamg = (double)(mvd_numerator / 50.0e-6f);
+                bounded = true;
+            }
+            if (bounded) {
+                const float xng_bounded = (float)(
+                    (double)((1.0f / 6.0f) * xrg) * pow(lamg, 3.0)
+                    / (double)am_g);
+                const float ngten = (xng_bounded - ng_entry_wrf * rho)
+                    * inverse_dt * (1.0f / rho);
+                graupel_number_per_kg[idx] = ng_entry_wrf + ngten * dt;
+            }
+        }
+    }
 
     const float inverse_cp = 1.0f
         / (1004.0f * (1.0f + 0.887f * qv0));
@@ -3804,20 +4183,37 @@ __device__ __forceinline__ void thompson_bound_ice_number(
     *ice_number_per_kg = fminf(ice_number, 999.0e3f) / density;
 }
 
-extern "C" __global__ void thompson_final_phase_cleanup(
+__device__ __forceinline__ void thompson_final_phase_cleanup_impl(
     float* __restrict__ qc,
     float* __restrict__ qi,
     float* __restrict__ ni,
     float* __restrict__ temperature,
     const float* __restrict__ pressure,
-    const float* __restrict__ qv,
-    int size)
+    float* __restrict__ qv,
+    const float* __restrict__ micro_columns,
+    int ncol, int idx)
 {
     // module_mp_thompson.F performs these two instantaneous transfers after
     // every fallout tendency and before the final category bounds.  Classic
     // mp=8 has fixed cloud number, so only the carried ice number is exposed.
-    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx >= size) return;
+    if (micro_columns != nullptr) {
+        // :2020.  A column WRF left before the source loop reaches neither
+        // the phase cleanup nor the terminal apply: it returns its entry
+        // rewrite and nothing else, which for cloud and ice is zero at every
+        // level (all of them entered at or below R1, :1844-1845,
+        // :1870-1871), and its vapour unfloored.
+        if (micro_columns[idx % ncol] == 0.0f) {
+            if (qc[idx] <= 1.0e-12f) qc[idx] = 0.0f;
+            if (qi[idx] <= 1.0e-12f) {
+                qi[idx] = 0.0f;
+                ni[idx] = 0.0f;
+            }
+            return;
+        }
+        // :3974.  Every level of a column with microphysics leaves with its
+        // vapour floored at 1.E-10; the kernels before carry it unfloored.
+        qv[idx] = fmaxf(1.0e-10f, qv[idx]);
+    }
 
     const float temp0 = temperature[idx];
     const float qv0 = fmaxf(1.0e-10f, qv[idx]);
@@ -3847,9 +4243,64 @@ extern "C" __global__ void thompson_final_phase_cleanup(
     if (qi[idx] <= 1.0e-12f) {
         qi[idx] = 0.0f;
         ni[idx] = 0.0f;
-    } else {
+    } else if (qi[idx] * rho > 1.0e-12f) {
         thompson_bound_ice_number(qi[idx] * rho, rho, &ni[idx]);
+    } else {
+        // :4025-4039 tests the MIXING RATIO and keeps both mass and number.
+        // The shared bound tests the concentration (right for the source
+        // stage at :3036-3055, wrong here) and zeroed the number of ice that
+        // sits in thin air aloft while keeping its mass.  WRF's per-kilogram
+        // form (the mp=28 phase cleanup carries the same rule):
+        const float am_i = 3.1415926536f * 890.0f / 6.0f;
+        const float qi_local = qi[idx];
+        const float ni_local = fmaxf(1.0e-6f / rho, ni[idx]);
+        double lami = (double)powf(
+            am_i * 6.0f * ni_local / qi_local, 1.0f / 3.0f);
+        const float xdi = (float)(4.0 * (1.0 / lami));
+        if (xdi < 5.0e-6f) {
+            lami = (double)(4.0f / 5.0e-6f);
+        } else if (xdi > 300.0e-6f) {
+            lami = (double)(4.0f / 300.0e-6f);
+        }
+        ni[idx] = (float)fmin(
+            (double)((1.0f / 6.0f) * qi_local / am_i) * pow(lami, 3.0),
+            999.0e3 / (double)rho);
     }
+}
+
+extern "C" __global__ void thompson_final_phase_cleanup(
+    float* __restrict__ qc,
+    float* __restrict__ qi,
+    float* __restrict__ ni,
+    float* __restrict__ temperature,
+    const float* __restrict__ pressure,
+    const float* __restrict__ qv,
+    int size)
+{
+    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= size) return;
+    thompson_final_phase_cleanup_impl(
+        qc, qi, ni, temperature, pressure, (float*)qv, nullptr, 1, idx);
+}
+
+// The production entry point: the cleanup of a column with microphysics
+// with WRF's terminal vapour floor (:3974), and only the entry rewrite's
+// zeros in a column WRF returned from at :2020 (micro_columns == 0, from
+// thompson_microphysics_columns).
+extern "C" __global__ void thompson_final_phase_cleanup_with_columns(
+    float* __restrict__ qc,
+    float* __restrict__ qi,
+    float* __restrict__ ni,
+    float* __restrict__ temperature,
+    const float* __restrict__ pressure,
+    float* __restrict__ qv,
+    const float* __restrict__ micro_columns,
+    int ncol, int size)
+{
+    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= size) return;
+    thompson_final_phase_cleanup_impl(
+        qc, qi, ni, temperature, pressure, qv, micro_columns, ncol, idx);
 }
 
 extern "C" __global__ void thompson_rain_freezing(
@@ -4234,8 +4685,8 @@ extern "C" __global__ void thompson_snow_cloud_riming(
     float collection_efficiency = 0.0f;
     if (diameter_fraction <= 0.25
             && table_snow_diameter >= 300.0e-6
-            && table_cloud_diameter >= 6.0e-6
-            && snow_velocity >= 1.0e-3) {
+            && table_cloud_diameter >= (double)6.0e-6f
+            && snow_velocity >= (double)1.0e-3f) {
         const double stokes_number = table_cloud_diameter
             * table_cloud_diameter * snow_velocity * 1000.0
             / (9.0 * 1.718e-5 * melted_snow_diameter);
@@ -4469,8 +4920,8 @@ extern "C" __global__ void thompson_cold_cloud_source_network(
                 / melted_snow_diameter;
             float efficiency = 0.0f;
             if (diameter_fraction <= 0.25
-                    && table_cloud_diameter >= 6.0e-6
-                    && snow_velocity >= 1.0e-3) {
+                    && table_cloud_diameter >= (double)6.0e-6f
+                    && snow_velocity >= (double)1.0e-3f) {
                 const double stokes_number = table_cloud_diameter
                     * table_cloud_diameter * snow_velocity * 1000.0
                     / (9.0 * 1.718e-5 * melted_snow_diameter);
@@ -4773,8 +5224,8 @@ extern "C" __global__ void thompson_snow_rime_conversion(
                 / melted_snow_diameter;
             float efficiency = 0.0f;
             if (diameter_fraction <= 0.25
-                    && table_cloud_diameter >= 6.0e-6
-                    && snow_velocity >= 1.0e-3) {
+                    && table_cloud_diameter >= (double)6.0e-6f
+                    && snow_velocity >= (double)1.0e-3f) {
                 const double stokes = table_cloud_diameter
                     * table_cloud_diameter * snow_velocity * 1000.0
                     / (9.0 * 1.718e-5 * melted_snow_diameter);
@@ -6630,7 +7081,25 @@ extern "C" __global__ void thompson_frozen_vapor_cloud_network(
     // also receive the neutral value because the later column sedimentation
     // kernel consumes the complete field.
     if (include_snow_rime_conversion) snow_velocity_boost[idx] = 1.0f;
-    if (temperature[idx] >= 273.15f) return;
+    if (temperature[idx] >= 273.15f) {
+        // :3033-3055, the cloud ice mass/number balance, runs at EVERY level
+        // of a column with microphysics, not only below 0 C: ice that sits
+        // at or above 0 C with no number gets the 300 micron number from the
+        // balance's size clamp, and ice with a number outside 5..300 microns
+        // is brought inside it.  The warm network owns no ice, so without
+        // this such ice reached the fallout with no number and the ice
+        // fallout gave it 5 micron crystals instead.  No source process
+        // changes ice here, so the balance reads the entry ice at the entry
+        // density (:1802), exactly as :3036-3037 do.
+        if (qi[idx] > 0.0f || ni[idx] > 0.0f) {
+            const float qv_entry = fmaxf(1.0e-10f, qv[idx]);
+            const float rho_entry = 0.622f * pressure[idx]
+                / (287.04f * temperature[idx] * (qv_entry + 0.622f));
+            thompson_bound_ice_number(qi[idx] * rho_entry, rho_entry,
+                                      &ni[idx]);
+        }
+        return;
+    }
 
     const float temp0 = temperature[idx];
     const float qv0 = fmaxf(1.0e-10f, qv[idx]);
@@ -6739,6 +7208,19 @@ extern "C" __global__ void thompson_frozen_vapor_cloud_network(
     }
     if (qi[idx] > 1.0e-12f) {
         const float am_i = 3.1415926536f * 890.0f / 6.0f;
+        // :1855-1858.  Ice that arrives with no number (ni*rho <= R2) is
+        // given 5-micron crystals BEFORE the size clamps below.  Without it
+        // the R2 floor makes the mean diameter enormous, the 300-micron clamp
+        // fires instead, and the ice sees a far smaller number.  The
+        // deposition, ice autoconversion, snow-collects-ice and
+        // rain-collects-ice rates and the nucleation target below all read
+        // this entry number (the mp=28 cold network carries the same rule).
+        if (ice_number <= 1.0e-6f) {
+            const double lambda5 = 4.0 / 5.0e-6;
+            ice_number = fminf(999.0e3f,
+                (1.0f / 6.0f) * ice_mass / am_i
+                * (float)(lambda5 * lambda5 * lambda5));
+        }
         double lambda = (double)powf(
             am_i * 6.0f * ice_number / ice_mass, 1.0f / 3.0f);
         double inverse_lambda = 1.0 / lambda;
@@ -6757,8 +7239,16 @@ extern "C" __global__ void thompson_frozen_vapor_cloud_network(
                 * (float)(lambda * lambda * lambda);
             mean_diameter = 300.0e-6f;
         }
-        ice_particle_mass = am_i * mean_diameter * mean_diameter
-            * mean_diameter;
+        // :2649/:2713, xDi = MAX(D0i, (bm_i+mu_i+1)*ilami) with D0i =
+        // (xm0i/am_i)**(1/bm_i), about 12.9 microns.  xmi, the particle mass
+        // that turns collected ice mass into a number (pni_sci, pni_rci),
+        // and the rain-collects-ice gate mvd_r > 4*xDi both read the FLOORED
+        // diameter, as the deposition branch below already does for its own
+        // copy (the mp=28 cold network carries the same rule).
+        const float floored_ice_diameter = fmaxf(
+            powf(1.0e-12f / am_i, 1.0f / 3.0f), mean_diameter);
+        ice_particle_mass = am_i * floored_ice_diameter
+            * floored_ice_diameter * floored_ice_diameter;
         const int mass_bin = ice_mass > 1.0e-10f
             ? thompson_decade_table_index(ice_mass, -10, 64) : 0;
         const int number_bin = ice_number > 1.0f
@@ -6807,7 +7297,7 @@ extern "C" __global__ void thompson_frozen_vapor_cloud_network(
         }
 
         if (rain_mass >= 1.0e-6f
-                && rain_mvd > 4.0f * mean_diameter) {
+                && rain_mvd > 4.0f * floored_ice_diameter) {
             const float density_factor = sqrtf(
                 (101325.0f / (287.05f * 298.0f)) * orho);
             const double rain_intercept =
@@ -6997,8 +7487,15 @@ extern "C" __global__ void thompson_frozen_vapor_cloud_network(
         const float gamma_higher = 6.40238373e15f;
         const float inverse_gamma_mass = 7.64716632e-13f;
 
+        // Cloud presence is WRF's L_qc, the MIXING RATIO test of the entry
+        // block (:1827), not the concentration: in thin air a mixing ratio
+        // just above R1 is a concentration at or below it, and WRF still
+        // forms mvd_c there (:2169-2175) and lets rain, snow and graupel
+        // collect that cloud (:2194, :2403, :2415).  The mp=28 networks test
+        // the mixing ratio too.
+        const bool l_qc = qc[idx] > 1.0e-12f;
         float cloud_lambda = 0.0f;
-        if (cloud_mass > 1.0e-12f) {
+        if (l_qc) {
             cloud_lambda = powf(
                 cloud_number * am_r * gamma_mass * inverse_gamma_number
                     / cloud_mass,
@@ -7038,7 +7535,9 @@ extern "C" __global__ void thompson_frozen_vapor_cloud_network(
 
         // Rain self-collection was already diagnosed once above.  Only the
         // rain/cloud mass collection member is added here.
-        if (rain_mass > 1.0e-12f && cloud_mass > 1.0e-12f
+        // :2194, L_qr .and. mvd_r > D0r .and. mvd_c > D0c: rain presence
+        // is the mixing ratio's too (rain_active, :1878).
+        if (rain_active && l_qc
                 && rain_mvd > 50.0e-6f && cloud_mvd > 1.0e-6f) {
             const double dr_first = 5.1164649614037726e-05;
             const double dr_last = 0.004886186104779057;
@@ -7086,7 +7585,9 @@ extern "C" __global__ void thompson_frozen_vapor_cloud_network(
         }
 
         const float cloud_snow_mass = fmaxf(0.0f, qs[idx] * rho);
-        if (cloud_mass > 1.0e-12f && cloud_snow_mass > 1.0e-12f
+        // :2403 with :2245-2251: L_qc, mvd_c > D0c, and xDs > D0s, where
+        // xDs is zero unless L_qs.
+        if (l_qc && qs[idx] > 1.0e-12f
                 && cloud_mvd > 1.0e-6f) {
             const float snow_temperature = fminf(-0.1f, tempc);
             const float snow_moment_2 = cloud_snow_mass * (1.0f / 0.069f);
@@ -7132,8 +7633,8 @@ extern "C" __global__ void thompson_frozen_vapor_cloud_network(
                     / melted_snow_diameter;
                 float efficiency = 0.0f;
                 if (diameter_fraction <= 0.25
-                        && table_cloud_diameter >= 6.0e-6
-                        && snow_velocity >= 1.0e-3) {
+                        && table_cloud_diameter >= (double)6.0e-6f
+                        && snow_velocity >= (double)1.0e-3f) {
                     const double stokes_number = table_cloud_diameter
                         * table_cloud_diameter * snow_velocity * 1000.0
                         / (9.0 * 1.718e-5 * melted_snow_diameter);
@@ -7165,7 +7666,7 @@ extern "C" __global__ void thompson_frozen_vapor_cloud_network(
         }
 
         const float cloud_graupel_mass = fmaxf(0.0f, qg[idx] * rho);
-        if (cloud_mass > 1.0e-12f && cloud_graupel_mass >= 1.0e-6f
+        if (l_qc && cloud_graupel_mass >= 1.0e-6f
                 && cloud_mvd > 1.0e-6f) {
             const float am_g = pi * 400.0f / 6.0f;
             const float intercept_power = fmaxf(2.0f, fminf(6.0f,
@@ -7246,8 +7747,13 @@ extern "C" __global__ void thompson_frozen_vapor_cloud_network(
         // pni_wfz as well).  The focused frozen-vapor gate predates this
         // cross-group interaction, so retain its ABI above and apply the
         // exact ordering only for the admitted complete cold-rain group.
-        const float existing_ice_number = qi[idx] > 1.0e-12f
-            ? fmaxf(1.0e-6f, ni[idx] * rho) : 0.0f;
+        // xni = ni(k) + ... (:2627) reads WRF's ENTRY ice number ni(k):
+        // R2 where there is no ice (:1873), and otherwise the number after
+        // the :1855-1858 re-diagnosis and the 5..300 micron clamps of
+        // :1860-1868, which is ice_number above.  The raw ni*rho made a
+        // number-less ice level look empty and out-of-range ice look like
+        // its unclamped number.
+        const float existing_ice_number = ice_number;
         const float target_number = fminf(
             250.0e3f, 5.0f * expf(0.304f * (273.15f - temp0)));
         nucleation_number_rate = (double)fmaxf(
@@ -7576,13 +8082,25 @@ extern "C" __global__ void thompson_frozen_vapor_cloud_network(
         + freeze_ice_rate + freeze_graupel_rate
         + rain_ice_rain_rate + rain_snow_category_rate
         + rain_snow_graupel_rate + rain_graupel_graupel_rate;
-    const float post_source_qv = fmaxf(1.0e-10f,
-        qv0 - (float)(vapor_sum * (double)orho) * dt);
+    // qv1d + DT*qvten on the vapour as it ENTERED, not on the 1.E-10 floor
+    // the rates read (:1800).  WRF floors the running vapour once, at the
+    // terminal apply (:3974); every later reader floors it for its working
+    // value (:3192).
+    const float post_source_qv =
+        qv[idx] - (float)(vapor_sum * (double)orho) * dt;
     const float post_source_temperature = temp0 + (float)(
         (double)(2.834e6f * inverse_cp) * vapor_sum
         * (double)orho * (double)dt
         + (double)(latent_fusion * inverse_cp) * fusion_rate
         * (double)orho * (double)dt);
+    // Entry rain and graupel as WRF holds them after :1878-1905 and
+    // :1915-1949 (zero where the mixing ratio is at or below R1), for the
+    // source-stage removals at :3088-3091 and :3157-3159 below.
+    const float qr_entry_wrf = qr[idx] > 1.0e-12f ? qr[idx] : 0.0f;
+    const float nr_entry_wrf = qr[idx] > 1.0e-12f ? nr[idx] : 0.0f;
+    const float qg_entry_wrf = qg[idx] > 1.0e-12f ? qg[idx] : 0.0f;
+    const float ng_entry_wrf = qg[idx] > 1.0e-12f
+        && track_graupel_number ? graupel_number_shadow[idx] : 0.0f;
     qi[idx] = fmaxf(0.0f, qi[idx]
         + (float)((nucleation_rate + hm_mass_rate
                    + cloud_freezing_rate + freeze_ice_rate + ice_rate
@@ -7615,9 +8133,14 @@ extern "C" __global__ void thompson_frozen_vapor_cloud_network(
         // reflectivity.  Every term below already exists in this simultaneous
         // source diagnosis.  Signs mirror module_mp_thompson.F:3107-3109.
         const float initial_number_per_kg = graupel_number_shadow[idx];
-        const float initial_number = qg[idx] > 0.0f
+        // png_gde = prg_gde*ng(k)/rg(k) (:2703) wherever L_qg holds, i.e.
+        // the ENTRY mixing ratio passed R1, with ng(k) = MAX(R2, ng1d*rho)
+        // from the entry block.  Gating on the entry concentration and on
+        // the post-source mass dropped it for graupel of 1e-12 kg/kg or so
+        // aloft (the mp=28 cold network carries the same gate).
+        const float initial_number = qg_entry_wrf > 0.0f
             ? fmaxf(1.0e-6f, initial_number_per_kg * rho) : 0.0f;
-        const double graupel_vapor_number_rate = graupel_mass > 1.0e-12f
+        const double graupel_vapor_number_rate = qg_entry_wrf > 0.0f
             ? graupel_rate * (double)initial_number / (double)graupel_mass
             : 0.0;
         // In the sub-freezing branch rain_graupel_number_rate is WRF's
@@ -7642,6 +8165,54 @@ extern "C" __global__ void thompson_frozen_vapor_cloud_network(
                    + graupel_riming_rate) * (double)orho) * dt);
     thompson_bound_ice_number(qi[idx] * rho, rho, &ni[idx]);
     thompson_bound_rain_number(qr[idx] * rho, rho, &nr[idx]);
+    // :3067-3091.  Where the post-source rain concentration is at or below R1
+    // WRF discards the call's rain sources and removes the entry rain:
+    // qrten = -qr1d*odts, nrten = -nr1d*odts.  The number bound above zeroes
+    // only the number; the mass has to go too.
+    if (!(qr[idx] * rho > 1.0e-12f)) {
+        qr[idx] = qr_entry_wrf + (-qr_entry_wrf * inverse_dt) * dt;
+        nr[idx] = nr_entry_wrf + (-nr_entry_wrf * inverse_dt) * dt;
+    }
+    // :3118-3160, the graupel mass/number balance, which WRF runs for
+    // non-hail-aware Thompson too.  At or below R1 the graupel and its
+    // private number are removed; otherwise the private number is reset so
+    // the median volume diameter stays in [D0r, 25.4 mm].  The fallout and
+    // calc_refl10cm read that number (the mp=28 source networks carry the
+    // same balance).
+    {
+        const float xrg = qg[idx] * rho;
+        if (!(xrg > 1.0e-12f)) {
+            qg[idx] = qg_entry_wrf + (-qg_entry_wrf * inverse_dt) * dt;
+            if (track_graupel_number) {
+                graupel_number_shadow[idx] =
+                    ng_entry_wrf + (-ng_entry_wrf * inverse_dt) * dt;
+            }
+        } else if (track_graupel_number) {
+            // REAL(4) throughout except lamg, which is DOUBLE (:1597).
+            const float am_g = 3.1415926536f * 400.0f / 6.0f;
+            const float mvd_numerator = 3.0f + 0.0f + 0.672f;
+            const float xng = fmaxf(1.0e-6f, graupel_number_shadow[idx] * rho);
+            double lamg = (double)powf(
+                am_g * 6.0f * xng / xrg, 1.0f / 3.0f);
+            const float mvd_g = (float)((double)mvd_numerator / lamg);
+            bool bounded = false;
+            if (mvd_g > 25.4e-3f) {
+                lamg = (double)(mvd_numerator / 25.4e-3f);
+                bounded = true;
+            } else if (mvd_g < 50.0e-6f) {
+                lamg = (double)(mvd_numerator / 50.0e-6f);
+                bounded = true;
+            }
+            if (bounded) {
+                const float xng_bounded = (float)(
+                    (double)((1.0f / 6.0f) * xrg) * pow(lamg, 3.0)
+                    / (double)am_g);
+                const float ngten = (xng_bounded - ng_entry_wrf * rho)
+                    * inverse_dt * (1.0f / rho);
+                graupel_number_shadow[idx] = ng_entry_wrf + ngten * dt;
+            }
+        }
+    }
     qv[idx] = post_source_qv;
     temperature[idx] = post_source_temperature;
 }

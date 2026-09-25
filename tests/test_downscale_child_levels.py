@@ -437,3 +437,82 @@ def test_a_child_config_route_without_the_flag_still_runs(tmp_path, capsys):
         "--i-parent-start", "4", "--j-parent-start", "4",
         "--accept-parent-cadence",
         "--out", str(tmp_path / "child-run"), "--dry-run"]) == 0
+
+
+# --- the boundary strips arrive on the preprocess backend --------------
+
+
+class _DeviceArrayDouble:
+    """What a CuPy array does when NumPy tries to adopt it: refuse.
+
+    ``np.asarray`` on a device array raises ``TypeError: Implicit
+    conversion to a NumPy array is not allowed``, and the boundary remap
+    reads its strips straight off the preprocess backend, which is CUDA
+    by default.  The double is the cheapest instrument that shows the
+    difference between a value that was taken to the host and one that
+    was not, on a machine with no card.
+    """
+
+    def __init__(self, array):
+        import numpy as np
+
+        self._array = np.asarray(array)
+
+    def __array__(self, *args, **kwargs):
+        raise TypeError("Implicit conversion to a NumPy array is not "
+                        "allowed. Please use `.get()` to construct a "
+                        "NumPy array explicitly.")
+
+    def __getitem__(self, key):
+        return _DeviceArrayDouble(self._array[key])
+
+    def get(self):
+        return self._array
+
+    @property
+    def shape(self):
+        return self._array.shape
+
+
+def test_the_boundary_remap_reads_its_strips_off_the_device(monkeypatch):
+    """`--child-levels` on the default backend used to die at exit 1.
+
+    Every field the remap loop reads goes through ``_to_host``; ``mu`` is
+    read once before that loop and was read with ``np.asarray``, so the
+    flag this whole module is the door for crashed on its first boundary
+    frame with CuPy's implicit-conversion TypeError -- on the default
+    ``--preprocess-backend cuda``, which is the only backend a downscale
+    run selects unless it is told otherwise.
+    """
+    import numpy as np
+
+    from gpuwm import offline_child
+
+    monkeypatch.setattr(
+        offline_child, "_to_host",
+        lambda value: np.ascontiguousarray(
+            value.get() if hasattr(value, "get") else value,
+            dtype=np.float32))
+
+    ny, nx, parent_nz = 4, 5, 3
+    child_znw = np.array([1.0, 0.7, 0.4, 0.15, 0.0])
+    parent_znw = np.array([1.0, 0.6, 0.25, 0.0])
+    mub = np.full((ny, nx), 90000.0)
+    phb = np.cumsum(
+        np.full((parent_nz + 1, ny, nx), 3000.0), axis=0)
+    strips = {
+        "mu": _DeviceArrayDouble(np.full((1, ny, nx), 500.0)),
+        "theta": _DeviceArrayDouble(
+            np.full((parent_nz, ny, nx), 300.0 * 90500.0)),
+    }
+
+    out, receipts = offline_child._remap_boundary_snapshot_to_child_ladder(
+        strips, child_mub=mub, child_phb=phb,
+        parent_znw=parent_znw, child_znw=child_znw,
+        hybrid_opt=2, etac=0.2, p_top=5000.0,
+        moisture_names=frozenset())
+
+    assert out["mu"] is strips["mu"]          # untouched, and still coupled
+    assert np.asarray(out["theta"]).shape == (len(child_znw) - 1, ny, nx)
+    assert np.isfinite(np.asarray(out["theta"])).all()
+    assert [entry.field for entry in receipts] == ["theta"]

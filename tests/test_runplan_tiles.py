@@ -35,6 +35,8 @@ from pathlib import Path
 
 import pytest
 
+from conftest import requires_cupy
+
 import gpuwm.go_cli as go_cli
 import gpuwm.prepared_single_domain_forecast as psdf
 import gpuwm.runplan as runplan_module
@@ -334,6 +336,13 @@ def test_the_tree_arm_carries_tiles_in_the_users_own_config(
         handed.read_bytes()).hexdigest()
 
 
+# NEEDS CUPY INSTALLED, and opens no device: both tests below call the
+# prepared single-domain forecast main, which refuses ahead of the work
+# without the array library (`python -m gpuwm.prepared_single_domain_forecast:
+# this command needs cupy ...`) and returns 2 before the flag they hold is
+# read.  Measured on the Linux release node: red without cupy, green with
+# it (proof/node-reds-276).
+@requires_cupy
 def test_the_runner_forwards_the_flag_into_its_preflight(tmp_path,
                                                          monkeypatch):
     """``main`` -> ``preflight_prepared_forecast(tiles=...)``, validated.
@@ -390,6 +399,7 @@ def test_the_overlay_lands_after_every_identity_comparison(tmp_path):
     assert overlay < source.index("return PreparedForecastInputs(")
 
 
+@requires_cupy
 def test_a_malformed_tiles_flag_is_a_usage_refusal_not_a_traceback(
         tmp_path, capsys):
     """And in the config front door's own vocabulary, not a second one."""
@@ -696,14 +706,45 @@ def test_the_estimate_of_a_streamed_plan_is_the_streamed_envelope(
     assert "[tiles]" in estimate["vram"]["basis"]
 
 
-def test_the_estimate_of_a_resident_plan_is_unchanged(tmp_path):
-    """THE REGRESSION FENCE.  No ``[tiles]``, no new arithmetic."""
+def resident_estimate_on_the_documents_device(estimate, config):
+    """The direct call on the device the document says it priced.
 
-    from gpuwm.core.preflight import estimate_experiment
+    The fence below compares what is comparable.  A document priced on
+    the card in the machine states that card (``device_profile``,
+    ``device_total_bytes``) and the cadence it priced
+    (``forcing_interval_seconds``); a profile-less direct call prices
+    the reference card, and comparing the two is how the fence read red
+    on every box with a card and green on every box without one.  With
+    no card read the document states ``None`` for both, and this IS the
+    bare direct call.
+    """
+
+    from gpuwm.core.preflight import (DeviceLocalMemoryProfile,
+                                      estimate_experiment)
+
+    vram = estimate["vram"]
+    stated = vram["device_profile"]
+    profile = None if stated is None else DeviceLocalMemoryProfile(
+        **{**stated, "compile_platform": (
+            None if stated["compile_platform"] is None
+            else tuple(stated["compile_platform"]))})
+    total = vram["device_total_bytes"]
+    return estimate_experiment(
+        load_experiment(config), profile=profile,
+        vram_gib=None if total is None else total / 1024 ** 3,
+        forcing_interval_seconds=vram["forcing_interval_seconds"],
+        forcing_intervals=vram["retained_forcing_intervals"])
+
+
+def test_the_estimate_of_a_resident_plan_is_unchanged(tmp_path):
+    """THE REGRESSION FENCE.  No ``[tiles]``, no new arithmetic: the
+    document quotes, to the byte, the direct estimate on the device it
+    names.  Read through the real probe seam, so on a box with a card
+    the document is priced on that card and the fence follows it."""
 
     config = _config(tmp_path)
     estimate = _estimate(tmp_path, config)
-    resident = estimate_experiment(load_experiment(config))
+    resident = resident_estimate_on_the_documents_device(estimate, config)
 
     assert estimate["vram"]["envelope_basis"] == "resident"
     assert (estimate["vram"]["peak_envelope_bytes"]
@@ -712,6 +753,10 @@ def test_the_estimate_of_a_resident_plan_is_unchanged(tmp_path):
             == resident.alloc_estimate_bytes)
     assert estimate["vram"]["estimate_gib"] == round(
         resident.alloc_estimate_bytes / 1024 ** 3, 4)
+    # The device half of the arithmetic is the card's census, never a
+    # sample: a profile this build read carries no bare-context reading.
+    stated = estimate["vram"]["device_profile"]
+    assert stated is None or stated["bare_context_bytes"] is None
     assert estimate["execution"]["resolved"] is True
     assert estimate["execution"]["streamed_forecast"] is False
 

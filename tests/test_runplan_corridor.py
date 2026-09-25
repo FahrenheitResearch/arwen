@@ -352,13 +352,22 @@ def test_estimate_prices_the_corridor_off_the_real_arithmetic(tmp_path,
     assert "No GPU residency" in corridor["basis"]
 
 
-def test_the_corridor_costs_no_vram(tmp_path, gfs_tree):
+def test_the_corridor_costs_no_vram(tmp_path, gfs_tree, monkeypatch):
     """Disk and host only -- the VRAM figure must not move.
 
     The corridor is cropped on the host, so a plan that seals one and
     the same plan without it are the same size on the card.  A front
     end that priced it into the VRAM budget would refuse runs that fit.
+
+    The estimate reads the card in the machine through its probe, and
+    ``device_free_bytes`` is that reading at the moment of the call, so
+    two estimates on a shared card compare two moments rather than two
+    plans: on the release node's RTX 4090 the pair read 24402984960
+    against 22796763136 bytes free (proof/node-reds-276).  With the
+    local card banned both price the declared profile, and what is
+    compared is the plan.
     """
+    monkeypatch.setenv("GPUWM_NO_LOCAL_GPU", "1")
     moving = estimate_plan(load_plan(_plan(tmp_path / "a",
                                            gfs_tree["follow"])))
     still = estimate_plan(load_plan(_plan(tmp_path / "b",
@@ -472,9 +481,13 @@ def test_the_hrrr_plan_is_priced_by_the_same_chain_agnostic_arithmetic(
     assert estimate_plan(plan)["corridor"] == hrrr
 
 
-def test_the_hrrr_estimate_costs_no_vram(tmp_path):
-    """Host and disk only, on this chain as on the other."""
+def test_the_hrrr_estimate_costs_no_vram(tmp_path, monkeypatch):
+    """Host and disk only, on this chain as on the other.
 
+    The local card is banned for the reason the test above states: the
+    comparison is of two plans, not of two readings of a shared card.
+    """
+    monkeypatch.setenv("GPUWM_NO_LOCAL_GPU", "1")
     moving = estimate_plan(load_plan(_plan(tmp_path / "a",
                                            _hrrr_follow(tmp_path))))
     base = _emit(tmp_path / "b", "hrrr-base", "hrrr")

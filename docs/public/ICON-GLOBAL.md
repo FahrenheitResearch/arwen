@@ -121,6 +121,12 @@ install stages both with the rest of the bridges:
 gpuwm fetch-bridges
 ```
 
+The standalone rw-wps bundle carries `gdt101_remap` too: it is a row in
+`BUNDLED_BRIDGES`, so the bundle builds, stages, identity-probes and binds
+it the way it does every other bridge, and its launcher exports
+`GPUWM_GDT101_REMAP` at the staged copy. `rw-wps --source icon-global` needs
+nothing built by hand.
+
 From a source checkout, build both:
 
 ```sh
@@ -143,8 +149,8 @@ template set it reads. The engine's marker names the template set because
 the intermediates are IEEE-packed (template 5.4): an engine built before
 this release's decoder passed a frameset-only handshake and then refused a
 correct intermediate as "Section 5 simple packing too short", pointing the
-user at the raw download. A bridge bundle built before this release does
-not contain `gdt101_remap` at all, and preparation refuses with the rebuild
+user at the raw download. A bridge bundle built before 2.7.5 does not
+contain `gdt101_remap` at all, and preparation refuses with the rebuild
 remedy rather than falling back.
 
 ## Readiness

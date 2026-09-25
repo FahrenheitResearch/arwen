@@ -79,6 +79,8 @@ from pathlib import Path
 
 import pytest
 
+from conftest import requires_cupy
+
 from gpuwm.core.kernel_frame_recordings import NOAHMP_COMPOSED_FRAME_RECORDINGS
 from gpuwm.core.preflight import (
     MEASURED_LOCAL_MEMORY_PROFILE, estimate_experiment, physics_kernel_modules)
@@ -216,6 +218,10 @@ def test_every_accepted_composition_rebuilds(priced):
                       for key, message in priced["rebuild_refused"][:10]))
 
 
+# NEEDS CUPY INSTALLED, and opens no device: this test prices every
+# composition the loader accepts, which imports the kernel modules; without
+# cupy 235 of them report the absent module rather than a pricing gap.
+@requires_cupy
 def test_every_accepted_composition_can_be_priced(priced):
     """THE INSTRUMENT.  Loader-accepted implies preflight-priceable.
 

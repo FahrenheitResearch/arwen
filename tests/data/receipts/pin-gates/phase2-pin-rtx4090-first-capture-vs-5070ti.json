@@ -1,0 +1,230 @@
+{
+  "pin": "tests/data/phase2_step_regression.rtx4090.npz",
+  "against": "tests/data/phase2_step_regression.npz",
+  "card": "NVIDIA GeForce RTX 4090",
+  "compute_capability": "8.9",
+  "driver": "610.57.04",
+  "cupy": "14.2.0",
+  "cuda_runtime": 13020,
+  "commit": "7463651257943712fe5d6caf58ae00bda9debbba",
+  "entries": {
+    "dry_flat/mup": {
+      "status": "moved",
+      "max_abs_difference": 0.022739410400390625,
+      "rms_of_old_entry": 10.810572215997563,
+      "max_abs_over_rms": 0.002103441885041079,
+      "differing_words": 168,
+      "words": 168
+    },
+    "dry_flat/php": {
+      "status": "moved",
+      "max_abs_difference": 0.009257912635803223,
+      "rms_of_old_entry": 14.690508601613146,
+      "max_abs_over_rms": 0.0006301968765592379,
+      "differing_words": 2519,
+      "words": 2856
+    },
+    "dry_flat/thp": {
+      "status": "moved",
+      "max_abs_difference": 0.000152587890625,
+      "rms_of_old_entry": 0.1784132444436904,
+      "max_abs_over_rms": 0.000855249794379244,
+      "differing_words": 1791,
+      "words": 2688
+    },
+    "dry_flat/u": {
+      "status": "moved",
+      "max_abs_difference": 0.00015020370483398438,
+      "rms_of_old_entry": 3.73230699775029,
+      "max_abs_over_rms": 4.0244198809080326e-05,
+      "differing_words": 2868,
+      "words": 2880
+    },
+    "dry_flat/v": {
+      "status": "moved",
+      "max_abs_difference": 0.00018396228551864624,
+      "rms_of_old_entry": 0.021731586129028747,
+      "max_abs_over_rms": 0.00846520288148282,
+      "differing_words": 2912,
+      "words": 2912
+    },
+    "dry_flat/w": {
+      "status": "moved",
+      "max_abs_difference": 0.00016503548249602318,
+      "rms_of_old_entry": 0.036680117254846684,
+      "max_abs_over_rms": 0.004499317200907159,
+      "differing_words": 2525,
+      "words": 2856
+    },
+    "moist/mup": {
+      "status": "moved",
+      "max_abs_difference": 0.020467758178710938,
+      "rms_of_old_entry": 16.277062280488472,
+      "max_abs_over_rms": 0.001257460211554631,
+      "differing_words": 168,
+      "words": 168
+    },
+    "moist/php": {
+      "status": "moved",
+      "max_abs_difference": 0.0087890625,
+      "rms_of_old_entry": 306.37589751955335,
+      "max_abs_over_rms": 2.8687186463285904e-05,
+      "differing_words": 2504,
+      "words": 2856
+    },
+    "moist/qc": {
+      "status": "held",
+      "max_abs_difference": 0.0,
+      "rms_of_old_entry": 0.0,
+      "max_abs_over_rms": null,
+      "differing_words": 0,
+      "words": 2688
+    },
+    "moist/qr": {
+      "status": "held",
+      "max_abs_difference": 0.0,
+      "rms_of_old_entry": 0.0,
+      "max_abs_over_rms": null,
+      "differing_words": 0,
+      "words": 2688
+    },
+    "moist/qv": {
+      "status": "moved",
+      "max_abs_difference": 3.725290298461914e-09,
+      "rms_of_old_entry": 0.005362379750133613,
+      "max_abs_over_rms": 6.947084078424494e-07,
+      "differing_words": 1893,
+      "words": 2688
+    },
+    "moist/thp": {
+      "status": "moved",
+      "max_abs_difference": 0.000518798828125,
+      "rms_of_old_entry": 0.2672222946731746,
+      "max_abs_over_rms": 0.0019414503896821756,
+      "differing_words": 1884,
+      "words": 2688
+    },
+    "moist/u": {
+      "status": "moved",
+      "max_abs_difference": 0.0001964569091796875,
+      "rms_of_old_entry": 3.732449901636172,
+      "max_abs_over_rms": 5.2634841553685114e-05,
+      "differing_words": 2873,
+      "words": 2880
+    },
+    "moist/v": {
+      "status": "moved",
+      "max_abs_difference": 0.00035327672958374023,
+      "rms_of_old_entry": 0.03285570470015486,
+      "max_abs_over_rms": 0.010752371096824326,
+      "differing_words": 2912,
+      "words": 2912
+    },
+    "moist/w": {
+      "status": "moved",
+      "max_abs_difference": 0.00020537152886390686,
+      "rms_of_old_entry": 0.05529890492059193,
+      "max_abs_over_rms": 0.003713844409013453,
+      "differing_words": 2525,
+      "words": 2856
+    },
+    "open/mup": {
+      "status": "moved",
+      "max_abs_difference": 1.8883862495422363,
+      "rms_of_old_entry": 9.389647517328799,
+      "max_abs_over_rms": 0.20111364628514314,
+      "differing_words": 224,
+      "words": 224
+    },
+    "open/php": {
+      "status": "moved",
+      "max_abs_difference": 1.4621422290802002,
+      "rms_of_old_entry": 12.701484781723234,
+      "max_abs_over_rms": 0.11511585095816086,
+      "differing_words": 3360,
+      "words": 3808
+    },
+    "open/thp": {
+      "status": "moved",
+      "max_abs_difference": 0.000457763671875,
+      "rms_of_old_entry": 0.1542920401323588,
+      "max_abs_over_rms": 0.0029668651181377166,
+      "differing_words": 2521,
+      "words": 3584
+    },
+    "open/u": {
+      "status": "moved",
+      "max_abs_difference": 0.07288718223571777,
+      "rms_of_old_entry": 1.4949806014491804,
+      "max_abs_over_rms": 0.04875460067178367,
+      "differing_words": 3808,
+      "words": 3808
+    },
+    "open/v": {
+      "status": "moved",
+      "max_abs_difference": 0.02031412231735885,
+      "rms_of_old_entry": 0.017577884817960094,
+      "max_abs_over_rms": 1.1556636380165048,
+      "differing_words": 3840,
+      "words": 3840
+    },
+    "open/w": {
+      "status": "moved",
+      "max_abs_difference": 0.012237610428940116,
+      "rms_of_old_entry": 0.03126028568645071,
+      "max_abs_over_rms": 0.39147468297912325,
+      "differing_words": 3363,
+      "words": 3808
+    },
+    "terrain/mup": {
+      "status": "moved",
+      "max_abs_difference": 0.026928424835205078,
+      "rms_of_old_entry": 5.539386658758326,
+      "max_abs_over_rms": 0.004861264702045765,
+      "differing_words": 160,
+      "words": 160
+    },
+    "terrain/php": {
+      "status": "moved",
+      "max_abs_difference": 0.005722612142562866,
+      "rms_of_old_entry": 5.8955686891276295,
+      "max_abs_over_rms": 0.0009706632971839133,
+      "differing_words": 2400,
+      "words": 2720
+    },
+    "terrain/thp": {
+      "status": "moved",
+      "max_abs_difference": 0.000274658203125,
+      "rms_of_old_entry": 0.0844699644113947,
+      "max_abs_over_rms": 0.003251548701824119,
+      "differing_words": 1186,
+      "words": 2560
+    },
+    "terrain/u": {
+      "status": "moved",
+      "max_abs_difference": 0.00016605854034423828,
+      "rms_of_old_entry": 2.365832774327688,
+      "max_abs_over_rms": 7.019031190462229e-05,
+      "differing_words": 2659,
+      "words": 2720
+    },
+    "terrain/v": {
+      "status": "moved",
+      "max_abs_difference": 0.00013594194751931354,
+      "rms_of_old_entry": 0.012197044594288935,
+      "max_abs_over_rms": 0.011145482536233911,
+      "differing_words": 2816,
+      "words": 2816
+    },
+    "terrain/w": {
+      "status": "moved",
+      "max_abs_difference": 0.00015233643352985382,
+      "rms_of_old_entry": 0.018992020887425687,
+      "max_abs_over_rms": 0.00802107550496184,
+      "differing_words": 2560,
+      "words": 2720
+    }
+  },
+  "moved": 25,
+  "total": 27
+}

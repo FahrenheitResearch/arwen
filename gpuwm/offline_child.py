@@ -611,6 +611,219 @@ def resolve_child_run_config(child_config_path, *, child_levels=None):
     return cfg
 
 
+#: What a downscaled child's own ``report.json`` calls the pipeline that
+#: wrote it, on BOTH of its outcomes -- the run that reached its last
+#: frame and the one whose fields stopped being finite.  One spelling,
+#: used by the writer (:mod:`gpuwm.offline_child_run`) and by the reader
+#: that decides whether a run directory holds a child at all
+#: (:func:`gpuwm.resume.offline_child_run_at`), so the document can say
+#: which route made it without either side keeping its own copy of the
+#: string.
+CHILD_REPORT_PIPELINE = "archived-parent-to-native-standalone-cuda-child"
+
+
+#: The horizontal spacing, in metres, at or below which this tree calls a
+#: child an LES rather than a very fine mesoscale run.  It is the tree's
+#: own number and not a new one: ``docs/public/LES.md`` ships its nested
+#: LES child at 250 m and calls that child "COARSE LES at the gray-zone
+#: edge", and ``docs/public/GRAYZONE-NEST.md`` puts the gray zone between
+#: roughly 2 km and that child.  At or below this spacing the grid
+#: resolves the eddies a boundary-layer scheme exists to stand in for.
+LES_CHILD_SPACING_M = 250.0
+
+#: Where the numbers above are written down, quoted in the statement so a
+#: reader can check the threshold rather than take it.
+LES_CHILD_SPACING_SOURCE = "docs/public/LES.md"
+
+#: The closures that mix in three dimensions, WRF's own ``km_opt``
+#: spelling: 2 is the 1.5-order prognostic TKE scheme and 3 is 3-D
+#: Smagorinsky.  1 and 4 are the two-dimensional operators, which under a
+#: boundary-layer scheme leave the vertical entirely to that scheme.
+#:
+#: THIS TREE admits either three-dimensional one with
+#: ``bl_pbl_physics = 0`` and no other way (``gpuwm.config``'s
+#: ``validate_km_opt``): the vertical exchange pair of both is applied by
+#: ``vertical_diffusion_2``, which is PBL-off gated, so with a scheme on
+#: only the horizontal half of the selected closure would run.  WRF's
+#: ``diff_opt`` is not a key here -- ``gpuwm.namelist_import`` maps
+#: ``diff_opt = 2`` onto the native mixing form on the way in and
+#: ``km_opt`` stays the whole of the selection.
+LES_CHILD_THREE_DIMENSIONAL_CLOSURES = (2, 3)
+
+#: The two-dimensional operators, which compute no vertical exchange pair
+#: of their own.  Under a boundary-layer scheme they leave the vertical to
+#: that scheme, which is a division of labour; with the scheme OFF they
+#: leave nothing doing it, so a child carrying one of these and
+#: ``bl_pbl_physics = 0`` mixes heat and moisture vertically by no route
+#: at all.  ``km_opt = 0`` is deliberately absent: this tree admits it
+#: only behind an acknowledgement the user writes out in full
+#: (``gpuwm.config``'s ``KM_OPT_ZERO_ACK``), so that child was told.
+LES_CHILD_NO_VERTICAL_MIXING_CLOSURES = (1, 4)
+
+
+def child_inherits_parent_levels(cfg, *, child_levels_spec,
+                                parent_levels) -> bool:
+    """Did anyone CHOOSE this child's vertical ladder, or is it the parent's?
+
+    Three readings, in the order they settle the question, and the same
+    three at the door and inside the runner so the two cannot disagree:
+
+    * ``--child-levels`` was given, so the ladder was chosen -- whatever
+      it came out as, someone asked for it;
+    * the configuration declares no ``eta_levels`` at all, so the child
+      is built on the parent's ladder (``docs/public/DOWNSCALE.md``:
+      "without ``--child-levels`` the child keeps the parent's levels");
+    * it declares one, so it is the parent's only if it is the same DEPTH
+      as the parent tape's, which is the reading the parent archive can
+      actually answer.  This is the arm a derived config lands on:
+      ``_derive_child_run_config`` copies ``eta_levels`` from the parent
+      verbatim along with everything else.
+    """
+
+    if child_levels_spec is not None:
+        return False
+    if getattr(cfg, "eta_levels", None) is None:
+        return True
+    return parent_levels is not None and int(parent_levels) == int(cfg.nz)
+
+
+def les_child_regime(cfg, *, inherits_parent_levels: bool,
+                     parent_levels: int | None = None) -> dict | None:
+    """The LES-regime statement a sub-250 m child earns, or ``None``.
+
+    ONE rule, read by the two places that need it: the downscale door
+    says it before the run starts, and the non-finite refusal says it
+    again when a run of that shape ends the way this shape ends.  A
+    second copy of the arithmetic is how the door and the refusal come to
+    disagree about what regime a child was in.
+
+    It is a STATEMENT and not a refusal.  A child at this spacing on an
+    inherited ladder is a run somebody may very well want -- the shipped
+    nested LES child is exactly one -- and nothing here changes what the
+    run does.  What it changes is that the reader is told which regime
+    they asked for before they wait for it, instead of afterwards.
+
+    ``inherits_parent_levels`` is the caller's answer to "did anyone
+    choose this child's vertical ladder?", because only the caller knows:
+    the door knows whether ``--child-levels`` was given and whether the
+    resolved ladder is still the parent's, and the runner knows what the
+    door resolved.  ``parent_levels`` is the parent archive's own level
+    count when the caller has it, and only sharpens the sentence.
+
+    Returns ``None`` when the child is coarser than
+    :data:`LES_CHILD_SPACING_M`, and otherwise when ALL THREE of these
+    are true of it -- there is nothing to say to a child that was
+    configured for the regime it is running in:
+
+    * it carries a vertical ladder of its own, so nobody handed it a
+      parent's;
+    * it does not run a 1-D boundary-layer scheme without a 3-D closure
+      beside it (:data:`LES_CHILD_THREE_DIMENSIONAL_CLOSURES`); and
+    * it is not left with no vertical mixing of heat or moisture at all,
+      which is the scheme off and a two-dimensional closure
+      (:data:`LES_CHILD_NO_VERTICAL_MIXING_CLOSURES`).
+
+    The third condition is the one this function's own ``why`` text has
+    always named and the rule once left out: an 83 m child on its own
+    ladder with ``bl_pbl_physics = 0`` and ``km_opt = 4`` heard nothing,
+    although by that text it has no vertical mixing by any route.
+    """
+
+    spacing = min(float(cfg.dx), float(cfg.dy))
+    if spacing > LES_CHILD_SPACING_M:
+        return None
+    km_opt = int(getattr(cfg, "km_opt", 0) or 0)
+    pbl = int(getattr(cfg, "bl_pbl_physics", 0) or 0)
+    three_dimensional = km_opt in LES_CHILD_THREE_DIMENSIONAL_CLOSURES
+    pbl_without_closure = bool(pbl) and not three_dimensional
+    no_vertical_mixing = (not pbl
+                          and km_opt in LES_CHILD_NO_VERTICAL_MIXING_CLOSURES)
+    if not (inherits_parent_levels or pbl_without_closure
+            or no_vertical_mixing):
+        return None
+    reasons = []
+    if inherits_parent_levels:
+        reasons.append(
+            f"inherits the parent's {int(cfg.nz)}-level vertical ladder"
+            if parent_levels is None or int(parent_levels) == int(cfg.nz)
+            else f"runs {int(cfg.nz)} levels carried down from the "
+                 f"parent's {int(parent_levels)}")
+    if pbl_without_closure:
+        reasons.append(
+            f"runs a 1-D boundary-layer scheme (bl_pbl_physics = {pbl}) "
+            f"with no 3-D closure (km_opt = {km_opt})")
+    if no_vertical_mixing:
+        reasons.append(
+            f"mixes heat and moisture vertically by no route at all "
+            f"(km_opt = {km_opt} computes no vertical exchange pair and "
+            f"bl_pbl_physics = {pbl})")
+    ways_out = []
+    if inherits_parent_levels:
+        ways_out.append(
+            "--child-levels N,STRETCH gives the child its own vertical "
+            "ladder instead of the parent's")
+    if pbl_without_closure or no_vertical_mixing:
+        ways_out.append(
+            "km_opt = 3 (3-D Smagorinsky) or km_opt = 2 (prognostic TKE) "
+            "with bl_pbl_physics = 0 in the --child-config TOML selects a "
+            "3-D closure, which this tree admits with the boundary-layer "
+            "scheme off and no other way")
+    ways_out.append(
+        "--child-surface-from gives the child its own geography, which a "
+        "grid this fine can resolve and the parent's cannot")
+    # THE SHAPE the reader is being warned about, and only the one that
+    # is true of this child: the walked failure belongs to a child with a
+    # boundary-layer scheme running at LES spacing, and putting that
+    # sentence on a child that has no such scheme would be a warning
+    # about a mechanism that is not there.
+    if pbl_without_closure:
+        shape = ("A boundary-layer-scheme child at LES spacing tends to "
+                 "grow vertical velocity check after check until the "
+                 "field goes non-finite.")
+    elif no_vertical_mixing:
+        shape = ("Nothing carries heat or moisture between this child's "
+                 "levels except the motion it resolves, so a column's "
+                 "stratification is held by that motion alone.")
+    else:
+        shape = (f"A child at this spacing on a ladder chosen for a "
+                 f"coarser grid leaves more of its turbulence to the "
+                 f"subgrid model than a resolved column does, 12.7 "
+                 f"percent against 7.9 ({LES_CHILD_SPACING_SOURCE}).")
+    statement = (
+        f"this child runs at {spacing:g} m spacing, at or below the "
+        f"{LES_CHILD_SPACING_M:g} m this tree calls coarse LES at the "
+        f"gray-zone edge ({LES_CHILD_SPACING_SOURCE}), and it "
+        + " and ".join(reasons)
+        + f".  {shape}  Ways out: " + "; ".join(ways_out))
+    why = (
+        "At this spacing the grid resolves the eddies a 1-D "
+        "boundary-layer scheme exists to stand in for, so the scheme's "
+        "vertical transport and the resolved motion do the same work "
+        "twice; and km_opt 1 and 4 compute no separate vertical exchange "
+        "pair at all, so with the scheme off there is no vertical mixing "
+        "of heat or moisture by any route "
+        f"({LES_CHILD_SPACING_SOURCE}, the two closures and the "
+        "vertical-scalar-mixing table).  The vertical ladder is the "
+        "binding constraint on the shipped nested child for the same "
+        "reason it is here: 250 m columns on a 3 km grandparent's 49 "
+        "shared levels, measured at 18 levels inside a 1741 m boundary "
+        "layer.")
+    return {
+        "spacing_m": spacing,
+        "threshold_m": LES_CHILD_SPACING_M,
+        "nz": int(cfg.nz),
+        "parent_nz": None if parent_levels is None else int(parent_levels),
+        "km_opt": km_opt,
+        "bl_pbl_physics": pbl,
+        "inherits_parent_levels": bool(inherits_parent_levels),
+        "pbl_without_three_dimensional_closure": pbl_without_closure,
+        "no_vertical_mixing_of_heat_or_moisture": no_vertical_mixing,
+        "statement": statement,
+        "why": why,
+        "source": LES_CHILD_SPACING_SOURCE,
+    }
+
+
 def _unsupported_parent_clause(mp_physics: int, *, what: str) -> str:
     """The refusal text for a parent scheme this lane cannot read.
 
@@ -2463,8 +2676,16 @@ def _remap_boundary_snapshot_to_child_ladder(
     """
 
     receipts = []
+    # ``interpolated`` arrives on the PREPROCESS BACKEND: on the default
+    # cuda route every value in it is a device array, which is why the
+    # field loop below reads each one through ``_to_host``.  ``mu`` is
+    # read here instead of there, and reading it with ``np.asarray``
+    # made `gpuwm downscale --child-levels` -- the whole reason this
+    # function exists -- die on its first boundary frame with CuPy's
+    # "Implicit conversion to a NumPy array is not allowed", at exit 1,
+    # on the default backend.
     child_mu = np.asarray(child_mub, dtype=np.float64) + np.asarray(
-        interpolated["mu"][0], dtype=np.float64)
+        _to_host(interpolated["mu"])[0], dtype=np.float64)
 
     def coeffs_for(znw):
         return compute_hybrid_coeffs(np.asarray(znw, dtype=np.float64),
@@ -3043,7 +3264,11 @@ def build_offline_lateral_boundaries(
 
 
 __all__ = [
+    "CHILD_REPORT_PIPELINE",
     "ChildSurfaceState",
+    "LES_CHILD_SPACING_M", "LES_CHILD_SPACING_SOURCE",
+    "LES_CHILD_THREE_DIMENSIONAL_CLOSURES", "les_child_regime",
+    "child_inherits_parent_levels",
     "OFFLINE_CHILD_MP_PHYSICS",
     "InterpolatedBoundarySnapshot", "InterpolatedInitialState",
     "OfflineBoundaryResult",

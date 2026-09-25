@@ -24,6 +24,8 @@ import numpy as np
 
 from gpuwm.aerosol_source_receipt import aerosol_source_report_entry
 from gpuwm.config import soil_layer_count, validate_run_config
+from gpuwm.offline_child_run import (_strict_json,
+                                     child_health_log_fields)
 from gpuwm.offline_child import (
     OfflineChildPlacement,
     bind_parent_physics_from_gpuwm_restart,
@@ -35,7 +37,12 @@ from gpuwm.offline_child import (
 
 
 def _log(event: str, **values) -> None:
-    print(json.dumps({"event": event, **values}, sort_keys=True), flush=True)
+    # THE SAME STRICT WRITER the child door uses, for the reason that
+    # door uses it: NaN is not a JSON token, so a line carrying one is
+    # refused by every reader outside Python, and the lines this proof
+    # writes most are the ones whose readings went.
+    print(_strict_json({"event": event, **values}, sort_keys=True),
+          flush=True)
 
 
 def _memory_snapshot(cp) -> dict[str, int]:
@@ -309,10 +316,15 @@ def run(outdir: str | Path, *, duration_seconds: float = 9.0,
             memory = _memory_snapshot(cp)
             parent_pool_reserved_peak = max(
                 parent_pool_reserved_peak, memory["pool_reserved_bytes"])
+            # THE SAME DECODER again: the parent's frame line took
+            # ``float()`` to a w_max that is NaN exactly when the parent
+            # went, and it is emitted immediately BEFORE the refusal
+            # below, so the one line that reports a blown-up parent was
+            # the one line no strict reader could open.
             _log("parent_frame", index=frame_index, path=str(path),
                  bytes=path.stat().st_size,
                  elapsed_seconds=float(parent.elapsed_seconds),
-                 nan=bool(health["nan"]), w_max=float(health["w_max"]),
+                 **child_health_log_fields(health),
                  memory=memory)
             if health["nan"]:
                 raise RuntimeError(
@@ -381,12 +393,21 @@ def run(outdir: str | Path, *, duration_seconds: float = 9.0,
             memory = _memory_snapshot(cp)
             child_pool_reserved_peak = max(
                 child_pool_reserved_peak, memory["pool_reserved_bytes"])
+            # THE SAME DECODER the offline child's own loop uses, and
+            # for the reason that loop states: ``cfl`` IS ``None``
+            # whenever ``nan`` is true, and coercing it here raised
+            # ``TypeError: float() argument must be a string or a real
+            # number, not 'NoneType'`` in the health line immediately
+            # before the refusal below (``offline_child_smoke.py`` lines
+            # 388 and 393 of the 2.7.5 tree, the door's own pair being
+            # lines 1460 and 1477).  So this proof died with that
+            # traceback on exactly
+            # the run it exists to report, which is the walked 2.7.5
+            # failure with the door's name changed.
             _log("child_step", step=step_index,
                  total_steps=child_steps,
                  elapsed_seconds=float(child.elapsed_seconds),
-                 nan=bool(last_health["nan"]),
-                 cfl=float(last_health["cfl"]),
-                 w_max=float(last_health["w_max"]),
+                 **child_health_log_fields(last_health),
                  memory=memory,
                  wall_seconds=time.perf_counter() - started)
             if last_health["nan"]:

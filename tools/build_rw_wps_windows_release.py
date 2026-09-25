@@ -25,6 +25,11 @@ from tools.build_rw_wps_release import (  # noqa: E402
     _run,
     _stage_rw_wps_python_project,
 )
+from gpuwm.native_wrf_distribution import (  # noqa: E402
+    BRIDGE_WORKSPACES,
+    BUNDLED_BRIDGES,
+    WINDOWS_CPU_BACKEND_LIBRARY,
+)
 
 
 def build_windows_release(args: argparse.Namespace) -> dict[str, object]:
@@ -49,7 +54,6 @@ def build_windows_release(args: argparse.Namespace) -> dict[str, object]:
     if dirty:
         raise RuntimeError("refusing to build RW-WPS from a dirty source tree")
 
-    manifest = REPO / "tools" / "grib1_bridge" / "Cargo.toml"
     source_date_epoch = subprocess.check_output(
         ["git", "-C", str(REPO), "show", "-s", "--format=%ct", "HEAD"],
         text=True,
@@ -86,26 +90,36 @@ def build_windows_release(args: argparse.Namespace) -> dict[str, object]:
             target_dir=cargo_target,
             source_date_epoch=source_date_epoch,
         )
-        _run([
-            "cargo",
-            "build",
-            "--manifest-path",
-            str(manifest),
-            "--release",
-            "--locked",
-            "--offline",
-        ], cwd=manifest.parent, env=environment)
+        # One build per workspace the bundle's declaration names, the
+        # same plan tools/build_rw_wps_release.py runs on Linux.  This
+        # command compiled tools/grib1_bridge alone and then handed the
+        # packager five hand-written literals, which is the shape that
+        # dropped rw_fetch and then gdt101_remap out of the bundle; the
+        # PE side had to move with it or the Windows archive would ship
+        # a different set of bridges from the Linux one.
+        for workspace in BRIDGE_WORKSPACES:
+            manifest = REPO / workspace / "Cargo.toml"
+            if not manifest.is_file():
+                raise FileNotFoundError(
+                    f"the standalone bundle declares bridges from "
+                    f"{workspace} and this checkout has no {manifest}")
+            _run([
+                "cargo",
+                "build",
+                "--manifest-path",
+                str(manifest),
+                "--release",
+                "--locked",
+                "--offline",
+            ], cwd=manifest.parent, env=environment)
         native = cargo_target / "release"
         distribution_args = argparse.Namespace(
             wheel=wheels[0],
-            grib1_bridge=native / "grib1_bridge.exe",
-            grib2_inventory=native / "grib2_inventory.exe",
-            grib2_dump=native / "grib2_dump.exe",
-            gfs_bridge=native / "gfs_grib2_bridge.exe",
-            hrrr_bridge=native / "hrrr_grib2_bridge.exe",
-            cpu_backend=native / "gpuwm_preprocess_cpu.dll",
+            cpu_backend=native / WINDOWS_CPU_BACKEND_LIBRARY,
             output_dir=output,
             archive=archive,
+            **{bridge.dest: native / f"{bridge.name}.exe"
+               for bridge in BUNDLED_BRIDGES},
         )
         result = build_windows_distribution(distribution_args)
 

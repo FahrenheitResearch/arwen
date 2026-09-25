@@ -117,6 +117,22 @@ gate, a receipt, or a measurement before it can be more than stamped (section
 coherence/correlation gate dedup found during instrument validation (section
 7.2).
 
+**Two condensate products the renderer does not draw (2.7.7).** Both were
+asked for by a programme reading this engine's output, and neither exists in
+the product catalog today.
+
+- *A layer-bounded supercooled liquid water path.* The vertical integral of
+  cloud water over the levels whose temperature lies between two stated
+  bounds (an icing layer, say -20 C to 0 C rather than the whole column), in
+  kg/m^2, as a map with its bounds in the title. `gpuwm/cells/catalog.py:109`
+  already computes the whole-column, below-freezing form of this as a cell
+  metric (`slwp_max_kg_m2`); what is missing is the layer bounds and the map.
+- *An isotherm-height map.* The height of a stated temperature surface, for
+  example the -10 C level, in metres MSL, with the cells that never reach it
+  masked rather than filled. Takes the temperature as an argument so one
+  product serves every isotherm, and states which crossing it took where a
+  column crosses more than once.
+
 **The perturbation ensemble engine.** Currently a self-limiting experimental
 tool (no mass/wind balance, shared lateral boundaries, lateral taper only); the
 path to shipping it is closing those stated limits, not relabeling them

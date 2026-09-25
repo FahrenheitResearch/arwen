@@ -1,4 +1,4 @@
-"""EXPERIMENTAL: ``gpuwm-obs.asos-surface.v1`` -> LETKF observation batches.
+"""EXPERIMENTAL: a ``gpuwm-obs.asos-surface`` record (v2, or v1) -> LETKF observation batches.
 
 The obs battery's ``rw_asos`` (BowEcho rustwx, ``tools/rustwx/crates/
 rw-obs/src/bin/asos.rs``) owns the decode: it pulls routine + SPECI METARs
@@ -32,13 +32,21 @@ clean pair (altimeter or station pressure vs ``psfc`` adjusted to station
 elevation) needs the v2 schema too, so this adapter does not offer a
 pressure type at all rather than offering a wrong one.
 
-**Reports are hourly-matched.**  The decoder matches reports to whole-hour
-valid times by design (``--step-hours`` in [1, 24]); a 5-15 min cycling run
-therefore sees fresh surface observations at roughly one cycle per hour.
-Each report is assimilated ONCE, at the analysis time nearest its valid
-time (ties to the earlier analysis), and never once its age exceeds
-``max_age_seconds``.  Sub-hourly cadence is the IEM ``asos1min`` dataset --
-a new rw-obs route, upstream.
+**Reports are hourly-matched, and dated to when they were taken.**  The
+decoder matches each report to the ONE whole-hour valid time nearest it
+(``--step-hours`` in [1, 24]), so a report serves one slot and a 5-15 min
+cycling run sees fresh surface observations at roughly one cycle per hour.
+A ``v2`` record carries each report's ``observation_time`` (the archive's
+own instant) beside the ``valid_time`` slot it serves; the age of a report
+at an analysis, and which analysis it is routed to, are measured from
+``observation_time``, while ``valid_time`` stays the slot binding.  A
+``v1`` record has only the slot, which then stands as the instant too,
+and the adapter counts such reports (``reports_without_observation_time``)
+so a receipt says which clock its ages came from.  Each report is
+assimilated ONCE, at the analysis nearest its observation time (ties to
+the earlier analysis), and never once its age exceeds ``max_age_seconds``.
+Sub-hourly cadence is the IEM ``asos1min`` dataset -- a new rw-obs route,
+upstream.
 
 **Station elevation is checked against model terrain.**  A valley or ridge
 station the grid does not resolve produces systematic 2 m innovations that
@@ -70,8 +78,12 @@ import numpy as np
 
 from gpuwm.da.letkf import GriddedObs, Localization
 
-#: The observation contract this adapter reads.
-OBS_SCHEMA = "gpuwm-obs.asos-surface.v1"
+#: The observation contract this adapter reads: ``v2``, whose reports carry
+#: their own ``observation_time``, and ``v1`` before it, whose reports are
+#: dated to the hour they were matched to.
+OBS_SCHEMA = "gpuwm-obs.asos-surface.v2"
+OBS_SCHEMA_V1 = "gpuwm-obs.asos-surface.v1"
+OBS_SCHEMAS = (OBS_SCHEMA, OBS_SCHEMA_V1)
 
 #: Provenance stamp for the adaptation itself.
 ADAPTER_SCHEMA = "gpuwm-da.surface-obs-adapter.v1"
@@ -375,10 +387,10 @@ def read_record(source) -> Mapping:
         raise SurfaceObsError(
             f"expected a path or a read asos-surface record, got "
             f"{type(source).__name__}")
-    if record.get("schema") != OBS_SCHEMA:
+    if record.get("schema") not in OBS_SCHEMAS:
         raise SurfaceObsError(
             f"record declares schema {record.get('schema')!r}, this "
-            f"adapter reads {OBS_SCHEMA!r}")
+            f"adapter reads {list(OBS_SCHEMAS)!r}")
     if record.get("status") != "READY":
         raise SurfaceObsError(
             f"record status is {record.get('status')!r}, not 'READY'; an "
@@ -428,13 +440,17 @@ def _select_reports(record: Mapping, analysis_time: datetime,
                     max_age_s: float, counts: dict) -> dict[str, dict]:
     """One report per station for this analysis time, each used once.
 
-    A report is eligible when its seam valid time is within
-    ``max_age_s`` of ``analysis_time`` AND, when the caller supplies the
-    full analysis schedule, ``analysis_time`` is the nearest analysis to
-    the report (ties to the earlier analysis).  The schedule rule is what
-    keeps an hourly report from being assimilated at two adjacent 15 min
-    cycles: the same number entering the filter twice is a second,
-    perfectly correlated observation nobody took.
+    A report is eligible when the instant it was TAKEN (its
+    ``observation_time``; on a v1 record the slot ``valid_time`` is the
+    only instant there is) is within ``max_age_s`` of ``analysis_time``
+    AND, when the caller supplies the full analysis schedule,
+    ``analysis_time`` is the nearest analysis to that instant (ties to the
+    earlier analysis).  The schedule rule is what keeps an hourly report
+    from being assimilated at two adjacent 15 min cycles: the same number
+    entering the filter twice is a second, perfectly correlated
+    observation nobody took.  Measuring from the observation instant is
+    what keeps a 12:52 report served under the 13:00 slot from being
+    routed and aged as if it had been taken at 13:00.
     """
 
     if analysis_times is not None:
@@ -454,16 +470,26 @@ def _select_reports(record: Mapping, analysis_time: datetime,
         if flags:
             counts["reports_refused_flagged"] += 1
             continue
-        valid = _parse_seam_time(report["valid_time"],
-                                 where=f"report {report.get('station_id')}")
-        age = (analysis_time - valid).total_seconds()
+        where = f"report {report.get('station_id')}"
+        valid = _parse_seam_time(report["valid_time"], where=where)
+        if report.get("observation_time"):
+            observed = _parse_seam_time(
+                report["observation_time"],
+                where=f"{where} observation_time")
+        else:
+            # A v1 record dated every report to the slot it was matched
+            # to; the slot is the only instant it has, and the count says
+            # so in the receipt.
+            observed = valid
+            counts["reports_without_observation_time"] += 1
+        age = (analysis_time - observed).total_seconds()
         if abs(age) > max_age_s:
             counts["reports_outside_window"] += 1
             continue
         if schedule is not None:
             nearest = min(
                 schedule,
-                key=lambda t: (abs((t - valid).total_seconds()), t))
+                key=lambda t: (abs((t - observed).total_seconds()), t))
             if nearest != analysis_time:
                 counts["reports_routed_to_other_analysis"] += 1
                 continue
@@ -472,14 +498,14 @@ def _select_reports(record: Mapping, analysis_time: datetime,
         if previous is not None:
             # Nearest report wins; ties to the one at or before the
             # analysis time (a nowcast prefers the past over the future).
-            if (abs(age), valid > analysis_time) >= (
-                    abs(previous["age_s"]), previous["valid"]
+            if (abs(age), observed > analysis_time) >= (
+                    abs(previous["age_s"]), previous["observed"]
                     > analysis_time):
                 counts["reports_superseded_same_station"] += 1
                 continue
             counts["reports_superseded_same_station"] += 1
         chosen[station_id] = {"report": report, "valid": valid,
-                              "age_s": age}
+                              "observed": observed, "age_s": age}
     return chosen
 
 
@@ -523,7 +549,7 @@ def surface_to_gridded_obs(
     Parameters
     ----------
     source
-        A ``gpuwm-obs.asos-surface.v1`` path or an already-read record.
+        A ``gpuwm-obs.asos-surface`` record path (v2, or v1) or an already-read record.
     target_grid
         The caller's own :class:`~gpuwm.obs.target_grid.TargetGrid`.
         Placement is its ``mass_index`` and ``inside`` -- the same
@@ -596,6 +622,7 @@ def surface_to_gridded_obs(
     counts = {
         "stations_in_record": len(stations),
         "reports_in_record": len(record["reports"]),
+        "reports_without_observation_time": 0,
         "reports_refused_flagged": 0,
         "reports_outside_window": 0,
         "reports_routed_to_other_analysis": 0,
@@ -797,9 +824,20 @@ def surface_to_gridded_obs(
                 "min": (min(ages) if ages else None),
                 "max": (max(ages) if ages else None),
             },
-            "note": "the seam is hourly-matched by decoder design; "
-                    "sub-hourly cadence needs the IEM asos1min route in "
-                    "rw-obs (upstream)",
+            # Which clock the ages above and the routing came from: the
+            # instant each report was taken (v2), or the slot it was
+            # matched to when the record carried nothing else (v1).
+            "innovation_time_source": (
+                "valid_time (the matched slot; the record carries no "
+                "observation_time)"
+                if counts["reports_without_observation_time"]
+                == len(record["reports"]) and record["reports"]
+                else "observation_time"),
+            "note": "the seam is hourly-matched by decoder design and "
+                    "each report serves one slot; its age and routing are "
+                    "measured from observation_time where the record "
+                    "carries it; sub-hourly cadence needs the IEM "
+                    "asos1min route in rw-obs (upstream)",
         },
         "notes": [
             "wind is SPEED only: drct is dropped at decode (v1 seam); "

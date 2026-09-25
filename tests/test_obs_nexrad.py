@@ -625,3 +625,60 @@ def test_one_real_volume_reaches_the_radar_grid_schema(tmp_path):
     assert receipt["sha256"] == hashlib.sha256(out.read_bytes()).hexdigest()
     assert read["provenance"]["volumes"][0]["volume_sha256"] == \
         fetch["files"][0]["sha256"]
+
+
+# -- the collection instants: when the volume was actually scanned --------
+
+def test_the_reader_lifts_the_collection_instants_the_pack_carries(tmp_path):
+    """A pack written since the instants existed dates every cut and the
+    whole volume from the radials' own clocks; the reader hands all of it
+    on, and keeps the header start, the key time and the end apart."""
+
+    azimuth = np.array([0.0, 1.0], dtype="<f4")
+    elevation = np.array([0.5, 0.5], dtype="<f4")
+    data = np.array([[10.0, 20.0, 30.0], [11.0, 21.0, 31.0]], dtype="<f4")
+    payload = azimuth.tobytes() + elevation.tobytes() + data.tobytes()
+    arrays = {
+        "a00000": {"dtype": "<f4", "shape": [2], "offset": 0, "bytes": 8},
+        "a00001": {"dtype": "<f4", "shape": [2], "offset": 8, "bytes": 8},
+        "a00002": {"dtype": "<f4", "shape": [2, 3], "offset": 16,
+                   "bytes": 24},
+    }
+    meta = _minimal_meta(payload, arrays)
+    meta["volume"].update({
+        "key_time": "2026-07-28T20:03:16Z",
+        "start_time": "2026-07-28T20:03:16.232Z",
+        "end_time": "2026-07-28T20:09:56.232Z",
+        "complete": True, "sweeps_in_volume": 12, "sweeps_incomplete": 0})
+    meta["sweeps"][0].update({
+        "start_time": "2026-07-28T20:03:16.232Z",
+        "end_time": "2026-07-28T20:03:36.232Z"})
+    path = tmp_path / "timed.pack"
+    path.write_bytes(_pack_bytes(meta, payload))
+    volume = read_sweep_pack(path)
+    assert volume.valid_time == "2026-07-28T20:03:16Z"
+    assert volume.key_time == "2026-07-28T20:03:16Z"
+    assert volume.start_time == "2026-07-28T20:03:16.232Z"
+    assert volume.end_time == "2026-07-28T20:09:56.232Z"
+    assert volume.complete is True
+    assert volume.sweeps_in_volume == 12
+    assert volume.sweeps_incomplete == 0
+    assert volume.sweeps[0].start_time == "2026-07-28T20:03:16.232Z"
+    assert volume.sweeps[0].end_time == "2026-07-28T20:03:36.232Z"
+    provenance = volume.provenance()
+    assert provenance["end_time"] == "2026-07-28T20:09:56.232Z"
+    assert provenance["sweeps_incomplete"] == 0
+
+
+def test_a_pack_from_before_the_instants_reads_them_as_unknown(tmp_path):
+    """None is "the pack did not say", and is never the header start."""
+
+    path = tmp_path / "v1.pack"
+    path.write_bytes(_good_pack())
+    volume = read_sweep_pack(path)
+    assert volume.start_time is None
+    assert volume.end_time is None
+    assert volume.key_time is None
+    assert volume.complete is None
+    assert volume.sweeps[0].start_time is None
+    assert volume.provenance()["end_time"] is None

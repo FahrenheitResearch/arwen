@@ -62,7 +62,6 @@ Nothing here is wired into a default route.  EXPERIMENTAL.
 from __future__ import annotations
 
 import gc
-import os
 import time
 import types
 from contextlib import contextmanager
@@ -1186,7 +1185,8 @@ def resolve_solve_device(requested: str) -> tuple[str, str]:
     # run, must not have a default quietly open a CUDA context on it --
     # which is exactly what a probe that only asked "is a device visible"
     # would do.
-    if os.environ.get("GPUWM_NO_LOCAL_GPU", "") not in ("", "0"):
+    from gpuwm.local_gpu import no_local_gpu
+    if no_local_gpu():
         return "host", ("auto: GPUWM_NO_LOCAL_GPU is set, so the analysis "
                         "runs on numpy and never opens a device context")
     try:

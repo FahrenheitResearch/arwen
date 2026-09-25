@@ -68,6 +68,16 @@ pub enum UnitConvert {
     /// Curated-mapping input already in Celsius against a Fahrenheit
     /// palette: `degC * 9/5 + 32`.
     CelsiusToFahrenheit,
+    /// A mixing ratio: `kg/kg * 1000`, the grams per kilogram every route
+    /// draws a hydrometeor in.
+    KgPerKgToGPerKg,
+    /// Move the values onto the power-of-a-thousand decade the legend
+    /// states, so a quantity whose whole range sits far from 1 still gets
+    /// ticks that read as numbers.  The payload is the exponent the units
+    /// carry, so `ScaleByDecade(-3)` multiplies by 1000 against a
+    /// `1e-3 <units>` label.  Chosen from the data's own range, never from
+    /// a variable's name.
+    ScaleByDecade(i32),
 }
 
 impl UnitConvert {
@@ -86,6 +96,15 @@ impl UnitConvert {
             Self::KgM3ToUgM3 => value * 1_000_000_000.0,
             Self::KgM2ToMgM2 => value * 1_000_000.0,
             Self::CelsiusToFahrenheit => value * 9.0 / 5.0 + 32.0,
+            Self::KgPerKgToGPerKg => value * 1000.0,
+            // The levels this rides against are built in f64, so the
+            // factor is taken in f64 and the product narrowed once.  An
+            // f32 `powi` of a large exponent is not the f64 one, and a
+            // value that lands a hair outside its own end level colours
+            // as the extend band rather than as itself.
+            Self::ScaleByDecade(exponent) => {
+                (f64::from(value) * 10f64.powi(-exponent)) as f32
+            }
         }
     }
 
@@ -135,6 +154,54 @@ pub struct StoreVariableStyleTemplate {
     pub style: StoreVariableStyle,
 }
 
+/// The power of a thousand that puts `max_abs` in 1-1000, or 0 when it is
+/// already there.  Powers of a thousand, not of ten, so the decade in the
+/// units is one a reader recognises (1e-3, 1e-6, 1e3) rather than an
+/// arbitrary shift.
+pub fn display_exponent(max_abs: f64) -> i32 {
+    if !max_abs.is_finite() || max_abs <= 0.0 {
+        return 0;
+    }
+    if (1.0..1000.0).contains(&max_abs) {
+        return 0;
+    }
+    ((max_abs.log10() / 3.0).floor() * 3.0) as i32
+}
+
+/// The units a mass mixing ratio is DRAWN in when the stored units are
+/// kilograms per kilogram, in any of the spellings a file carries
+/// (`kg kg-1`, `kg kg^-1`, `kg kg^{-1}`, `kg/kg`, `kg kg**-1`): grams per
+/// kilogram, and the factor that gets there.  `None` for any other units.
+///
+/// Keyed on the units attribute and never on a variable's name, so a
+/// tracer a user added to their own registry with `kg kg-1` on it gets
+/// the same bar as QCLOUD, and a plane in any other units is untouched.
+/// The section route has always drawn its mixing ratios in g kg-1; the
+/// map routes drew the same fields in kg kg-1 moved onto a decade, so one
+/// field read `1.2 against 1e-3 kg kg-1` on a map and `1.2 g kg-1` on a
+/// cut of the same air.
+pub fn grams_per_kilogram(units: &str) -> Option<(f64, &'static str)> {
+    let compact: String = units
+        .chars()
+        .filter(|c| !c.is_whitespace() && !matches!(c, '^' | '{' | '}' | '*'))
+        .collect::<String>()
+        .to_ascii_lowercase();
+    matches!(compact.as_str(), "kgkg-1" | "kg/kg").then_some((1000.0, "g kg-1"))
+}
+
+/// `1e-6 kg kg^{-1}`: the units with the decade the values were moved onto.
+pub fn scaled_units(units: &str, exponent: i32) -> String {
+    if exponent == 0 {
+        return units.to_string();
+    }
+    let units = units.trim();
+    if units.is_empty() {
+        format!("1e{exponent}")
+    } else {
+        format!("1e{exponent} {units}")
+    }
+}
+
 /// Build a neutral full-range style for a stored 2-D variable without a
 /// production meteorological counterpart.
 ///
@@ -142,25 +209,91 @@ pub struct StoreVariableStyleTemplate {
 /// A non-degenerate range is represented exactly, without percentile
 /// clipping. Constant fields receive display-only padding; absent or invalid
 /// ranges use an explicit 0..1 placeholder so renderers still have ordered
-/// levels. Raw values and units are never converted.
+/// levels.
+///
+/// WHAT BREAKAGE THIS PREVENTS (gate law, CLAUDE.md): a colorbar whose
+/// every tick reads `0`. The tick formatter carries one decimal
+/// (`rustwx_render::format_tick`), so a plane whose whole range sits below
+/// 0.05 printed the same character at every tick and the panel reported no
+/// number at all. Measured on a real stored 2-D mixing-ratio plane
+/// (`kg kg-1`, finite range 1.0071e-3 to 3.8782e-3): fourteen ticks, all
+/// fourteen labelled `0`. The remedy is the one the mesh lane already
+/// carries and is driven by the RANGE, never by a variable's name: the
+/// values move onto the power-of-a-thousand decade that puts the largest
+/// of them in 1-1000, and the decade is stated in the units and the title
+/// so a reader can put it back. A range already in 1-1000 is untouched,
+/// exponent 0, and its style is byte-unchanged.
+///
+/// A caller that has ALREADY moved its own values onto a decade must use
+/// [`generic_style_for_prescaled_store_variable`] instead, or the decade
+/// is taken twice and the levels leave the cells they colour behind.
 pub fn generic_style_for_store_variable(
     var_name: &str,
     stored_units: &str,
     finite_range: Option<(f32, f32)>,
 ) -> StoreVariableStyle {
-    const COLORS: [[u8; 4]; 9] = [
-        [68, 1, 84, 255],
-        [72, 40, 120, 255],
-        [62, 74, 137, 255],
-        [49, 104, 142, 255],
-        [38, 130, 142, 255],
-        [31, 158, 137, 255],
-        [53, 183, 121, 255],
-        [109, 205, 89, 255],
-        [253, 231, 37, 255],
-    ];
+    let range = usable_generic_range(finite_range);
+    // A mass mixing ratio is drawn in grams per kilogram before any
+    // decade is taken: the units decide, never the name.
+    let (grams_factor, base_units) = match grams_per_kilogram(stored_units) {
+        Some((factor, units)) => (factor, units),
+        None => (1.0, stored_units),
+    };
+    let range = (range.0 * grams_factor, range.1 * grams_factor);
+    // The decade the legend will speak in, taken from the data's own range
+    // before the levels are cut, so every level and the convert that rides
+    // with them agree by construction.
+    let exponent = display_exponent(range.0.abs().max(range.1.abs()));
+    let factor = 10f64.powi(-exponent);
+    let display_units = scaled_units(base_units, exponent);
+    let mut style = generic_style_on_a_settled_range(
+        var_name,
+        &display_units,
+        (range.0 * factor, range.1 * factor),
+    );
+    // The convert carries both moves as one decade: a thousand-fold into
+    // grams is three decades, and the legend states the rest.
+    let total_exponent = exponent - (grams_factor.log10().round() as i32);
+    if total_exponent != 0 {
+        style.convert = UnitConvert::ScaleByDecade(total_exponent);
+    }
+    style
+}
 
-    let range = match finite_range {
+/// The same neutral full-range style for a caller that has already moved
+/// its values onto the decade `display_units` states.
+///
+/// WHAT BREAKAGE THIS PREVENTS (gate law, CLAUDE.md): one panel's levels
+/// cut on a different decade from the cells they colour. The mesh lane
+/// moves its own decade, because it also masks cells below a named floor
+/// and has a diverging branch of its own, and it then asked
+/// [`generic_style_for_store_variable`] for the levels. That function
+/// takes a decade off whatever range it is handed, so a range the caller
+/// had already shifted could be shifted a second time and the fill sat a
+/// thousand-fold off its own bar. This entry does no decade arithmetic at
+/// all: the range it is given is the range its levels span, the units it
+/// is given are the units it states, and the returned `convert` is always
+/// [`UnitConvert::None`]. Whether a second shift is possible is therefore
+/// a question about which function was called, not about which numbers
+/// reached it.
+pub fn generic_style_for_prescaled_store_variable(
+    var_name: &str,
+    display_units: &str,
+    display_range: Option<(f32, f32)>,
+) -> StoreVariableStyle {
+    generic_style_on_a_settled_range(
+        var_name,
+        display_units,
+        usable_generic_range(display_range),
+    )
+}
+
+/// The ordered pair the levels are cut on: the range as given when it is
+/// usable, display-only padding around a constant field, and an explicit
+/// 0..1 placeholder when there is no usable range at all, so a renderer
+/// always has ordered levels.
+fn usable_generic_range(finite_range: Option<(f32, f32)>) -> (f64, f64) {
+    match finite_range {
         Some((lo, hi)) if lo.is_finite() && hi.is_finite() && lo < hi => {
             (f64::from(lo), f64::from(hi))
         }
@@ -174,7 +307,28 @@ pub fn generic_style_for_store_variable(
             (center - padding, center + padding)
         }
         _ => (0.0, 1.0),
-    };
+    }
+}
+
+/// Levels, palette and legend over a range that is already final: no
+/// decade is taken here, and `convert` is always [`UnitConvert::None`].
+fn generic_style_on_a_settled_range(
+    var_name: &str,
+    display_units: &str,
+    range: (f64, f64),
+) -> StoreVariableStyle {
+    const COLORS: [[u8; 4]; 9] = [
+        [68, 1, 84, 255],
+        [72, 40, 120, 255],
+        [62, 74, 137, 255],
+        [49, 104, 142, 255],
+        [38, 130, 142, 255],
+        [31, 158, 137, 255],
+        [53, 183, 121, 255],
+        [109, 205, 89, 255],
+        [253, 231, 37, 255],
+    ];
+
     let levels = (0..=COLORS.len())
         .map(|index| range.0 + (range.1 - range.0) * index as f64 / COLORS.len() as f64)
         .collect();
@@ -200,12 +354,12 @@ pub fn generic_style_for_store_variable(
         // nature of the ramp is visible in the legend itself and logged
         // per variable at render time; spelling it in the headline made
         // uncurated rows read like errors next to curated ones.
-        title: if stored_units.trim().is_empty() {
+        title: if display_units.trim().is_empty() {
             var_name.to_string()
         } else {
-            format!("{var_name} [{stored_units}]")
+            format!("{var_name} [{display_units}]")
         },
-        display_units: stored_units.to_string(),
+        display_units: display_units.to_string(),
         convert: UnitConvert::None,
         scale: ColorScale::Discrete(DiscreteColorScale {
             levels,
@@ -985,6 +1139,158 @@ mod tests {
         assert!(scale.levels.windows(2).all(|pair| pair[0] < pair[1]));
         assert_eq!(scale.extend, ExtendMode::Neither);
         assert_eq!(scale.mask_below, None);
+    }
+
+    #[test]
+    fn a_mixing_ratio_plane_gets_a_colorbar_whose_ticks_are_numbers() {
+        // The measurement this pins: a real stored 2-D mixing-ratio plane,
+        // units `kg kg-1`, finite range 1.0071096e-3 to 3.8782053e-3, read
+        // through the store reader and styled through this function. Before
+        // the decade shift the panel drew fourteen ticks and labelled all
+        // fourteen `0`.
+        let style = generic_style_for_store_variable(
+            "a_mixing_ratio_plane",
+            "kg kg-1",
+            Some((1.0071096e-3, 3.8782053e-3)),
+        );
+        // A mass mixing ratio goes to grams per kilogram first, keyed on
+        // its units; the range 1.0 to 3.9 g kg-1 then needs no decade.
+        assert_eq!(style.display_units, "g kg-1");
+        assert_eq!(style.title, "a_mixing_ratio_plane [g kg-1]");
+        assert_eq!(style.convert, UnitConvert::ScaleByDecade(-3));
+
+        let cmap = rustwx_render::build_colormap(&style.scale, style.colormap_options);
+        let labels: Vec<String> = rustwx_render::colorbar_ticks(&cmap, style.cbar_tick_step)
+            .iter()
+            .map(|tick| rustwx_render::format_tick(*tick))
+            .collect();
+        assert!(
+            !labels.is_empty(),
+            "a colorbar with no tick reports nothing either"
+        );
+        assert!(
+            labels.iter().any(|label| label != "0"),
+            "every tick still reads zero, so the bar measures nothing: {labels:?}"
+        );
+        assert!(
+            labels.iter().collect::<std::collections::BTreeSet<_>>().len() == labels.len(),
+            "two ticks that print the same string are one tick: {labels:?}"
+        );
+    }
+
+    #[test]
+    fn the_convert_puts_a_value_where_its_own_levels_are() {
+        let style = generic_style_for_store_variable(
+            "a_mixing_ratio_plane",
+            "kg kg-1",
+            Some((1.0071096e-3, 3.8782053e-3)),
+        );
+        let scale = style.scale.resolved_discrete();
+        let lowest = style.convert.apply(1.0071096e-3);
+        let highest = style.convert.apply(3.8782053e-3);
+        assert!(
+            (f64::from(lowest) - scale.levels.first().copied().unwrap()).abs() < 1.0e-6,
+            "the smallest value has to land on the lowest level: {lowest}"
+        );
+        assert!(
+            (f64::from(highest) - scale.levels.last().copied().unwrap()).abs() < 1.0e-6,
+            "the largest value has to land on the highest level: {highest}"
+        );
+    }
+
+    #[test]
+    fn a_range_already_in_one_to_a_thousand_keeps_its_units_and_its_values() {
+        for (units, range) in [
+            ("K", (271.4_f32, 302.8_f32)),
+            ("dBZ", (1.5_f32, 62.0_f32)),
+            ("widgets", (-2.5_f32, 7.5_f32)),
+        ] {
+            let style = generic_style_for_store_variable("plane", units, Some(range));
+            assert_eq!(style.display_units, units, "{units} moved decade");
+            assert_eq!(style.convert, UnitConvert::None, "{units} gained a convert");
+            let scale = style.scale.resolved_discrete();
+            assert_eq!(scale.levels.first().copied(), Some(f64::from(range.0)));
+            assert_eq!(scale.levels.last().copied(), Some(f64::from(range.1)));
+        }
+    }
+
+    #[test]
+    fn the_decade_is_read_off_the_range_and_never_off_the_name() {
+        // Same numbers, four names: a name cannot buy or lose a decade.
+        let mut seen = Vec::new();
+        for name in ["a_condensate_plane", "smoke", "x", "reflectivity"] {
+            let style =
+                generic_style_for_store_variable(name, "kg kg-1", Some((2.0e-7, 8.3e-7)));
+            seen.push((style.display_units.clone(), style.convert));
+        }
+        assert!(
+            seen.windows(2).all(|pair| pair[0] == pair[1]),
+            "the decade moved with the name: {seen:?}"
+        );
+        // 2e-7 to 8.3e-7 kg kg-1 is 2e-4 to 8.3e-4 g kg-1, which still
+        // needs a power of a thousand: 200 to 830 against 1e-6 g kg-1,
+        // and the convert carries the thousand into grams as well.
+        assert_eq!(seen[0].0, "1e-6 g kg-1");
+        assert_eq!(seen[0].1, UnitConvert::ScaleByDecade(-9));
+    }
+
+    #[test]
+    fn a_kilogram_per_kilogram_plane_is_labelled_in_grams_per_kilogram() {
+        // Every spelling a file carries, and only those.
+        for units in ["kg kg-1", "kg kg^-1", "kg kg^{-1}", "kg/kg", "kg kg**-1", "KG KG-1"] {
+            assert_eq!(grams_per_kilogram(units), Some((1000.0, "g kg-1")), "{units}");
+            let style = generic_style_for_store_variable("q", units, Some((1.0e-3, 4.0e-3)));
+            assert_eq!(style.display_units, "g kg-1", "{units}");
+            assert_eq!(style.convert, UnitConvert::ScaleByDecade(-3));
+            assert!((f64::from(style.convert.apply(4.0e-3)) - 4.0).abs() < 1e-6);
+            let scale = style.scale.resolved_discrete();
+            assert!((scale.levels.first().copied().unwrap() - 1.0).abs() < 1e-6);
+            assert!((scale.levels.last().copied().unwrap() - 4.0).abs() < 1e-6);
+        }
+        for units in ["g kg-1", "kg m-2", "kg/m^2", "K", "", "kg kg-2"] {
+            assert_eq!(grams_per_kilogram(units), None, "{units}");
+        }
+        // The direct route's convert for a catalog row is the same thousand.
+        assert_eq!(UnitConvert::KgPerKgToGPerKg.apply(2.5e-3), 2.5);
+    }
+
+    #[test]
+    fn the_prescaled_entry_never_takes_a_decade_of_its_own() {
+        // A caller that has already moved its values must get levels over
+        // exactly the range it stated.  Every one of these would shift
+        // under the auto entry.
+        for (units, range, top) in [
+            ("1e-6 kg kg-1", (0.1_f32, 1.0_f32), 1.0_f64),
+            ("kg kg-1", (1.0071096e-3_f32, 3.8782053e-3_f32), 3.8782053e-3_f64),
+            ("m", (2.0e4_f32, 4.2e7_f32), 4.2e7_f64),
+        ] {
+            let style = generic_style_for_prescaled_store_variable("plane", units, Some(range));
+            assert_eq!(style.convert, UnitConvert::None, "{units} gained a convert");
+            assert_eq!(style.display_units, units, "{units} moved decade");
+            assert_eq!(style.title, format!("plane [{units}]"));
+            let scale = style.scale.resolved_discrete();
+            assert_eq!(scale.levels.first().copied(), Some(f64::from(range.0)));
+            assert!(
+                (scale.levels.last().copied().unwrap() - top).abs() <= top.abs() * 1.0e-6,
+                "{units}: top level {:?} is not the range's own top {top}",
+                scale.levels.last()
+            );
+        }
+    }
+
+    #[test]
+    fn the_two_entries_agree_wherever_no_decade_is_owed() {
+        // Same numbers through both doors when the range is already in
+        // 1-1000: the split may not have moved the shipped style.
+        let auto = generic_style_for_store_variable("plane", "dBZ", Some((1.5, 62.0)));
+        let prescaled = generic_style_for_prescaled_store_variable("plane", "dBZ", Some((1.5, 62.0)));
+        assert_eq!(auto.title, prescaled.title);
+        assert_eq!(auto.display_units, prescaled.display_units);
+        assert_eq!(auto.convert, prescaled.convert);
+        assert_eq!(
+            auto.scale.resolved_discrete().levels,
+            prescaled.scale.resolved_discrete().levels
+        );
     }
 
     #[test]

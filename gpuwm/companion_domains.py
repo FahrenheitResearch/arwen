@@ -21,6 +21,25 @@ import tomllib
 REQUEST_SCHEMA = "arwen.companion-domain-edit.v1"
 RESULT_SCHEMA = "arwen.companion-domain-result.v1"
 
+
+class DomainScopeError(ValueError):
+    """A per-domain edit of a setting this configuration's route holds
+    tree-wide, carrying the edit that publishes instead.
+
+    ``all_domains_settings`` is the whole edit this door MEASURED as
+    publishing -- the same settings at every domain, plus whatever the
+    route's own namelists state for that selection -- or ``None`` where
+    nothing it tried published.  It is measured through the renderer the
+    save publishes through, never derived from the setting names, so a
+    panel, a front end and a test read one answer instead of three, and
+    the sentence cannot offer a way out that the save then refuses.
+    """
+
+    def __init__(self, message, all_domains_settings=None):
+        super().__init__(message)
+        self.all_domains_settings = (None if all_domains_settings is None
+                                     else dict(all_domains_settings))
+
 # Explicit example settings already shipped in this configuration. This is
 # an editable preset, not a new detection algorithm or a model-wide default.
 #
@@ -665,7 +684,8 @@ def capabilities():
                      "threshold_units": "geopotential-height depth in metres",
                      "description": "Existing cyclone example; review its explicit cadence and movement bounds for this grid."}],
         "target_mode": "scheduled discrete relocation in whole parent cells",
-        "limits": ["One manual target itinerary can drive one global mover; multiple weather followers use per-domain follow.",
+        "limits": ["A candidate carries every file its route reads, not the configuration alone: the TOML, its namelist.wps, and on the native regional route the two namelists and the target-domain document beside them, rendered from the edited configuration and listed in route_companions.",
+                   "One manual target itinerary can drive one global mover; multiple weather followers use per-domain follow.",
                    "Target points center a fixed-size nest at explicit UTC times; there is no interpolation between targets.",
                    "Use set_placement for a target at experiment start; scheduled relocation targets occur later than the start.",
                    "Absolute target itineraries need an active or scheduled-start nest; trigger-spawned or retiring slots can use weather follow instead.",
@@ -844,10 +864,43 @@ def _apply(raw, action, output):
         rows = raw["domain"] if grid_id == 0 else [_domain_table(raw, grid_id)]
         if not isinstance(action["settings"], dict):
             raise ValueError("Physics settings must be an object")
+        from gpuwm.hrrr_route_inputs import route_shared_domain_keys
         _, shared_keys, domain_keys = _native_contract()
         shared_settings = {k:v for k,v in action["settings"].items() if k in shared_keys and k not in domain_keys}
         if grid_id and shared_settings:
             raise ValueError("These settings apply to all domains: " + ", ".join(sorted(shared_settings)) + ". Select All domains to change them.")
+        # A key this configuration's own input route carries once for the
+        # whole tree is a tree-wide setting HERE, whatever the schema
+        # admits per domain: the route runs the namelists written beside
+        # the candidate, and they have one column for the tree. Asked and
+        # answered before the candidate is rendered, so the reader meets
+        # the sentence above with its way out instead of the importer's
+        # words about a namelist column they never asked to write.
+        route_shared = {k:v for k,v in action["settings"].items()
+                        if k in route_shared_domain_keys((raw.get("fetch") or {}).get("source"))}
+        if grid_id and route_shared:
+            from gpuwm.hrrr_route_inputs import _settings_phrase
+            # THE WAY OUT IS DRIVEN, NOT OFFERED.  "Select All domains"
+            # is what this door says for a tree-wide setting, and for
+            # two of these keys it is not enough on its own: the route
+            # states a runtime switch for the suite that is selected,
+            # and the round trip refuses the tree-wide edit until that
+            # switch is stated with it.  Told only the first step, a
+            # reader takes it and meets the importer's words about a
+            # namelist column they never asked to write.
+            remedy, refused = _all_domains_remedy(raw, action["settings"], output)
+            sentence = ("These settings apply to all domains of a forecast on this input route: "
+                + ", ".join(sorted(route_shared)) + ". Select All domains to change them.")
+            extra = {k: v for k, v in (remedy or {}).items()
+                     if k not in action["settings"]}
+            if extra:
+                sentence += (" This route states " + _settings_phrase(extra)
+                    + " for that selection and runs the namelists it writes beside the"
+                    " configuration, so change " + _settings_phrase(remedy) + " together.")
+            elif remedy is None:
+                sentence += (" Selecting All domains is refused here as well, so read its"
+                    " own way out first: " + str(refused))
+            raise DomainScopeError(sentence, remedy)
         domain_settings = {k:v for k,v in action["settings"].items() if k not in shared_settings}
         changes = {"shared": shared_settings, "domains": [{"grid_id": row["grid_id"], "settings": domain_settings} for row in rows]}
         validate_native_overrides(changes)
@@ -881,6 +934,19 @@ def _apply(raw, action, output):
         for key in ("nx", "ny"):
             row[key] = max(minimum, _round_cells(row[key] / ratio) * ratio)
         row["history_interval_s"] = _number(action["history_interval_s"], "history_interval_s")
+        # A nest INHERITS its parent's radiation cadence. The rule is the
+        # emission door's (gpuwm.domain_wizard.radt_ladder_minutes:
+        # radiative transfer varies on cloud timescales, not grid scales),
+        # and a row written without it fell to the schema default instead,
+        # so a nest added here could join a tree on one cadence and run
+        # another. Written into BOTH spellings at the parent's effective
+        # value: radt is what the emission door puts on its own nest rows
+        # and what the route's namelist carries, radt_minutes is what a
+        # zero cadence needs (a zero radt means "not stated", not "every
+        # step"), and agreeing values leave the pair with nothing to
+        # resolve.
+        from gpuwm.config import effective_radt_minutes
+        row["radt"] = row["radt_minutes"] = effective_radt_minutes(parent.run)
         raw["domain"].append(row)
         exp = _build(raw, output)
         row["i_parent_start"], row["j_parent_start"] = _placement(exp, child_id, action["placement"])
@@ -1063,6 +1129,136 @@ def _wps_text(exp, original_path, output_path, raw, original_count, original_dom
     return with_domain_ids(text, [domain.grid_id for domain in exp.domains])
 
 
+def candidate_route_files(raw, original_exp, exp, output, *, original_wps=None):
+    """The WPS text and the route companions a candidate publishes.
+
+    ONE renderer for the door that SAVES and for every measurement of
+    what a save would meet.  Measured any other way, a panel offered
+    "Select All domains to change them" for an edit whose save the
+    route's own importer then refused, which is a remedy that does not
+    work told to a reader as though it had been tried.
+
+    ``original_wps`` is the WPS namelist a save PRESERVES.  A
+    measurement passes ``None`` and gets the candidate's own rendered
+    geography instead: every field :func:`~gpuwm.hrrr_route_inputs.
+    verify_round_trip` compares comes from the experiment, and the
+    preserved file's remaining settings (its resolution choices, its
+    other sections) reach none of them.
+    """
+
+    from gpuwm.hrrr_route_inputs import candidate_companions
+
+    wps = candidate_wps_text(raw, original_exp, exp, output,
+                             original_wps=original_wps)
+    return wps, candidate_companions(
+        output, exp, wps_text=wps,
+        source=(raw.get("fetch") or {}).get("source"))
+
+
+def candidate_wps_text(raw, original_exp, exp, output, *, original_wps=None):
+    """The WPS namelist this candidate publishes, on its own.
+
+    Split out because it is the INPUT to the route's question rather
+    than part of the answer: a layout that cannot be reconciled with
+    the one being preserved is a refusal of this edit, and it is not
+    the route saying anything about the physics it was asked about.
+    """
+
+    return _wps_text(exp, original_wps, output.with_suffix(".namelist.wps"),
+                     raw, len(original_exp.domains),
+                     original_domain_ids=[domain.grid_id
+                                          for domain in original_exp.domains])
+
+
+def candidate_route_blocker(raw, original_exp, exp, output):
+    """What this candidate's ROUTE would refuse about it, or ``None``.
+
+    The question every caller that says what a save would meet has to
+    ask, asked of the renderer itself rather than of a table of setting
+    names.
+
+    ONE question: what the route's own namelist writer and importer say
+    about this candidate.  Both halves of that answer count -- a
+    selection those namelists have no spelling for, and a set they read
+    back as a different tree -- because a save meets either one.
+
+    A route that reads the configuration itself is not asked at all,
+    and a candidate whose WPS namelist could not be rendered returns
+    ``None``: that step is the input to the question rather than the
+    answer, so a layout that cannot be reconciled with the one being
+    preserved is not reported as the route refusing a physics
+    selection.
+    """
+
+    from gpuwm.source_drivability import candidate_route_chain
+
+    if candidate_route_chain((raw.get("fetch") or {}).get("source")) != "prepared:hrrr":
+        return None
+    try:
+        wps = candidate_wps_text(raw, original_exp, exp, output)
+    except Exception:  # the question was never reached, so it is unanswered
+        return None
+    from gpuwm.hrrr_route_inputs import candidate_companions
+    try:
+        candidate_companions(output, exp, wps_text=wps,
+                             source=(raw.get("fetch") or {}).get("source"))
+    except (ValueError, NotImplementedError) as error:
+        return error
+    except Exception:  # not the route's answer, so not reported as one
+        return None
+    return None
+
+
+def _all_domains_remedy(raw, settings, output):
+    """The tree-wide edit that publishes, driven, and what refused it.
+
+    Returns ``(settings_that_published, refusal)``, at most one of them
+    set.  Two attempts, no more: these settings at every domain, and --
+    where the route's round trip refused them and said what its own
+    namelist column carries -- the same settings with those fields
+    stated beside them.  Nothing is claimed that was not driven through
+    the renderer the save publishes through, so a door that names
+    "Select All domains" has tried it.
+    """
+
+    def attempt(candidate_settings):
+        """``(published, refusal)`` for these settings at every domain.
+
+        The parser and the route are asked separately because only the
+        route's own refusal has a second step to name.  Where the
+        renderer falls over for a reason of its own the answer is the
+        sentence this door already shipped, with nothing added: an
+        unmeasured second step is not stated at all.
+        """
+
+        candidate = copy.deepcopy(raw)
+        try:
+            original_exp = _build(raw, output)
+            _apply(candidate, {"kind": "set_physics", "grid_id": 0,
+                               "settings": dict(candidate_settings)}, output)
+            exp = _build(candidate, output)
+        except (ValueError, NotImplementedError) as error:
+            return False, error
+        except Exception:  # a probe that could not read is not an answer
+            return False, None
+        blocker = candidate_route_blocker(candidate, original_exp, exp, output)
+        if blocker is not None:
+            return False, blocker
+        return True, None
+
+    published, refused = attempt(settings)
+    if published:
+        return dict(settings), None
+    stated = getattr(refused, "namelist_values", None)
+    if stated:
+        wider = dict(settings, **stated)
+        published, second = attempt(wider)
+        if published:
+            return wider, None
+        refused = second or refused
+    return None, refused
+
+
 def edit_configuration(request):
     from gpuwm.config_authority import read_config_authority
     from gpuwm.case_data import resolved_case_data_paths
@@ -1079,7 +1275,13 @@ def edit_configuration(request):
         raise ValueError("The selected configuration changed; refresh its domain layers before editing")
     output = Path(request["output_path"]).expanduser().resolve()
     wps_output, receipt_output = output.with_suffix(".namelist.wps"), output.with_suffix(".domains.json")
-    if output == authority.source or any(os.path.lexists(p) for p in (output, wps_output, receipt_output)):
+    # Every path this door may write, including the native route's three
+    # extra companions. They were left out of the sweep while the door
+    # did not write them, so an edit published next to an earlier edit's
+    # namelists silently left those in place for the run to read.
+    from gpuwm.hrrr_route_inputs import route_input_paths
+    reserved = (output, wps_output, receipt_output, *route_input_paths(output).values())
+    if output == authority.source or any(os.path.lexists(p) for p in reserved):
         raise FileExistsError("Choose a new candidate output path; existing configurations and companions are preserved")
     original = tomllib.loads(authority.payload.decode("utf-8-sig"))
     original_exp = _build(original, authority.source)
@@ -1106,10 +1308,18 @@ def edit_configuration(request):
         "experiment": experiment_config_document(exp), "tiles": exp.tiles.to_mapping(), "fetch": raw.get("fetch", {}),
         "case_data": {k:v for k,v in raw.get("case_data", {}).items() if k in
                       ("forcing_interval_s", "start_time", "end_time", "wps_namelist")}}
-    wps = _wps_text(exp, original_wps, wps_output, raw, len(original_exp.domains),
-                    original_domain_ids=[domain.grid_id for domain in original_exp.domains])
+    # Rendered from the EDITED experiment, so an edited cadence reaches
+    # the namelist the route reads instead of the TOML it does not.
+    # The candidate's own [fetch].source, which is exactly what the
+    # dispatcher reads to choose the chain (gpuwm/runplan.py _chain_key).
+    # Not "None when [case_data] is present": a configuration carrying
+    # both would then be given a short candidate and still routed to the
+    # regional chain, which is the failure this door was fixed for.
+    wps, companions = candidate_route_files(raw, original_exp, exp, output,
+                                            original_wps=original_wps)
     result = {"schema": RESULT_SCHEMA, "created": True, "forecast_started": False,
         "config_path": str(output), "config_sha256": config_sha, "wps_path": str(wps_output),
+        "route_companions": [str(path) for path, _text in companions],
         "receipt_path": str(receipt_output), "source_path": str(authority.source), "source_sha256": authority.sha256,
         "configuration": configuration, "domains": [domain_config_document(d) for d in exp.domains],
         "map_geojson": domain_geojson(outlines, targets),
@@ -1120,8 +1330,8 @@ def edit_configuration(request):
         raise ValueError("The original configuration changed while preparing the candidate; refresh before editing")
     output.parent.mkdir(parents=True, exist_ok=True)
     # The existing create-only publication helper owns rollback and preserves a
-    # replaced file. The configuration is published after its WPS and receipt.
-    _publish_new_files([(wps_output, wps), (receipt_output, _json(result)), (output, text)])
+    # replaced file. The configuration is published after its companions and receipt.
+    _publish_new_files([*companions, (receipt_output, _json(result)), (output, text)])
     return result
 
 
@@ -1154,8 +1364,8 @@ def main(args):
 
 def register_cli(subparsers):
     parser = subparsers.add_parser("companion-domains", help="create a candidate domain edit using native geometry")
-    parser.add_argument("--request", type=Path)
-    parser.add_argument("--capabilities", action="store_true")
+    parser.add_argument("--request", type=Path, help="a domain edit request document; the candidate it publishes carries every file its route reads, named in the result's route_companions")
+    parser.add_argument("--capabilities", action="store_true", help="report the actions, presets and limits this door offers, and write nothing")
     parser.add_argument("--repairs", action="store_true", help="check compatible physics replacements without writing a candidate")
     parser.add_argument("--availability", action="store_true", help="report why each installed physics option is open or closed to a draft")
     parser.set_defaults(func=main)

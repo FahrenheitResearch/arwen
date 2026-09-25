@@ -2,9 +2,9 @@
 
 An inventory that silently drops a construction path would let the FTZ
 receipt claim coverage it does not have, so the injection test below plants
-one site of each supported kind in a throwaway checkout and requires all
-three back.  A hand-maintained list would pass the regeneration half and fail
-this one.
+one site of each of four kinds in a throwaway checkout and requires all four
+back, the option tuple each one passes included.  A hand-maintained list
+would pass the regeneration half and fail this one.
 """
 from __future__ import annotations
 
@@ -86,6 +86,11 @@ def make_nvrtc():
 def make_reduction():
     return cp.ReductionKernel("T x", "int32 y", "x != (T)0 ? 1 : 0",
                               "a | b", "y = a", "0", "synthetic_probe")
+
+
+def make_elementwise():
+    return cp.ElementwiseKernel("T x", "T y", "y = x", "synthetic_column",
+                                options=("-fmad=false",))
 '''
 
 
@@ -101,20 +106,29 @@ def injected_checkout(tmp_path: Path) -> Path:
     return root
 
 
-def test_injected_sites_of_all_three_kinds_are_reported(injected_checkout):
+def test_injected_sites_of_all_four_kinds_are_reported(injected_checkout):
     document = ri.build_inventory(injected_checkout)
     kinds = {site["constructor_kind"] for site in document["sites"]}
     assert kinds == {"cupy.RawModule",
                      "cupy.cuda.compiler.compile_using_nvrtc",
-                     "cupy.ReductionKernel"}, (
+                     "cupy.ReductionKernel",
+                     "cupy.ElementwiseKernel"}, (
         f"inventory missed a route kind; reported {sorted(kinds)}")
     by_kind = {site["constructor_kind"]: site for site in document["sites"]}
     assert by_kind["cupy.RawModule"]["options"] == [
         "-std=c++17", "--ftz=false"]
     assert by_kind["cupy.cuda.compiler.compile_using_nvrtc"]["options"] == [
         "-std=c++17", "-arch=compute_90"]
-    assert by_kind["cupy.ReductionKernel"]["takes_caller_options"] is False
+    # A reduction that passes no options is recorded as passing none, not as
+    # a kind that could not have.
+    assert by_kind["cupy.ReductionKernel"]["takes_caller_options"] is True
+    assert by_kind["cupy.ReductionKernel"]["options_argument_present"] is False
     assert by_kind["cupy.ReductionKernel"]["options"] is None
+    # The tuple a CuPy-generated kernel passes through its options keyword is
+    # the site's tuple; the inventory once filed every such site as
+    # option-less and lost this one.
+    assert by_kind["cupy.ElementwiseKernel"]["options_argument_present"] is True
+    assert by_kind["cupy.ElementwiseKernel"]["options"] == ["-fmad=false"]
 
 
 def test_inventory_reports_a_site_it_would_otherwise_skip(injected_checkout):
@@ -123,7 +137,7 @@ def test_inventory_reports_a_site_it_would_otherwise_skip(injected_checkout):
     (injected_checkout / "pkg" / "synthetic_routes.py").write_text(
         "x = 1\n", encoding="utf-8")
     after = len(ri.build_inventory(injected_checkout)["sites"])
-    assert before == 3 and after == 0, (before, after)
+    assert before == 4 and after == 0, (before, after)
 
 
 def test_release_inventory_does_not_require_excluded_campaign_sources(
@@ -138,7 +152,7 @@ def test_release_inventory_does_not_require_excluded_campaign_sources(
         "campaign/**\n", encoding="utf-8")
     _git(root, "add", "-A")
     private = ri.build_inventory(root)
-    assert len(private["sites"]) == 3
+    assert len(private["sites"]) == 4
     assert all(site["file"] == "pkg/synthetic_routes.py"
                for site in private["sites"])
     _git(root, "rm", "-f", "--", "campaign/private_probe.py")

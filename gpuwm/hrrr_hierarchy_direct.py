@@ -151,11 +151,37 @@ def _sealed_root_rrtmg_variant(identity: dict[str, object]) -> str | None:
     return variant if isinstance(variant, str) else None
 
 
+def _sealed_root_rrtmg_compatibility(identity: dict[str, object]) -> str | None:
+    """The WRF RRTMG lineage the sealed root preparation pinned, if any.
+
+    The companion of :func:`_sealed_root_rrtmg_variant`, read for the same
+    reason and failing open the same way.  A WRF namelist has no key for
+    ``wrf_rrtmg_compatibility`` and the token is not decoration -- the
+    RTE+RRTMGP arm reads it to choose its snow treatment and stamps it
+    into the restart algorithm identity -- so an import that derives it
+    can hand this hierarchy a different lineage from the root it must
+    match.  The d01-binding comparison downstream still refuses any real
+    mismatch.
+    """
+
+    domain_config = identity.get("domain_config")
+    if not isinstance(domain_config, dict):
+        return None
+    run = domain_config.get("run")
+    if not isinstance(run, dict):
+        return None
+    compatibility = run.get("wrf_rrtmg_compatibility")
+    return compatibility if isinstance(compatibility, str) else None
+
+
 def _native_experiment(wps_namelist: Path, namelist_input: Path,
                        *, rrtmg_variant: str | None = None,
+                       rrtmg_compatibility: str | None = None,
                        acknowledgements: tuple[str, ...] = ()):
     keywords = ({} if rrtmg_variant is None
                 else {"rrtmg_variant": rrtmg_variant})
+    if rrtmg_compatibility is not None:
+        keywords["rrtmg_compatibility"] = rrtmg_compatibility
     resolved, report = import_namelists(
         wps_namelist, namelist_input, name="native_hrrr_hierarchy",
         acknowledgements=tuple(acknowledgements), **keywords)
@@ -180,11 +206,13 @@ def _require_raw_stock_delta(
     unchanged -- so under the resolved RRTMG (4, 4) pair the delta
     collapses and both arms run 4.  ``ghg_input=0`` stays stock-only in
     both cases: on the (0, 1) suite it fixes the substituted RRTM's gas
-    table, and on the (4, 4) suite it mirrors what
-    ``gpuwm/core/rrtmg_legacy.py`` pins on the native side.  Pinning it
-    is mandatory either way: WRF's default ``1`` reads the time-varying
-    CAM gas table and is not a valid implicit substitute for the
-    fixed-gas configurations used by the acceptance gate.
+    table, and on the (4, 4) suite it mirrors the fixed-gas configuration
+    the native arm runs on EITHER engine -- ``gpuwm/core/rrtmg_legacy.py``
+    pins it in its switch table, and the RTE+RRTMGP arm selects one annual
+    mean CO2 for the run's calendar year (``gpuwm/core/rrtmgp.py``).
+    Pinning it is mandatory either way: WRF's default ``1`` reads the
+    time-varying CAM gas table and is not a valid implicit substitute for
+    the fixed-gas configurations used by the acceptance gate.
 
     ``do_radar_ref=1`` is the second stock-only key and is mandatory for
     the same class of reason: it is a setting the native arm answers in
@@ -894,6 +922,7 @@ def prepare_hrrr_hierarchy(
     native_exp, native_resolved, native_report = _native_experiment(
         Path(wps_namelist), Path(namelist_input),
         rrtmg_variant=_sealed_root_rrtmg_variant(identity),
+        rrtmg_compatibility=_sealed_root_rrtmg_compatibility(identity),
         acknowledgements=tuple(acknowledgements))
     from gpuwm.static.highres_production import parse_static_table
     declared_highres = identity.get("source_identity", {}).get("static_highres")

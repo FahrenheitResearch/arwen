@@ -27,6 +27,34 @@ pub const NX: usize = 24;
 pub const NY: usize = 18;
 pub const NZ: usize = 4;
 
+/// The column-plane inputs: a dry column mass on full eta levels with no
+/// `DNW` (this tree's history stream writes `ZNW` and not the
+/// thicknesses), one cloud water value on every level, no cloud ice and
+/// one skin temperature.  The pressures below put only the top level
+/// below freezing, and the heights put that level in the 3 to 6 km layer
+/// above ground, so the water path each row integrates is known.
+pub const DRY_COLUMN_MASS_PA: f32 = 96_000.0;
+pub const ETA_FULL_LEVELS: [f32; NZ + 1] = [1.0, 0.75, 0.5, 0.25, 0.0];
+pub const CLOUD_WATER_KG_PER_KG: f32 = 1.0e-4;
+pub const SKIN_TEMPERATURE_K: f32 = 290.0;
+/// Potential temperature on every level (the stored `T` is theta - 300).
+pub const THETA_K: f64 = 310.0;
+/// The terrain height every cell carries, m.
+pub const TERRAIN_M: f64 = 320.0;
+
+/// Full pressure on mass level `k`, Pa: `97_000 - 12_000 k`.
+#[allow(dead_code)]
+pub fn pressure_pa(level: usize) -> f64 {
+    97_000.0 - 12_000.0 * level as f64
+}
+
+/// Height above sea level of mass level `k`, m: the full levels sit at
+/// `TERRAIN_M + 1000 k`, so a mass level is 500 m above its lower one.
+#[allow(dead_code)]
+pub fn mass_level_height_msl_m(level: usize) -> f64 {
+    TERRAIN_M + 1_000.0 * level as f64 + 500.0
+}
+
 /// Value at cell `(y, x)` of the user plane; a deterministic ramp, so a
 /// reader can prove it read THIS plane and not some neighbour's.
 pub fn user_plane_value(y: usize, x: usize) -> f32 {
@@ -129,6 +157,9 @@ fn write_frame(dir: &Path, valid_time: &str, rain_total: Option<f32>) -> PathBuf
     // layer the streamline front door has to be provable against.
     let sinalpha = surface(&mut schema, "SINALPHA", "1");
     let cosalpha = surface(&mut schema, "COSALPHA", "1");
+    let mu = surface(&mut schema, "MU", "Pa");
+    let mub = surface(&mut schema, "MUB", "Pa");
+    let tsk = surface(&mut schema, "TSK", "K");
     let user = surface(&mut schema, USER_PLANE, USER_PLANE_UNITS);
     let rain = rain_total.map(|total| {
         (
@@ -169,6 +200,19 @@ fn write_frame(dir: &Path, valid_time: &str, rain_total: Option<f32>) -> PathBuf
         &[time, bottom_top, south_north, west_east],
         "kg kg-1",
     );
+    let qcloud = volume_var(
+        &mut schema,
+        "QCLOUD",
+        &[time, bottom_top, south_north, west_east],
+        "kg kg-1",
+    );
+    let qice = volume_var(
+        &mut schema,
+        "QICE",
+        &[time, bottom_top, south_north, west_east],
+        "kg kg-1",
+    );
+    let znw = volume_var(&mut schema, "ZNW", &[time, bottom_top_stag], "");
     let ph = volume_var(
         &mut schema,
         "PH",
@@ -208,19 +252,24 @@ fn write_frame(dir: &Path, valid_time: &str, rain_total: Option<f32>) -> PathBuf
     }
     let q2_values = vec![0.010f32; cells];
     let psfc_values = vec![97_000.0f32; cells];
-    let hgt_values = vec![320.0f32; cells];
+    let hgt_values = vec![TERRAIN_M as f32; cells];
+    let mu_values = vec![0.0f32; cells];
+    let mub_values = vec![DRY_COLUMN_MASS_PA; cells];
+    let tsk_values = vec![SKIN_TEMPERATURE_K; cells];
     let u10_values = vec![6.0f32; cells];
     let v10_values = vec![-4.0f32; cells];
     let sinalpha_values = vec![0.0f32; cells];
     let cosalpha_values = vec![1.0f32; cells];
 
     // Perturbation potential temperature is stored as theta - 300 K.
-    let theta_perturbation = vec![10.0f32; volume];
+    let theta_perturbation = vec![(THETA_K - 300.0) as f32; volume];
     let qvapor_values = vec![0.008f32; volume];
+    let qcloud_values = vec![CLOUD_WATER_KG_PER_KG; volume];
+    let qice_values = vec![0.0f32; volume];
     let mut base_pressure = Vec::with_capacity(volume);
     let mut pressure_perturbation = Vec::with_capacity(volume);
     for level in 0..NZ {
-        let base = 97_000.0 - 12_000.0 * level as f32;
+        let base = pressure_pa(level) as f32;
         for _ in 0..cells {
             base_pressure.push(base);
             pressure_perturbation.push(0.0);
@@ -228,7 +277,7 @@ fn write_frame(dir: &Path, valid_time: &str, rain_total: Option<f32>) -> PathBuf
     }
     let mut base_geopotential = Vec::with_capacity(cells * (NZ + 1));
     for level in 0..=NZ {
-        let value = 9.81 * (320.0 + 1_000.0 * level as f32);
+        let value = 9.81 * (TERRAIN_M as f32 + 1_000.0 * level as f32);
         for _ in 0..cells {
             base_geopotential.push(value);
         }
@@ -260,17 +309,25 @@ fn write_frame(dir: &Path, valid_time: &str, rain_total: Option<f32>) -> PathBuf
         (v10, &v10_values),
         (sinalpha, &sinalpha_values),
         (cosalpha, &cosalpha_values),
+        (mu, &mu_values),
+        (mub, &mub_values),
+        (tsk, &tsk_values),
         (user, &user_values),
     ] {
         writer
             .write_record(0, id, VarData::F32(values.as_slice()))
             .unwrap();
     }
+    writer
+        .write_record(0, znw, VarData::F32(&ETA_FULL_LEVELS))
+        .unwrap();
     for (id, values) in [
         (t, &theta_perturbation),
         (p, &pressure_perturbation),
         (pb, &base_pressure),
         (qvapor, &qvapor_values),
+        (qcloud, &qcloud_values),
+        (qice, &qice_values),
         (ph, &geopotential_perturbation),
         (phb, &base_geopotential),
         (u, &u_values),

@@ -215,7 +215,7 @@ fn unverified_summary(directory: &Path, error: String) -> Value {
         .and_then(|milliseconds| companion::local_progress::utc_text(milliseconds).ok());
     json!({"id":directory,"job_id":directory,"job_dir":directory,"target":{"kind":"local"},"state":"unverified","error":error,
         "action":launcher.as_ref().and_then(|value| value["action"].as_str()),"created_at":created,
-        "name":Value::Null,"forecast_start_time":Value::Null,"run_seconds":Value::Null})
+        "name":Value::Null,"forecast_start_time":Value::Null,"forecast_start_hour":Value::Null,"run_seconds":Value::Null})
 }
 
 fn local_jobs(roots: &BTreeSet<PathBuf>, live: Option<&Value>) -> Vec<Value> {
@@ -242,8 +242,17 @@ fn local_jobs(roots: &BTreeSet<PathBuf>, live: Option<&Value>) -> Vec<Value> {
     }).collect()
 }
 
+/// What a run's row says about itself, read out of the run's own authority
+/// configuration at the digest the status recorded.
+///
+/// `forecast_start_hour` is the run's LEAD, and it comes from `[fetch]`
+/// rather than `[experiment]`: the lead is a property of the forcing the
+/// run was given, and it is what tells a reader whether a row starting at
+/// 18Z is an analysis or a twelve-hour forecast. Without it two rows with
+/// the same start time and the same length are indistinguishable on the
+/// list, which is the state the desktop was in for every remote run.
 fn snapshot_summary(status: &Value) -> Value {
-    let mut result = json!({"name":null,"forecast_start_time":null,"run_seconds":status["progress"]["run_seconds"]});
+    let mut result = json!({"name":null,"forecast_start_time":null,"forecast_start_hour":null,"run_seconds":status["progress"]["run_seconds"]});
     let Some(path) = status["source_config_path"].as_str().map(Path::new).filter(|path| path.is_absolute()) else { return result; };
     let Some(expected) = status["source_config_sha256"].as_str() else { return result; };
     let Ok(metadata) = fs::metadata(path) else { return result; };
@@ -251,6 +260,12 @@ fn snapshot_summary(status: &Value) -> Value {
     let Ok(bytes) = fs::read(path) else { return result; };
     if companion::digest(&bytes) != expected { return result; }
     let Some(document) = std::str::from_utf8(&bytes).ok().and_then(|text| text.parse::<toml_edit::DocumentMut>().ok()) else { return result; };
+    // Read BEFORE the `[experiment]` early return below: a configuration
+    // may carry a `[fetch]` table and no `[experiment]` one, and returning
+    // on the missing block would drop a lead that is present in the file.
+    result["forecast_start_hour"] = json!(document.get("fetch").and_then(toml_edit::Item::as_table_like)
+        .and_then(|fetch| fetch.get("forecast_start_hour"))
+        .and_then(|value| value.as_integer().or_else(|| value.as_float().map(|hours| hours as i64))));
     let Some(experiment) = document.get("experiment").and_then(toml_edit::Item::as_table_like) else { return result; };
     result["name"] = json!(experiment.get("name").and_then(toml_edit::Item::as_str));
     result["forecast_start_time"] = json!(experiment.get("start_time").and_then(toml_edit::Item::as_value).map(|value| value.to_string().trim_matches('"').to_owned()));
@@ -385,6 +400,15 @@ fn run_summary(status: &Value) -> Value {
     // its identity comes from the manifest the child itself published.
     if value["name"].is_null() { value["name"] = status["name"].clone(); }
     if value["forecast_start_time"].is_null() { value["forecast_start_time"] = status["start_time"].clone(); }
+    // And a REMOTE run has no readable configuration at all: its file is on
+    // the other computer, so `snapshot_summary` above returns nulls and the
+    // status the controller published is the only place the lead can come
+    // from. Taken as a FALLBACK rather than in the plain copy list two
+    // lines up, because that list assigns unconditionally and a status
+    // without the field would then erase a lead read from the authority
+    // document -- the same reason `name` and `forecast_start_time` are
+    // filled this way and not copied.
+    if value["forecast_start_hour"].is_null() { value["forecast_start_hour"] = status["forecast_start_hour"].clone(); }
     value["parent_run_dir"] = status["parent"]["run_dir"].clone();
     value["downscale"] = downscale_inputs(status);
     value["domain_count"] = json!(status["progress"]["domains"].as_array().map(Vec::len));
@@ -746,6 +770,56 @@ mod tests {
         assert_eq!(receipts["history_dir"],json!(child));assert_eq!(receipts["checkpoint_dir"],json!(child));
         assert_eq!(receipts["history_frames"],3);assert_eq!(receipts["restart_sets"],2);assert_eq!(receipts["parent_domain"],2);
         fs::remove_dir_all(root).ok();fs::remove_dir_all(plain).ok();fs::remove_dir_all(child).ok();
+    }
+    #[test]
+    fn a_runs_row_carries_the_lead_from_its_authority_configuration(){
+        // Two rows with the same start time and the same length are the
+        // same row on the list unless the lead is on it: one is an
+        // analysis start, the other a twelve-hour forecast off the same
+        // cycle. The lead lives in [fetch], not [experiment].
+        let root=directory("row-lead");
+        let config=root.join("run.toml");
+        let text="[experiment]\nname='lead row proof'\nstart_time=2024-05-21T18:00:00\nrun_seconds=3600\n\n[fetch]\nsource='gfs'\ncycle='2024-05-21T06'\nforecast_start_hour=12\n";
+        fs::write(&config,text.as_bytes()).unwrap();
+        let digest=companion::digest(text.as_bytes());
+        let status=json!({"id":"job-1","source_config_path":config,"source_config_sha256":digest,"progress":{"domains":[],"run_seconds":3600.0}});
+        let row=run_summary(&status);
+        assert_eq!(row["forecast_start_hour"],json!(12));
+        assert_eq!(row["name"],json!("lead row proof"));
+        // A lead of zero is a real answer and must not read as absent:
+        // "this row starts at the cycle" is what a reader needs to see.
+        let zero=root.join("zero.toml");
+        let zero_text="[experiment]\nname='cycle start'\nstart_time=2024-05-21T06:00:00\nrun_seconds=3600\n\n[fetch]\nforecast_start_hour=0\n";
+        fs::write(&zero,zero_text.as_bytes()).unwrap();
+        let row=run_summary(&json!({"id":"job-2","source_config_path":zero,"source_config_sha256":companion::digest(zero_text.as_bytes()),"progress":{"domains":[]}}));
+        assert_eq!(row["forecast_start_hour"],json!(0));
+        // A configuration with no [fetch] table has no lead to publish,
+        // and the row says so rather than inventing a zero.
+        let bare=root.join("bare.toml");
+        let bare_text="[experiment]\nname='no fetch table'\nstart_time=2024-05-21T18:00:00\nrun_seconds=3600\n";
+        fs::write(&bare,bare_text.as_bytes()).unwrap();
+        let row=run_summary(&json!({"id":"job-3","source_config_path":bare,"source_config_sha256":companion::digest(bare_text.as_bytes()),"progress":{"domains":[]}}));
+        assert!(row["forecast_start_hour"].is_null());
+        // THE AUTHORITY RULE, unchanged by this field: a file whose bytes
+        // no longer match the digest the status recorded is not this run's
+        // configuration, so nothing is read out of it -- including a lead
+        // that would otherwise look authoritative on the row.
+        fs::write(&config,text.replace("forecast_start_hour=12","forecast_start_hour=6").as_bytes()).unwrap();
+        let row=run_summary(&status);
+        assert!(row["forecast_start_hour"].is_null()&&row["name"].is_null());
+        // A REMOTE run: its configuration is on the other computer, so the
+        // status the controller published is the only source, and the row
+        // takes it. This is the route by which a remote row gets a lead at
+        // all.
+        let row=run_summary(&json!({"id":"job-4","forecast_start_hour":18,"start_time":"2024-05-21T18:00:00","name":"remote run","progress":{"domains":[]}}));
+        assert_eq!(row["forecast_start_hour"],json!(18));
+        // And the status must not ERASE a lead read from the authority
+        // document. A plain copy would: it assigns unconditionally, so a
+        // status without the field would null a lead the file carried.
+        fs::write(&config,text.as_bytes()).unwrap();
+        let row=run_summary(&status);
+        assert_eq!(row["forecast_start_hour"],json!(12));
+        fs::remove_dir_all(root).ok();
     }
     #[test]
     fn runs_resolve_the_requested_saved_node_without_changing_the_active_one(){

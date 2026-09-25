@@ -122,7 +122,7 @@ def _resolve_nest_tree(domains: list, *, ident, tier_label: str) -> list:
 def _convert_proposal(document: dict, archive_report: dict | None = None, *, version: int) -> dict:
     from gpuwm.case_catalog import (CatalogError, SCHEMA, _native_contract,
                                    validate_native_overrides)
-    from gpuwm.physics_compat import THOMPSON_LEGACY_RRTMG_PROFILE_ID
+    from gpuwm.physics_compat import THOMPSON_RTE_RRTMGP_PROFILE_ID
     source_schema = f"arwen.case-catalog/v{version}"
     if document.get("schema") != source_schema:
         raise CatalogError(f"Unsupported imported catalog schema {document.get('schema')!r}")
@@ -270,7 +270,14 @@ def _convert_proposal(document: dict, archive_report: dict | None = None, *, ver
         converted.append({"id": ident, "title": original["name"], "event_kind": original["category"],
                           "summary": original.get("selection_rationale", ""),
                           "source_options": options, "recommended_source_option": default_source,
-                          "tiers": tiers, "physics_profile": THOMPSON_LEGACY_RRTMG_PROFILE_ID,
+                          # A default, not a pin: gpuwm/case_catalog.py binds this
+                          # field when the caller names no profile, so it follows
+                          # the product's radiation arm (RTE+RRTMGP on both streams,
+                          # cumulus off) rather than the legacy twin it replaced,
+                          # which differs in the radiation engine and nothing else.
+                          # A proposal that means a specific engine names it per
+                          # case instead of inheriting one here.
+                          "tiers": tiers, "physics_profile": THOMPSON_RTE_RRTMGP_PROFILE_ID,
                           "recommendations": [{"topic": "physics", "data": deepcopy(original.get("physics", {}))},
                                               {"topic": "verification", "data": deepcopy(original.get("verification", {}))}],
                           "tags": deepcopy(original.get("tags", [])), "metadata": metadata})

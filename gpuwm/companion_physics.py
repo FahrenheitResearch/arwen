@@ -70,7 +70,11 @@ AT_SAVE = "save"
 AT_RUN_PREPARATION = "run-preparation"
 
 #: The one remedy this door can measure: the same option, applied to
-#: every domain, is admitted.  Claimed only where that was tried.
+#: every domain, is admitted.  Claimed only where that was tried, and
+#: tried through the renderer a save publishes through -- the
+#: configuration parser admits sets the route's own importer refuses, so
+#: a claim made without that renderer was a promise rather than a
+#: measurement.
 ALL_DOMAINS = "all-domains"
 
 
@@ -147,6 +151,7 @@ def repairs(request):
     from gpuwm.config_authority import read_config_authority
     from gpuwm.companion_domains import _apply, _build, _exact_keys, physics_components, REQUEST_SCHEMA
     from gpuwm.case_catalog import _native_contract
+    from gpuwm.hrrr_route_inputs import route_shared_domain_keys
 
     required = {"schema", "config_path", "expected_sha256", "action"}
     _exact_keys(request, required, required, where="physics repair request")
@@ -178,6 +183,11 @@ def repairs(request):
 
     components = {c["id"]: c for c in physics_components()}
     _, _, domain_keys = _native_contract()
+    # The same scope reading the availability door makes: a key this
+    # configuration's route carries once for the tree is not one this
+    # domain owns, so a repair that leaves it where it already is stays
+    # a repair instead of becoming an edit the save door refuses.
+    route_shared = route_shared_domain_keys((raw.get("fetch") or {}).get("source"))
     runs = [d.run for d in original.domains if grid_id == 0 or d.grid_id == grid_id]
     rules, unmeasured = _fired_rules(runs, action["settings"])
     # A domain the registry table could not be evaluated on is named in the
@@ -199,7 +209,8 @@ def repairs(request):
             # Shared values already in effect need no edit. A different shared
             # value is genuinely outside this domain's scope, so parser refusal
             # explains that choice rather than silently widening the edit.
-            settings = {k: v for k, v in settings.items() if k in domain_keys
+            settings = {k: v for k, v in settings.items()
+                        if (k in domain_keys and k not in route_shared)
                         or not all(getattr(run, k, None) == v for run in runs)}
         candidate_action = {"kind": "set_physics", "grid_id": grid_id, "settings": settings}
         signature = draft_digest(candidate_action)
@@ -323,10 +334,13 @@ def availability(request):
     created, the same contract :func:`repairs` carries.
     """
     from gpuwm.config_authority import read_config_authority
-    from gpuwm.companion_domains import _apply, _build, _exact_keys, physics_components, REQUEST_SCHEMA
+    from gpuwm.companion_domains import (_apply, _build, _exact_keys,
+                                          candidate_route_blocker,
+                                          physics_components, REQUEST_SCHEMA)
     from gpuwm.case_catalog import _native_contract
     from gpuwm.config import run_preparation_preconditions
     from gpuwm.explain import split as split_explanation
+    from gpuwm.hrrr_route_inputs import route_shared_domain_keys
     from gpuwm.physics_menu import switch_route_blocker
 
     required = {"schema", "config_path", "expected_sha256", "action"}
@@ -347,6 +361,13 @@ def availability(request):
     # question rather than being answered against a guessed one.
     forcing_source = (raw.get("fetch") or {}).get("source")
     _, shared_keys, domain_keys = _native_contract()
+    # A key the configuration's own input route carries once for the
+    # whole tree belongs to the run-wide question below, not to the
+    # per-domain one, however the schema scopes it: the door a save
+    # passes through refuses it on one domain, and this panel's job is
+    # to say so with the remedy rather than to report the refusal as an
+    # ordinary combination.
+    route_shared = route_shared_domain_keys(forcing_source)
     installed = physics_components()
     runs = [d.run for d in original.domains if grid_id == 0 or d.grid_id == grid_id]
 
@@ -369,18 +390,31 @@ def availability(request):
         candidate = copy.deepcopy(raw)
         _apply(candidate, {"kind": "set_physics", "grid_id": scope,
                            "settings": settings}, authority.source)
-        return _build(candidate, authority.source)
+        return candidate, _build(candidate, authority.source)
 
-    def refusal(settings, scope):
+    def refusal(settings, scope, *, render=False):
         """``(kind, error, at)`` from the first door that refuses, or ``None``.
 
         The kind here names the DOOR only.  Whether that door's refusal
         belongs to the option or to the combination it was asked about is
         a separate measurement, made in :func:`placed`.
+
+        ``render`` adds the renderer a save publishes through, and every
+        statement this door makes about a candidate AS A WHOLE is made
+        with it: whether the option is admitted at the selected scope,
+        and whether selecting All domains opens it.  Without it the
+        configuration parser answered both, and the route's own importer
+        -- which runs at that renderer and refuses sets the parser
+        admits -- answered neither, so a cell carried the remedy "select
+        All domains to use this" for an edit whose save then met the
+        importer's words.  The wall search below deliberately leaves it
+        off: that search asks whether the OPTION is reachable at all,
+        walking every installed choice for another component, and no
+        wall is ever claimed from a render.
         """
 
         try:
-            experiment = resolve(settings, scope)
+            candidate, experiment = resolve(settings, scope)
         except NotImplementedError as error:
             return NOT_IMPLEMENTED, error, AT_SAVE
         except ValueError as error:
@@ -403,15 +437,32 @@ def availability(request):
                 if unmet:
                     return (PRECONDITION, ValueError(unmet[0]),
                             AT_RUN_PREPARATION)
+            if render:
+                blocker = candidate_route_blocker(candidate, original,
+                                                  experiment, authority.source)
+                if blocker is not None and str(blocker) != standing_route:
+                    return SOURCE_ROUTE, blocker, AT_SAVE
         except Exception as error:  # one option's surprise is not the panel's
             return CHECK_FAILED, error, AT_SAVE
         return None
+
+    #: What the route says about this configuration AS IT STANDS.
+    #:
+    #: A refusal the draft already meets is the DRAFT's, and the draft's
+    #: own verdict below carries it.  Repeating it on every option said
+    #: that all forty are closed when what is closed is the
+    #: configuration: measured on a saved case whose radiation selector
+    #: the route's namelists have no spelling for, where the option the
+    #: configuration is already running came back unavailable.
+    standing_route = str(candidate_route_blocker(raw, original, original,
+                                                 authority.source) or "")
 
     def run_wide(settings):
         """The values here that no single domain owns and that differ."""
 
         return {key: value for key, value in settings.items()
-                if key in shared_keys and key not in domain_keys
+                if (key in route_shared
+                    or (key in shared_keys and key not in domain_keys))
                 and not all(getattr(run, key, None) == value for run in runs)}
 
     def scoped(settings):
@@ -423,7 +474,8 @@ def availability(request):
 
         if not grid_id:
             return dict(settings)
-        return {key: value for key, value in settings.items() if key in domain_keys
+        return {key: value for key, value in settings.items()
+                if (key in domain_keys and key not in route_shared)
                 or not all(getattr(run, key, None) == value for run in runs)}
 
     def scope_refusal(settings):
@@ -528,7 +580,7 @@ def availability(request):
         # can no longer answer differently about one cell.
         if everywhere is unmeasured:
             everywhere = refusal(dict(action["settings"], **option_settings),
-                                 0) if grid_id else None
+                                 0, render=True) if grid_id else None
         remedy = ALL_DOMAINS if grid_id and everywhere is None else None
         return [stated(COMBINATION, error, closes=False, at=at, remedy=remedy)]
 
@@ -544,7 +596,7 @@ def availability(request):
         settings.update(extra)
         outside = scope_refusal(settings)
         if outside is not None:
-            everywhere = refusal(settings, 0)
+            everywhere = refusal(settings, 0, render=True)
             reasons = [stated(SHARED_SCOPE, outside, closes=True,
                               remedy=None if everywhere else ALL_DOMAINS)]
             # Selecting All domains is the remedy that refusal offers. Where
@@ -554,7 +606,7 @@ def availability(request):
                 reasons.extend(placed(everywhere, extra, everywhere) if isolate
                                else [stated(everywhere[0], everywhere[1], closes=False, at=everywhere[2])])
             return {"available": False, "reasons": reasons}
-        found = refusal(scoped(settings), grid_id)
+        found = refusal(scoped(settings), grid_id, render=True)
         if found is None:
             return {"available": True, "reasons": []}
         if not isolate:

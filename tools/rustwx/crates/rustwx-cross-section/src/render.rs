@@ -131,6 +131,13 @@ pub struct CrossSectionRenderRequest {
     pub palette: Vec<Color>,
     pub value_range: Option<(f32, f32)>,
     pub value_ticks: Vec<f32>,
+    /// Colour bar ticks with the text each one prints, for a fill whose
+    /// drawn value is not the value a reader wants beside the bar: a fill
+    /// drawn in log10 hands decade positions here with the field's own
+    /// numbers as labels (-1 reads 0.1, 0 reads 1, 1 reads 10).  Empty
+    /// leaves the ticks to `value_ticks` and the automatic labels (gpuwm
+    /// addition, VENDOR.md).
+    pub colorbar_ticks: Vec<(f32, String)>,
     pub colorbar_label: Option<String>,
     pub show_axes: bool,
     pub show_grid: bool,
@@ -175,6 +182,13 @@ impl CrossSectionRenderRequest {
 
     pub fn with_colorbar_label(mut self, label: impl Into<String>) -> Self {
         self.colorbar_label = Some(label.into());
+        self
+    }
+
+    /// Ticks at these drawn values, each printing its own text instead of
+    /// the drawn value (see [`Self::colorbar_ticks`]).
+    pub fn with_colorbar_ticks(mut self, ticks: Vec<(f32, String)>) -> Self {
+        self.colorbar_ticks = ticks;
         self
     }
 
@@ -258,6 +272,7 @@ impl Default for CrossSectionRenderRequest {
             palette: CrossSectionPalette::default().build(),
             value_range: None,
             value_ticks: Vec::new(),
+            colorbar_ticks: Vec::new(),
             colorbar_label: None,
             show_axes: true,
             show_grid: true,
@@ -444,6 +459,9 @@ struct ResolvedRenderScene {
     min_value: f32,
     max_value: f32,
     value_ticks: Vec<f32>,
+    /// One label per entry of `value_ticks` when the request named its
+    /// ticks; empty when the labels are the drawn values themselves.
+    tick_labels: Vec<String>,
     colorbar_label: String,
     overlay_levels: Vec<f32>,
     highlight_overlay: Option<f32>,
@@ -483,14 +501,26 @@ impl ResolvedRenderScene {
             return Err(CrossSectionError::EmptyColorRamp);
         }
 
-        let value_ticks = if request.value_ticks.is_empty() {
-            declared_style
-                .as_ref()
-                .map(|style| style.value_ticks().to_vec())
-                .filter(|ticks| !ticks.is_empty())
-                .unwrap_or_else(|| nice_value_ticks(min_value, max_value, 7))
+        let (value_ticks, tick_labels) = if !request.colorbar_ticks.is_empty() {
+            (
+                request.colorbar_ticks.iter().map(|(value, _)| *value).collect(),
+                request
+                    .colorbar_ticks
+                    .iter()
+                    .map(|(_, label)| label.clone())
+                    .collect(),
+            )
+        } else if request.value_ticks.is_empty() {
+            (
+                declared_style
+                    .as_ref()
+                    .map(|style| style.value_ticks().to_vec())
+                    .filter(|ticks| !ticks.is_empty())
+                    .unwrap_or_else(|| nice_value_ticks(min_value, max_value, 7)),
+                Vec::new(),
+            )
         } else {
-            request.value_ticks.clone()
+            (request.value_ticks.clone(), Vec::new())
         };
 
         let uses_default_overlay = request_uses_default_overlays(request);
@@ -548,6 +578,7 @@ impl ResolvedRenderScene {
             min_value,
             max_value,
             value_ticks,
+            tick_labels,
             colorbar_label,
             overlay_levels,
             highlight_overlay,
@@ -1956,7 +1987,7 @@ fn draw_colorbar(
         None,
     );
 
-    for &tick in &scene.value_ticks {
+    for (index, &tick) in scene.value_ticks.iter().enumerate() {
         if tick < scene.min_value || tick > scene.max_value {
             continue;
         }
@@ -1973,7 +2004,11 @@ fn draw_colorbar(
             1,
             None,
         );
-        let tick_label = format_scalar_value(tick);
+        let tick_label = scene
+            .tick_labels
+            .get(index)
+            .cloned()
+            .unwrap_or_else(|| format_scalar_value(tick));
         canvas.draw_text(
             label_x as i32,
             y.round() as i32 - text_line_height(1, canvas.type_scale) as i32 / 2,
@@ -2852,6 +2887,34 @@ mod tests {
         assert!(
             rightmost > width / 2,
             "the mark belongs on the right of the row, saw {rightmost} of {width}"
+        );
+    }
+
+    #[test]
+    fn named_colorbar_ticks_print_their_own_text_at_the_drawn_value() {
+        // A fill drawn in log10 sits on -1..1 and wants 0.1, 1, 10 beside
+        // the bar.  Without named ticks the bar prints the drawn values.
+        let section = sample_section();
+        let auto = CrossSectionRenderRequest::default().with_value_range(-1.0, 1.0);
+        let named = CrossSectionRenderRequest::default()
+            .with_value_range(-1.0, 1.0)
+            .with_colorbar_ticks(vec![
+                (-1.0, "0.1".to_string()),
+                (0.0, "1".to_string()),
+                (1.0, "10".to_string()),
+            ]);
+        let scene = ResolvedRenderScene::resolve(&section, &section, &named).unwrap();
+        assert_eq!(scene.value_ticks, vec![-1.0, 0.0, 1.0]);
+        assert_eq!(scene.tick_labels, vec!["0.1", "1", "10"]);
+        let auto_scene = ResolvedRenderScene::resolve(&section, &section, &auto).unwrap();
+        assert!(auto_scene.tick_labels.is_empty());
+        assert!(auto_scene.value_ticks.contains(&0.0));
+        let plain = render_scalar_section(&section, &auto).unwrap();
+        let labelled = render_scalar_section(&section, &named).unwrap();
+        assert_ne!(
+            plain.rgba(),
+            labelled.rgba(),
+            "named tick text must reach the drawn bar"
         );
     }
 

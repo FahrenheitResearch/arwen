@@ -12,6 +12,8 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
+from conftest import requires_cupy
+
 from gpuwm.experiment import load_experiment
 from gpuwm.ingest.prepared_cache import (
     PREPARED_CACHE_SCHEMA,
@@ -782,19 +784,25 @@ def test_the_aggregate_radiation_spelling_is_agreement_not_drift():
     silent = _asking_for_no_physics(
         (ROOT / "configs" / "gfs_wrf_direct_proof.toml").read_text(
             encoding="utf-8"))
-    # 20CRv3 WSM6 pins the aggregate (ra_physics 4, lw/sw -1); the config
-    # below spells the identical selection the explicit way.
+    # Every profile pins the split pair now.  The registry option keyed
+    # on the (-1, -1) sentinel is retired, because that tuple is an
+    # ABSENCE and it matched every configuration written in the aggregate
+    # spelling, whatever engine that spelling named.  This profile was
+    # the one that declared it, so the direction under test flips: the
+    # profile spells the pair, and the config below spells the identical
+    # selection the aggregate way, which is what the WRF namelist
+    # importer emits for a coupled pair.
     profile = runner.TWENTYCRV3_WSM6_PHYSICS_PROFILE
     pinned = runner._profile_pinned_physics(
         runner._profile_runtime_switches("gfs", profile))
     assert (pinned["ra_physics"], pinned["ra_lw_physics"],
-            pinned["ra_sw_physics"]) == (4, -1, -1)
-    explicit = _declaring_before_first_domain(
+            pinned["ra_sw_physics"]) == (0, 4, 4)
+    aggregate = _declaring_before_first_domain(
         silent,
-        "ra_physics = 0\nra_lw_physics = 4\nra_sw_physics = 4\n\n")
+        "ra_physics = 4\nra_lw_physics = -1\nra_sw_physics = -1\n\n")
 
     _rendered, exp, _receipt = runner._render_materialized_experiment(
-        explicit, source="gfs", profile=profile)
+        aggregate, source="gfs", profile=profile)
     assert runner.radiation_scheme_ids(exp.root.run) == (4, 4)
 
     # A genuinely different pair through the same spelling still refuses.
@@ -971,15 +979,26 @@ def test_a_declared_rrtmg_variant_is_governed_by_the_profile_resolution(
 
     ``ra_rrtmg_variant`` selects which radiation IMPLEMENTATION a
     resolved (4, 4) pair executes -- gpuwm/core/rrtmg_legacy.py or
-    gpuwm/core/rrtmgp.py.  Exactly one shipped profile pins the pair
+    gpuwm/core/rrtmgp.py.  One shipped profile used to pin the pair
     without pinning the variant (the 20CRv3 WSM6 suite, whose name
-    asserts rte-rrtmgp); before this test, a config declaring
-    ``ra_physics = 4`` plus ``ra_rrtmg_variant = "rrtmg_legacy"`` kept
-    the variant under the kept-unpinned rule and published an authority
-    running LEGACY RRTMG under that profile's name, silently, where the
-    old delete-everything renderer produced rte-rrtmgp -- and step 5
-    could never notice, because the key is outside the switch table.  A
-    key the profile RESOLVES is governed like a key it pins.
+    asserts rte-rrtmgp), so a config declaring ``ra_physics = 4`` plus
+    ``ra_rrtmg_variant = "rrtmg_legacy"`` kept the variant under the
+    kept-unpinned rule and published an authority running LEGACY RRTMG
+    under that profile's name, silently, where the old
+    delete-everything renderer produced rte-rrtmgp -- and step 5 could
+    never notice, because the key is outside the switch table.  A key
+    the profile RESOLVES is governed like a key it pins, which is what
+    this test measures and what it still measures.
+
+    THE PRECONDITION IS RETIRED, with a reading, because the edit that
+    closes it has landed.  That suite was the one template declaring
+    the registry option keyed on the (-1, -1) sentinel, and the switch
+    product states ``ra_rrtmg_variant`` for a resolved (4, 4) pair --
+    read off the option's SELECTORS, which for that one option were the
+    sentinel and not the pair.  So it was also the one profile that
+    named no engine for its own radiation.  It declares the 4/4 option
+    now, states the parameter's declared default beside it, and the
+    engine it runs is on the product instead of left to silence.
     """
 
     silent = _asking_for_no_physics(
@@ -988,9 +1007,7 @@ def test_a_declared_rrtmg_variant_is_governed_by_the_profile_resolution(
     profile = runner.TWENTYCRV3_WSM6_PHYSICS_PROFILE
     pinned = runner._profile_pinned_physics(
         runner._profile_runtime_switches("gfs", profile))
-    # The hazard's precondition, pinned so a future profile edit that
-    # closes it retires this test loudly instead of leaving it vacuous.
-    assert "ra_rrtmg_variant" not in pinned
+    assert pinned["ra_rrtmg_variant"] == "rte-rrtmgp"
     assert runner._profile_radiation_pair(pinned) == (4, 4)
 
     legacy = _declaring_before_first_domain(
@@ -1507,7 +1524,15 @@ def _prepared_fixture(
         "user": user_metadata,
         "state_names": [],
         "coord_arrays": [],
-        "coord_scalars": {},
+        # A real cache records the hybrid pair beside the coefficient
+        # arrays it restores (ingest/prepared_cache._coord_metadata dumps
+        # every non-array field of the VerticalCoord), and the runner
+        # holds the coordinate it adopts against exactly these.
+        "coord_scalars": {
+            "hybrid_opt": exp.vertical.hybrid_opt,
+            "etac": exp.vertical.etac,
+            "p_top": exp.vertical.p_top,
+        },
         "base_arrays": [],
         "base_scalars": {},
         "met_fields": sorted(runner._REQUIRED_MET_FIELDS),
@@ -2347,6 +2372,11 @@ def test_unnamed_preflight_recomputes_the_front_door_selection(
         _preflight_fixture(fixture, physics_profile=None)
 
 
+# NEEDS CUPY INSTALLED, and opens no device: the door refuses ahead of
+# the work without the array library and returns 2, so execution is never
+# reached and no status is stated.  Measured on the Linux release node: red
+# without cupy, green with it (proof/node-reds-276).
+@requires_cupy
 def test_unnamed_forecast_main_reaches_execution_and_states_the_status(
         tmp_path, monkeypatch, capsys):
     """main() with NO --physics-profile: the production entrypoint.
@@ -2625,6 +2655,10 @@ def test_a_digest_that_is_neither_says_it_is_neither(tmp_path):
     assert _sha256(fixture.proof) in message and "0" * 64 in message
 
 
+# NEEDS CUPY INSTALLED, and opens no device: this test asserts the forecast
+# door's --proof-sha256 refusal; without cupy the capability refusal answers
+# in its place.
+@requires_cupy
 def test_the_forecast_door_refuses_the_content_sha_without_a_traceback(
         tmp_path, monkeypatch, capsys):
     """Through main(): a refusal, an exit code, and no work started.

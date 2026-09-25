@@ -14,14 +14,17 @@ construction, receipted nowhere.  What this file pins:
   ``launch_refl10cm_thompson`` on the same state -- the operator is the
   product authority, not a lookalike;
 - the -35 dBZ clear-air floor of the 1/6/8/10 family (NSSL's is 0);
-- the operator's hard requirement for the same-call classic
-  graupel-number shadow.  That shadow is a REBUILT scratch slot
-  (``gpuwm/io/restart.py``: per-call work buffer, never serialized,
-  finalized and consumed by REFL_10CM), so a DA caller evaluating H_Z
-  between steps cannot read it off a checkpoint -- it must come from the
-  microphysics call the analysis time is aligned with.  The refusal is
-  the contract the cycling driver has to satisfy; pinning it here keeps
-  that wiring gap loud instead of latent.
+- the classic graupel-number shadow, on both sides of the line it sits
+  on.  That shadow is a REBUILT scratch slot (``gpuwm/io/restart.py``:
+  per-call work buffer, never serialized, finalized and consumed by
+  REFL_10CM), so a DA caller evaluating H_Z between steps cannot read it
+  off a checkpoint.  It does not have to: the wrapper DIAGNOSES the
+  moment from qg, T, p and qv at the entry of every call, and between
+  steps that diagnosis IS the moment, so the operator derives it.  The
+  product-side authority still refuses without it, because its caller
+  is inside the microphysics call and does hold the evolved one.  This
+  file pins both, because a fix that demoted the refusal instead of
+  deriving the field would pass a test that only pinned one.
 """
 
 from __future__ import annotations
@@ -147,18 +150,84 @@ def test_mp8_floors_at_minus_thirty_five_dbz_in_clear_air():
     assert float(got.max()) == -35.0
 
 
-def test_mp8_requires_the_same_call_graupel_number_shadow():
-    """No shadow, no reflectivity -- a refusal, never a silent guess.
+def test_mp8_without_a_shadow_derives_the_wrappers_own_diagnosis():
+    """The DA caller has no evolved moment, and needs none.
 
-    WRF classic Thompson's ng1d is private to the scheme: a per-call
-    REBUILT scratch, absent from checkpoints by design.  A DA caller
-    that cannot produce it must hear that loudly, because the tempting
-    fallbacks (zeros, or Morrison's prognostic ng) are both a different
-    formulation wearing the right name.
+    Every cycling driver reaches H_Z(x) between steps, so none of them
+    can hand over the moment the microphysics call evolved -- and the
+    operator used to refuse them all, which left the whole Thompson
+    family with no reflectivity operator at the one door that needs it.
+    What WRF's wrapper does at the entry of every call is DIAGNOSE the
+    moment from qg, T, p and qv; with no tendency acting between steps
+    that diagnosis is the moment, so the operator performs it.
+
+    Measured against the two ends of the scheme's own transcription
+    (init then finalize) applied to the same state, and against the
+    field a zero shadow would have produced, so a derivation that quietly
+    handed over zeros could not pass.
     """
+    import cupy as cp
+
+    from gpuwm.core.refl import launch_refl10cm_thompson
+    from gpuwm.core.state import DTYPE
+    from gpuwm.core.thompson import (
+        launch_classic_graupel_number_finalize,
+        launch_classic_graupel_number_init)
+
     state, _ = _thompson_state()
-    with pytest.raises(ValueError, match="graupel number shadow"):
-        obsop.simulated_reflectivity(state, SimpleNamespace(mp_physics=8))
+    cfg = SimpleNamespace(mp_physics=8)
+
+    got = obsop.simulated_reflectivity(state, cfg)
+    cp.cuda.Stream.null.synchronize()
+    got = got.copy()
+
+    reference_state, _ = _thompson_state()
+    thb = reference_state.thb[:, None, None]
+    temperature = (thb + reference_state.thp) * cp.power(
+        reference_state.p / DTYPE(c.P0), DTYPE(c.RCP))
+    derived = cp.zeros(got.shape, dtype=cp.float32)
+    launch_classic_graupel_number_init(
+        reference_state.qg, temperature, reference_state.p,
+        reference_state.qv, derived)
+    launch_classic_graupel_number_finalize(
+        reference_state.qg, temperature, reference_state.p,
+        reference_state.qv, derived)
+    cp.cuda.Stream.null.synchronize()
+    assert float(derived.min()) > 0.0
+
+    reference = cp.zeros(got.shape, dtype=cp.float32)
+    launch_refl10cm_thompson(
+        reference_state.qv, reference_state.qr, reference_state.nr,
+        reference_state.qs, reference_state.qg, derived, temperature,
+        reference_state.p, reference)
+    cp.cuda.Stream.null.synchronize()
+    cp.testing.assert_array_equal(got, reference)
+    assert float(got.max()) > -35.0
+
+    zeros = cp.zeros(got.shape, dtype=cp.float32)
+    zero_shadow = cp.zeros(got.shape, dtype=cp.float32)
+    launch_refl10cm_thompson(
+        reference_state.qv, reference_state.qr, reference_state.nr,
+        reference_state.qs, reference_state.qg, zero_shadow, temperature,
+        reference_state.p, zeros)
+    cp.cuda.Stream.null.synchronize()
+    assert bool((got != zeros).any())
+
+
+def test_the_product_authority_still_requires_the_same_call_shadow():
+    """The refusal keeps its job, one caller down from the operator.
+
+    ``compute_refl_10cm`` is called from inside the microphysics call,
+    which HAS the evolved moment; a re-diagnosis there would silently
+    drop the call's own source and fallout tendencies.  So the refusal
+    stays, and its sentence names the caller that does not need it.
+    """
+    from gpuwm.core.refl import compute_refl_10cm
+
+    state, _ = _thompson_state()
+    with pytest.raises(ValueError, match="graupel number shadow") as raised:
+        compute_refl_10cm(state, SimpleNamespace(mp_physics=8))
+    assert "simulated_reflectivity" in str(raised.value)
 
 
 def test_mp8_is_not_the_morrison_route():

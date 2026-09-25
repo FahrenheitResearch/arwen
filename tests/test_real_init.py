@@ -1190,7 +1190,8 @@ class _ReferencePreprocessBackend:
 def _analyzed_hrrr_real_init(
         mp_physics, *, state_backend="cpu", terrain_m=0.0,
         drop=(), reshape=None, wif_grid_latlon=None, wif_valid_date=None,
-        analyzed_species=None, **config_overrides):
+        analyzed_species=None, horizontal_operators=None,
+        **config_overrides):
     """One decoded-native-HRRR real initialization, never a fabricated state.
 
     ``drop`` removes analyzed species from the decoded snapshot and
@@ -1239,7 +1240,8 @@ def _analyzed_hrrr_real_init(
         **analyzed,
     }
     snapshot = HorizontalSnapshot(
-        valid_time=datetime(2026, 7, 20, 6), levels_hpa=levels, fields=fields)
+        valid_time=datetime(2026, 7, 20, 6), levels_hpa=levels, fields=fields,
+        horizontal_operators=horizontal_operators)
     cfg = RunConfig(
         nx=nx, ny=ny, nz=nz, dx=12000.0, dy=12000.0, ztop=18000.0,
         dt=30.0, run_seconds=60.0, hybrid_opt=2, etac=0.2, moist=True,
@@ -1654,25 +1656,6 @@ def test_mp9_reverted_tuple_reproduces_the_condensate_free_start(monkeypatch):
             f"state.{name} unexpectedly carried analyzed mass")
 
 
-def test_mp28_real_ingest_zeroes_the_source_absent_number_moments():
-    """Registry scalars the analysis does not carry begin at exact zero.
-
-    mp=8's arm zeroes ni and nr.  mp=28 adds nc, because the aerosol-aware
-    scheme promotes cloud droplet number from the constant Nt_c to a
-    prognostic Registry scalar (QNCLOUD, Registry.EM_COMMON:3036).  Exact
-    FP32 zero is required, not "small": real.exe initializes absent package
-    members to 0.0 and the scheme owns their first physical update.
-    """
-    result, _ = _analyzed_hrrr_real_init(28)
-    state = result.state
-    for name in ("nc", "nr", "ni"):
-        live = _host_array(getattr(state, name))
-        assert live.dtype == np.float32
-        assert live.shape == (8, 2, 3)
-        assert int(live.view(np.uint32).max()) == 0, (
-            f"state.{name} is not exact FP32 zero")
-
-
 def test_mp28_real_ingest_leaves_the_aerosols_for_the_init_hook():
     """The aerosol fields must arrive EXACTLY zero, and say so.
 
@@ -1709,9 +1692,11 @@ def test_mp28_real_ingest_leaves_the_aerosols_for_the_init_hook():
     assert receipt["aer_init_opt"] == 0 and receipt["wif_input_opt"] == 0
     assert set(receipt["not_initialized_here"]) == {
         "nwfa", "nifa", "nwfa2d", "nifa2d"}
+    # The number moments are not in this receipt: the cold-start closure
+    # sets them from the analyzed mass, and their receipt is
+    # hydrometeor_initialization["cold_start_moment_closure"].
     fingerprints = receipt["source_absent_state_fields"]
-    assert set(fingerprints) == {
-        "nc", "nr", "ni", "nwfa", "nifa", "nwfa2d", "nifa2d"}
+    assert set(fingerprints) == {"nwfa", "nifa", "nwfa2d", "nifa2d"}
     assert all(item["nonzero_count"] == 0 for item in fingerprints.values())
 
     # Every other scheme carries an empty aerosol receipt, so the field can
@@ -2161,8 +2146,18 @@ def test_mp28_real_ingest_runs_on_the_production_cuda_preprocessing():
         live = cp.asnumpy(getattr(state, name))
         assert np.isfinite(live).all() and live.min() >= 0.0
         assert np.count_nonzero(live) == live.size
-    for name in ("nc", "nr", "ni", "nwfa", "nifa", "nwfa2d", "nifa2d"):
+    # The aerosols stay at real.exe's zero until the profile fill; the
+    # three number moments are closed over the analyzed mass (every cell
+    # carries mass here, so every cell is written) through the scheme's
+    # own entry block, on the CUDA preprocessing backend as on the CPU one.
+    for name in ("nwfa", "nifa", "nwfa2d", "nifa2d"):
         assert int(cp.asnumpy(getattr(state, name)).view(np.uint32).max()) == 0
+    for name in ("nc", "nr", "ni"):
+        live = cp.asnumpy(getattr(state, name))
+        assert np.isfinite(live).all() and live.min() > 0.0
+    closure = result.hydrometeor_initialization["cold_start_moment_closure"]
+    assert closure["repaired_cells_total"] == 3 * nz * ny * nx
+    assert set(closure["written_state_fields"]) == {"nc", "nr", "ni"}
     assert result.aerosol_initialization["awaiting_profile_fill"] is True
 
     driver = initialize_physics(state, cfg)
@@ -2332,3 +2327,83 @@ def test_declared_analyzed_inventory_retains_only_file_supplied_mass(selected):
 def test_declared_analyzed_field_cannot_be_absent():
     with pytest.raises(KeyError,match="QC"):
         _analyzed_hrrr_real_init(6,drop=("QC",),analyzed_species=("QC",))
+
+
+def test_the_hydrometeor_receipt_names_the_horizontal_owner_and_the_zero_w():
+    """The operator each analyzed species took, and W's zero, are READ.
+
+    The regular-source pass publishes the owner of every output field on
+    the snapshot; the initializer copies the five hydrometeors' owners
+    into the receipt so a parabolic entry (the overshoot the
+    non-negativity check refuses) is visible after the fact.  The native
+    decoder publishes no owners and says so.  Vertical velocity is zero on
+    every route and the receipt states the policy instead of leaving it
+    to be inferred from an absence.
+    """
+    from gpuwm.ingest.real import WRF_REAL_VERTICAL_VELOCITY_POLICY
+
+    owners = {name: "bilinear" for name in ("QC", "QR", "QI", "QS", "QG")}
+    owners["TT"] = "parabolic"
+    result, _ = _analyzed_hrrr_real_init(8, horizontal_operators=owners)
+    receipt = result.hydrometeor_initialization
+    assert receipt["horizontal_operator"] == {
+        name: "bilinear" for name in ("QC", "QR", "QI", "QS", "QG")}
+    assert receipt["vertical_velocity"] == WRF_REAL_VERTICAL_VELOCITY_POLICY
+    assert receipt["vertical_velocity"]["policy"] == "exact-fp32-zero"
+    assert int(_host_array(result.state.w).view(np.uint32).max()) == 0
+
+    native, _ = _analyzed_hrrr_real_init(8)
+    assert native.hydrometeor_initialization["horizontal_operator"] == {
+        name: "unrecorded" for name in ("QC", "QR", "QI", "QS", "QG")}
+
+
+def test_mp28_cold_start_closes_the_number_moments_over_the_imported_mass():
+    """Mass in, numbers consistent with it: the scheme's own entry block.
+
+    real.exe leaves the aerosol-aware scheme's three number moments at
+    exact zero and lets Thompson's entry block set them on the first call.
+    Between the cold start and that first call the state carried mass
+    with no number in every cloudy cell (orphan cells), and anything
+    that reads the state there -- the between-step reflectivity operator,
+    a t=0 analysis, a picture of the initial frame -- read a rain number
+    at the scheme's R2 floor and diagnosed a reflectivity burst.  The
+    cold start now runs the same entry block once, from
+    gpuwm.core.thompson_entry (the authority gpuwm.da.moments
+    .repair_moments applies), on the density the initializer formed,
+    and says so in hydrometeor_initialization.
+    """
+    from gpuwm.da.moments import moment_consistency_report, scheme_moments
+    from gpuwm.core.thompson_entry import R1
+
+    result, _ = _analyzed_hrrr_real_init(28)
+    state = result.state
+    view = {name: _host_array(getattr(state, name))
+            for name in ("qc", "qr", "qi", "nc", "nr", "ni")}
+    view["alt"] = np.asarray(result.total_specific_volume, dtype=np.float32)
+    report = moment_consistency_report(view, mp_physics=28)
+    assert report["offending_cells_total"] == 0, report
+    assert report["nonfinite_cells_total"] == 0
+    for pair in scheme_moments(28).pairs:
+        mass, number = view[pair.mass], view[pair.number]
+        assert number.dtype == np.float32
+        assert np.isfinite(number).all() and (number >= 0.0).all()
+        assert (number[mass > R1] > 0.0).all(), pair
+        assert (number[mass <= R1] == 0.0).all(), pair
+
+    closure = result.hydrometeor_initialization["cold_start_moment_closure"]
+    assert closure["repaired"] is True
+    assert closure["repaired_cells_total"] == sum(
+        int(np.count_nonzero(view[pair.mass] > R1))
+        for pair in scheme_moments(28).pairs)
+    assert closure["authority"] == scheme_moments(28).repair_authority
+    assert closure["mp_physics"] == 28
+    assert set(closure["written_state_fields"]) == {"nc", "nr", "ni"}
+
+
+def test_mp8_cold_start_keeps_the_zero_moment_contract_it_pins():
+    """The mp=8 arm is unchanged by the mp=28 closure and says so."""
+    result, _ = _analyzed_hrrr_real_init(8)
+    receipt = result.hydrometeor_initialization
+    assert "cold_start_moment_closure" not in receipt
+    for name in ("ni", "nr"):
+        assert int(_host_array(getattr(result.state, name)).view(np.uint32).max()) == 0

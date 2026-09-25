@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+from dataclasses import dataclass
 import hashlib
 import importlib
 from importlib import metadata
@@ -28,22 +29,114 @@ from typing import Any
 
 from gpuwm import __version__
 from gpuwm.bridges import BRIDGE_ABI_MARKERS as _SHARED_BRIDGE_ABI_MARKERS
+from gpuwm.bridges import BRIDGE_ENV as _SHARED_BRIDGE_ENV
+from gpuwm.bridges import CRATE_RELATIVE as _DECODER_WORKSPACE
+from gpuwm.bridges import RUSTWX_CRATE_RELATIVE as _RENDERER_WORKSPACE
 from gpuwm.bridges import quiet_loader_errors
 from gpuwm.gpu_stack_identity import gpu_cuda_stack_identity
 from gpuwm.runtime_manifest import RUNTIME_SCHEMA
+# The fetch backbone's environment variable comes from the module that
+# READS it, for the same reason the six decoders' come from
+# :data:`gpuwm.bridges.BRIDGE_ENV`.  It cannot live in that map -- its
+# consumers resolve through :func:`gpuwm.bridges.crate_dir`, the
+# decoder crate, and rw_fetch builds in ``tools/rustwx`` -- so this is
+# the one row whose authority is elsewhere, and naming it as a literal
+# here would have been a second copy inside the declaration that exists
+# to end second copies.
+from gpuwm.rustwx_fetch import FETCH_ENV as _FETCH_BACKBONE_ENV
 PYTHON_DISTRIBUTION = "rw-wps"
-BRIDGE_NAMES = (
-    "grib1_bridge",
-    "grib2_inventory",
-    "grib2_dump",
-    "gfs_grib2_bridge",
-    "hrrr_grib2_bridge",
-    # Built from tools/rustwx, not tools/grib1_bridge -- the vendored
-    # wx-core download stack and its offline vendor closure live there.
-    # The distribution takes every bridge by explicit path, so the two
-    # cargo workspaces cost nothing here beyond two build commands.
-    "rw_fetch",
+
+
+@dataclass(frozen=True)
+class BundledBridge:
+    """One executable the standalone rw-wps bundle carries, declared once.
+
+    Everything a builder needs about a bridge is on the row: the cargo
+    workspace that produces it, the option that names an already-built
+    copy, the environment variable the installed launcher binds it to,
+    the no-argument usage marker its identity probe demands, and the
+    route that refuses without it.
+
+    THE ROW IS THE WHOLE DECLARATION, because the shape it replaces cost
+    a release.  A bridge used to be a name in a tuple plus a hand-written
+    ``parser.add_argument`` plus a hand-written entry in each builder's
+    ``bridge_inputs`` dict plus a hand-written ``export`` in each
+    launcher -- five places, none of which any test held together.  Two
+    of the five went stale: ``tools/build_rw_wps_release.py`` never
+    passed ``rw_fetch`` at all, so the standalone release builder raised
+    ``AttributeError`` before staging a byte, and both launchers bound
+    five of the six bridges.  Then 2.7.5 added ``gdt101_remap`` to the
+    bridge bundle for ICON global and the standalone bundle silently did
+    not grow it, which shipped as a known limit with ``gpuwm doctor``
+    naming the gap.
+
+    A new bridge is now one row.  Nothing else in this file or in either
+    builder is written per bridge, and
+    ``tests/test_native_wrf_distribution.py`` fails when a row and the
+    surfaces that must honour it disagree.
+    """
+
+    name: str
+    workspace: str
+    option: str
+    env_var: str
+    usage_marker: str
+    consumer: str
+
+    @property
+    def dest(self) -> str:
+        """The parsed-option attribute this row's path arrives on."""
+
+        return self.option.removeprefix("--").replace("-", "_")
+
+
+#: Every bridge the standalone rw-wps bundle carries.  The order is the
+#: order the manifest and the contract report them in.
+#:
+#: ``rw_fetch`` builds from the renderer workspace and not the decoder
+#: one -- the vendored wx-core download stack and its offline vendor
+#: closure live there -- which is why the workspace is a column rather
+#: than an assumption.  ``gdt101_remap`` is the icosahedral remapper the
+#: ICON global route writes its regional intermediates with; it builds
+#: beside the GRIB decoders in the same workspace.
+BUNDLED_BRIDGES: tuple[BundledBridge, ...] = (
+    BundledBridge(
+        "grib1_bridge", _DECODER_WORKSPACE, "--grib1-bridge",
+        _SHARED_BRIDGE_ENV["grib1_bridge"], "usage: grib1_bridge",
+        "the ERA5 route (rw-wps --source era5)"),
+    BundledBridge(
+        "grib2_inventory", _DECODER_WORKSPACE, "--grib2-inventory",
+        _SHARED_BRIDGE_ENV["grib2_inventory"], "usage: grib2_inventory",
+        "every generic GRIB2 prep route (rw-wps --source gfs/20crv3/mapped)"),
+    BundledBridge(
+        "grib2_dump", _DECODER_WORKSPACE, "--grib2-dump",
+        _SHARED_BRIDGE_ENV["grib2_dump"], "usage: grib2_dump",
+        "every generic GRIB2 prep route (rw-wps --source gfs/20crv3/mapped)"),
+    BundledBridge(
+        "gfs_grib2_bridge", _DECODER_WORKSPACE, "--gfs-bridge",
+        _SHARED_BRIDGE_ENV["gfs_grib2_bridge"], "usage: gfs_grib2_bridge",
+        "the GFS front door (rw-wps --source gfs)"),
+    BundledBridge(
+        "hrrr_grib2_bridge", _DECODER_WORKSPACE, "--hrrr-bridge",
+        _SHARED_BRIDGE_ENV["hrrr_grib2_bridge"], "usage: hrrr_grib2_bridge",
+        "the HRRR front door (rw-wps --source hrrr)"),
+    BundledBridge(
+        "gdt101_remap", _DECODER_WORKSPACE, "--gdt101-remap",
+        _SHARED_BRIDGE_ENV["gdt101_remap"], "usage: gdt101_remap",
+        "every source whose native grid is a GDT-101 unstructured mesh "
+        "(rw-wps --source icon-global), whose input-normalization stage "
+        "writes its regional intermediates with this binary and refuses "
+        "rather than falling back without it"),
+    BundledBridge(
+        "rw_fetch", _RENDERER_WORKSPACE, "--rw-fetch",
+        _FETCH_BACKBONE_ENV, "usage: rw_fetch",
+        "the rust fetch backbone (rw-wps --source ... over NOMADS/S3)"),
 )
+BRIDGE_NAMES = tuple(bridge.name for bridge in BUNDLED_BRIDGES)
+#: The cargo workspaces a standalone bundle must build, in build order
+#: and without repeats: the column above, read as the build plan it is.
+BRIDGE_WORKSPACES = tuple(dict.fromkeys(
+    bridge.workspace for bridge in BUNDLED_BRIDGES))
 CPU_BACKEND_LIBRARY = "libgpuwm_preprocess_cpu.so"
 WINDOWS_CPU_BACKEND_LIBRARY = "gpuwm_preprocess_cpu.dll"
 HRRR_HELPERS = (
@@ -73,17 +166,15 @@ _MINIMUM_VERSIONS = {
     "cupy-cuda12x": (13, 0),
 }
 _BRIDGE_USAGE_MARKERS = {
-    "grib1_bridge": "usage: grib1_bridge",
-    "grib2_inventory": "usage: grib2_inventory",
-    "grib2_dump": "usage: grib2_dump",
-    "gfs_grib2_bridge": "usage: gfs_grib2_bridge",
-    "hrrr_grib2_bridge": "usage: hrrr_grib2_bridge",
-    "rw_fetch": "usage: rw_fetch",
+    **{bridge.name: bridge.usage_marker for bridge in BUNDLED_BRIDGES},
     # The mapped decode engine is a decoder of record: on the Rust route
     # it is the one binary an input manifest seals, so it needs the same
     # no-argument identity probe the subprocess tools get.  Without a row
     # here `bridge_identity` refuses the name outright and no manifest
-    # could be authored for that route at all.
+    # could be authored for that route at all.  It is NOT in
+    # BUNDLED_BRIDGES because the standalone bundle does not carry it:
+    # the mapped route builds its own copy, and a row here would promise
+    # a file the bundle has no build step for.
     "gpuwm_mapped_engine": "usage: gpuwm_mapped_engine",
 }
 # The generic GRIB2 pair is an internal tabular ABI, not just any executable
@@ -110,6 +201,46 @@ _BRIDGE_ABI_MARKERS = {
         b"ranges\tsha256"
     ),
 }
+
+
+def add_bridge_options(parser: argparse.ArgumentParser) -> None:
+    """Give a distribution builder one option per declared bridge.
+
+    Both builders call this instead of writing a line per bridge, so a
+    new row in :data:`BUNDLED_BRIDGES` reaches the Linux and the Windows
+    builder in the same commit that declares it.  ``dest`` is spelled
+    out rather than left to argparse so the option text and the attribute
+    the builders read cannot drift apart.
+    """
+
+    for bridge in BUNDLED_BRIDGES:
+        parser.add_argument(
+            bridge.option, type=Path, required=True, dest=bridge.dest,
+            help=f"the built {bridge.name}, needed by {bridge.consumer}")
+
+
+def bridge_inputs(args: argparse.Namespace) -> dict[str, Path]:
+    """Resolve every declared bridge from one builder's parsed options.
+
+    A caller that assembles its own namespace (the release builder does,
+    from a cargo target directory) and forgets a row is refused BY NAME
+    here, naming the route a bundle without that binary would refuse.
+    That refusal is the whole point: the shipped release builder dropped
+    ``rw_fetch`` from its namespace and the failure was an
+    ``AttributeError`` inside the packager, three screens from the
+    omission.
+    """
+
+    resolved: dict[str, Path] = {}
+    for bridge in BUNDLED_BRIDGES:
+        value = getattr(args, bridge.dest, None)
+        if value is None:
+            raise ValueError(
+                f"the standalone rw-wps bundle declares {bridge.name} and "
+                f"this build named no {bridge.option}: a bundle without it "
+                f"refuses {bridge.consumer}")
+        resolved[bridge.name] = Path(value).resolve()
+    return resolved
 
 
 def _sha256(path: Path) -> str:

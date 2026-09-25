@@ -67,6 +67,87 @@ def authority_from_vtable(path: Path) -> dict:
     }
 
 
+#: The reader's refusals about the DECLARED LAYER SET, by the words
+#: only they carry.  Nothing about where the sources are is wrong when
+#: one of these comes back, so the discovery remedy below would send a
+#: user to do again the exact thing they have already done -- which is
+#: what the field report did with it.
+#:
+#: These words are a hand-transcribed match on the OTHER side's sentences
+#: (``tools/rustwx/crates/rw-netcdf/src/soil_recovery.rs``), so a
+#: rewording on either side would silently send the user back to the
+#: discovery remedy.  ``tests/test_wrf_soil_refusal_marks.py`` reads the
+#: Rust source and holds the pairing: exactly the layer refusals carry a
+#: mark, and no other refusal does.
+_LAYER_REFUSAL_MARKS = ("the authority declares", "declared layer")
+
+#: The conversion refusal, which is NOT about the declared layer set and
+#: NOT about finding the files: both inputs are the right ones and the
+#: arithmetic between them does not land in [0, 1].
+_CONVERSION_REFUSAL_MARK = "invalid volume fraction"
+
+
+def _conversion_remedy(authority_path, met_path, authority):
+    """The way out when the numbers are read and the conversion is wrong.
+
+    The reader names the fraction it produced, the declared layer, that
+    layer's thickness and the source value it started from, because the
+    conversion is ``value * scale / thickness`` and only those numbers
+    separate its two causes: a source that is not the declared quantity
+    (the scale is wrong, and the fraction is usually out by a round
+    factor) or a declared layer whose bounds are the wrong thickness for
+    the source it is being applied to (the fraction is out by the ratio
+    of the two thicknesses).  This remedy points at both, in that order,
+    rather than sending anyone to look for other files.
+    """
+
+    variable = authority.get("source_variable", "SOILM")
+    quantity = authority.get("source_quantity", "unstated")
+    units = authority.get("source_units", "unstated")
+    return (
+        f"Both inputs were found and read; the conversion between them is "
+        f"what failed. {authority_path} declares {variable} as "
+        f"{quantity!r} in units {units!r}, and the reader divides by the "
+        f"declared layer thickness printed above to reach a volume "
+        f"fraction. Two things produce a fraction outside [0, 1]. Either "
+        f"{met_path} does not hold that quantity -- check the SOILM units "
+        f"attribute with `ncdump -h {met_path}` against source_units, "
+        f"since a layer water mass read as a volume fraction is out by "
+        f"roughly the layer thickness in millimetres -- or the declared "
+        f"bounds for that layer are not the bounds the source was "
+        f"produced on, in which case the fraction is out by the ratio of "
+        f"the declared thickness to the real one. Correct whichever of "
+        f"source_quantity/source_units or source_layer_bounds_m the two "
+        f"numbers above disagree with.")
+
+
+def _layer_remedy(authority_path, met_path, authority, domain):
+    """The way out of a layer-declaration refusal: two numbers, then what to change.
+
+    A declaration is allowed to name MORE layers than a cycle stacked,
+    and that case recovers.  What cannot be reconciled is a stacked
+    depth that no declared layer contains, so the way out is to widen
+    the declaration rather than to look for other files.
+    """
+
+    variable = authority.get("source_variable", "SOILM")
+    axis = authority.get("source_depth_variable", "SOIL_LEVELS")
+    declared = len(authority.get("source_layer_bounds_m", []))
+    return (
+        f"Compare two numbers. {authority_path} declares {declared} source soil "
+        f"layer(s): the SOILM rows of a Vtable, or the source_layer_bounds_m "
+        f"entries of a {AUTHORITY_SCHEMA} file. `ncdump -h {met_path}` gives the "
+        f"layer dimension of {variable} and {axis}, which is how many layers that "
+        "cycle stacked. The reader prints both lists above. A declaration naming "
+        "more layers than the cycle stacked is fine and recovers; what it must do "
+        "is name a layer whose bounds contain each stacked depth. So extend "
+        f"{authority_path} to cover those depths, or put a "
+        f"wrf-soil-authority.{domain}.json beside the met_em ({AUTHORITY_SCHEMA}, "
+        "source_layer_bounds_m in metres) declaring the layers this source was "
+        "produced on. Pointing --soil-source at another copy of the same "
+        "directory returns this same answer.")
+
+
 def recover_supplied_soil(path, raw, attributes, *, source_directory=None):
     """Recover impossible mislabeled total water using original source inputs.
 
@@ -115,14 +196,41 @@ def recover_supplied_soil(path, raw, attributes, *, source_directory=None):
         raise ValueError(prefix + "The producing Vtable or source-layer authority is missing. " + remedy)
     input_paths = {"wrfinput": path, "met_em": met_path, "authority": authority_path}
     hashes = {name: _sha(item) for name, item in input_paths.items()}
+    # Which two files this run read, and the rule that picked each one.
+    # A refusal from the reader is about THESE bytes, and a user holding
+    # a WPS directory with several cycles and several domains in it
+    # cannot check the refusal against the right pair unless it is named.
+    selection = {
+        "met_em": f"{met_path}, the met_em for domain {domain[1]} at the "
+                  f"initialization time {start} this wrfinput declares, "
+                  f"found in {directory}",
+        "authority": f"{authority_path}, the first of "
+                     + ", ".join(dict.fromkeys(item.name for item in authority_paths))
+                     + " present in " + " then ".join(str(root) for root in authority_roots),
+    }
     if authority_path.name == "Vtable":
         authority = authority_from_vtable(authority_path)
     else:
         authority = json.loads(io_path(authority_path).read_text(encoding="utf-8"))
         if not isinstance(authority, dict) or authority.get("schema") != AUTHORITY_SCHEMA:
             raise ValueError(f"{authority_path}: expected {AUTHORITY_SCHEMA} source layer authority")
-    from gpuwm.netcdf_bridge import recover_wrf_soil
-    values, receipt = recover_wrf_soil(path, met_path, authority)
+    from gpuwm.netcdf_bridge import NetcdfDecodeError, recover_wrf_soil
+    try:
+        values, receipt = recover_wrf_soil(path, met_path, authority)
+    except NetcdfDecodeError as error:
+        # Which remedy: a refusal about the declared layers is answered
+        # by the declaration, a refusal about the conversion by the two
+        # numbers the reader printed, and everything else by finding the
+        # right pair of source files.
+        way_out = remedy
+        if any(mark in str(error) for mark in _LAYER_REFUSAL_MARKS):
+            way_out = _layer_remedy(authority_path, met_path, authority, domain[1])
+        elif _CONVERSION_REFUSAL_MARK in str(error):
+            way_out = _conversion_remedy(authority_path, met_path, authority)
+        raise ValueError(
+            f"{prefix}The source layers were read from {selection['met_em']}, "
+            f"under the layer authority {selection['authority']}, and they "
+            f"could not be used: {error}  " + way_out) from error
     if set(values) - {"SMOIS", "SH2O"} or "SMOIS" not in values:
         raise ValueError("soil recovery did not return the declared soil-water fields")
     for name, value in values.items():
@@ -132,5 +240,6 @@ def recover_supplied_soil(path, raw, attributes, *, source_directory=None):
         raise ValueError("soil recovery inputs changed while being read; launch again with stable inputs")
     receipt = dict(receipt, input_files={
         name: {"path": str(item), "sha256": hashes[name]}
-        for name, item in input_paths.items()}, authority=authority)
+        for name, item in input_paths.items()}, authority=authority,
+        source_selection=selection)
     return values, receipt

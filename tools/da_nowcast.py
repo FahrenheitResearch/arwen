@@ -155,17 +155,20 @@ DEFAULT_MEMBERS = 10
 #:
 #: The replacement is the HRRR route's own default
 #: (:data:`gpuwm.hrrr_route_inputs.ROUTE_DEFAULT_PHYSICS_PROFILE`):
-#: Thompson microphysics with legacy RRTMG longwave AND shortwave and no
+#: Thompson microphysics with RTE+RRTMGP longwave AND shortwave and no
 #: cumulus parameterization.  Chosen because the nowcast's background is
 #: HRRR permanently (project ruling, 2026-08-06) and a product must not
 #: default to a different suite from the route that prepares its
-#: background.  It is not free -- RRTMG on a 12-minute cadence per member
-#: instead of a 1-minute shortwave-only call, and mp8 carries more
-#: species than mp6 -- so a member-count or VRAM plan measured under the
-#: old default has to be re-measured rather than extrapolated.
-#: ``--physics-profile`` still takes any shipped profile, the retired one
-#: included, and a daylight validation window is exactly where it belongs.
-NOWCAST_DEFAULT_PHYSICS_PROFILE = "thompson-mp8-ysu-mm5-noah-rrtmg-legacy-v1"
+#: background; the two are held equal by test.  It is not free -- full
+#: radiation on a 12-minute cadence per member instead of a 1-minute
+#: shortwave-only call, and mp8 carries more species than mp6 -- so a
+#: member-count or VRAM plan measured under the old default has to be
+#: re-measured rather than extrapolated.  The radiation engine moved to
+#: RTE+RRTMGP with the route on 2026-09-19; the legacy RRTMG arm is still
+#: a named profile.  ``--physics-profile`` still takes any shipped
+#: profile, the retired one included, and a daylight validation window is
+#: exactly where it belongs.
+NOWCAST_DEFAULT_PHYSICS_PROFILE = "thompson-mp8-ysu-mm5-noah-rte-rrtmgp-v1"
 
 #: The LETKF chunk workspace, in MiB.  This is the ONE term in the
 #: memory model an operator controls, which is why it is reachable from
@@ -299,6 +302,74 @@ def parse_iso(value: str) -> datetime:
 
 def iso(stamp: datetime) -> str:
     return stamp.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+@dataclass(frozen=True)
+class SurveyClock:
+    """Which time the survey asks the archive about, and why.
+
+    The survey lists volumes, measures the feed's lag, censuses the
+    echo and derives the storm motion that sites the domain.  All four
+    are statements about a MOMENT, and the moment is the one the caller
+    named: a replay of an archived window is about that window's
+    volumes.  Reading the wall clock instead answered a question nobody
+    asked -- it listed the volumes of the day the command was typed on,
+    sited the domain on that day's echo, and every later stage took the
+    box as given, so nothing downstream could recover from it.
+
+    ``at`` is what the archive is asked about; ``wall`` is when the
+    command ran.  With no window they are the same time, which is the
+    live case and the reason the defect could survive: every live run
+    was right.
+    """
+
+    at: datetime
+    wall: datetime
+    mode: str                     # "window" | "wall"
+    window_end: datetime | None
+
+    @property
+    def subject(self) -> str:
+        return ("the window end the run was given" if self.mode == "window"
+                else "the time the command ran")
+
+    @property
+    def why(self) -> str:
+        if self.mode == "window":
+            return ("a window end was given, so the survey asked the "
+                    "archive about that window: a replay is sited, timed "
+                    "and graded on the volumes of the window it replays")
+        return ("no window end was given (--window-end latest), so the "
+                "survey asked the archive about now, which is the live "
+                "case")
+
+    def to_payload(self) -> dict:
+        return {"mode": self.mode, "at": iso(self.at),
+                "wall": iso(self.wall),
+                "window_end": (None if self.window_end is None
+                               else iso(self.window_end)),
+                "why": self.why}
+
+
+def survey_clock(window_end: str, *, now: datetime) -> SurveyClock:
+    """The survey's clock, from the window the caller asked for.
+
+    ``latest`` has no window yet -- it is DERIVED from the newest volume
+    the feed carries, which is a question about now -- so it, and only
+    it, reads the wall clock.  Anything else is a window, including one
+    that ends a minute ago.
+    """
+
+    text = window_end.strip()
+    if text.lower() == "latest":
+        return SurveyClock(at=now, wall=now, mode="wall", window_end=None)
+    try:
+        end = parse_iso(text)
+    except ValueError:
+        raise FrontDoorError(
+            f"--window-end {window_end!r} is neither an ISO-8601 UTC "
+            "time nor 'latest'") from None
+    return SurveyClock(at=end, wall=now, mode="window", window_end=end)
 
 
 #: The perturbation length scale a caller gets when they say nothing.
@@ -570,6 +641,77 @@ def resolve_latest_window_end(newest_volume: datetime, *, cycles: int,
         "--window-end explicitly")
 
 
+#: The leg-number offset this door gives the cycle driver.
+#:
+#: The driver numbers a leg ``--leg-number-offset + index``
+#: (``tools/da_cycle_prepared.py``'s ``leg_number``), and this door
+#: starts a case at leg zero, so it leaves the driver's own default
+#: alone.  Stated here rather than assumed at the point of use: the
+#: other caller of that driver, ``tools/da_nowcast_auto.py``, DOES pass
+#: an offset when it continues a case that already has legs, and a
+#: receipt that names the free legs has to read the same number the
+#: frames were written under.  A door that gains an offset changes this
+#: constant, and the receipt follows it.
+CYCLE_LEG_NUMBER_OFFSET = 0
+
+
+def forecast_frames_block(cycle_out: Path, *, cycles: int,
+                          free_legs: int,
+                          leg_number_offset: int = CYCLE_LEG_NUMBER_OFFSET
+                          ) -> dict:
+    """Where this run's forecast frames are, named in the receipt.
+
+    The cycle writes one frame per leg per trajectory, the FREE legs
+    included -- those are the forecast running past the last observation
+    -- as a column-max composite ``.npz`` and, beside it, the same field
+    as a real wrfout that ``gpuwm render --engine rust`` draws.  A
+    receipt that stopped at ``cycle_out`` left a reader to discover that
+    layout by listing directories, and the pages describing this door
+    named only the gallery.  Nothing here is new output: it is the
+    output this door has always produced, said out loud.
+
+    What the frame is, is part of naming it.  The wrfout is a ONE-LEVEL
+    surface snapshot of that composite, not the leg's three-dimensional
+    state, and the remaining wrfout variables in it are the structural
+    stand-ins :func:`gpuwm.io.surface_wrfout.write_surface_wrfout`
+    supplies so the file is a readable wrfout at all.  A reader of the
+    receipt alone would otherwise infer full fields, which is the
+    inference the pages already correct.
+
+    ``leg_number_offset`` is the driver's own numbering, not a second
+    convention invented here; see :data:`CYCLE_LEG_NUMBER_OFFSET`.
+    """
+
+    first_free = int(leg_number_offset) + int(cycles)
+    return {
+        "dir": str(cycle_out / "composites"),
+        "npz": "legNN_<trajectory>.npz (refl_colmax, elapsed_seconds)",
+        "wrfout": ("wrfout_legNN_<trajectory>.nc, drawable by "
+                   "`gpuwm render --engine rust`"),
+        "vertical": ("one-level surface snapshot of the column-max "
+                     "composite (REFL_10CM with its geolocation); the "
+                     "three-dimensional leg state is not kept, and a "
+                     "run that needs full fields drives the prepared "
+                     "forecast (tools/da_cycle_prepared.py) with its "
+                     "own history settings"),
+        "measured_field": ("composite reflectivity; the other wrfout "
+                           "variables in the file are the writer's "
+                           "structural stand-ins (gpuwm/io/"
+                           "surface_wrfout.py), so composite "
+                           "reflectivity is what a picture of one of "
+                           "these frames shows"),
+        "nested": ("legNN_<trajectory>_dNN.npz and wrfout_legNN_"
+                   "<trajectory>_dNN.nc, one pair per nested leg per "
+                   "nesting trajectory, when the run asked for a nest; "
+                   "the child's file is the same one-level snapshot as "
+                   "the parent's"),
+        "trajectories": "control, then one per member by index",
+        "leg_number_offset": int(leg_number_offset),
+        "free_legs": [f"leg{first_free + k:02d}"
+                      for k in range(int(free_legs))],
+    }
+
+
 def wrfout_name(init: datetime, seconds: float) -> str:
     stamp = init + timedelta(seconds=seconds)
     return stamp.strftime("wrfout_d01_%Y-%m-%d_%H_%M_%S")
@@ -606,8 +748,12 @@ def motion_from_centroids(older: dict, newer: dict, *,
 
     if older["gates"] < min_gates or newer["gates"] < min_gates:
         return None
-    dt = (parse_iso(newer["valid_time"])
-          - parse_iso(older["valid_time"])).total_seconds()
+    # The displacement is between two scans, so the baseline is between
+    # the instants the radials were collected, not between two archive
+    # key names; the key time stands in only for a pack that did not say.
+    dt = (parse_iso(newer.get("start_time") or newer["valid_time"])
+          - parse_iso(older.get("start_time") or older["valid_time"])
+          ).total_seconds()
     if dt < 300.0:
         return None
     u = (newer["centroid_east_km"] - older["centroid_east_km"]) \
@@ -698,6 +844,25 @@ def echo_stats(volume, *, threshold_dbz: float,
 
 
 # ---------------------------------------------------------------------------
+def offered_physics_profiles() -> tuple[str, ...]:
+    """The suites this door offers, which is the set its route can run.
+
+    ONE TABLE FOR BOTH DOORS.  This door's first stage is ``gpuwm
+    domain``, so a suite it offers and that door refuses is not a suite
+    this door can run at all -- which is what a profile present in the
+    runner's own tables and absent from the configuration door's choice
+    list produced: two rows that died in argument parsing with no
+    physics reached.  Both doors read
+    :func:`gpuwm.physics_menu.shipped_profiles`, which is derived from
+    the registry rather than transcribed, so a suite registered tomorrow
+    reaches both with no edit at either.
+    """
+
+    from gpuwm.physics_menu import shipped_profiles
+
+    return tuple(shipped_profiles())
+
+
 # stage command builders (unit-tested; every stage is a shipped CLI)
 # ---------------------------------------------------------------------------
 def _py() -> str:
@@ -1099,6 +1264,109 @@ class DealiasChoice:
                 else "--no-dealias-refinement"]
 
 
+def default_nest_ratio() -> int:
+    """The refinement ratio a caller gets when they say nothing.
+
+    Read off :class:`gpuwm.da.nested_forecast.NestGeometry` rather than
+    typed, so this door and the driver it forwards to cannot come to
+    disagree about what 'the default nest' is.
+    """
+
+    from gpuwm.da.nested_forecast import NestGeometry
+
+    return int(NestGeometry.ratio)
+
+
+@dataclass(frozen=True)
+class NestChoice:
+    """The fine nest over the free forecast, as the caller asked for it.
+
+    This front door owns NO nest geometry.  Every field here is the
+    prepared cycle driver's own flag with the driver's own default, and
+    :meth:`argv_tail` forwards them unchanged, because the nest itself
+    -- derivation, admissibility, the child's clock, its leg-end product
+    -- is ``gpuwm.da.nested_forecast`` driven from
+    ``tools/da_cycle_prepared.py`` and a second implementation of any of
+    it here would be a second thing to keep true.
+
+    Asked for the same way the driver is asked: an EXTENT turns it on
+    (``--nest-half-width-km``, or ``--nest-nx``/``--nest-ny``), and
+    nothing else does.  A run that names no extent builds the same argv
+    it built before this existed.
+    """
+
+    half_width_km: float | None
+    nx: int | None
+    ny: int | None
+    ratio: int | None
+    i_parent_start: int | None
+    j_parent_start: int | None
+    members: int | None
+    history_interval_s: float | None
+    acknowledge: tuple[str, ...]
+
+    @property
+    def requested(self) -> bool:
+        return (self.half_width_km is not None or self.nx is not None
+                or self.ny is not None)
+
+    @property
+    def resolved_ratio(self) -> int:
+        # Resolved here and not in ``from_args`` so a run that asks for
+        # no nest never imports the nest machinery: this module builds
+        # argv for subprocesses and keeps a stdlib-only import surface
+        # on the paths that do not need more (same rule as
+        # :data:`DEFAULT_DEALIAS_ENGINE`).
+        return (int(self.ratio) if self.ratio is not None
+                else default_nest_ratio())
+
+    @classmethod
+    def from_args(cls, args) -> "NestChoice":
+        return cls(
+            half_width_km=getattr(args, "nest_half_width_km", None),
+            nx=getattr(args, "nest_nx", None),
+            ny=getattr(args, "nest_ny", None),
+            ratio=getattr(args, "nest_ratio", None),
+            i_parent_start=getattr(args, "nest_i_parent_start", None),
+            j_parent_start=getattr(args, "nest_j_parent_start", None),
+            members=getattr(args, "nest_members", None),
+            history_interval_s=getattr(args, "nest_history_interval_s",
+                                       None),
+            acknowledge=tuple(getattr(args, "nest_acknowledge", None)
+                              or ()))
+
+    def argv_tail(self) -> list[str]:
+        if not self.requested:
+            return []
+        argv = ["--nest-ratio", str(self.resolved_ratio)]
+        for flag, value in (("--nest-half-width-km", self.half_width_km),
+                            ("--nest-nx", self.nx),
+                            ("--nest-ny", self.ny),
+                            ("--nest-i-parent-start", self.i_parent_start),
+                            ("--nest-j-parent-start", self.j_parent_start),
+                            ("--nest-members", self.members),
+                            ("--nest-history-interval-s",
+                             self.history_interval_s)):
+            if value is not None:
+                argv.extend((flag, str(value)))
+        for acknowledgement in self.acknowledge:
+            argv.extend(("--nest-acknowledge", str(acknowledgement)))
+        return argv
+
+    def to_payload(self) -> dict:
+        if not self.requested:
+            return {"requested": False}
+        return {"requested": True, "ratio": self.resolved_ratio,
+                "half_width_km": self.half_width_km,
+                "nx": self.nx, "ny": self.ny,
+                "i_parent_start": self.i_parent_start,
+                "j_parent_start": self.j_parent_start,
+                "members": self.members,
+                "history_interval_s": self.history_interval_s,
+                "acknowledge": list(self.acknowledge),
+                "receipt": "cycle/cycle-report.json -> nest"}
+
+
 def obs_cmd(*, selection: RadarSelection, valid: datetime,
             grid_wrfout: Path, out_nc: Path, work_dir: Path,
             bucket: str | None, dealias: DealiasChoice) -> list[str]:
@@ -1146,7 +1414,8 @@ def cycle_cmd(*, prepared_root: Path, authority_dir: Path, profile: str,
               sfc_wspd_sigma_ms: float | None = None,
               sfc_max_age_s: float | None = None,
               goes_cwp: list[Path] | None = None,
-              cwp_vertical_loc_m: float | None = None) -> list[str]:
+              cwp_vertical_loc_m: float | None = None,
+              nest: "NestChoice | None" = None) -> list[str]:
     """The cycle driver's command line for one run.
 
     ``plan`` supplies the run length and the default cadence; the
@@ -1155,19 +1424,20 @@ def cycle_cmd(*, prepared_root: Path, authority_dir: Path, profile: str,
     the ensemble across processes.  Both callers build the SAME argv
     here, so the flag surface has one author.
 
-    Two capabilities are deliberately absent from this argv and stay
-    absent until each has the receipt it is missing:
+    ``nest`` is the fine free-forecast nest, forwarded flag for flag to
+    the driver that owns it (:class:`NestChoice`).  It reaches this argv
+    only when the caller named an extent, so a run that asks for no nest
+    builds exactly the argv it built before the nest was reachable from
+    here.  Its cost model is COMPUTED rather than measured
+    (``evidence/da-nested-forecast/cost-model.json`` says so in its own
+    ``basis`` field); what a nested leg actually costs is in the cycle
+    report the run writes, per leg, per trajectory.
 
-    * the fine free-forecast nest (``--nest-*`` on the cycle driver).
-      Its cost model is COMPUTED, not measured
-      (``evidence/da-nested-forecast/cost-model.json`` says so in its
-      own ``basis`` field), and the measured A/B was still queued behind
-      a busy card when these defaults were set.  Opt in on the cycle
-      driver directly; see docs/da-nested-forecast.md.
-    * concurrent member advance (``--member-workers``).  It is not in
-      this tree at all -- the lane carrying it was held out of the
-      integration with its byte-identity proof still open.  There is
-      nothing to turn on and nothing to turn off.
+    One capability is still deliberately absent from this argv:
+    concurrent member advance (``--member-workers``).  It is not in this
+    tree at all -- the lane carrying it was held out of the integration
+    with its byte-identity proof still open.  There is nothing to turn
+    on and nothing to turn off.
     """
 
     cadence = (float(plan.cycle_seconds) if leg_seconds is None
@@ -1232,6 +1502,8 @@ def cycle_cmd(*, prepared_root: Path, authority_dir: Path, profile: str,
         argv.extend(("--goes-cwp", str(path)))
     if cwp_vertical_loc_m is not None:
         argv.extend(("--cwp-vertical-loc-m", str(float(cwp_vertical_loc_m))))
+    if nest is not None:
+        argv.extend(nest.argv_tail())
     if free_leg_seconds is not None:
         argv.extend(("--free-leg-seconds", str(float(free_leg_seconds))))
     if resume_ensemble is not None:
@@ -1754,12 +2026,21 @@ def gpu_snapshot() -> str:
         return "nvidia-smi unavailable"
 
 
-def survey_site(site: str, *, work_dir: Path, now: datetime,
+def survey_site(site: str, *, work_dir: Path, clock: SurveyClock,
                 span_seconds: float, motion_baseline_s: float,
                 echo_threshold_dbz: float, min_echo_gates: int,
                 max_lag_seconds: float, allow_stale: bool,
                 bucket: str | None, range_km: float | None) -> dict:
-    """S3 survey: freshness, echo census, motion, and the two decodes."""
+    """S3 survey: freshness, echo census, motion, and the two decodes.
+
+    ``clock`` decides which window is listed and what the lag is
+    measured against: the requested window's end for a replay, the wall
+    clock for a live run (:class:`SurveyClock`).  Which one was used is
+    written into the receipt, because a survey is only readable beside
+    the moment it asked about.
+    """
+
+    at = clock.at
 
     from gpuwm.obs.nexrad import (find_nexrad_bin, nexrad_remedy,
                                   run_decode, run_fetch, run_list,
@@ -1773,9 +2054,10 @@ def survey_site(site: str, *, work_dir: Path, now: datetime,
     authority_km = (range_km if range_km is not None
                     else SuperobParams().max_range_km)
 
+    listing_start = at - timedelta(seconds=span_seconds)
     listing = run_list(
         binary, site=site,
-        start=iso(now - timedelta(seconds=span_seconds)), end=iso(now),
+        start=iso(listing_start), end=iso(at),
         bucket=bucket)
     volumes = sorted(
         (v for v in listing.get("volumes", [])
@@ -1783,27 +2065,18 @@ def survey_site(site: str, *, work_dir: Path, now: datetime,
         key=lambda v: v["valid_time"])
     if not volumes:
         raise FrontDoorError(
-            f"{site}: no volumes in the last {span_seconds / 60:.0f} "
-            "minutes -- site down, id wrong, or archive far behind")
-    newest = volumes[-1]
-    lag = (now - parse_iso(newest["valid_time"])).total_seconds()
-    if lag > max_lag_seconds and not allow_stale:
-        raise FrontDoorError(
-            f"{site}: newest archived volume {newest['filename']} is "
-            f"{lag / 60:.1f} min old (ceiling {max_lag_seconds / 60:.0f}"
-            " min); pass --allow-stale to nowcast from a stale feed "
-            "anyway")
-
-    target = parse_iso(newest["valid_time"]) - timedelta(
-        seconds=motion_baseline_s)
-    older = min(volumes, key=lambda v: abs(
-        (parse_iso(v["valid_time"]) - target).total_seconds()))
-    picks = [older, newest] if older["key"] != newest["key"] else [newest]
-
+            f"{site}: no volumes in the {span_seconds / 60:.0f} minutes "
+            f"before {iso(at)} ({clock.subject}) -- "
+            + ("site down, id wrong, or archive far behind"
+               if clock.mode == "wall" else
+               "id wrong, or the archive does not reach that window"))
     work_dir.mkdir(parents=True, exist_ok=True)
-    surveyed = []
     antenna = None
-    for chosen in picks:
+
+    def surveyed_volume(chosen: dict) -> dict:
+        """Fetch, decode, verify and census one listed volume."""
+
+        nonlocal antenna
         stamp = parse_iso(chosen["valid_time"])
         run_fetch(binary, site=site,
                   start=iso(stamp - timedelta(seconds=30)),
@@ -1826,13 +2099,88 @@ def survey_site(site: str, *, work_dir: Path, now: datetime,
                    "lon_deg": float(volume.site.lon_deg),
                    "alt_m": float(volume.site.alt_m)}
         stats = echo_stats(volume, threshold_dbz=echo_threshold_dbz)
-        surveyed.append({
+        end_time = getattr(volume, "end_time", None)
+        if end_time is None:
+            raise FrontDoorError(
+                f"{site}: the decoded pack for {chosen['filename']} "
+                "carries no end_time, so the survey cannot tell whether "
+                f"the volume was complete by {iso(at)} and would admit it "
+                "on its start alone, which is up to ten minutes before it "
+                "existed. The rw_nexrad this run found predates the "
+                "collection instants; rebuild it from this tree "
+                "(cargo build --release -p rw-nexrad under tools/rustwx)")
+        return {
             "volume": chosen["filename"],
             "key": chosen["key"],
+            # The archive key's own stamp: the volume's start as the
+            # archive named it.
             "valid_time": chosen["valid_time"],
+            # The radials' own clocks, and when the archive published it.
+            "start_time": getattr(volume, "start_time", None),
+            "end_time": end_time,
+            "complete": getattr(volume, "complete", None),
+            "availability_time": chosen.get("last_modified") or None,
             "volume_sha256": sha256_file(volume_path),
             **stats,
+        }
+
+    # Admission: a volume is the newest usable one when its LAST radial was
+    # collected at or before the moment the survey is about.  The listing
+    # names volumes by their start, and a volume takes four to ten minutes,
+    # so the newest key in a window can name a volume that was still being
+    # scanned when the window ended.  Walking back from the newest key costs
+    # one extra decode in that case and admits nothing before it existed.
+    refused_incomplete = []
+    newest_entry = None
+    for candidate in reversed(volumes):
+        entry = surveyed_volume(candidate)
+        if parse_iso(entry["end_time"]) <= at:
+            newest_entry = entry
+            break
+        refused_incomplete.append({
+            "volume": entry["volume"],
+            "start_time": entry["start_time"],
+            "end_time": entry["end_time"],
+            "reason": (f"its last radial was collected at "
+                       f"{entry['end_time']}, after {iso(at)} "
+                       f"({clock.subject})"),
         })
+        # At most one listed volume can straddle the clock (the next one
+        # starts after it), so three refusals in a row is a listing whose
+        # keys do not describe its volumes, and is said rather than walked.
+        if len(refused_incomplete) >= 3:
+            break
+    if newest_entry is None:
+        names = ", ".join(r["volume"] for r in refused_incomplete)
+        raise FrontDoorError(
+            f"{site}: no listed volume was complete by {iso(at)} "
+            f"({clock.subject}); refused {names}. The listing names "
+            "volumes by their start and every one examined ends after "
+            "that moment, which a real archive cannot do three times in a "
+            "row -- check the bucket and the site")
+    newest = newest_entry
+    lag = (at - parse_iso(newest["end_time"])).total_seconds()
+    if lag > max_lag_seconds and not allow_stale:
+        behind = ("old" if clock.mode == "wall"
+                  else f"older than the window end {iso(at)}")
+        remedy = ("nowcast from a stale feed" if clock.mode == "wall"
+                  else "replay a window the archive covers this thinly")
+        raise FrontDoorError(
+            f"{site}: newest complete archived volume {newest['volume']} "
+            f"was complete at {newest['end_time']}, {lag / 60:.1f} min "
+            f"{behind} (ceiling {max_lag_seconds / 60:.0f} min); pass "
+            f"--allow-stale to {remedy} anyway")
+
+    # The motion baseline is between scans: aim it at the newest volume's
+    # own start and pick the listed volume whose key is nearest, which is
+    # the archive's spelling of that same start.
+    target = parse_iso(newest["start_time"] or newest["valid_time"]
+                       ) - timedelta(seconds=motion_baseline_s)
+    older = min(volumes, key=lambda v: abs(
+        (parse_iso(v["valid_time"]) - target).total_seconds()))
+    surveyed = [newest]
+    if older["key"] != newest["key"]:
+        surveyed = [surveyed_volume(older), newest]
 
     motion = None
     if len(surveyed) == 2:
@@ -1842,10 +2190,30 @@ def survey_site(site: str, *, work_dir: Path, now: datetime,
     return {
         "schema": SURVEY_SCHEMA,
         "site": site,
-        "surveyed_at": iso(now),
+        # When the survey RAN, unchanged.  Which moment it asked the
+        # archive about is the block below, and for a live run they are
+        # the same time.
+        "surveyed_at": iso(clock.wall),
+        "clock": clock.to_payload(),
+        "listing_window": {"start": iso(listing_start), "end": iso(at)},
         "volumes_listed": len(volumes),
-        "newest_volume": newest["filename"],
+        "newest_volume": newest["volume"],
+        "newest_volume_start_time": newest["start_time"],
+        "newest_volume_end_time": newest["end_time"],
+        "newest_volume_availability_time": newest["availability_time"],
         "archive_lag_seconds": round(lag, 1),
+        "archive_lag_definition": (
+            "seconds from the newest admitted volume's last radial "
+            "collection instant (its end_time) to the survey clock; the "
+            "key name's time is the volume's start and is not the age of "
+            "its data"),
+        "admission": {
+            "rule": ("a volume is admitted when its last radial was "
+                     "collected at or before the survey clock; the listing "
+                     "names volumes by their start"),
+            "clock": iso(at),
+            "refused_incomplete_at_clock": refused_incomplete,
+        },
         "range_authority_km": authority_km,
         "echo_threshold_dbz": echo_threshold_dbz,
         "antenna": antenna,
@@ -1966,11 +2334,15 @@ def build_parser() -> argparse.ArgumentParser:
                           "branch here")
     run.add_argument("--physics-profile",
                      default=NOWCAST_DEFAULT_PHYSICS_PROFILE,
+                     choices=offered_physics_profiles(),
                      help="shipped physics profile for every stage "
                           f"(default {NOWCAST_DEFAULT_PHYSICS_PROFILE}, "
                           "which runs BOTH radiation streams; see "
                           "NOWCAST_DEFAULT_PHYSICS_PROFILE for why the "
-                          "lw-off default was retired)")
+                          "lw-off default was retired).  The list is the "
+                          "one the configuration door this run calls "
+                          "first accepts, so every name offered here is "
+                          "a name every stage takes")
     run.add_argument("--hydrometeors", action="store_true",
                      help="perturb AND analyse the scheme's moisture and "
                           "hydrometeor state instead of u/v alone "
@@ -1992,7 +2364,7 @@ def build_parser() -> argparse.ArgumentParser:
                           "echo. Suppresses spurious convection. Requires "
                           "--hydrometeors")
     run.add_argument("--surface-obs", type=Path, default=None,
-                     help="a gpuwm-obs.asos-surface.v1 file, assimilated as "
+                     help="a gpuwm-obs.asos-surface record (v2, or v1), assimilated as "
                           "2 m temperature and 10 m wind speed at k=0 "
                           "beside the radar batches. Build it with rw_asos "
                           "decode. A quantity is enabled by STATING ITS "
@@ -2144,6 +2516,51 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--motion-baseline-seconds", type=float,
                      default=2700.0,
                      help="how far back the second survey volume sits")
+    # -- the fine nest over the free forecast ----------------------------
+    #
+    # The driver's own flags, spelled the driver's way and forwarded
+    # unchanged (NestChoice).  An EXTENT turns the nest on and nothing
+    # else does, which is how `tools/da_cycle_prepared.py` is asked, so
+    # a caller who has read one page has read both.  The parent carries
+    # the ensemble and the assimilation; the nest is the detailed view
+    # of the forecast that runs past the last observation.
+    nest_group = run.add_argument_group(
+        "the fine nest over the free forecast",
+        "off unless an extent is named; see docs/da-nested-forecast.md")
+    nest_group.add_argument(
+        "--nest-half-width-km", type=float, default=None,
+        help=("half-width of the nest in kilometres, centred in the "
+              "parent.  Naming it is what turns the nest on"))
+    nest_group.add_argument("--nest-nx", type=int, default=None,
+                            help="child extent in CHILD cells "
+                                 "(with --nest-ny); also turns it on")
+    nest_group.add_argument("--nest-ny", type=int, default=None,
+                            help="child extent in CHILD cells "
+                                 "(with --nest-nx)")
+    nest_group.add_argument(
+        "--nest-ratio", type=int, default=None,
+        help=("parent-to-child refinement ratio, applied to BOTH space "
+              "and time (default: the nest geometry's own, 3 -- which "
+              "off a 3 km parent is a 1 km nest)"))
+    nest_group.add_argument("--nest-i-parent-start", type=int,
+                            default=None,
+                            help="1-based parent cell of the child's "
+                                 "origin (default: centred)")
+    nest_group.add_argument("--nest-j-parent-start", type=int,
+                            default=None)
+    nest_group.add_argument(
+        "--nest-members", type=int, default=None,
+        help=("how many ensemble members carry a nest, beside the "
+              "control (default: the control only).  Nest cost scales "
+              "as ratio^3 per covered parent cell TIMES this number"))
+    nest_group.add_argument("--nest-history-interval-s", type=float,
+                            default=None,
+                            help="child history cadence (default: the "
+                                 "parent's)")
+    nest_group.add_argument(
+        "--nest-acknowledge", action="append", default=[],
+        help=("acknowledge a nested-domain admissibility refusal by id, "
+              "e.g. nested-forecast:sub-gray-zone-pbl"))
     run.add_argument("--survey-span-seconds", type=float, default=5400.0)
     run.add_argument("--max-lag-seconds", type=float, default=900.0,
                      help="freshness ceiling on the archive feed")
@@ -2343,7 +2760,7 @@ def resolve_da_preset(args) -> None:
     if "surface" not in without and args.surface_obs is None:
         raise FrontDoorError(
             "--da full includes the surface stream: pass --surface-obs "
-            "<gpuwm-obs.asos-surface.v1> (build it with rw_asos decode) "
+            "<gpuwm-obs.asos-surface record, v2 or v1> (build it with rw_asos decode) "
             "plus at least one of --sfc-t2-sigma-k / --sfc-wspd-sigma-ms "
             "(WoFS-like practice is 1.5-2.5 K at storm-scale grids), or "
             "drop the stream with --without surface")
@@ -2475,6 +2892,29 @@ def validate_analysis_flags(args) -> None:
                 f"{flag} names a missing file: {path}. An observation "
                 "stream that cannot be read assimilates nothing, and a run "
                 "that discovers this mid-cycle has already spent the card")
+    # The nest's three CLI refusals, met here for the same reason as the
+    # rest of this function: the driver raises them at the cycle stage,
+    # which is after the fetch, the preparation and the georeference
+    # forecast have been paid for.
+    nest = NestChoice.from_args(args)
+    free_legs = int(getattr(args, "free_legs", 0) or 0)
+    if nest.requested and free_legs <= 0:
+        raise FrontDoorError(
+            "--nest-* needs --free-legs > 0: the nest runs over the FREE "
+            "forecast legs, which is the whole point of it -- the parent "
+            "carries the assimilation and the nest carries the detail of "
+            "the forecast that runs past the observations")
+    if nest.members is not None and not nest.requested:
+        raise FrontDoorError(
+            "--nest-members without a nest extent "
+            "(--nest-half-width-km or --nest-nx/--nest-ny): there is no "
+            "nest for those members to carry")
+    if (nest.members is not None
+            and nest.members > int(getattr(args, "members", 0) or 0)):
+        raise FrontDoorError(
+            f"--nest-members {nest.members} exceeds --members "
+            f"{args.members}: the nest is a subset of the parent "
+            "ensemble")
 
 
 def run_pipeline(args) -> int:
@@ -2518,12 +2958,22 @@ def run_pipeline(args) -> int:
     # Resolved before the survey moves a byte: a contradictory radar
     # request should cost nothing to refuse.
     selection = radar_selection(args)
+    # Same moment, same reason, and this one decides what the survey
+    # asks the archive: a window end names the moment the run is about,
+    # and only `latest` is a question about now.  Parsed here rather
+    # than after the survey (where the window used to be resolved)
+    # because the survey needs it, and because "that is not a time" is
+    # worth more before two Level-II volumes have been paid for.
+    clock = survey_clock(args.window_end, now=now)
+    # The nest, resolved once here and forwarded to the cycle stage; its
+    # own refusals were met in validate_analysis_flags above.
+    nest = NestChoice.from_args(args)
     out.mkdir(parents=True, exist_ok=True)
     repo_root = Path(__file__).resolve().parent.parent
 
     # ---- survey ---------------------------------------------------------
     survey = survey_site(
-        args.site, work_dir=out / "vols", now=now,
+        args.site, work_dir=out / "vols", clock=clock,
         span_seconds=args.survey_span_seconds,
         motion_baseline_s=args.motion_baseline_seconds,
         echo_threshold_dbz=args.echo_threshold_dbz,
@@ -2534,18 +2984,21 @@ def run_pipeline(args) -> int:
     receipts.mkdir(parents=True, exist_ok=True)
     (receipts / "00-survey.json").write_text(
         json.dumps(survey, indent=1), encoding="utf-8")
-    print(f"survey: lag {survey['archive_lag_seconds'] / 60:.1f} min, "
+    print(f"survey: clock {clock.mode} ({iso(clock.at)}), lag "
+          f"{survey['archive_lag_seconds'] / 60:.1f} min, "
           f"echo gates {survey['survey_volumes'][-1]['gates']}, "
           f"motion {survey['motion']}")
 
     # ---- window plan ----------------------------------------------------
-    if args.window_end.strip().lower() == "latest":
-        newest = parse_iso(survey["survey_volumes"][-1]["valid_time"])
+    if clock.window_end is None:
+        # The window ends no later than the newest volume was COMPLETE:
+        # its last analysis has to have a whole volume to assimilate.
+        newest = parse_iso(survey["newest_volume_end_time"])
         window_end = resolve_latest_window_end(
             newest, cycles=args.cycles,
             cycle_seconds=args.cycle_seconds)
     else:
-        window_end = parse_iso(args.window_end)
+        window_end = clock.window_end
     plan = plan_window(window_end, cycles=args.cycles,
                        cycle_seconds=args.cycle_seconds,
                        free_legs=args.free_legs, now=now,
@@ -2814,7 +3267,8 @@ def run_pipeline(args) -> int:
         sfc_wspd_sigma_ms=args.sfc_wspd_sigma_ms,
         sfc_max_age_s=args.sfc_max_age_s,
         goes_cwp=args.goes_cwp,
-        cwp_vertical_loc_m=args.cwp_vertical_loc_m),
+        cwp_vertical_loc_m=args.cwp_vertical_loc_m,
+        nest=nest),
         cwd=repo_root, receipts_dir=receipts, index=9)
     if _stop(args.stop_after, "cycle"):
         return _stopped_early(out, receipts, args, "cycle")
@@ -2866,13 +3320,22 @@ def run_pipeline(args) -> int:
             "members": args.members,
             "memory_budget_mib": args.memory_budget_mib,
             "vram_gib": args.vram_gib,
-            "nested_free_forecast": False,
+            # What this run ACTUALLY asked the cycle driver for, not a
+            # constant: the nest is reachable from this door now, and a
+            # receipt that said False either way would be the reason a
+            # reader could not tell the two runs apart.
+            "nested_free_forecast": nest.requested,
+            "nest": nest.to_payload(),
             "concurrent_members": False,
         },
         "plan": plan.to_payload(),
         "seed": seed,
         "survey": {"archive_lag_seconds": survey["archive_lag_seconds"],
                    "motion": survey["motion"],
+                   # Which clock listed the volumes this domain was
+                   # sited from: a reader of the case a year later
+                   # cannot tell a replay from a live run otherwise.
+                   "clock": survey["clock"],
                    "receipt": "receipts/00-survey.json"},
         "domain_center": center,
         "case_name": case_name,
@@ -2885,6 +3348,8 @@ def run_pipeline(args) -> int:
             "run_dir": str(run_dir),
             "obs": [str(p) for p in obs_files],
             "cycle_out": str(cycle_out),
+            "forecast_frames": forecast_frames_block(
+                cycle_out, cycles=args.cycles, free_legs=args.free_legs),
             "gallery": str(out / "gallery"),
         },
     }

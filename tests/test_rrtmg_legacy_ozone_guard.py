@@ -1,12 +1,21 @@
 """Every legacy-RRTMG construction site, and who fails closed on ozone.
 
-`ra_rrtmg_variant='rrtmg_legacy'` with `o3input = 2` means the child takes
-its ozone INTERPOLATED FROM THE PARENT -- WRF evaluates the CAM
-climatology on `id == 1` only and passes `o3rad` down.  A child built
-without a parent to take it from does not refuse; it silently evaluates a
-fresh climatology on its OWN latitudes and reports
+A RESIDENT nest under `ra_rrtmg_variant='rrtmg_legacy'` with `o3input = 2`
+takes its ozone INTERPOLATED FROM THE PARENT: WRF runs the climatology
+chain on `id == 1` only and hands a nest the root's field through the
+`rdf=(p2c)` forcing stream the Registry declares on `o3rad`
+(Registry/Registry.EM_COMMON:1264).  A resident child built without a
+parent to take it from does not refuse on its own; it silently evaluates
+a fresh climatology on its OWN latitudes and reports
 `"ozone_routing": "root-climatology"` for a nested domain.  That is a
 fail-OPEN, and `o3input = 2` is the RunConfig default.
+
+This file is about the RESIDENT routes.  The OFFLINE child route
+(`gpuwm.offline_child_run`) is a different case and is pinned in
+tests/test_offline_child_ozone.py: that domain is configured as a WRF root
+and stamps `parent_id = 0`, so WRF's own answer for it is the climatology
+on its own grid, which it evaluates and declares as
+`"ozone_routing": "child-grid-climatology"`.
 
 WHY THIS FILE EXISTS AT ALL, rather than more assertions in
 tests/test_rrtmg_legacy_wiring.py: that module imports cupy at module
@@ -152,23 +161,26 @@ def test_every_legacy_construction_site_is_accounted_for():
     ]
 
 
-def test_the_offline_child_route_refuses_parent_ozone_it_cannot_supply():
-    """The offline route's refusal, pinned as a refusal.
+def test_the_offline_child_route_is_not_governed_by_this_refusal():
+    """The offline route reaches the constructor and names what it built.
 
-    Source-level because the call needs staged wrfinput/history assets to
-    reach; what is pinned is that the o3input==2 branch RAISES rather
-    than falling through to the constructor, which is the fail-open this
-    closed.
+    Retired with the defect it was installed for: that route's domain is a
+    WRF root, not a nest, so it has a climatology answer of its own and no
+    parent to be refused for lacking.  What replaces the refusal is a
+    DECLARATION, pinned here so a future edit cannot quietly put the
+    resident-nest name back on an offline child, and exercised end to end
+    in tests/test_offline_child_ozone.py.
     """
     import inspect
 
     from gpuwm import offline_child_run
+    from gpuwm.core.cam_ozone import ROUTING_CHILD_GRID_CLIMATOLOGY
 
     source = inspect.getsource(offline_child_run._initialize_child_physics)
-    guard = source.index("cfg.o3input == 2")
-    construct = source.index("make_radiation(")
-    assert guard < construct, "the ozone refusal must precede construction"
-    assert "raise ValueError" in source[guard:construct]
+    assert "requires radiation_parent" not in source
+    assert "needs ozone interpolated from the parent domain" not in source
+    assert "ROUTING_CHILD_GRID_CLIMATOLOGY" in source
+    assert ROUTING_CHILD_GRID_CLIMATOLOGY == "child-grid-climatology"
 
 
 def test_a_real_tree_dependency_uses_driver_carrier_without_parent_adapter(monkeypatch):

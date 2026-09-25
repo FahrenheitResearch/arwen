@@ -166,12 +166,13 @@ impl WrfProcessOptions {
                 names.push(store_name);
             }
         }
+        names.extend(crate::wrf_column_planes::planned_store_fields(self));
         names.sort();
         names.dedup();
         names
     }
 
-    fn should_process(
+    pub(crate) fn should_process(
         &self,
         wrf_name: &str,
         store_name: Option<&str>,
@@ -202,7 +203,7 @@ impl WrfProcessOptions {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum WrfProductGroup {
+pub(crate) enum WrfProductGroup {
     Core,
     Diagnostic,
     Heavy,
@@ -322,13 +323,13 @@ pub struct WrfProcessSummary {
     pub notes: Vec<String>,
 }
 
-struct WrfHourFields {
+pub(crate) struct WrfHourFields {
     grid: LatLonGrid,
     projection: Option<GridProjection>,
     canonical: Vec<(String, SelectedField2D)>,
     derived: Vec<OwnedDerivedField>,
     volumes: Vec<IsoVolume>,
-    notes: Vec<String>,
+    pub(crate) notes: Vec<String>,
 }
 
 struct OwnedDerivedField {
@@ -1126,6 +1127,15 @@ fn read_wrf_products(
         "updraft_helicity_2to5km",
         FieldSelector::height_layer_agl(CanonicalField::UpdraftHelicity, 2000, 5000),
         Some("m2/s2")
+    );
+    crate::wrf_column_planes::push_column_planes(
+        &mut fields,
+        file,
+        timeidx,
+        &grid,
+        projection.clone(),
+        options,
+        progress,
     );
 
     if options.should_process("apcp", Some("apcp"), WrfProductGroup::Core) {
@@ -2045,7 +2055,7 @@ fn push_isobaric_recipe_planes<'a>(
     }
 }
 
-fn push_canonical_values(
+pub(crate) fn push_canonical_values(
     fields: &mut WrfHourFields,
     grid: &LatLonGrid,
     projection: Option<GridProjection>,

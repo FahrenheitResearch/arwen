@@ -1,0 +1,154 @@
+# THE GPU PIN SET.  Every test in the tree that asserts a pinned digest,
+# fingerprint or bitwise/ULP baseline of a GPU result, plus the mp=8 freeze.
+# tools/release/precut_gpu_gate.py runs exactly these on the release node's
+# card before a cut (serially, -n 0, without GPUWM_NO_LOCAL_GPU) and records
+# the card and the NVRTC build it ran on; tests/test_gpu_pin_set.py holds this
+# file to the tree.  One pytest node id per line, a file or file::test;
+# # starts a comment.
+#
+# WHY EACH IS HERE
+#   tests/test_coriolis_map.py: the phase-2 step capture (one file per card,
+#     tests/_phase2_pin.py PIN_FILES) and the sina=0 Coriolis pin; the step
+#     capture shipped red in 2.7.4 and 2.7.5 with nothing running it.
+#   tests/test_mp8_frozen.py: the mp=8 freeze digests and receipts; CPU-only,
+#     but it shipped red in 2.7.4 and 2.7.5 for the same reason and its
+#     subject is a GPU unit's compiled source.
+#   tests/test_omega_column_scan.py: the Omega column kernel bit-identical to
+#     its float32 transcription (zero differing words).
+#   tests/test_openbc.py::test_advection_periodic_path_bitwise_regression: the
+#     advection kernels bitwise against tests/data/advection_periodic_regression.npz.
+#   tests/test_diff6_boundary_face.py, the two bitwise rows: the diff6 periodic
+#     path against the 4d2ce99 capture, and the forced path off the seam faces.
+#   tests/test_mynn_noah_surface_identity.py and
+#   tests/test_surface_certified_identity.py: byte identity of surface
+#     trajectories against committed JSON fixtures.
+#   tests/test_shinhong_runtime.py::test_off_path_bl1_micro_run_state_hash_is_pinned:
+#     a SHA-256 of a bl=1 run's prognostic bytes, one row per NVRTC build and
+#     card; red on the release node until the 13.3.33 row was recorded there.
+#   tests/test_shinhong_wrf461_parity.py::test_shinhong_cuda_column_holds_its_measured_distance_from_wrf:
+#     the kernel's max-ULP distance from WRF per field, asserted for equality
+#     against the row for the NVRTC build compiling it; red on the release
+#     node until the 13.3.33 row was recorded there.
+#   tests/test_shinhong_wrf461_parity.py::test_shinhong_cuda_partition_curves_hold_their_distance_from_glibc:
+#     the five device partition curves' max-ULP table against the oracle's
+#     direct probe, asserted for equality; one flat table keyed by neither
+#     compiler nor card, measured on the RTX 5090 and holding on the RTX 4090.
+#   tests/test_sase_gpu.py::test_dynamic_solve_device_real_lift_golden: the
+#     device solve's (c_nu, f) pinned to rtol 1e-9 per card; red on the
+#     release node's RTX 4090 against the RTX 5090 pair by 1.48e-08 in f.
+#   tests/test_feedback.py::test_feedback_zero_output_is_pinned_and_costs_nothing:
+#     FEEDBACK_ZERO_STATE_SHA256, a digest of a feedback=0 run's device state.
+#   tests/test_ysu_wrf461_parity.py, the two ULP rows, and
+#   tests/test_noah_wrf461_parity.py::test_noah_cuda_column_holds_its_measured_distance_from_wrf:
+#     max-ULP tables asserted for equality (a kernel that got better silently
+#     is as much a drift as one that got worse), measured on the RTX 5090 and
+#     holding on the RTX 4090.
+#   tests/test_uh_wrf461_parity.py::test_cuda_kernel_matches_the_oracle_at_the_pinned_ulp:
+#     the UH kernel's max-ULP table against the oracle, pinned at zero and
+#     asserted for equality (a table pinned at zero is still a pin: a kernel
+#     that moves one bit shows up here), holding on the RTX 4090.
+#   the tests/test_ntiedtke_*_parity.py kernel rows, 30 of them: each
+#     asserts a DEVICE result exactly equal to the Fortran oracle's
+#     recorded columns, or to the numpy mirror word for word, and each
+#     reaches a card through a cupy importorskip, so on a machine with no
+#     device they skip and say nothing.  A device result asserted for
+#     equality that no gate runs is the thing that shipped red twice, so
+#     these are pins for the card stage's purpose.  Declared one node id
+#     per row rather than by file, because the same files carry CPU rows
+#     that compare the numpy mirror with the oracle and those are not
+#     pins (see EXCLUDED).  The 15 files hold 53 rows that reach a device
+#     in all; tests/test_gpu_pin_set.py classifies every one of them, so
+#     a new row cannot join a file and stay undeclared.
+#
+# EXCLUDED, AND WHY
+#   tests/test_kf.py: kf_real74_12z_columns.npz is input columns, and its table
+#     pin compares a CPU generator with the shipped table.
+#   tests/test_p3_front_door.py: the overflow column is an input; the assertion
+#     is against WRF's own expression, not a captured result.
+#   tests/test_thompson_active_collision.py, tests/test_morrison_wrf461_parity.py
+#   and tests/test_gf_wrf461_parity.py: the baseline is a Fortran oracle
+#     compared at a tolerance, or a digest of the oracle's own files, not a
+#     pinned GPU result.  The remaining tests of the shinhong, ysu and noah
+#     parity files are one of THREE kinds: a Fortran oracle compared at a
+#     tolerance, a digest of the oracle's own files, or a CPU reference
+#     measured on no device.  Only the equality-asserted ULP rows OF A
+#     DEVICE RESULT above are pins.  The third kind is the one the earlier
+#     wording missed, and it asserts an ULP table for equality just as
+#     loudly: tests/test_shinhong_wrf461_parity.py:368 and :393 measure the
+#     numpy authority against the fixture, and :424 and :432 measure two
+#     of the oracle's own columns against each other, with the ysu file
+#     carrying the same shape.  No card is opened by any of them, so the
+#     card stage would be running them for nothing.
+#   tests/test_uh_wrf461_parity.py, the remaining tests: the numpy mirror's
+#     ULP row runs on no device, the negative control asserts only that a
+#     perturbation is seen, and the oracle-file digests hash the oracle's own
+#     files.
+#   tests/test_noahmp_frame_provenance.py: an estimator inventory baseline with
+#     no device behind it.
+#   the tests/test_ntiedtke_*_parity.py rows that reach a device and are
+#     NOT results: 20 assert a compiled kernel's local_size_bytes is 0,
+#     which is a launch-cost property of the artifact rather than a value
+#     the oracle has an opinion about, and three assert a behaviour with
+#     no oracle number behind it at all -- that a seeded array comes back
+#     zeroed (cloud_depth), that a -7.0 sentinel is gone everywhere
+#     (mrescale), and that deep-only slots are left alone on other
+#     columns (prep).  Each would be worth running; none is a pin, and
+#     the card stage is the pin stage.
+#   tests/test_thompson_aerosol_gpu.py::test_mp8_freeze_receipt_still_holds_at_the_wp12b_tip:
+#     it re-asserts the mp=8 freeze on no device, and it is green whenever
+#     tests/test_mp8_frozen.py is, which the set already runs.  Not a
+#     judgement about how alike they look: it IMPORTS its four expected
+#     values from that module (THOMPSON_CU_SHA256, the compiled-source
+#     digest, THOMPSON_PY_SHA256 and TABLE_SET_ID_PIN) and re-hashes the
+#     same files, and test_mp8_frozen.py asserts every one of them against
+#     a receipt it captures live from the real loader.  So it can only be
+#     red where that file is already red, and running it here would hash
+#     three files twice on the card to learn nothing.
+
+tests/test_coriolis_map.py
+tests/test_mp8_frozen.py
+tests/test_omega_column_scan.py
+tests/test_openbc.py::test_advection_periodic_path_bitwise_regression
+tests/test_diff6_boundary_face.py::test_periodic_path_bitwise_identical_to_base
+tests/test_diff6_boundary_face.py::test_forced_path_changes_only_the_seam_faces
+tests/test_mynn_noah_surface_identity.py
+tests/test_surface_certified_identity.py
+tests/test_shinhong_runtime.py::test_off_path_bl1_micro_run_state_hash_is_pinned
+tests/test_shinhong_wrf461_parity.py::test_shinhong_cuda_column_holds_its_measured_distance_from_wrf
+tests/test_shinhong_wrf461_parity.py::test_shinhong_cuda_partition_curves_hold_their_distance_from_glibc
+tests/test_sase_gpu.py::test_dynamic_solve_device_real_lift_golden
+tests/test_feedback.py::test_feedback_zero_output_is_pinned_and_costs_nothing
+tests/test_ysu_wrf461_parity.py::test_ysu_cuda_column_holds_its_measured_distance_from_wrf
+tests/test_ysu_wrf461_parity.py::test_ysu_momentum_is_this_far_from_wrfs_own_ctopo_driver_path
+tests/test_noah_wrf461_parity.py::test_noah_cuda_column_holds_its_measured_distance_from_wrf
+tests/test_uh_wrf461_parity.py::test_cuda_kernel_matches_the_oracle_at_the_pinned_ulp
+tests/test_ntiedtke_adjust_parity.py::test_kernel_level_outputs_are_bitwise
+tests/test_ntiedtke_adjust_parity.py::test_kernel_surface_fluxes_are_bitwise
+tests/test_ntiedtke_cloud_depth_parity.py::test_kernel_flip_and_sum_are_exact
+tests/test_ntiedtke_cuascn_parity.py::test_kernel_level_outputs_are_bitwise
+tests/test_ntiedtke_cuascn_parity.py::test_kernel_integer_outputs_and_wup_are_exact
+tests/test_ntiedtke_cuddrafn_parity.py::test_kernel_level_outputs_are_bitwise
+tests/test_ntiedtke_cuddrafn_parity.py::test_kernel_prfl_is_bitwise
+tests/test_ntiedtke_cudlfsn_parity.py::test_kernel_level_outputs_are_bitwise
+tests/test_ntiedtke_cudlfsn_parity.py::test_kernel_scalars_are_exact
+tests/test_ntiedtke_cudlfsn_parity.py::test_the_kernel_LEAVES_untouched_class2_levels_alone
+tests/test_ntiedtke_cudtdqn_parity.py::test_kernel_outputs_are_bitwise
+tests/test_ntiedtke_cududvn_parity.py::test_kernel_outputs_are_bitwise
+tests/test_ntiedtke_cuflxn_parity.py::test_kernel_level_outputs_are_bitwise
+tests/test_ntiedtke_cuflxn_parity.py::test_kernel_precipitation_fluxes_are_bitwise
+tests/test_ntiedtke_cuflxn_parity.py::test_kernel_prain_is_bitwise
+tests/test_ntiedtke_kedis_parity.py::test_kernel_ptte_is_bitwise
+tests/test_ntiedtke_mprofile_parity.py::test_kernel_outputs_are_bitwise
+tests/test_ntiedtke_mrescale_parity.py::test_kernel_outputs_are_bitwise
+tests/test_ntiedtke_post_conversion_parity.py::test_kernel_is_bitwise
+tests/test_ntiedtke_post_run_parity.py::test_kernel_is_bitwise
+tests/test_ntiedtke_prep_parity.py::test_cuda_cuinin_is_bitwise
+tests/test_ntiedtke_prep_parity.py::test_cuda_cutypen_is_bitwise_across_all_ktype_arms
+tests/test_ntiedtke_prep_parity.py::test_cuda_cubasmcn_is_bitwise_on_both_sides_of_the_guard
+tests/test_ntiedtke_prep_parity.py::test_cuda_mfub_is_bitwise
+tests/test_ntiedtke_prep_parity.py::test_cuda_closure_is_bitwise_across_every_arm
+tests/test_ntiedtke_uscale_parity.py::test_kernel_level_outputs_are_bitwise
+tests/test_ntiedtke_prep_parity.py::test_cuda_reproduces_every_prep_word
+tests/test_ntiedtke_prep_parity.py::test_cuda_matches_the_mirror_exactly
+tests/test_ntiedtke_prep_parity.py::test_cuda_scale_factors_survive_both_branches_in_one_launch
+tests/test_ntiedtke_uscale_parity.py::test_kernel_scalar_outputs_are_exact

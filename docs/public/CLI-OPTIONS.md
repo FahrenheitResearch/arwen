@@ -242,10 +242,10 @@ Takes no options of its own.
 | option | what it does |
 |---|---|
 | `--availability` | report why each installed physics option is open or closed to a draft |
-| `--capabilities` | _(the parser declares no help text for this option)_ |
+| `--capabilities` | report the actions, presets and limits this door offers, and write nothing |
 | `--explain` | print the full reasoning, alternate routes and per-item evidence behind this command's output, instead of the default one-line-per-item summary |
 | `--repairs` | check compatible physics replacements without writing a candidate |
-| `--request` | _(the parser declares no help text for this option)_ |
+| `--request` | a domain edit request document; the candidate it publishes carries every file its route reads, named in the result's route_companions |
 
 ## `gpuwm companion-forcing`
 
@@ -395,7 +395,7 @@ Takes no options of its own.
 | `--nest-history-interval SECONDS` | the same, for every NESTED domain (default 900). Nests write more often than the root by default because resolving what the root cannot, over a shorter window, is the point of running one. Ignored for a single-domain ladder |
 | `--nz N` | vertical mass levels (default: 49); resamples the default eta ladder while preserving its stretching |
 | `--out TOML` | emitted experiment TOML path |
-| `--physics-profile {morrison-mp10-ysu-mm5-noah-kf-rte-rrtmgp-v1,nssl2-mp18-ysu-mm5-noah-kf-rte-rrtmgp-validation-candidate-v1,nssl2-mp18-ysu-mm5-noah-kf-rrtmg-legacy-validation-candidate-v1,thompson-mp8-ysu-mm5-noah-rrtmg-legacy-v1,thompson-mp8-shinhong-mm5-noah-rrtmg-legacy-v1,p3-mp50-ysu-mm5-noah-rrtmg-legacy-v1,wsm6-mynn-mynn-noah-rte-rrtmgp-implemented-unverified-v1,wsm6-mynn-mynn-ruc-rte-rrtmgp-implemented-unverified-v1,thompson-mp8-ysu-mm5-noah-validation-v1,wsm6-ysu-mm5-noah-no-radiation-v1,wsm6-mynn-mynn-noah-no-radiation-implemented-unverified-v1,wsm6-ysu-mm5-ruc-no-radiation-implemented-unverified-v1,wsm6-mynn-mynn-ruc-no-radiation-implemented-unverified-v1,wsm6-ysu-mm5-noahmp-no-radiation-expert-only-v1,wsm6-mynn-mynn-noahmp-no-radiation-expert-only-v1,wsm6-mynn-mynn-noahmp-rte-rrtmgp-expert-only-v1,20crv3-wsm6-ysu-mm5-noah-kf-rte-rrtmgp-implemented-unverified-v1,milbrandt2mom-mp9-ysu-mm5-noah-ntiedtke-rrtmg-legacy-v1,wdm6-mp16-ysu-mm5-noah-grell-freitas-rte-rrtmgp-v1,wsm6-sase-revised-mm5-noah-closure-supplied-v1,wsm6-pbl-off-mm5-noah-tke-1-5-order-v1,wsm6-pbl-off-mm5-noah-smagorinsky-3d-v1,wsm6-pbl-off-mm5-noah-constant-k-v1}` | shipped physics suite to emit; taken verbatim from the registry the prepared-forecast runner validates against, so the emitted config passes its guard as written. Read the names: the *-no-radiation-* and *-validation-* profiles run reduced physics with longwave OFF and are NOT nocturnally valid -- selecting one for a window that includes local night is REFUSED unless you declare it yourself with --ack. (--source era5, the default source, binds morrison-mp10-ysu-mm5-noah-kf-rte-rrtmgp-v1; every source has its own computed default and its own admissible set -- `gpuwm run-plan --physics-profiles` prints the whole table) |
+| `--physics-profile {morrison-mp10-ysu-mm5-noah-kf-rte-rrtmgp-v1,nssl2-mp18-ysu-mm5-noah-kf-rte-rrtmgp-validation-candidate-v1,nssl2-mp18-ysu-mm5-noah-kf-rrtmg-legacy-validation-candidate-v1,thompson-mp8-ysu-mm5-noah-rte-rrtmgp-v1,thompson-mp8-ysu-mm5-noah-rrtmg-legacy-v1,thompson-mp8-shinhong-mm5-noah-rrtmg-legacy-v1,p3-mp50-ysu-mm5-noah-rrtmg-legacy-v1,wsm6-mynn-mynn-noah-rte-rrtmgp-implemented-unverified-v1,wsm6-mynn-mynn-ruc-rte-rrtmgp-implemented-unverified-v1,thompson-mp8-ysu-mm5-noah-validation-v1,wsm6-ysu-mm5-noah-no-radiation-v1,wsm6-mynn-mynn-noah-no-radiation-implemented-unverified-v1,wsm6-ysu-mm5-ruc-no-radiation-implemented-unverified-v1,wsm6-mynn-mynn-ruc-no-radiation-implemented-unverified-v1,kessler-mp1-ysu-mm5-noah-dudhia-v1,wsm6-ysu-mm5-noahmp-no-radiation-expert-only-v1,wsm6-mynn-mynn-noahmp-no-radiation-expert-only-v1,wsm6-mynn-mynn-noahmp-rte-rrtmgp-expert-only-v1,20crv3-wsm6-ysu-mm5-noah-kf-rte-rrtmgp-implemented-unverified-v1,milbrandt2mom-mp9-ysu-mm5-noah-ntiedtke-rrtmg-legacy-v1,wdm6-mp16-ysu-mm5-noah-grell-freitas-rte-rrtmgp-v1,wsm6-sase-revised-mm5-noah-closure-supplied-v1,wsm6-pbl-off-mm5-noah-tke-1-5-order-v1,wsm6-pbl-off-mm5-noah-smagorinsky-3d-v1,wsm6-pbl-off-mm5-noah-constant-k-v1}` | shipped physics suite to emit; taken verbatim from the registry the prepared-forecast runner validates against, so the emitted config passes its guard as written. Read the names: the *-no-radiation-* and *-validation-* profiles run reduced physics with longwave OFF and are NOT nocturnally valid -- selecting one for a window that includes local night is REFUSED unless you declare it yourself with --ack. (--source era5, the default source, binds morrison-mp10-ysu-mm5-noah-kf-rte-rrtmgp-v1; every source has its own computed default and its own admissible set -- `gpuwm run-plan --physics-profiles` prints the whole table) |
 | `--point LAT,LON` | domain center in decimal degrees. \|lat\| 90 is refused. A point carries no extent, so the fit chooses one: the largest layout the budget affords, capped at 6000 km per axis and kept clear of the projection pole, where lat-lon source interpolation and static-tile windowing do not work. Both caps SHRINK the domain rather than refuse it, and the plan summary states which one bound; the pole refusal is left for a center so close to one that even the smallest layout contains it. Draw a --polygon to ask for more ground than the cap. The projection is auto-selected from \|lat\| (<25 Mercator, 25-60 Lambert conformal, >60 polar stereographic) unless --projection is set. Negative (southern/western) values work in both forms: --point -33.87,151.21 and --point=-33.87,151.21 |
 | `--polygon GEOJSON` | local GeoJSON Polygon, MultiPolygon, Feature, or FeatureCollection; the minimum antimeridian-aware bounds supply the center and every emitted level is fitted around the geometry |
 | `--projection {auto,lambert,mercator,polar}` | map projection override (default: auto by center latitude; all three are oracle-gated against WRF v4.6.1 module_llxy) |
@@ -426,7 +426,7 @@ Takes no options of its own.
 | `--start-time` | explicit new UTC start; otherwise preserve template |
 | `--target-host-memory-json` | selected target host-memory snapshot for an explicit --card or --vram-gib budget |
 | `--vram-gib` | target total VRAM capacity in GiB; omit device flags to detect this machine's GPU |
-| `--write` | write reviewed TOML, WPS and fit receipt |
+| `--write` | write the reviewed TOML, the fit receipt, and every file its input route reads beside it |
 
 ## `gpuwm domain-tiles`
 
@@ -439,7 +439,7 @@ Takes no options of its own.
 | `--explain` | print the full reasoning, alternate routes and per-item evidence behind this command's output, instead of the default one-line-per-item summary |
 | `--mode {auto,on}` | auto streams when needed; on forces planner-selected streaming |
 | `--out` | new ordinary TOML path |
-| `--write` | create the reviewed TOML and tile receipt |
+| `--write` | create the reviewed TOML, the tile receipt, and every file its input route reads beside it |
 
 ## `gpuwm downscale`
 
@@ -663,7 +663,7 @@ Takes no options of its own.
 | `--json` | emit the review as one JSON document on stdout, which this door always does; accepted so a companion can state it |
 | `--launch` | launch or resume an existing local-da.json |
 | `--obs-table` | existing neutral observation table; repeatable |
-| `--out` | new directory to publish experiment.toml, ensemble.toml, experiment.namelist.wps and local-da.json into; refused if it exists |
+| `--out` | new directory to publish experiment.toml, ensemble.toml, experiment.namelist.wps, every other file the published configuration is read with on its own input route, and local-da.json into; refused if it exists |
 | `--point` | latitude,longitude |
 | `--prepared-config` | configuration authority consumed by the supplied prepared bundle |
 | `--prepared-namelist` | WPS authority consumed by the supplied prepared bundle |
@@ -1226,6 +1226,7 @@ Takes no options of its own.
 | `--section lat,lon,lat,lon\|FILE.json` | rust engine: the line the vertical-section products (xsec:<fill>[/<overlay>...] in --products, any 3-D wrfout field on a height axis) are cut along; a JSON file gives {start, end} or a {points, extend_km} polyline |
 | `--section-across KM` | rust engine: also draw each section product across the line, this many km long, through the fill's maximum column |
 | `--section-size WxH` | the size a cross-section is drawn at; absent, a section is landscape 2:1 at the map's width, because a vertical cut handed the map's own size comes out portrait |
+| `--section-top-km N` | rust engine: the ceiling of a section's height axis, 1-40 km; absent, the engine fits up to 14 km, which draws a shallow feature in the bottom fourteenth of the frame -- give it 3 for a boundary-layer cut |
 | `--series` | render compatible files from each run/domain/episode as one timeline, including multi-hour products |
 | `--size WxH` | output pixels, rust engine (default 1200x900) |
 | `--source-label TEXT` | model/provenance label stamped on every plot (default 'ArWen <the executing version>'); set it when rendering wrfout files this model did not produce, so the sheet does not claim them |
@@ -1304,7 +1305,7 @@ Takes no options of its own.
 
 | argument | what it does |
 |---|---|
-| `CONFIG` | the SAME config the interrupted run used; the restart identity check refuses any other |
+| `CONFIG` | the SAME config the interrupted run used; the restart identity check refuses any other. An argument that is not a readable file is tried with the .toml extension a file manager hides, then against --outdir, and last against the configuration the run in --outdir recorded for itself (child.toml, experiment.toml or captured-config-<run id>.toml) |
 
 | option | what it does |
 |---|---|

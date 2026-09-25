@@ -52,6 +52,8 @@ from gpuwm.offline_child import (
     DERIVED_CHILD_SURFACE_CAVEAT,
     OfflineChildContractError,
     OfflineChildPlacement,
+    child_inherits_parent_levels,
+    les_child_regime,
     bind_parent_physics_from_gpuwm_restart,
     bind_parent_physics_from_wrf_namelist,
     child_surface_requirement,
@@ -1153,8 +1155,8 @@ def downscale_main(args) -> int:
         raise
 
 
-def _admit_render_products(render_products, *, dry_run: bool) -> None:
-    """Refuse an undrawable product request BEFORE anything is opened.
+def _admit_render_products(render_products, *, dry_run: bool) -> str:
+    """The product spec this child will be drawn with, or a refusal.
 
     Pictures are this door's default, so "this computer cannot draw" and
     "that is not a product" are admission facts, not discoveries.  Both
@@ -1172,19 +1174,61 @@ def _admit_render_products(render_products, *, dry_run: bool) -> None:
     with no renderer must still be able to price a child on it.  The
     spec is checked either way -- a review that does not review the
     product list is not a review.
+
+    The three STORELESS families (``mesh:``, ``meshdiff:`` and an
+    ``xsec:`` term, since this chain composes no section line) are
+    dropped per PRODUCT by :func:`gpuwm.rustwx.drop_storeless_terms`,
+    named on stderr, and what survives is returned and carried into the
+    plan.  WHAT BREAKAGE THAT PREVENTS (gate law): this chain's render
+    stage IS ``gpuwm render`` (:func:`gpuwm.go_cli.render_command`), and
+    that door drops such a term and draws the rest, so a whole-run
+    refusal here would refuse a child whose own render stage completes.
+    Two doors of one product would answer one request differently, and
+    the costlier answer -- no forecast at all -- would be the one this
+    door gave.  A drop that leaves nothing IS refused, here, before the
+    parent archive is opened: that child would integrate for hours and
+    then draw nothing.
     """
 
     from gpuwm.go_cli import render_extra_missing, unknown_render_products
     from gpuwm.first_products import early_render_requested
 
     if not early_render_requested(render_products):
-        return
+        return render_products
     if not dry_run:
         missing = render_extra_missing()
         if missing is not None:
             from gpuwm.offline_child_run import RENDERER_MISSING_REMEDY
 
             raise OfflineChildContractError(layered(RENDERER_MISSING_REMEDY, missing))
+    # The storeless families first, so the catalog question below is
+    # asked of the spec this child will actually be drawn with.  No
+    # renderer and no file is opened to decide them: the grammar is the
+    # answer, and `section=None` because this chain composes no line.
+    from gpuwm import rustwx
+
+    render_products, dropped = rustwx.drop_storeless_terms(render_products)
+    if dropped and not render_products:
+        raise OfflineChildContractError(layered(
+            ", ".join(term for term, _reason in dropped)
+            + ": this child's render would have nothing left to draw, so "
+            "the forecast would run for its full length and produce no "
+            "pictures.\n"
+            + "\n".join(f"  {term}: {reason}"
+                        for term, reason in dropped),
+            "These families are not drawn from the history frames a child "
+            "writes, so no door of this chain can draw them.  Name the "
+            "products that ARE drawn from the frames and they are drawn "
+            "beside anything else asked for; --render-products none runs "
+            "the child and draws nothing at all."))
+    for term, reason in dropped:
+        warn(f"{term} is dropped from this child's render and the other "
+             f"requested products are still drawn; {reason}",
+             why="The renderer refuses one of these families for the "
+                 "WHOLE invocation before it draws anything, so the term "
+                 "is dropped here and at the render door rather than "
+                 "forwarded, which is what cost a finished child every "
+                 "other product's pictures.")
     unknown = unknown_render_products(render_products)
     if unknown:
         raise OfflineChildContractError(
@@ -1194,15 +1238,17 @@ def _admit_render_products(render_products, *, dry_run: bool) -> None:
             "gpuwm render --list-products names every product this "
             "install can draw; repeat this command with names from it, "
             "or 'all'.")
-    # A vertical section needs a LINE, and this chain composes none.
-    # The engine refuses an `xsec:` request that carries no `--section`,
-    # but it refuses it at render, which is after the child has been
-    # integrated; the grammar is knowable here, with nothing opened.
-    from gpuwm import rustwx
-
-    section_problem = rustwx.section_spec_problem(render_products)
-    if section_problem is not None:
-        raise OfflineChildContractError(section_problem)
+    # The build's FILELESS requirement pair is deliberately not consulted
+    # here.  It answers "which selectors does this renderer's wrfout
+    # import plan write", and measured against a real child that pair
+    # calls sixteen of the shipped snow preset's twenty-one products
+    # undrawable -- including 2m_temperature and 500mb_height_winds,
+    # which that same run then drew, 143 pictures of them.  A note that
+    # fires on products every run draws is noise on every run, and the
+    # store's own catalog, read at render time against the frames this
+    # invocation will draw, is the measurement that holds.  That is
+    # where a product is dropped and named.
+    return render_products
 
 
 def _downscale_main(args, reservation: _OutputReservation,
@@ -1215,7 +1261,11 @@ def _downscale_main(args, reservation: _OutputReservation,
     render_products = (args.render_products
                        if getattr(args, "render_products", None) is not None
                        else DEFAULT_RENDER_PRODUCTS)
-    _admit_render_products(render_products, dry_run=bool(args.dry_run))
+    # The spec that SURVIVES admission is the one the plan carries and
+    # the render stage is run with: a dropped term recorded in the plan
+    # would be a promise the finalize render does not keep.
+    render_products = _admit_render_products(
+        render_products, dry_run=bool(args.dry_run))
     auto_vram = bool(getattr(args, "auto_vram", False))
     if auto_vram and (args.card is not None or args.vram_gib is not None):
         # Two declarations of one budget: a measured card and a declared
@@ -1443,6 +1493,36 @@ def _downscale_main(args, reservation: _OutputReservation,
     # remap and the whole preparation had been paid for.  Same function
     # the state builder calls (gpuwm.offline_child).
     require_runnable_child_radiation_from_archive(cfg, frames[0])
+    # THE REGIME, STATED BEFORE THE RUN.  A child below the spacing this
+    # tree calls LES is a different regime from the mesoscale run its
+    # configuration was written for, and until now nothing said so to the
+    # person who asked for one: `--child-levels`' own help knows it ("the
+    # LES case: a 100 m child wants the levels, not just the columns")
+    # and the help for a flag is read by people who already know to look
+    # for the flag.  Meanwhile `_derive_child_run_config` copies the
+    # parent's physics VERBATIM, so a derived child carries the parent's
+    # `bl_pbl_physics` and `km_opt` down to any spacing at all.
+    #
+    # A STATEMENT, not a refusal: the shipped nested LES child is exactly
+    # a 250 m child on its grandparent's ladder, and nothing here changes
+    # what any run does.  The reader is told which regime they asked for
+    # while they can still change their mind.
+    #
+    # The ladder is called inherited on a MEASUREMENT -- the resolved
+    # child's level count against the parent tape's own, read off the
+    # dimensions the contract already validated -- rather than on which
+    # route built the config, because both routes can arrive at either
+    # answer.
+    parent_levels = contract.frames[0].dimensions.get("bottom_top")
+    parent_levels = None if parent_levels is None else int(parent_levels)
+    les_regime = les_child_regime(
+        cfg,
+        inherits_parent_levels=child_inherits_parent_levels(
+            cfg, child_levels_spec=args.child_levels,
+            parent_levels=parent_levels),
+        parent_levels=parent_levels)
+    if les_regime is not None:
+        warn(les_regime["statement"], why=les_regime["why"])
     # The [tiles] the child will actually integrate under, resolved once
     # for the plan document AND the price below, so the warning a
     # disagreement earns prints exactly once.
@@ -1646,6 +1726,11 @@ def _downscale_main(args, reservation: _OutputReservation,
         "domain": plan_parent_domain,
     }
     plan["warnings"] = [dict(record) for record in warnings]
+    # The regime statement as FIELDS beside the sentence: a controller
+    # showing this plan can put the spacing, the ladder and the closure
+    # in front of a reader without parsing prose, and ``null`` says
+    # plainly that this child is not in that regime.
+    plan["les_regime"] = les_regime
     # What this child will be drawn as, in the plan a reviewer reads
     # before anything runs -- the same field name the run plan of a
     # forecast carries, so one reader answers "which products?" for
@@ -1686,8 +1771,9 @@ def _downscale_main(args, reservation: _OutputReservation,
         # derived; the never-adopt reservation already happened there.
         outdir_reserved=outdir_reserved)
     # From here the directory belongs to the run: a forecast that dies
-    # mid-integration leaves frames a reader needs, and no report.json to
-    # claim it finished.  Deleting that would be destroying evidence.
+    # mid-integration leaves frames a reader needs, and a report.json
+    # whose `result` is FAIL rather than one claiming it finished.
+    # Deleting that would be destroying evidence.
     reservation.hand_off()
     # Written AFTER the hand-off and BEFORE the child launches: a reader
     # watching the new run directory finds the grid, the price and the

@@ -14,6 +14,8 @@ import textwrap
 import numpy as np
 import pytest
 
+from conftest import requires_cupy
+
 from gpuwm.core.microphysics_transition import MP8_TO_MP18_POLICY
 from gpuwm.experiment import load_experiment
 from gpuwm.ingest.prepared_cache import prepared_domain_config_identity
@@ -247,6 +249,66 @@ def test_capability_executable_runs_outside_checkout_without_cupy(tmp_path):
         runner.THOMPSON_NSSL_PLAN_ID,
     ]
     assert list(tmp_path.iterdir()) == [blocker]
+
+
+def test_the_runner_takes_tilestream_from_its_own_tree_not_the_callers_directory(
+    tmp_path,
+):
+    """gpuwm and tilestream ship as one distribution and must import as one.
+
+    ``gpuwm sim --print-command`` prints ``python -m
+    gpuwm.prepared_domain_tree_forecast ...`` for a caller to drive itself,
+    and ``-m`` puts the CALLER'S directory at ``sys.path[0]``.  Driven from
+    a directory holding an older checkout's ``tilestream/``, that directory
+    supplied the streamed restart types and a resume died on ``cannot
+    import name 'ValidatedStreamedRestart' from
+    'tilestream.restart_stream'`` with a checkpoint on disk and no way to
+    continue it.  The runner puts its own tree first, so the pair that
+    shipped together is the pair that runs.
+    """
+    decoy = tmp_path / "tilestream"
+    decoy.mkdir()
+    (decoy / "__init__.py").write_text("", encoding="utf-8")
+    (decoy / "restart_stream.py").write_text(
+        textwrap.dedent("""
+        def write_streamed_restart():
+            pass
+    """),
+        encoding="utf-8",
+    )
+    (tmp_path / "origin_probe.py").write_text(
+        textwrap.dedent("""
+        import json
+        import gpuwm.prepared_domain_tree_forecast as tree_runner
+        import tilestream.restart_stream as streamed
+
+        print(json.dumps({
+            "tilestream": streamed.__file__,
+            "root": str(tree_runner.REPOSITORY_ROOT),
+            "validated": hasattr(streamed, "ValidatedStreamedRestart"),
+        }))
+    """),
+        encoding="utf-8",
+    )
+    root = Path(runner.__file__).resolve().parents[1]
+    environment = os.environ.copy()
+    environment["PYTHONPATH"] = os.pathsep.join(
+        [str(root), environment.get("PYTHONPATH", "")]).rstrip(os.pathsep)
+
+    completed = subprocess.run(
+        [sys.executable, "-m", "origin_probe"],
+        cwd=tmp_path,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    payload = json.loads(completed.stdout.strip().splitlines()[-1])
+    assert payload["validated"] is True
+    assert Path(payload["tilestream"]).resolve() == (
+        Path(payload["root"]) / "tilestream" / "restart_stream.py")
 
 
 def test_exact_four_domain_thompson_nssl_plan_is_advertised_not_whitelisted(
@@ -728,6 +790,10 @@ def test_the_tree_runner_uses_the_shared_radiation_workspace_predicate():
 # The mp8 table gap: one sentence at preflight, never a traceback mid-run
 # ---------------------------------------------------------------------------
 
+# NEEDS CUPY INSTALLED, and opens no device: this test asserts the tree
+# forecast's own refusal for a missing microphysics table; without cupy the
+# capability refusal answers first.
+@requires_cupy
 def test_a_missing_thompson_table_is_a_refusal_not_a_traceback(
         tmp_path, monkeypatch, capsys):
     """`FileNotFoundError: missing Thompson table asset .../qr_acr_qg_V4.dat`

@@ -43,8 +43,12 @@ gpuwm local-da --launch local-cycle/local-da.json
 Repeating that command uses the existing cycle and ensemble recovery
 contracts. `--launch local-cycle/local-da.json --dry-run` validates and
 reads the saved review without starting it. A generated directory contains
-`experiment.toml`, `ensemble.toml`, `experiment.namelist.wps` and
-`local-da.json`.
+`experiment.toml`, `ensemble.toml`, `experiment.namelist.wps`,
+`local-da.json`, and every other file the configuration's input route
+reads beside it: on the native regional route that is the two
+namelists and the target-domain document the run reads, rendered from
+the published configuration and listed in `local-da.json` under
+`files` with the rest.
 Their hashes, and any explicit observation input hashes, are checked again
 before launch. `--run` combines publication and execution for a caller
 that has explicitly requested both actions.

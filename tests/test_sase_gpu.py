@@ -22,8 +22,8 @@ import pytest
 from gpuwm.config import SASE_PBL_SCHEME as _SASE_SELECTOR
 
 from conftest import requires_gpu
-from sase_goldens import (GOLDEN_C_NU_DEVICE, GOLDEN_C_NU_FP64,
-                          GOLDEN_F_DEVICE, GOLDEN_F_FP64)
+from sase_goldens import (GOLDEN_C_NU_FP64, GOLDEN_DEVICE_BY_CARD,
+                          GOLDEN_F_FP64)
 
 pytestmark = pytest.mark.gpu
 
@@ -437,11 +437,25 @@ def test_dynamic_solve_device_real_lift_golden():
     """Real-lift golden gate: the device solve on the FP32 cast of the
     frozen seed-3 fixture lands within rel 5e-4 of the FP64 goldens
     (input quantization + FP32 forward arithmetic both included), and
-    reproduces the pinned device goldens exactly (deterministic
-    reduction; drift canary for kernel/toolchain changes).
+    reproduces the pinned device goldens of THIS card exactly
+    (deterministic reduction; drift canary for kernel/toolchain changes).
+    The pair is per card (sase_goldens.GOLDEN_DEVICE_BY_CARD: the 5090
+    pair fails on an RTX 4090 by rel 1.48e-08 in f); a card with no pair
+    skips, naming itself, rather than failing for the card and not the
+    code, and the release card stage names that skip in its receipt.
     """
     import cupy as cp
     from gpuwm.core.sase import launch_dynamic_solve
+    props = cp.cuda.runtime.getDeviceProperties(0)
+    card = props["name"]
+    card = card.decode() if isinstance(card, bytes) else str(card)
+    if card not in GOLDEN_DEVICE_BY_CARD:
+        pytest.skip(f"the SASE device golden pair is per card and none is recorded for "
+                    f"{card!r} (compute capability {props['major']}.{props['minor']}); "
+                    f"pairs exist for {sorted(GOLDEN_DEVICE_BY_CARD)}.  Record this card's "
+                    "(c_nu, f) from two processes in tests/sase_goldens.py with the reading "
+                    "against the FP64 authority and the nearest recorded card.")
+    golden_c_nu, golden_f = GOLDEN_DEVICE_BY_CARD[card]
     u32, v32, w32, e32 = _solve_fixture32(3, (8, 24, 24), 0.05, 0.1, True)
     dev = [cp.asarray(a) for a in (u32, v32, w32, e32)]
     c_nu, f = launch_dynamic_solve(*dev, dx=500.0, dy=500.0, dz=200.0,
@@ -451,8 +465,12 @@ def test_dynamic_solve_device_real_lift_golden():
     assert rel_c <= 5e-4 and rel_f <= 5e-4, (
         f"real-lift golden: c_nu={c_nu!r} (rel {rel_c:.3e}), "
         f"f={f!r} (rel {rel_f:.3e}), gate 5e-4")
-    np.testing.assert_allclose(c_nu, GOLDEN_C_NU_DEVICE, rtol=1e-9)
-    np.testing.assert_allclose(f, GOLDEN_F_DEVICE, rtol=1e-9)
+    np.testing.assert_allclose(c_nu, golden_c_nu, rtol=1e-9,
+                               err_msg=f"c_nu moved on {card}; a deliberate change re-pins "
+                                       "GOLDEN_DEVICE_BY_CARD with its reading")
+    np.testing.assert_allclose(f, golden_f, rtol=1e-9,
+                               err_msg=f"f moved on {card}; a deliberate change re-pins "
+                                       "GOLDEN_DEVICE_BY_CARD with its reading")
     # S3-3 review fold-in: the golden pin rests on launch-to-launch
     # bitwise determinism (fixed block count and reduction order, host
     # np sum) -- assert it directly with a second invocation.
@@ -2073,7 +2091,7 @@ def test_thomas_scalar_surface_deposit_parity_and_validation():
 
 @requires_gpu
 def test_thomas_scalar_zero_flux_bitwise_identity():
-    """THE S3-11b seam-off pin (brief section 4, mirroring 11a's
+    """THE S3-11b seam-off pin (spec section 4, mirroring 11a's
     zero-flux identity): with the deposit arguments given but the flux
     field zero, the device sweep is BITWISE-identical to the pre-change
     path (the sfc_flux=None call) -- every thickness mode, both channel
@@ -2142,7 +2160,7 @@ def test_thomas_scalar_zero_flux_bitwise_identity():
 
 @requires_gpu
 def test_warm_sector_qfx_device_deposit_closed_form_and_ledger():
-    """FIXTURE (b) on device (brief section 5; CPU twin
+    """FIXTURE (b) on device (spec section 5; CPU twin
     test_warm_sector_qfx_moistens_at_closed_form_rate): the moisture
     face of the seam at the physical warm-sector QFX = 1.0e-4
     kg m^-2 s^-1 (LH ~ 250 W/m^2 over XLV = 2.5e6 -- the P2 Td2-miss
@@ -2314,7 +2332,7 @@ def _run_lake_flux_column_device(monkeypatch, hfx, rho1, minutes=10.0,
 
 @requires_gpu
 def test_lake_flux_device_stable_layer_and_kv_collapse(monkeypatch):
-    """FIXTURE (a) on device (brief section 5): the seam forms the
+    """FIXTURE (a) on device (spec section 5): the seam forms the
     marine stable layer ON THE DEVICE PATH, against the CPU authority
     engine (test_sase._run_lake_flux_column -- imported, not copied,
     so the two engines cannot drift) at the observed yolo-b 17Z
@@ -2846,8 +2864,8 @@ def test_sase_driver_d02_first_light_moist_50_steps(monkeypatch):
     combined share to ~7.3% (+ ~0.4% of integrate wall).  BINDING PIN
     here: <= 6.5 ms/call at that shape (1.65x measured -- regression
     guard, not a budget verdict); the budget verdict itself is
-    re-scored on the S4-3 smoke receipt (coordinator adjudication,
-    flagged in the S4-2 report)."""
+    re-scored on the S4-3 smoke receipt (adjudicated, and flagged in
+    the S4-2 report)."""
     import time
 
     import cupy as cp
@@ -2915,7 +2933,7 @@ def test_sase_driver_d02_first_light_moist_50_steps(monkeypatch):
 
     initialize_physics(state, cfg, landmask=1.0, tsk=302.0,
                        swdown=400.0, glw=320.0, radiation=radiation)
-    # (The lane's opt-in per-call CUDA-event instrumentation is not part
+    # (The opt-in per-call CUDA-event instrumentation is not part
     # of this port -- it existed to feed a campaign harness that did not
     # come with it -- so the seam-share print below is dropped and the
     # stability assertions, which are the test's subject, remain.)
@@ -3416,7 +3434,7 @@ def test_m1b_vertical_channel_increment_d02_shape():
     against the yolo-d pre-M1 d02 seam baseline 62.12 ms/call
     (out/sase-yolo-d/run-metrics.json seam_ms_mean, 2026-07-22); the
     budget verdict itself is re-scored on the S4-3d smoke receipt
-    (coordinator adjudication -- the S4-2 report's carried flag).
+    (adjudicated -- the S4-2 report's carried flag).
     BINDING PIN: increment <= 6.0 ms/call at this shape (regression
     guard at ~2x the measured 2.965/2.957 ms dual-run pair on the RTX
     5090, 2026-07-22; a worst-case-mask increment of 4.8% of the
@@ -3474,7 +3492,7 @@ def test_m1b_vertical_channel_increment_d02_shape():
 # one-cell move in any selected level changes the flux by a median 35%
 # on the clean real-field population and 47-53% on the strictly
 # root-invariant subset (design doc SASE-M2 amendment, "root / anchor
-# separation"; S4-4 report round 6).  Index agreement is therefore a
+# separation"; S4-4 report).  Index agreement is therefore a
 # SEPARATE pass/fail gate, asserted BIT-EXACTLY on all seven diagnosed
 # levels (k_base, k_top, k_r, k_lid, LFC, NB, buoyancy peak) against a
 # reference transcribed INDEPENDENTLY of both engines.
@@ -3630,7 +3648,7 @@ def _vent_indices_ref(args):
     k_base/k_top come from ``test_sase._vent_layer_indices`` and k_r
     from ``test_sase._vent_root_index`` -- the CPU corpus's own
     independent transcriptions, VALIDATED 38/38 against an instrumented
-    authority build (S4-4 round 7) -- and the termination triple from
+    authority build (S4-4) -- and the termination triple from
     :func:`_vent_termination_ref` here.  None of the three shares code
     with ``plume_vent_flux``.
     """
@@ -3782,7 +3800,7 @@ def test_m2_plume_vent_device_parity_and_index_agreement():
     reference EXACTLY on every column.  A one-cell move in any of them
     is a median 35% flux change on the clean real-field population and
     47-53% on the strictly root-invariant subset (design doc SASE-M2
-    amendment; S4-4 report round 6), so a 2e-6 flux agreement on a
+    amendment; S4-4 report), so a 2e-6 flux agreement on a
     column whose indices differ is not agreement at all.  The reference
     is transcribed independently of both engines (see
     :func:`_vent_indices_ref`).
@@ -4613,8 +4631,8 @@ def test_m2_vent_kernel_time_increment_d02_shape():
     uncalibrated device records the measurement without asserting.
 
     MEASUREMENT CONDITION (stated, not a tolerance): this is a wall-clock
-    kernel timing and it requires an IDLE card -- the lane's standing
-    rule ("GPU authorized when the card is free") is a precondition of
+    kernel timing and it requires an IDLE card -- the standing rule
+    ("GPU authorized when the card is free") is a precondition of
     the number, not just of the courtesy.  MEASURED under a concurrent
     GPU-heavy test suite the same seam reads 50.8-52.5 ms, i.e. 2.1x,
     and this pin fails.  The pin is NOT loosened to cover that: a 30 ms
@@ -5665,10 +5683,11 @@ def test_sase_step_stable_dissipation_authority_parity():
 def test_vanishing_friction_velocity_does_not_saturate_or_go_non_finite():
     """The trap this closure must not repeat.
 
-    A sibling scheme in this tree carries a latent sm_120 defect of a
-    very specific shape: it forms u*^3 in FP32, and this architecture
-    flushes FP32 subnormals to zero in ALL arithmetic (--ftz=false does
-    not reach it, and CuPy appends -ftz=true regardless).  Below
+    A sibling scheme in this tree carries a latent defect of a very
+    specific shape on CuPy's compile route: it forms u*^3 in FP32, and
+    that route flushes FP32 subnormals to zero in every arithmetic
+    mechanism the FTZ receipt measures (the loader passes no ftz flag, and
+    CuPy's appended -ftz=true is what makes that route flush).  Below
     u* ~ 1e-13 the cube underflows to exactly zero, a later ratio
     becomes inf/inf = NaN, and a min() against a ceiling returns the
     NON-NaN operand -- so the exchange coefficient silently SATURATES at
@@ -5971,7 +5990,7 @@ def test_split_e_update_additive_channel_kernel_ulp_and_controls():
     E_MIN clip.  dt is a power of two so b*dt is exact and FMA
     contraction cannot skew the mirror.
 
-    THE REGIME FIXTURE covers what the lane's receipts name as live:
+    THE REGIME FIXTURE covers what the receipts name as live:
     three whole planes at the measured 12.2 km stability N^2 = 3.566e-5
     with e at the registered Ri = 0.12/0.14/0.16 fixed-point amplitudes
     (0.96 / 0.21 / 0.006 m2/s2 -- the band where the census found 72%
@@ -6346,16 +6365,27 @@ def test_sase_step_additive_trajectory_parity_10_steps_stable_limb():
 @requires_gpu
 def test_sase_driver_additive_switch_is_selectable_and_fires():
     """SELECTABILITY, driver tier: ``RunConfig.sase_additive_
-    dissipation=True`` on an admitted SASE configuration must
-    (i) validate, (ii) reach the device step through
+    dissipation`` on an admitted SASE configuration must (i) validate
+    in BOTH positions, (ii) reach the device step through
     ``PhysicsDriver._run_sase`` -- before this seam the switch was
     authority-side only and a GPU run that set it got the channel
     silently DROPPED -- and (iii) move the prognostic subgrid energy on
     a stably stratified column set, while (iv) two OFF runs stay
     bitwise identical (the comparison is deterministic, so the ON/OFF
-    difference is the switch and nothing else).  Default stays False;
-    flipping it is an integration decision with its own evidence
-    (authority module docstring, S3-12 section)."""
+    difference is the switch and nothing else).
+
+    THE DEFAULT IS TRUE (gpuwm/config.py since 1a0e8a7f8; authority
+    module docstring, S3-12 section, "DEFAULT: TRUE, AND WHY"), so the
+    ON leg is the BARE default and the OFF leg pins
+    ``sase_additive_dissipation=False`` explicitly -- the authority's
+    own idiom for the un-channeled formulation, the one every RED leg
+    uses.  A bare ``RunConfig`` taken as the OFF leg IS the ON leg:
+    from the default flip until this construction the test compared
+    the default against itself and read a wired switch as "not wired"
+    (RTX 4090, NVRTC 13.3.33, receipt
+    proof/sase-additive-switch-276/repro-7ec6c8e2b.xml).  (v) pins
+    fixed-means-default: an explicit True is bitwise the bare
+    default."""
     import cupy as cp
     from dataclasses import replace
 
@@ -6365,14 +6395,19 @@ def test_sase_driver_additive_switch_is_selectable_and_fires():
     from gpuwm.core.physics import RadiationResult, initialize_physics
     from gpuwm.verify.sase_ref import E_MIN
 
-    base_cfg = RunConfig(nx=12, ny=10, nz=16, dx=2000.0, dy=2000.0,
-                         ztop=8000.0, dt=5.0, run_seconds=5.0,
-                         time_step_sound=4, moist=True, mp_physics=10,
-                         ra_physics=4, sf_sfclay_physics=1,
-                         sf_surface_physics=2, km_opt=0,
-                         bl_pbl_physics=_SASE_SELECTOR)
-    cfg_on = replace(base_cfg, sase_additive_dissipation=True)
-    assert validate_run_config(cfg_on) is cfg_on   # (i) admitted
+    cfg_on = RunConfig(nx=12, ny=10, nz=16, dx=2000.0, dy=2000.0,
+                       ztop=8000.0, dt=5.0, run_seconds=5.0,
+                       time_step_sound=4, moist=True, mp_physics=10,
+                       ra_physics=4, sf_sfclay_physics=1,
+                       sf_surface_physics=2, km_opt=0,
+                       bl_pbl_physics=_SASE_SELECTOR)
+    assert cfg_on.sase_additive_dissipation is True, (
+        "the ON leg is the bare default; a default that moved needs "
+        "this test's legs moved with it, never a bare config as OFF")
+    cfg_off = replace(cfg_on, sase_additive_dissipation=False)
+    cfg_on_explicit = replace(cfg_on, sase_additive_dissipation=True)
+    for cfg in (cfg_on, cfg_off, cfg_on_explicit):
+        assert validate_run_config(cfg) is cfg           # (i) admitted
 
     def run(cfg):
         coord = make_vertical_coord(cfg.nz)
@@ -6402,18 +6437,24 @@ def test_sase_driver_additive_switch_is_selectable_and_fires():
         assert driver.call_counts["sase"] == 1
         return cp.asnumpy(state.e_sgs)
 
-    e_off_1 = run(base_cfg)
-    e_off_2 = run(base_cfg)
+    e_off_1 = run(cfg_off)
+    e_off_2 = run(cfg_off)
     assert e_off_1.tobytes() == e_off_2.tobytes(), (
         "the OFF leg is not deterministic -- the ON/OFF comparison "
         "below would be meaningless")                     # (iv)
     e_on = run(cfg_on)
     assert e_on.tobytes() != e_off_1.tobytes(), (
         "sase_additive_dissipation=True left the device step bitwise "
-        "unchanged -- the switch is not wired")           # (ii, iii)
+        "equal to an explicit False -- the switch is not wired")  # (ii, iii)
     # the channel only ever STRENGTHENS dissipation
     assert np.all(e_on <= e_off_1)
     assert np.all(np.isfinite(e_on)) and np.all(e_on >= np.float32(E_MIN))
     moved = int(np.count_nonzero(e_on != e_off_1))
+    assert moved > 0
+    # (v) fixed-means-default: the bare default IS the explicit True
+    assert run(cfg_on_explicit).tobytes() == e_on.tobytes(), (
+        "an explicit sase_additive_dissipation=True differs from the "
+        "bare default -- the default is not the channel")
     print(f"driver seam: {moved} of {e_on.size} e_sgs cells moved "
-          f"under sase_additive_dissipation=True")
+          f"under sase_additive_dissipation=True against an explicit "
+          f"False; max OFF - ON = {float(np.max(e_off_1 - e_on)):.3e}")

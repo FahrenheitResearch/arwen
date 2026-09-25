@@ -1,0 +1,23 @@
+{
+  "command": "kernel",
+  "elapsed_seconds": 0.8,
+  "environment": {
+    "cuda_runtime": 13020,
+    "cupy": "14.2.0",
+    "driver": 13030,
+    "git_commit": "72f18213da05714186cce7d415e862a6abbb69dc",
+    "gpu": "NVIDIA GeForce RTX 5070 Ti",
+    "numpy": "2.5.3",
+    "platform": "Linux-7.0.0-29-generic-x86_64-with-glibc2.43",
+    "python": "3.14.4"
+  },
+  "result": {
+    "column_scan_omega_ref_us": 164.46399688720703,
+    "cp_cumsum_alone_us": 1054.3839931488037,
+    "grid": "480x384x49",
+    "legacy_omega_ref_us": 1932.8160285949707,
+    "moved_bytes_cumsum": 70778880,
+    "reps": 50
+  },
+  "schema": "gpuwm-omega-column-scan-receipt-v1"
+}

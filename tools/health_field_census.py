@@ -84,9 +84,14 @@ from pathlib import Path
 
 import numpy as np
 
-#: The census never touches a device, so make the ban explicit for anything it
-#: imports that consults it.
-os.environ.setdefault("GPUWM_NO_LOCAL_GPU", "1")
+#: The census never touches a device, and its own run makes the ban explicit
+#: for anything it imports that consults it (see ``main``).  Nothing is
+#: planted at import: a test that borrows one helper from here runs in a
+#: process whose environment is not this tool's to change.  Measured on
+#: the release node with the ban planted here: the longwave probe's child
+#: inherited it, tests/conftest.py masked the device in that child
+#: (CUDA_VISIBLE_DEVICES=-1), and the byte-identity gate skipped as "the
+#: environment withheld device visibility" (proof/node-reds-276).
 
 # ``gpuwm`` is installed editable, and its finder points at the checkout that
 # ran ``pip install -e``, NOT at this file's tree.  Run as a script from a
@@ -860,7 +865,20 @@ def main(argv=None) -> int:
              "neighbourhood_sample_matrix for what that does and does not "
              "cover.")
     args = parser.parse_args(argv)
+    # The ban covers this run and only this run: a caller's environment is
+    # left exactly as it was found.
+    previous = os.environ.get("GPUWM_NO_LOCAL_GPU")
+    os.environ.setdefault("GPUWM_NO_LOCAL_GPU", "1")
+    try:
+        return _measure(args)
+    finally:
+        if previous is None:
+            os.environ.pop("GPUWM_NO_LOCAL_GPU", None)
+        else:
+            os.environ["GPUWM_NO_LOCAL_GPU"] = previous
 
+
+def _measure(args) -> int:
     install_host_array_backend()
     if args.around:
         experiment = load_any_experiment(args.config)

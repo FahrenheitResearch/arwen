@@ -70,6 +70,19 @@ def _grid(**kwargs) -> TargetGrid:
         name="analytic")
 
 
+def _beneath_the_cloud(grid, j, i, height_m):
+    """The cell under a cloud top seen at cell (j, i)'s nominal point."""
+
+    from goes_pack_fixtures import PROJECTION
+    from gpuwm.obs.goes_cwp import parallax_displacement
+
+    lat, lon, _, _ = parallax_displacement(
+        grid.lat[j, i], grid.lon[j, i], height_m, PROJECTION)
+    i_frac, j_frac = grid.mass_index(np.asarray([float(lat)]),
+                                     np.asarray([float(lon)]))
+    return int(np.rint(j_frac[0])), int(np.rint(i_frac[0]))
+
+
 def _product(tmp_path, grid, cells, *, phase, cod, cps, tops=None):
     """One goes-grid document, built the way the builder builds it."""
 
@@ -208,8 +221,13 @@ def test_a_column_integral_is_one_observation_not_nz_of_them(tmp_path):
     assert np.all(mask.sum(axis=0)[placed] == 1)
     assert np.all(errors[mask] > 0.0)
     # z_w is 0..10000 in four 2500 m layers: 9000 m is level 3, and the
-    # 3000 m fallback for the clear column is level 1.
-    assert mask[3, 4, 4] and mask[1, 4, 5]
+    # 3000 m fallback for the clear column is level 1.  The ice column
+    # sits under its cloud top, a cell or two toward the satellite from
+    # the ground point it was seen at; the clear column is where the
+    # ground is.
+    jc, ic = _beneath_the_cloud(grid, 4, 4, 9000.0)
+    assert (jc, ic) != (4, 4)
+    assert mask[3, jc, ic] and mask[1, 4, 5]
 
 
 def test_the_adapter_refuses_a_three_dimensional_hx(tmp_path):
@@ -483,7 +501,12 @@ def test_builder_cli_writes_a_product_from_two_packs(tmp_path):
         read_goes_grid(out, expected_grid=grid)
     document = read_goes_grid(out, expected_grid=from_file)
     assert document["variables"]["cwp_mask"].sum() == 2
-    assert document["variables"]["obs_level"][4, 4] == 3
+    # The ice column is under its 9 km top, not at the ground point it was
+    # seen from; the clear column is at the ground.
+    jc, ic = _beneath_the_cloud(from_file, 4, 4, 9000.0)
+    assert document["variables"]["obs_level"][jc, ic] == 3
+    assert document["variables"]["obs_level"][4, 5] == 1
+    assert receipt["counts"]["pixels_displaced_to_cloud_top"] == 1
 
 
 def test_builder_cli_requires_the_uncalibrated_errors_to_be_stated(tmp_path):

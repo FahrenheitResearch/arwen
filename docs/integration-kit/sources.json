@@ -1,15 +1,15 @@
 {
   "certification_rule": "certified_stock_wrf requires implemented field/level/cadence policies plus acceptance by unchanged stock wrf.exe within the declared source/domain envelope",
-  "gpuwm_version": "2.7.4",
+  "gpuwm_version": "2.7.6",
   "readiness_rule": "runnable means the strict implementation route exists; stock-WRF certification is a separate exact evidence status",
   "registry_schema": "gpuwm-native-source-adapters-v1",
   "routes": {
     "experiment": "the config-driven experiment route: one experiment TOML with its [case_data] inputs, prepared and integrated in this process (what `gpuwm run CONFIG` executes)",
     "prepared": "the native prepared-cache route: authority, fetch, manifest, preparation, forecast and render, in the documented order (what `gpuwm go CONFIG` executes) -- for sources the config-driven route cannot decode"
   },
-  "runnable_source_count": 18,
+  "runnable_source_count": 19,
   "schema": "gpuwm.run-plan.sources.v1",
-  "source_count": 32,
+  "source_count": 33,
   "sources": [
     {
       "aliases": [],
@@ -72,7 +72,9 @@
         "intent_routes": [
           "prepared"
         ],
-        "intent_supported": true
+        "intent_supported": true,
+        "requires_source_root": false,
+        "source_root_reason": null
       },
       "runner": "hrrr_f00_f12_v1",
       "source_id": "hrrr",
@@ -134,7 +136,7 @@
       },
       "max_forecast_hour": 48,
       "member_set": null,
-      "notes": "HRRR's public wrfprs product through the GENERIC mapped route: one wrfprs file per valid time carries the 39-level pressure state, the surface/2m/10m fields, in-band terrain and the nine-node RUC soil column.  The Lambert CONUS grid, the grid-relative wind rotation and the node soil geometry are declared in the packaged mapping/composition documents -- there is no HRRR decode code on this route.  Distinct from --source hrrr, the certified native hybrid-level route: this profile initialises from the pressure-level analysis, which is smoother near terrain than native levels, and it is not yet accepted by unchanged stock WRF.",
+      "notes": "HRRR's public wrfprs product through the GENERIC mapped route: one wrfprs file per valid time carries the 39-level pressure state with its five hydrometeor masses (cloud water, cloud ice, rain, snow, graupel), the surface/2m/10m fields, in-band terrain and the nine-node RUC soil column.  The Lambert CONUS grid, the grid-relative wind rotation and the node soil geometry are declared in the packaged mapping/composition documents -- there is no HRRR decode code on this route.  Distinct from --source hrrr, the certified native hybrid-level route: this profile initialises from the pressure-level analysis, which is smoother near terrain than native levels, and it is not yet accepted by unchanged stock WRF.",
       "packaged_profile": "hrrr-prs-grib2-v1",
       "required_products": [
         "wrfprs"
@@ -145,7 +147,9 @@
         "intent_routes": [
           "prepared"
         ],
-        "intent_supported": true
+        "intent_supported": true,
+        "requires_source_root": false,
+        "source_root_reason": null
       },
       "runner": "mapped_composition_v1",
       "source_id": "hrrr-prs",
@@ -199,7 +203,9 @@
         "intent_routes": [
           "prepared"
         ],
-        "intent_supported": true
+        "intent_supported": true,
+        "requires_source_root": false,
+        "source_root_reason": null
       },
       "runner": "mapped_composition_v1",
       "source_id": "gem-gdps",
@@ -207,6 +213,67 @@
       "title": "GEM GDPS (Canadian global)",
       "upstream_ingest": "declarative_mapping_v1_over_packaged_profile",
       "upstream_model_id": "gem",
+      "wizard_planable": true
+    },
+    {
+      "aliases": [
+        "icon",
+        "icon-13km",
+        "dwd-icon",
+        "dwd-icon-global"
+      ],
+      "composition_requirement": null,
+      "coverage": null,
+      "credentials": {
+        "items": [],
+        "required": false,
+        "summary": "this registry row declares no credential requirement"
+      },
+      "decoder": "gdt101_remap + vendored grib-core + mapped engine",
+      "default_product": "icosahedral-pressure-level",
+      "display_name": "ICON global 13 km (DWD)",
+      "fetch": {
+        "kind": "table_route",
+        "refusal": null,
+        "route_id": "icon-global"
+      },
+      "file_family": "GRIB2",
+      "forcing_interval_seconds": 10800.0,
+      "maturity": {
+        "cadence_mapping": "selected-uniform-three-hour-forecast-series-v1",
+        "field_mapping": "packaged-rw-wps-icon-global-grib2-v1",
+        "level_mapping": "18-pressure-level-to-explicit-wrf-eta-v2",
+        "runnable": true,
+        "status": "runnable_mapping_not_stock_wrf_certified",
+        "stock_wrf_gate": "live-unchanged-stock-wrf-gate-pending"
+      },
+      "max_forecast_hour": 180,
+      "member_set": null,
+      "notes": "DWD global R03B07, nominal 13 km, 2,949,120 native cells. A native Rust input normalizer verifies the external grid identity, remaps only the WPS domain plus a halo to 0.125 degrees, and seals raw-to-normalized provenance before prep. 18 pressure levels (30..1000 hPa), TERRA soil and sea ice. Three-hour forcing; 00/12Z to f180, 06/18Z to f120. No observation assimilation or stock-WRF certification is implied.",
+      "packaged_profile": "icon-global-grib2-v1",
+      "required_products": [
+        "pressure-level",
+        "single-level",
+        "soil-level",
+        "time-invariant",
+        "grid-coordinates"
+      ],
+      "run_plan": {
+        "intent_chain": "prepared:staged",
+        "intent_refusal": null,
+        "intent_routes": [
+          "prepared"
+        ],
+        "intent_supported": true,
+        "requires_source_root": false,
+        "source_root_reason": null
+      },
+      "runner": "mapped_composition_v1",
+      "source_id": "icon-global",
+      "source_kind": "deterministic_state",
+      "title": "ICON global 13 km (DWD)",
+      "upstream_ingest": "native_gdt101_normalization_then_packaged_profile",
+      "upstream_model_id": "icon",
       "wizard_planable": true
     },
     {
@@ -272,7 +339,9 @@
         "intent_routes": [
           "prepared"
         ],
-        "intent_supported": true
+        "intent_supported": true,
+        "requires_source_root": false,
+        "source_root_reason": null
       },
       "runner": "mapped_composition_v1",
       "source_id": "icon-eu",
@@ -322,9 +391,11 @@
       ],
       "run_plan": {
         "intent_chain": null,
-        "intent_refusal": "the registry row for 'hrrr-ak' declares no runnable implementation route (status 'adapter_mapping_required'), so there is nothing for an intent to drive",
+        "intent_refusal": "'hrrr-ak' declares no runnable implementation route (status 'adapter_mapping_required'). Choose a runnable source from gpuwm sources.",
         "intent_routes": [],
-        "intent_supported": false
+        "intent_supported": false,
+        "requires_source_root": false,
+        "source_root_reason": null
       },
       "runner": null,
       "source_id": "hrrr-ak",
@@ -377,7 +448,9 @@
         "intent_routes": [
           "prepared"
         ],
-        "intent_supported": true
+        "intent_supported": true,
+        "requires_source_root": false,
+        "source_root_reason": null
       },
       "runner": "gfs_pgrb2_0p25_v1",
       "source_id": "gfs",
@@ -425,10 +498,14 @@
         "pgrb2.0p25"
       ],
       "run_plan": {
-        "intent_chain": null,
-        "intent_refusal": "'gdas' is acquired over a legacy transport, which publishes no bound mapped-prep handoff (prep-arguments.json); the staged chain composes its preparation from that handoff, so this source needs a table acquisition route before an intent can drive it",
-        "intent_routes": [],
-        "intent_supported": false
+        "intent_chain": "prepared:staged",
+        "intent_refusal": null,
+        "intent_routes": [
+          "prepared"
+        ],
+        "intent_supported": true,
+        "requires_source_root": false,
+        "source_root_reason": null
       },
       "runner": "mapped_composition_v1",
       "source_id": "gdas",
@@ -481,7 +558,9 @@
         "intent_routes": [
           "prepared"
         ],
-        "intent_supported": true
+        "intent_supported": true,
+        "requires_source_root": false,
+        "source_root_reason": null
       },
       "runner": "mapped_composition_v1",
       "source_id": "gefs",
@@ -534,7 +613,9 @@
         "intent_routes": [
           "prepared"
         ],
-        "intent_supported": true
+        "intent_supported": true,
+        "requires_source_root": false,
+        "source_root_reason": null
       },
       "runner": "mapped_composition_v1",
       "source_id": "aigfs",
@@ -587,7 +668,9 @@
         "intent_routes": [
           "prepared"
         ],
-        "intent_supported": true
+        "intent_supported": true,
+        "requires_source_root": false,
+        "source_root_reason": null
       },
       "runner": "mapped_composition_v1",
       "source_id": "aigefs",
@@ -636,9 +719,11 @@
       ],
       "run_plan": {
         "intent_chain": null,
-        "intent_refusal": "the registry row for 'hgefs' declares no runnable implementation route (status 'member_selection_and_mapping_required'), so there is nothing for an intent to drive",
+        "intent_refusal": "'hgefs' declares no runnable implementation route (status 'member_selection_and_mapping_required'). Choose a runnable source from gpuwm sources.",
         "intent_routes": [],
-        "intent_supported": false
+        "intent_supported": false,
+        "requires_source_root": false,
+        "source_root_reason": null
       },
       "runner": null,
       "source_id": "hgefs",
@@ -691,7 +776,9 @@
         "intent_routes": [
           "prepared"
         ],
-        "intent_supported": true
+        "intent_supported": true,
+        "requires_source_root": false,
+        "source_root_reason": null
       },
       "runner": "mapped_composition_v1",
       "source_id": "ecmwf-open-data",
@@ -744,7 +831,9 @@
         "intent_routes": [
           "prepared"
         ],
-        "intent_supported": true
+        "intent_supported": true,
+        "requires_source_root": false,
+        "source_root_reason": null
       },
       "runner": "mapped_composition_v1",
       "source_id": "aifs",
@@ -816,7 +905,9 @@
         "intent_routes": [
           "prepared"
         ],
-        "intent_supported": true
+        "intent_supported": true,
+        "requires_source_root": false,
+        "source_root_reason": null
       },
       "runner": "mapped_composition_v1",
       "source_id": "rap",
@@ -862,9 +953,11 @@
       ],
       "run_plan": {
         "intent_chain": null,
-        "intent_refusal": "the registry row for 'nam' declares no runnable implementation route (status 'adapter_mapping_required'), so there is nothing for an intent to drive",
+        "intent_refusal": "'nam' declares no runnable implementation route (status 'adapter_mapping_required'). Choose a runnable source from gpuwm sources.",
         "intent_routes": [],
-        "intent_supported": false
+        "intent_supported": false,
+        "requires_source_root": false,
+        "source_root_reason": null
       },
       "runner": null,
       "source_id": "nam",
@@ -912,9 +1005,11 @@
       ],
       "run_plan": {
         "intent_chain": null,
-        "intent_refusal": "the registry row for 'hiresw' declares no runnable implementation route (status 'member_selection_and_mapping_required'), so there is nothing for an intent to drive",
+        "intent_refusal": "'hiresw' declares no runnable implementation route (status 'member_selection_and_mapping_required'). Choose a runnable source from gpuwm sources.",
         "intent_routes": [],
-        "intent_supported": false
+        "intent_supported": false,
+        "requires_source_root": false,
+        "source_root_reason": null
       },
       "runner": null,
       "source_id": "hiresw",
@@ -962,9 +1057,11 @@
       ],
       "run_plan": {
         "intent_chain": null,
-        "intent_refusal": "the registry row for 'href' declares no runnable implementation route (status 'explicit_composition_required'), so there is nothing for an intent to drive",
+        "intent_refusal": "'href' declares no runnable implementation route (status 'explicit_composition_required'). Choose a runnable source from gpuwm sources.",
         "intent_routes": [],
-        "intent_supported": false
+        "intent_supported": false,
+        "requires_source_root": false,
+        "source_root_reason": null
       },
       "runner": null,
       "source_id": "href",
@@ -1010,9 +1107,11 @@
       ],
       "run_plan": {
         "intent_chain": null,
-        "intent_refusal": "the registry row for 'sref' declares no runnable implementation route (status 'explicit_composition_required'), so there is nothing for an intent to drive",
+        "intent_refusal": "'sref' declares no runnable implementation route (status 'explicit_composition_required'). Choose a runnable source from gpuwm sources.",
         "intent_routes": [],
-        "intent_supported": false
+        "intent_supported": false,
+        "requires_source_root": false,
+        "source_root_reason": null
       },
       "runner": null,
       "source_id": "sref",
@@ -1058,9 +1157,11 @@
       ],
       "run_plan": {
         "intent_chain": null,
-        "intent_refusal": "the registry row for 'rtma' declares no runnable implementation route (status 'explicit_composition_required'), so there is nothing for an intent to drive",
+        "intent_refusal": "'rtma' declares no runnable implementation route (status 'explicit_composition_required'). Choose a runnable source from gpuwm sources.",
         "intent_routes": [],
-        "intent_supported": false
+        "intent_supported": false,
+        "requires_source_root": false,
+        "source_root_reason": null
       },
       "runner": null,
       "source_id": "rtma",
@@ -1106,9 +1207,11 @@
       ],
       "run_plan": {
         "intent_chain": null,
-        "intent_refusal": "the registry row for 'urma' declares no runnable implementation route (status 'explicit_composition_required'), so there is nothing for an intent to drive",
+        "intent_refusal": "'urma' declares no runnable implementation route (status 'explicit_composition_required'). Choose a runnable source from gpuwm sources.",
         "intent_routes": [],
-        "intent_supported": false
+        "intent_supported": false,
+        "requires_source_root": false,
+        "source_root_reason": null
       },
       "runner": null,
       "source_id": "urma",
@@ -1156,9 +1259,11 @@
       ],
       "run_plan": {
         "intent_chain": null,
-        "intent_refusal": "the registry row for 'nbm' declares no runnable implementation route (status 'explicit_composition_required'), so there is nothing for an intent to drive",
+        "intent_refusal": "'nbm' declares no runnable implementation route (status 'explicit_composition_required'). Choose a runnable source from gpuwm sources.",
         "intent_routes": [],
-        "intent_supported": false
+        "intent_supported": false,
+        "requires_source_root": false,
+        "source_root_reason": null
       },
       "runner": null,
       "source_id": "nbm",
@@ -1231,7 +1336,9 @@
         "intent_routes": [
           "prepared"
         ],
-        "intent_supported": true
+        "intent_supported": true,
+        "requires_source_root": false,
+        "source_root_reason": null
       },
       "runner": "mapped_composition_v1",
       "source_id": "rrfs",
@@ -1279,9 +1386,11 @@
       ],
       "run_plan": {
         "intent_chain": null,
-        "intent_refusal": "the registry row for 'rrfs-a' declares no runnable implementation route (status 'adapter_mapping_required'), so there is nothing for an intent to drive",
+        "intent_refusal": "'rrfs-a' declares no runnable implementation route (status 'adapter_mapping_required'). Choose a runnable source from gpuwm sources.",
         "intent_routes": [],
-        "intent_supported": false
+        "intent_supported": false,
+        "requires_source_root": false,
+        "source_root_reason": null
       },
       "runner": null,
       "source_id": "rrfs-a",
@@ -1327,9 +1436,11 @@
       ],
       "run_plan": {
         "intent_chain": null,
-        "intent_refusal": "the registry row for 'rrfs-public' declares no runnable implementation route (status 'adapter_mapping_required'), so there is nothing for an intent to drive",
+        "intent_refusal": "'rrfs-public' declares no runnable implementation route (status 'adapter_mapping_required'). Choose a runnable source from gpuwm sources.",
         "intent_routes": [],
-        "intent_supported": false
+        "intent_supported": false,
+        "requires_source_root": false,
+        "source_root_reason": null
       },
       "runner": null,
       "source_id": "rrfs-public",
@@ -1377,9 +1488,11 @@
       ],
       "run_plan": {
         "intent_chain": null,
-        "intent_refusal": "the registry row for 'refs' declares no runnable implementation route (status 'explicit_composition_required'), so there is nothing for an intent to drive",
+        "intent_refusal": "'refs' declares no runnable implementation route (status 'explicit_composition_required'). Choose a runnable source from gpuwm sources.",
         "intent_routes": [],
-        "intent_supported": false
+        "intent_supported": false,
+        "requires_source_root": false,
+        "source_root_reason": null
       },
       "runner": null,
       "source_id": "refs",
@@ -1428,9 +1541,11 @@
       ],
       "run_plan": {
         "intent_chain": null,
-        "intent_refusal": "the registry row for 'rrfs-firewx' declares no runnable implementation route (status 'explicit_composition_required'), so there is nothing for an intent to drive",
+        "intent_refusal": "'rrfs-firewx' declares no runnable implementation route (status 'explicit_composition_required'). Choose a runnable source from gpuwm sources.",
         "intent_routes": [],
-        "intent_supported": false
+        "intent_supported": false,
+        "requires_source_root": false,
+        "source_root_reason": null
       },
       "runner": null,
       "source_id": "rrfs-firewx",
@@ -1479,9 +1594,11 @@
       ],
       "run_plan": {
         "intent_chain": null,
-        "intent_refusal": "the registry row for 'wrf' declares no runnable implementation route (status 'wrf_archive_mapping_required'), so there is nothing for an intent to drive",
+        "intent_refusal": "'wrf' declares no runnable implementation route (status 'wrf_archive_mapping_required'). Choose a runnable source from gpuwm sources.",
         "intent_routes": [],
-        "intent_supported": false
+        "intent_supported": false,
+        "requires_source_root": false,
+        "source_root_reason": null
       },
       "runner": null,
       "source_id": "wrf",
@@ -1507,9 +1624,9 @@
             "location_kind": "home_file",
             "needed_for": "acquisition",
             "obtain_url": "https://cds.climate.copernicus.eu",
-            "present": false,
+            "present": true,
             "present_message": "Copernicus CDS key is present (<USER_HOME>/.cdsapirc); acquisition can proceed.",
-            "status_message": "No Copernicus CDS key at <USER_HOME>/.cdsapirc: the retrieval cannot be requested at all -- this source is not downloaded by gpuwm but by the provider's own client, which reads a personal account key from that file and fails several commands later with its own exception if it is absent.  Obtain one at https://cds.climate.copernicus.eu."
+            "status_message": "Copernicus CDS key is present (<USER_HOME>/.cdsapirc); acquisition can proceed."
           }
         ],
         "required": true,
@@ -1548,7 +1665,9 @@
         "intent_routes": [
           "experiment"
         ],
-        "intent_supported": true
+        "intent_supported": true,
+        "requires_source_root": false,
+        "source_root_reason": null
       },
       "runner": "era5_combined_grib1_v1",
       "source_id": "era5",
@@ -1577,9 +1696,9 @@
             "location_kind": "home_file",
             "needed_for": "acquisition",
             "obtain_url": "https://cds.climate.copernicus.eu",
-            "present": false,
+            "present": true,
             "present_message": "Copernicus CDS key is present (<USER_HOME>/.cdsapirc); acquisition can proceed.",
-            "status_message": "No Copernicus CDS key at <USER_HOME>/.cdsapirc: the retrieval cannot be requested at all -- this source is not downloaded by gpuwm but by the provider's own client, which reads a personal account key from that file and fails several commands later with its own exception if it is absent.  Obtain one at https://cds.climate.copernicus.eu."
+            "status_message": "Copernicus CDS key is present (<USER_HOME>/.cdsapirc); acquisition can proceed."
           }
         ],
         "required": true,
@@ -1612,10 +1731,14 @@
         "same-hour pressure-level/single-level analysis"
       ],
       "run_plan": {
-        "intent_chain": null,
-        "intent_refusal": "no acquisition route is registered for 'era5-l137' (`gpuwm fetch --source era5-l137` refuses), so the chain's fetch stage has no way to bring its bytes",
-        "intent_routes": [],
-        "intent_supported": false
+        "intent_chain": "prepared:staged",
+        "intent_refusal": null,
+        "intent_routes": [
+          "prepared"
+        ],
+        "intent_supported": true,
+        "requires_source_root": true,
+        "source_root_reason": "ERA5 model-level data is served by the Copernicus Climate Data Store as a queued MARS request (dataset reanalysis-era5-complete, levtype=ml, levelist=1/to/137), not as files at a predictable URL: there is no cycle-and-lead path for a fetch to resolve, and the request runs under your own CDS account. The same is true of the pressure-level/single-level analysis this source borrows its land surface from, so both files arrive the same way."
       },
       "runner": "mapped_composition_v1",
       "source_id": "era5-l137",
@@ -1666,10 +1789,14 @@
         "one exact member"
       ],
       "run_plan": {
-        "intent_chain": null,
-        "intent_refusal": "no acquisition route is registered for '20crv3' (`gpuwm fetch --source 20crv3` refuses), so the chain's fetch stage has no way to bring its bytes",
-        "intent_routes": [],
-        "intent_supported": false
+        "intent_chain": "prepared:staged",
+        "intent_refusal": null,
+        "intent_routes": [
+          "prepared"
+        ],
+        "intent_supported": true,
+        "requires_source_root": true,
+        "source_root_reason": "the 20CRv3 every-member GRIB2 archive is not published on an anonymously readable public endpoint; only the ensemble-MEAN NetCDF distribution is, and a member state is not a mean."
       },
       "runner": "twentycrv3_member_grib2_v1",
       "source_id": "20crv3",
@@ -1723,10 +1850,14 @@
         "recovered invariant supplement"
       ],
       "run_plan": {
-        "intent_chain": null,
-        "intent_refusal": "no acquisition route is registered for '20crv3-cf' (`gpuwm fetch --source 20crv3-cf` refuses), so the chain's fetch stage has no way to bring its bytes",
-        "intent_routes": [],
-        "intent_supported": false
+        "intent_chain": "prepared:staged",
+        "intent_refusal": null,
+        "intent_routes": [
+          "prepared"
+        ],
+        "intent_supported": true,
+        "requires_source_root": true,
+        "source_root_reason": "the NOAA PSL 20CRv3 NetCDF distribution is a per-year, per-variable reanalysis archive with no cycle and no forecast lead, so --cycle/--hours describe nothing in it. It is also missing orography and a land mask entirely, which the packaged profile recovers with tools/build_pressure_level_invariant_supplement.py from files you already hold."
       },
       "runner": "mapped_composition_v1",
       "source_id": "20crv3-cf",
@@ -1775,9 +1906,11 @@
       ],
       "run_plan": {
         "intent_chain": null,
-        "intent_refusal": "the registry row for 'mapped' declares no forcing_interval_seconds, so `gpuwm domain` has no boundary cadence to write into an emitted namelist.wps and cannot plan it",
+        "intent_refusal": "'mapped' declares no forcing_interval_seconds. Declare its boundary cadence before using gpuwm domain.",
         "intent_routes": [],
-        "intent_supported": false
+        "intent_supported": false,
+        "requires_source_root": false,
+        "source_root_reason": null
       },
       "runner": "mapped_composition_v1",
       "source_id": "mapped",

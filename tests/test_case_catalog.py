@@ -455,6 +455,15 @@ def test_geometry_only_opens_native_domains_without_any_gpu_sizing(tmp_path, mon
     else:
         source = proposal_zip(tmp_path, document=worldwide_proposal_document())
         case_id, options = "synthetic-import", {"source_option": kind}
+    if kind == "hrrr":
+        # This proposal's regional suite is not one of the shipped
+        # single-domain physics profiles, and the namelists that route
+        # reads have no key for moist_cq: the route derives it from the
+        # suite, so a configuration stating the other value is refused
+        # at publication rather than run as something it does not say.
+        # Stated here, at the value that route derives, which is what
+        # the refusal in the case below names.
+        options["native_overrides"] = {"shared": {"moist_cq": False}}
     out = tmp_path / "opened.toml"
     receipt = catalog.create_case(source, case_id, out=out, tier="lower", now=NOW,
                                   geometry_only=True, **options)
@@ -625,6 +634,66 @@ def test_imported_native_creation_honors_hourly_cadence_and_unique_vtables(tmp_p
         assert [d["dx_km"] for d in receipt["domains"]] == [12, 3, 1]
 
 
+def test_an_imported_case_defaults_to_the_modern_radiation_arm(tmp_path):
+    """The importer's stamped profile follows the product default.
+
+    gpuwm/case_catalog.py binds that field when the caller names no
+    profile, so it is a user-reachable default and moves with the route
+    default rather than staying on the legacy twin it replaced.
+    """
+    from gpuwm.physics_compat import THOMPSON_RTE_RRTMGP_PROFILE_ID
+    loaded = catalog.load_catalog(proposal_zip(tmp_path))
+    case = loaded.document["cases"][0]
+    assert case["physics_profile"] == THOMPSON_RTE_RRTMGP_PROFILE_ID
+    preview = catalog.preview_case(loaded, "synthetic-import", tier="lower", now=NOW)
+    assert preview["physics_profile"] == THOMPSON_RTE_RRTMGP_PROFILE_ID
+
+
+@pytest.mark.parametrize("named_profile,typed_variant,expected_token", [
+    (None, "rrtmg_legacy", "wrf-rrtmg-4-4-legacy-v1"),
+    ("thompson-mp8-ysu-mm5-noah-rrtmg-legacy-v1", "rte-rrtmgp", "wrf-rrtmg-4-4-to-rte-rrtmgp-v2"),
+])
+def test_a_typed_radiation_variant_carries_its_own_compatibility_token(
+        tmp_path, named_profile, typed_variant, expected_token):
+    """A proposal that types the engine by switch still composes.
+
+    The wizard writes wrf_rrtmg_compatibility from the profile; the
+    proposal's typed ra_rrtmg_variant lands as a shared override on top,
+    and gpuwm.config refuses the pair when the token records the other
+    implementation. Under the modern default a proposal typing the
+    legacy engine met that refusal; under the legacy profile a proposal
+    typing the modern engine meets its mirror. The token now follows the
+    typed variant in both directions, and the typed variant is what runs.
+    """
+    document = proposal_document()
+    for preset in document["cases"][0]["presets"].values():
+        for domain in preset["domains"]:
+            domain["selectors"]["ra_rrtmg_variant"] = typed_variant
+    path = proposal_zip(tmp_path, document=document)
+    out = tmp_path / "typed.toml"
+    catalog.create_case(path, "synthetic-import", out=out, tier="lower", now=NOW,
+                        geometry_only=True, physics_profile=named_profile)
+    raw = tomllib.loads(out.read_text(encoding="utf-8"))
+    assert raw["shared"]["ra_rrtmg_variant"] == typed_variant
+    assert raw["shared"]["wrf_rrtmg_compatibility"] == expected_token
+
+
+def test_a_typed_compatibility_token_is_left_as_typed(tmp_path):
+    """Typing both keys is the proposal's own statement, kept verbatim."""
+    document = proposal_document()
+    for preset in document["cases"][0]["presets"].values():
+        for domain in preset["domains"]:
+            domain["selectors"]["ra_rrtmg_variant"] = "rrtmg_legacy"
+            domain["selectors"]["wrf_rrtmg_compatibility"] = "none"
+    path = proposal_zip(tmp_path, document=document)
+    out = tmp_path / "typed-both.toml"
+    catalog.create_case(path, "synthetic-import", out=out, tier="lower", now=NOW,
+                        geometry_only=True)
+    raw = tomllib.loads(out.read_text(encoding="utf-8"))
+    assert raw["shared"]["ra_rrtmg_variant"] == "rrtmg_legacy"
+    assert raw["shared"]["wrf_rrtmg_compatibility"] == "none"
+
+
 def worldwide_proposal_document():
     from copy import deepcopy
     document = proposal_document()
@@ -660,15 +729,46 @@ def test_worldwide_source_geometry_and_cadence_reach_native_creation(tmp_path, s
     assert preview["provenance"]["catalog"]["provenance"][0]["source_schema"] == "arwen.case-catalog/v2"
     assert preview["source_availability"]["hours"] == (12 if source == "era5" else 6)
     output = tmp_path / f"{source}.toml"
+    # The regional route derives moist_cq from the physics suite and its
+    # namelists cannot state it; this proposal's suite is not one of the
+    # shipped profiles, so the value that route will run is stated here.
+    overrides = ({"shared": {"moist_cq": False}} if source == "hrrr" else None)
     receipt = catalog.create_case(loaded, "synthetic-import", out=output, tier="lower",
-                                  source_option=source, vram_gib=32, now=NOW)
+                                  source_option=source, vram_gib=32, now=NOW,
+                                  native_overrides=overrides)
     raw = tomllib.loads(output.read_text(encoding="utf-8"))
     from gpuwm.experiment import load_experiment
+    from gpuwm.hrrr_route_inputs import route_input_paths
     assert [row.run.dx / 1000 for row in load_experiment(output).domains] == spacing
+    # A created case carries every file its own input route reads.
+    for role, companion in route_input_paths(output).items():
+        assert companion.is_file() == (source == "hrrr" or role == "wps_namelist"), role
     assert raw["fetch"].get("cadence", 1) == cadence
     assert raw["experiment"]["run_seconds"] == preview["geometry"]["run_hours"] * 3600
     assert receipt["admission"]["forecast_started"] is False
     assert Path(receipt["original_catalog"]).read_bytes() == path.read_bytes()
+
+
+def test_a_regional_case_the_route_cannot_state_is_refused_whole(tmp_path):
+    """The route reads namelists, and they have no key for this one.
+
+    A physics suite outside the shipped single-domain profiles leaves
+    ``moist_cq`` to be derived from the suite by whoever reads the
+    namelists, so a configuration that states the other value would be
+    integrated as something it does not say.  Publication refuses,
+    naming the field and its two values, and creates nothing: before
+    2.7.6 the same case was created and then refused at the prepare
+    stage for the route files it did not carry.
+    """
+    from gpuwm.hrrr_route_inputs import HrrrRouteInputError
+
+    loaded = catalog.load_catalog(proposal_zip(tmp_path, document=worldwide_proposal_document()))
+    output = tmp_path / "unstateable.toml"
+    with pytest.raises(HrrrRouteInputError, match="moist_cq"):
+        catalog.create_case(loaded, "synthetic-import", out=output, tier="lower",
+                            source_option="hrrr", vram_gib=32, now=NOW)
+    assert not output.exists()
+    assert not list(tmp_path.glob("unstateable*"))
 
 
 def test_worldwide_source_blocking_reasons_remain_visible_and_prevent_creation(tmp_path):

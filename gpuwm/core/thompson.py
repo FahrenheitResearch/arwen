@@ -92,7 +92,8 @@ def launch_warm_saturation_adjust(temperature, pressure, qv, qc) -> None:
 
 def launch_cloud_saturation_adjust(
         temperature, pressure, qv, qc, *, reference_density=None,
-        reference_temperature=None, condensation_marker=None) -> None:
+        reference_temperature=None, condensation_marker=None,
+        cloud_presence=None) -> None:
     """Apply WRF's liquid-cloud saturation adjustment at any temperature.
 
     When supplied, ``reference_density`` records the post-process,
@@ -102,6 +103,10 @@ def launch_cloud_saturation_adjust(
     density output to be supplied as well.
     ``condensation_marker`` records a positive phase change before storage
     rounding, retaining the decision that suppresses same-call rain evaporation.
+    ``cloud_presence`` receives WRF's L_qc(k) as the adjustment leaves it
+    (module_mp_thompson.F:3215-3223, cleared at :3485), 1 or 0 at every
+    level, which the cloud fallout's column gate reads (:3645); it requires
+    the three outputs above.
     """
     fields = {
         "temperature": temperature,
@@ -109,6 +114,13 @@ def launch_cloud_saturation_adjust(
         "qv": qv,
         "qc": qc,
     }
+    if cloud_presence is not None:
+        if (condensation_marker is None or reference_density is None
+                or reference_temperature is None):
+            raise ValueError(
+                "cloud_presence requires reference_density, "
+                "reference_temperature and condensation_marker")
+        fields["cloud_presence"] = cloud_presence
     if reference_density is not None:
         fields["reference_density"] = reference_density
     if reference_temperature is not None:
@@ -125,9 +137,22 @@ def launch_cloud_saturation_adjust(
                 raise ValueError(
                     f"condensation_marker must not alias {name}: preserve "
                     "the state and decision in separate storage")
+    if cloud_presence is not None:
+        for name, value in fields.items():
+            if name != "cloud_presence" and _arrays_overlap(
+                    cloud_presence, value):
+                raise ValueError(
+                    f"cloud_presence must not alias {name}")
     threads = 256
     blocks = (size + threads - 1) // threads
-    if condensation_marker is not None:
+    if cloud_presence is not None:
+        get_kernel(
+            "thompson", "thompson_cloud_saturation_adjust_with_presence")(
+                (blocks,), (threads,),
+                (temperature, pressure, qv, qc, reference_density,
+                 reference_temperature, condensation_marker, cloud_presence,
+                 np.int32(size)))
+    elif condensation_marker is not None:
         get_kernel("thompson", "thompson_cloud_saturation_adjust_with_history")(
             (blocks,), (threads,),
             (temperature, pressure, qv, qc,
@@ -201,7 +226,8 @@ def launch_rain_evaporation(
         qr, nr, temperature, pressure, qv, dt: float,
         *, reference_density=None, reference_temperature=None,
         graupel_melt_marker=None, source_density=None,
-        condensation_marker=None) -> None:
+        condensation_marker=None,
+        density_carries_rain_presence: bool = False) -> None:
     """Apply WRF's ordinary subsaturated-rain evaporation process.
 
     This admitted slice covers the Srivastava-Coen branch for an already
@@ -216,6 +242,11 @@ def launch_rain_evaporation(
     still coating melting graupel; it requires the density-only output form.
     A positive ``condensation_marker`` suppresses this process, retaining
     WRF's cloud-adjustment decision independently of saturation roundoff.
+    ``density_carries_rain_presence`` also writes WRF's L_qr into
+    ``reference_density`` (zero where :3236 failed) and marks the :3568
+    rewrite (negative), for ``launch_rain_sedimentation``'s and
+    ``launch_snow_sedimentation``'s presence forms; it requires the history
+    form (``source_density`` or ``condensation_marker``).
     """
     fields = {
         "qr": qr,
@@ -266,8 +297,16 @@ def launch_rain_evaporation(
         raise ValueError(f"dt must be finite and positive, got {dt}")
     threads = 256
     blocks = (size + threads - 1) // threads
+    if density_carries_rain_presence and (
+            source_density is None and condensation_marker is None):
+        raise ValueError(
+            "density_carries_rain_presence requires the history form: pass "
+            "source_density or condensation_marker")
     if source_density is not None or condensation_marker is not None:
-        get_kernel("thompson", "thompson_rain_evaporation_with_density_history")(
+        get_kernel("thompson", (
+            "thompson_rain_evaporation_with_density_history_and_presence"
+            if density_carries_rain_presence
+            else "thompson_rain_evaporation_with_density_history"))(
             (blocks,), (threads,),
             (qr, nr, temperature, pressure, qv, reference_density,
              graupel_melt_marker if graupel_melt_marker is not None else np.uint64(0),
@@ -818,9 +857,18 @@ def launch_warm_frozen_source_network_from_owner(
 
 
 def launch_final_phase_cleanup(
-        qc, qi, ni, temperature, pressure, qv) -> None:
-    """Apply Thompson's post-fallout instantaneous cloud phase cleanup."""
-    _, size = _validate_fields({
+        qc, qi, ni, temperature, pressure, qv, *,
+        micro_columns=None) -> None:
+    """Apply Thompson's post-fallout instantaneous cloud phase cleanup.
+
+    ``micro_columns`` (the ``(ny, nx)`` flag
+    :func:`launch_microphysics_columns` writes at entry) adds WRF's terminal
+    vapour floor, 1.E-10 at every level of a column with microphysics
+    (:3974), and leaves a column WRF returned from at :2020 with only the
+    entry rewrite's zero cloud and ice.  The production adapter always
+    passes it.
+    """
+    shape, size = _validate_fields({
         "qc": qc,
         "qi": qi,
         "ni": ni,
@@ -830,9 +878,48 @@ def launch_final_phase_cleanup(
     })
     threads = 256
     blocks = (size + threads - 1) // threads
-    get_kernel("thompson", "thompson_final_phase_cleanup")(
+    if micro_columns is None:
+        get_kernel("thompson", "thompson_final_phase_cleanup")(
+            (blocks,), (threads,),
+            (qc, qi, ni, temperature, pressure, qv, np.int32(size)))
+        return
+    if len(shape) != 3 or micro_columns.shape != shape[1:]:
+        raise ValueError(f"micro_columns must have shape {shape[1:]}, "
+                         f"got {micro_columns.shape}")
+    _validate_fields({"micro_columns": micro_columns})
+    get_kernel("thompson", "thompson_final_phase_cleanup_with_columns")(
         (blocks,), (threads,),
-        (qc, qi, ni, temperature, pressure, qv, np.int32(size)))
+        (qc, qi, ni, temperature, pressure, qv, micro_columns,
+         np.int32(shape[1] * shape[2]), np.int32(size)))
+
+
+def launch_microphysics_columns(
+        qc, qi, qr, qs, qg, temperature, pressure, qv,
+        micro_columns) -> None:
+    """WRF's per-column ``no_micro`` decision, :1646, :1827-1990, :2020.
+
+    Writes 1.0 into ``micro_columns`` (``(ny, nx)`` float32) for a column
+    with microphysics and 0.0 for one ``mp_thompson`` leaves at :2020: every
+    entry cloud, ice, rain, snow and graupel mixing ratio at or below R1 and
+    no level supersaturated over ice.  Call it on the entry state.
+    """
+    shape, _ = _validate_fields({
+        "qc": qc, "qi": qi, "qr": qr, "qs": qs, "qg": qg,
+        "temperature": temperature, "pressure": pressure, "qv": qv,
+    })
+    if len(shape) != 3:
+        raise ValueError(f"fields must be (nz, ny, nx), got {shape}")
+    nz, ny, nx = shape
+    if micro_columns.shape != (ny, nx):
+        raise ValueError(f"micro_columns must have shape {(ny, nx)}, "
+                         f"got {micro_columns.shape}")
+    _validate_fields({"micro_columns": micro_columns})
+    ncol = ny * nx
+    blocks = (ncol + _COLUMN_TPB - 1) // _COLUMN_TPB
+    get_kernel("thompson", "thompson_microphysics_columns")(
+        (blocks,), (_COLUMN_TPB,),
+        (qc, qi, qr, qs, qg, temperature, pressure, qv, micro_columns,
+         np.int32(nz), np.int32(ny), np.int32(nx)))
 
 
 def launch_ice_nucleation(
@@ -1350,7 +1437,8 @@ def launch_effective_radius(
 def launch_rain_sedimentation(
         qr, nr, temperature, pressure, qv, dz, rainnc, rainncv,
         dt: float, *, reference_density=None,
-        accumulate_surface: bool = False) -> None:
+        accumulate_surface: bool = False,
+        density_carries_rain_presence: bool = False) -> None:
     """Apply the independently admitted WRF two-moment rain fallout slice.
 
     Volume fields are contiguous FP32 ``(nz, ny, nx)`` arrays and surface
@@ -1359,7 +1447,13 @@ def launch_rain_sedimentation(
     process driver remains fail-closed.  ``reference_density`` is optional;
     the evaporation composition uses it to preserve WRF's pre-evaporation
     volumetric rain state while fallout uses the updated environmental density.
+    ``density_carries_rain_presence`` says that density is ZERO exactly where
+    WRF's L_qr failed (the mp=28 rain evaporation writes it so); the fallout
+    then takes L_qr from it instead of from the post-evaporation mixing ratio.
     """
+    if density_carries_rain_presence and reference_density is None:
+        raise ValueError("density_carries_rain_presence needs the "
+                         "reference_density that carries it")
     fields = {
         "qr": qr,
         "nr": nr,
@@ -1393,7 +1487,9 @@ def launch_rain_sedimentation(
 
     kernel_name = ("thompson_rain_sediment_64" if nz <= _SHALLOW_KMAX
                    else "thompson_rain_sediment_256")
-    if reference_density is not None:
+    if density_carries_rain_presence:
+        kernel_name += "_with_presence"
+    elif reference_density is not None:
         kernel_name += "_with_density"
     kernel = get_kernel("thompson", kernel_name)
     ncol = ny * nx
@@ -1564,7 +1660,8 @@ def launch_snow_sedimentation(
         accumulate_surface: bool = False,
         snow_melt_marker=None, melt_rain_qr=None, melt_rain_nr=None,
         reference_density=None, reference_temperature=None,
-        velocity_boost=None) -> None:
+        velocity_boost=None, melt_rain_density=None,
+        melt_rain_density_carries_presence: bool = False) -> None:
     """Apply the independently admitted WRF one-moment snow fallout slice.
 
     Set ``accumulate_surface`` only when an earlier frozen-species fallout
@@ -1578,6 +1675,12 @@ def launch_snow_sedimentation(
     WRF snow/rain velocity blend while ``melt_rain_qr``/``melt_rain_nr``
     provide the post-source rain distribution.  The production path combines
     all three with held state, as WRF does in one snow-fallout call.
+    ``melt_rain_density`` is the rain fallout's own reference density (the
+    buffer ``launch_rain_sedimentation`` is handed): with it the blend reads
+    WRF's rr(k) and the rain fall speed vtrk(k) as the rain pass forms them
+    (:3612-3634), a level without rain inheriting the speed above it, as
+    :3722-3724 do.  ``melt_rain_density_carries_presence`` matches
+    ``launch_rain_sedimentation``'s ``density_carries_rain_presence``.
     """
     fields = {
         "qs": qs,
@@ -1608,6 +1711,15 @@ def launch_snow_sedimentation(
             raise ValueError(
                 "velocity_boost requires reference_temperature")
         fields["velocity_boost"] = velocity_boost
+    if melt_rain_density is not None:
+        if melt_rain_qr is None or velocity_boost is None:
+            raise ValueError(
+                "melt_rain_density requires the melt-rain inputs and "
+                "velocity_boost")
+        fields["melt_rain_density"] = melt_rain_density
+    elif melt_rain_density_carries_presence:
+        raise ValueError("melt_rain_density_carries_presence needs the "
+                         "melt_rain_density that carries it")
     shape, _ = _validate_fields(fields)
     if (snow_melt_marker is not None
             and _arrays_overlap(snow_melt_marker, qs)):
@@ -1640,7 +1752,11 @@ def launch_snow_sedimentation(
 
     kernel_name = ("thompson_snow_sediment_64" if nz <= _SHALLOW_KMAX
                    else "thompson_snow_sediment_256")
-    if velocity_boost is not None and melt_rain_qr is not None:
+    if melt_rain_density is not None:
+        kernel_name += "_with_rain_profile"
+        if melt_rain_density_carries_presence:
+            kernel_name += "_and_presence"
+    elif velocity_boost is not None and melt_rain_qr is not None:
         kernel_name += "_with_melt_rain_and_state_and_boost"
     elif velocity_boost is not None:
         kernel_name += "_with_state_and_boost"
@@ -1660,6 +1776,8 @@ def launch_snow_sedimentation(
     arguments = (qs,)
     if melt_rain_qr is not None:
         arguments += (snow_melt_marker, melt_rain_qr, melt_rain_nr)
+    if melt_rain_density is not None:
+        arguments += (melt_rain_density,)
     arguments += (temperature, pressure, qv)
     if reference_density is not None:
         arguments += (reference_density,)
@@ -1759,7 +1877,12 @@ def launch_classic_graupel_number_init(
 
 def launch_classic_graupel_number_finalize(
         qg, temperature, pressure, qv, graupel_number_shadow) -> None:
-    """Apply WRF's one final classic-ng bound after all call tendencies."""
+    """Apply WRF's one final classic-ng bound after all call tendencies.
+
+    Also WRF's terminal graupel zero (module_mp_thompson.F:4058-4063): a
+    graupel mixing ratio at or below R1 is written as zero, mass and number,
+    in every column -- ``qg`` is written in place.
+    """
     shape, size = _validate_fields({
         "qg": qg,
         "temperature": temperature,
@@ -1917,6 +2040,7 @@ __all__ = [
     "launch_graupel_cloud_riming",
     "launch_graupel_fallout_column_mask",
     "launch_hydrometeor_column_mask",
+    "launch_microphysics_columns",
     "launch_graupel_sedimentation",
     "launch_graupel_melting",
     "launch_graupel_sublimation",

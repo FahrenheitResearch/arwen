@@ -176,6 +176,17 @@ pub struct RadialData {
     /// Radial status: 0=start elev, 1=intermediate, 2=end elev, 3=start volume,
     /// 4=end volume, 5=start elev (found mid-volume in some SAILS data).
     pub radial_status: u8,
+    /// When this radial was collected: milliseconds past midnight UTC,
+    /// from the Message-31 header's own collection-time word.
+    ///
+    /// Kept because it is the only clock a volume carries per radial.  The
+    /// Archive-II volume header stamps the volume's START, and a volume
+    /// takes four to ten minutes to complete, so a reader that has only
+    /// the header dates the last sweep to the first radial's instant.
+    pub collection_time_ms: u32,
+    /// The day of that collection: days since 1970-01-01 with the epoch
+    /// day numbered 1, the same spelling as the volume header's date.
+    pub collection_date: u16,
     pub moments: Vec<MomentData>,
 }
 
@@ -239,6 +250,8 @@ struct MessageHeader {
 }
 
 struct Message31Header {
+    collection_time_ms: u32,
+    collection_date: u16,
     azimuth_angle: f32,
     elevation_angle: f32,
     elevation_number: u8,
@@ -724,6 +737,8 @@ impl Level2File {
             },
             nyquist_velocity,
             radial_status: msg31.radial_status,
+            collection_time_ms: msg31.collection_time_ms,
+            collection_date: msg31.collection_date,
             moments,
         };
 
@@ -829,8 +844,8 @@ impl Level2File {
         cursor
             .read_exact(&mut radar_id)
             .map_err(|e| e.to_string())?;
-        let _collection_time = cursor.read_u32::<BigEndian>().map_err(|e| e.to_string())?;
-        let _collection_date = cursor.read_u16::<BigEndian>().map_err(|e| e.to_string())?;
+        let collection_time_ms = cursor.read_u32::<BigEndian>().map_err(|e| e.to_string())?;
+        let collection_date = cursor.read_u16::<BigEndian>().map_err(|e| e.to_string())?;
         let _azimuth_number = cursor.read_u16::<BigEndian>().map_err(|e| e.to_string())?;
         let azimuth_angle = cursor.read_f32::<BigEndian>().map_err(|e| e.to_string())?;
         let compression = cursor.read_u8().map_err(|e| e.to_string())?;
@@ -846,6 +861,8 @@ impl Level2File {
         let data_block_count = cursor.read_u16::<BigEndian>().map_err(|e| e.to_string())?;
 
         Ok(Message31Header {
+            collection_time_ms,
+            collection_date,
             azimuth_angle,
             elevation_angle,
             elevation_number,
@@ -1428,6 +1445,8 @@ mod tests {
         pointers: Option<Vec<u32>>,
         blocks: Vec<Vec<u8>>,
         radial_status: u8,
+        collection_time_ms: u32,
+        collection_date: u16,
     }
 
     impl RadialBuilder {
@@ -1439,6 +1458,9 @@ mod tests {
                 pointers: None,
                 blocks: vec![vol_block(), elv_block(), rad_block(2384), ref_moment(4)],
                 radial_status: 3,
+                // 20:03:16.500 on the volume header's own day.
+                collection_time_ms: 72_196_500,
+                collection_date: 20663,
             }
         }
 
@@ -1454,8 +1476,8 @@ mod tests {
             let pointers = self.pointers.clone().unwrap_or(natural);
 
             let mut msg31 = Vec::from(&b"KTLX"[..]);
-            msg31.extend_from_slice(&0u32.to_be_bytes()); // collection time
-            msg31.extend_from_slice(&20663u16.to_be_bytes()); // julian date
+            msg31.extend_from_slice(&self.collection_time_ms.to_be_bytes());
+            msg31.extend_from_slice(&self.collection_date.to_be_bytes());
             msg31.extend_from_slice(&1u16.to_be_bytes()); // azimuth number
             msg31.extend_from_slice(&90.0f32.to_be_bytes()); // azimuth angle
             msg31.push(self.compression);
@@ -1698,6 +1720,8 @@ mod tests {
             azimuth_spacing: 1.0,
             nyquist_velocity: None,
             radial_status: status,
+            collection_time_ms: 0,
+            collection_date: 20663,
             moments: Vec::new(),
         }
     }

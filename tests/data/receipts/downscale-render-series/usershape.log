@@ -1,0 +1,40 @@
+########## 0. lane tip installed over the sealed 2.7.5 dependencies ##########
+b942dc217 docs(render): the layout page states which products a render asks for and why the rest are dropped, what a sub-hourly history does to the fixed-hour windows, and what a failed child render leaves behind
+TIP=b942dc217771d66a2bc6388a70688d80b9141dbe
+render.py  lane=9d4f0c3ec952c96e venv-fixed=9d4f0c3ec952c96e  shipped-wheel=c2a8856c6a97d6ef venv-2.7.5=c2a8856c6a97d6ef
+rustwx.py  lane=71a4d815508f8b3a venv-fixed=71a4d815508f8b3a  shipped-wheel=24a137ff350f3a7d venv-2.7.5=24a137ff350f3a7d
+go_cli.py  lane=0c5ed7246634face venv-fixed=0c5ed7246634face  shipped-wheel=0b66ce0160a6237e venv-2.7.5=0b66ce0160a6237e
+offline_child_run.py  lane=0fea5d4bb3b75d4e venv-fixed=0fea5d4bb3b75d4e  shipped-wheel=4732b5dc7e8c46dc venv-2.7.5=4732b5dc7e8c46dc
+downscale.py  lane=546535728fe0a02d venv-fixed=546535728fe0a02d  shipped-wheel=0e302c73075ac1ed venv-2.7.5=0e302c73075ac1ed
+########## 1. the user shapes ##########
+<home>/agent-scratch/downscale-render-276/usershape.py:25: DeprecationWarning: Setting the shape on a NumPy array has been deprecated in NumPy 2.5.
+As an alternative, you can create a new view using np.reshape (with copy=False if needed).
+  times[0, :] = netCDF4.stringtoarr(stamp.ljust(width)[:width], width)
+source frames: 13
+frames_u10 -> 13 frames wrfout_d04_1974-04-03_23_10_00 .. wrfout_d04_1974-04-04_01_10_00
+BUILD_DONE
+<home>/agent-scratch/downscale-render-276/usershape.py:25: DeprecationWarning: Setting the shape on a NumPy array has been deprecated in NumPy 2.5.
+As an alternative, you can create a new view using np.reshape (with copy=False if needed).
+  times[0, :] = netCDF4.stringtoarr(stamp.ljust(width)[:width], width)
+source frames: 13
+frames_u05 -> 23 frames wrfout_d04_1974-04-03_23_10_00 .. wrfout_d04_1974-04-04_01_00_00
+BUILD_DONE
+########## 2. what the catalog says about each shape ##########
+SHAPE=u10 list exit=0 rows=513
+SHAPE=u05 list exit=0 rows=513
+########## 3. which general-preset slugs the 2.7.5 door forwards ##########
+==========================================================================
+SHAPE u10
+  10m_wind_gusts                     missing-fields/missing-fields  FORWARDED by 2.7.5: not stored: wind_gust_10m_agl
+  qpf_1h                             excluded/windowed-ordinal-axis  DROPPED by 2.7.5 prose
+  precipitation_type                 missing-fields/missing-fields  FORWARDED by 2.7.5: not stored: categorical_rain_surface, categorical_freezing_rain_surfac
+  cloud_cover                        missing-fields/missing-fields  FORWARDED by 2.7.5: not stored: total_cloud_cover_entire_atmosphere
+  2.7.5 forwards 3 refused general slugs on this shape: 10m_wind_gusts,precipitation_type,cloud_cover
+==========================================================================
+SHAPE u05
+  10m_wind_gusts                     missing-fields/missing-fields  FORWARDED by 2.7.5: not stored: wind_gust_10m_agl
+  qpf_1h                             excluded/windowed-ordinal-axis  DROPPED by 2.7.5 prose
+  precipitation_type                 missing-fields/missing-fields  FORWARDED by 2.7.5: not stored: categorical_rain_surface, categorical_freezing_rain_surfac
+  cloud_cover                        missing-fields/missing-fields  FORWARDED by 2.7.5: not stored: total_cloud_cover_entire_atmosphere
+  2.7.5 forwards 3 refused general slugs on this shape: 10m_wind_gusts,precipitation_type,cloud_cover
+USERSHAPE_DONE

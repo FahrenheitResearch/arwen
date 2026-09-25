@@ -98,11 +98,13 @@ and `PROVENANCE.md` all said "nineteen" while the gate drove twenty-two,
 so two residuals (`wp08-freeze`, `wp08-nusweep`) were in no published class
 at all. They are below.
 
-**Result: 17 of 22 clear the flat 2.0e-6 / 2.0e-4 dB gate on every
+**Result: 18 of 22 clear the flat 2.0e-6 / 2.0e-4 dB gate on every
 compared quantity, with nothing held out at all.** That is
-16 of the 19 spec'd `aero-*` fixtures, plus `wp08-melt`. One more,
-`aero-reduces-to-classic`, clears only under ONE named allowance (§3.2),
-taking the gated count to 18 of 22. Four miss outright.
+16 of the 19 spec'd `aero-*` fixtures, plus `wp08-freeze` and `wp08-melt`.
+One more, `aero-reduces-to-classic`, clears only under ONE named allowance
+(§3.2), taking the gated count to 19 of 22. Three miss outright.
+`wp08-freeze` joined on 2026-09-23, when the rain fallout was handed WRF's
+`L_qr` (see the `wp08-freeze` note under §3.1).
 
 **RE-MEASURED ON THE 1.4.1 LINE (2026-08-01).** Every number on this page
 was measured while the port sat on its own base, ArWen 1.3.1. Merging
@@ -153,9 +155,9 @@ here for the first time: the flat gate and the adapter's gate agree on it.
 | `aero-cold-overlap` | MISS | qc | 1.0 | **cross-network reconciliation, cold half** — and a one-ULP disagreement reported as full scale; see §3.1 |
 
 The three columns outside the spec'd nineteen, measured the same way:
-`wp08-melt` PASS (`nc_per_kg` 1.365e-07), `wp08-freeze` MISS
-(`nr_per_kg` 2.724e-06, 1.4x the gate), `wp08-nusweep` MISS
-(`qr` 4.642e-06, 2.3x the gate).
+`wp08-melt` PASS (`nc_per_kg` 1.365e-07), `wp08-freeze` PASS
+(`nr_per_kg` 4.006e-07 on the card; it missed at 2.724e-06 until 2026-09-23),
+`wp08-nusweep` MISS (`qr` 4.642e-06, 2.3x the gate).
 
 ### 3.1 Every field that misses, with its number
 
@@ -165,7 +167,18 @@ The three columns outside the spec'd nineteen, measured the same way:
 | `aero-reduces-to-classic` | nothing at level 5 any more (`nr` 4.146e-07, inside the flat gate); `qr` / `nr` 1.238e-04 at level 6 if that level is measured relatively rather than in ULPs, which is what §3.2's one surviving allowance exists for |
 | `aero-cloud-freeze-nc` | `qc` 4.926e-06 |
 | `wp08-nusweep` | `qr` 4.642e-06 |
-| `wp08-freeze` | `nr` 2.724e-06 |
+
+**`wp08-freeze` left this table on 2026-09-23.** It was published at `nr`
+2.724e-06 (34 ULP) at level 0 because the rain fallout took `L_qr` from
+the post-evaporation mixing ratio; at level 1 WRF's `:3568` leaves
+`rr(k)` = 1.174815e-12 above R1 under `L_qr` true while ArWen saw
+qr = 8.526513e-13 and gave the level the fall speed from above. The mp=28
+rain evaporation now writes a zero reference density where `:3236`
+failed (and a negative one where `:3568` floored the pair), and the adapter launches the fallout's `_with_presence` entry
+points, which read `L_qr` from it. Level 0 is 5 ULP from WRF (4.006e-07)
+on a card, bit for bit alike on an RTX 4090 and an RTX 5090, and that same
+5 ULP is the fixture's worst over all 23 quantities. The host build of the
+kernels reads 1 ULP (8.012e-08) and 3 ULP; it is not the device.
 
 **No surface accumulation misses any more, on any fixture in the deck.**
 All seven are compared separately: `RAINNC`, `RAINNCV` and `SR` are now
@@ -195,9 +208,8 @@ of the entry value (`qr`: 1.789 ULP).
 
 **Where the rest of them live.** Every surviving residual now sits in one
 of two regimes: the field is **created from zero** inside the step
-(`wp08-freeze` `nr` at level 0, reaching 23.808 per kg; `wp08-nusweep`
-`qr` at level 12, reaching 2.242e-11 kg/kg on an absolute difference of
-1.04e-16 kg/kg), or it is driven to **near-total consumption**
+(`wp08-nusweep` `qr` at level 12, reaching 2.242e-11 kg/kg on an absolute
+difference of 1.04e-16 kg/kg), or it is driven to **near-total consumption**
 (`aero-cloud-freeze-nc` `qc` at level 4, 98.2% frozen away and the
 survivor differing by exactly 1.000 ULP of entry; `aero-cold-overlap` at
 levels 4 and 6). After the Koop closure below, there is **no surviving
@@ -898,7 +910,20 @@ kernel loader compiles one module per `.cu` file from
 `_preamble() + <name>.cu`, so an unedited file is an unchanged source string
 and therefore unchanged PTX.
 
-Measured rather than asserted:
+**This receipt is historical.** `thompson.cu` stopped being byte-frozen
+when mp=8's own rain concentration and condensation history was corrected
+(2.7.4), and it has since carried WRF rules both schemes share (the
+process-rate comparison's snow-cloud table bin and fall-speed gates, and on
+2026-09-23 the rules that brought the classic kernels and `_apply_thompson`
+to the ones the mp=28 units follow). `tests/test_mp8_frozen.py` re-pins its
+digests with each such change, with the record of what moved. What holds
+mp=8 now is WRF's own Fortran: `tools/thompson_real_column_parity --mp 8` on the
+seven saved real-data frames, and the committed classic companion fixture
+`tests/data/thompson_real_columns_wrf461_mp8.npz`, which
+`tests/test_thompson_real_column_host_parity.py` grades with every process
+rate and final-state quantity held to WRF.
+
+Measured rather than asserted (2026-08-01):
 
 | receipt | result |
 | --- | --- |

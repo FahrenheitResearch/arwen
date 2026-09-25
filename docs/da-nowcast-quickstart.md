@@ -232,6 +232,48 @@ gates` is the >=35 dBZ census the domain is centred on, and `motion` is
 the centroid displacement between two volumes when there are two to
 compare.
 
+### Replaying an archived window
+
+Give `--window-end` an hour instead of `latest` and the run is about
+that hour, end to end:
+
+```bash
+python -m tools.da_nowcast run --site KXXX \
+    --window-end 2026-08-07T22:30:00Z --out CASE_DIR
+```
+
+**Which clock the survey uses.**  The survey is what lists the volumes,
+measures the feed's lag, censuses the echo and derives the storm motion
+that SITES THE DOMAIN, so the moment it asks the archive about decides
+where the run's box is.  It takes that moment from the window:
+
+| `--window-end` | the survey asks about | `clock.mode` in the receipt |
+|---|---|---|
+| an ISO-8601 UTC time | that time, back `--survey-span-seconds` | `window` |
+| `latest` | now | `wall` |
+
+`latest` is the live case and the only one with no window yet: the
+window is DERIVED from the newest volume the feed carries, which is a
+question about now.  Every receipt says which clock it used and over
+what span -- `receipts/00-survey.json` carries `clock` and
+`listing_window`, and `nowcast-receipt.json` repeats `clock` under
+`survey` -- so a case read a year later can be told apart from a live
+one without guessing.
+
+Two consequences worth knowing before you read the numbers:
+
+- `lag` on a replay is how far the newest volume sits behind the WINDOW
+  END, not behind today.  It is normally a few minutes, and
+  `--max-lag-seconds` refuses a window the archive covers too thinly.
+  `--allow-stale` is not how you reproduce a past event any more; the
+  window is.
+- The background cycle is still chosen against the real clock, because
+  whether a file is published is a question about now and not about the
+  window.
+
+Everything else is the ordinary run: the same eight stages, the same
+receipts, the same gallery.
+
 ### What you get at the end
 
 `CASE_DIR/gallery/index.html`.  Open it in a browser.  It opens with a
@@ -253,6 +295,76 @@ been graded, `_verification.json` (`gpuwm-da.nowcast-gallery-verification.v1`)
 carrying the metric definitions and per-frame numbers.  The last two
 figures do not exist yet on a run that has just finished -- see
 [accuracy labels](#5-what-the-labels-on-the-figures-mean).
+
+### Where the forecast itself lands
+
+The gallery is the picture; these are the frames it is drawn from, and
+they are yours to render, score or post-process:
+
+```
+CASE_DIR/cycle/composites/legNN_<trajectory>.npz    column-max composite
+CASE_DIR/cycle/composites/wrfout_legNN_<trajectory>.nc   the same field
+```
+
+One pair per leg per trajectory -- `control` and each member by index --
+and the FREE legs are in there with the applied ones: with `--cycles 2
+--free-legs 2` the applied legs are `leg00`/`leg01` and the forecast
+running past the last observation is `leg02`/`leg03`.  The `.npz` carries
+`refl_colmax` and `elapsed_seconds`; the `.nc` beside it is a real wrfout
+carrying the same field with its geolocation, so
+
+```bash
+gpuwm render --engine rust CASE_DIR/cycle/composites/wrfout_leg03_0.nc
+```
+
+draws it with the production renderer, and the picture it draws is
+composite reflectivity: that is the field the frame carries, and the
+other wrfout variables in it are the structural stand-ins that make a
+one-level snapshot readable as a wrfout at all.  `nowcast-receipt.json`
+names the directory and the free legs under `outputs.forecast_frames`,
+says under the same block that the frame is a one-level surface snapshot
+of the composite, and names the field it carries; a run that asked for a
+nest gets the same pair per nested leg under a `_d02` name, and the same
+receipt block says so.
+
+The three-dimensional state of each leg is not kept: the cycle writes the
+composite, not a history stream.  A run that needs the full fields runs
+the prepared forecast (`tools/da_cycle_prepared.py`, which this stage
+drives) with its own history settings.
+
+### A fine nest over the free forecast
+
+Name an extent and the free legs carry a 1 km child over the middle of
+the domain, the same way `tools/da_cycle_prepared.py` is asked:
+
+```bash
+python -m tools.da_nowcast run --site KXXX --window-end latest \
+    --out CASE_DIR --nest-half-width-km 45 --nest-members 1
+```
+
+The parent keeps the whole ensemble and the assimilation; the nest is the
+detailed view of the forecast that runs past the observations, so it
+applies to the free legs only and refuses without them.  `--nest-ratio`,
+`--nest-nx`/`--nest-ny`, `--nest-i-parent-start`, `--nest-j-parent-start`,
+`--nest-members`, `--nest-history-interval-s` and `--nest-acknowledge`
+are the driver's own flags, forwarded unchanged.  Its frames land beside
+the parent's, as the same pair:
+
+```
+CASE_DIR/cycle/composites/legNN_<trajectory>_d02.npz      the child's composite
+CASE_DIR/cycle/composites/wrfout_legNN_<trajectory>_d02.nc   the same field
+```
+
+so `gpuwm render --engine rust` draws the child exactly as it draws the
+parent, and the child's file states its own domain -- `GRID_ID`, the
+parent starts and the ratio -- rather than leaving that to the `d02` in
+its name.  The child's frame is the same one-level snapshot as the
+parent's, so composite reflectivity is the field drawable from it.  Its geometry and its cost are in `cycle/cycle-report.json`
+under `nest`, and the run receipt's `sizing.nested_free_forecast` says
+whether a nest ran.  What the nest costs is owed rather than quoted: the
+pair run so far, with and without a 45 km half-width nest at 2 members
+and 2 free legs, had its two arms meet different card loads, so it is
+not a controlled pair and no seconds are stated from it.
 
 Everything is CLI plus versioned JSON.  `CASE_DIR/nowcast-receipt.json`
 (`gpuwm-da.nowcast.v1`) names every output and carries the verification
@@ -403,7 +515,18 @@ What it does on its own:
 The ensemble is alive across cycles: each one resumes the generation the
 last wrote, so the covariance is the one the cycling built rather than a
 fresh perturbation every few minutes.  Free legs branch off that state
-and never become it.
+and never become it.  A generation is one tree checkpoint set per
+trajectory (`gpuwm.io.restart`, the set `gpuwm run --restart` reads)
+plus the increments the next leg has still to apply, so a leg resumed
+from it continues the soil, the surface, the precipitation accumulators,
+the held radiation tendencies and the clock of the leg that wrote it,
+not the atmosphere alone; a generation written by an earlier release,
+which carried the atmosphere alone, is refused by name and the cycle is
+started again from the prepared background.  Inside one cycle each
+trajectory's set is staged under the driver's `--stage-dir` (default
+`<out>/stage`) and consumed by the leg that restores it, and the run
+removes whatever the stage still holds when it ends, however it ends,
+so a cycle leaves its generation behind and nothing else.
 
 **Epochs end.**  A prepared case carries a finite window of lateral
 boundary data.  Approaching it, the daemon says so on the page, boots a
@@ -637,7 +760,10 @@ da_nowcast: KXXX: newest archived volume KXXX20260805_085732_V06 is 13.9 min old
 
 The front door measures how far behind the feed is and refuses to start
 a *nowcast* on data that is not now.  The default ceiling is 15 minutes
-(`--max-lag-seconds`).  This is expected behaviour, not a bug: the
+(`--max-lag-seconds`).  On a replay the same sentence is measured
+against the window end instead ("`... is 13.9 min older than the window
+end 2026-08-07T22:30:00Z`"), which is the only reading of it that means
+anything when the run is about a past hour.  This is expected behaviour, not a bug: the
 archive bucket only gains a volume file when the volume **ends**, so its
 newest object is on average half a volume period old and at worst a
 whole one.  Polled every 30 s across more than one volume period, the
@@ -646,11 +772,19 @@ VCP and 4 / 95 / 186 s on a 197 s one -- so *when* you ask matters as
 much as anything you configure.  Receipts: `evidence/da-demo/live-feed/`.
 
 Your options, in order: wait for the next volume; raise
-`--max-lag-seconds`; or pass `--allow-stale` to run anyway, which is the
-right answer when you are reproducing a past event rather than nowcasting
-a present one.  If instead you get `no volumes in the last N minutes --
-site down, id wrong, or archive far behind`, check the site id against
-`rw_nexrad sites` first.
+`--max-lag-seconds`; or pass `--allow-stale` to run anyway.  Reproducing
+a past event is NOT one of them any more: name the hour with
+`--window-end` and the whole run, survey included, is about that hour
+(see [replaying an archived window](#replaying-an-archived-window)), so
+there is no staleness to forgive.  `--allow-stale` went on meaning
+"reproduce a past event" for as long as the survey could only ask about
+now.
+
+If instead you get `no volumes in the N minutes before <time> -- site
+down, id wrong, or archive far behind`, check the site id against
+`rw_nexrad sites` first; on a replay the same refusal ends `id wrong, or
+the archive does not reach that window`, and names the window it asked
+about.
 
 The observation builder can also read the real-time chunk feed, which
 publishes the same bytes as they are collected rather than when the

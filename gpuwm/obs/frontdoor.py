@@ -216,8 +216,9 @@ ASOS = FrontDoor(
     env_var="GPUWM_RW_ASOS",
     subject="the surface observation front door",
     abi_marker=(
-        "gpuwm-obs.asos-surface.v1\tstations\treports\tprovenance\t"
-        "temperature_2m\tdewpoint_2m\twind_speed_10m\tmslp\tK\tm s-1\tPa"),
+        "gpuwm-obs.asos-surface.v2\tstations\treports\tprovenance\t"
+        "observation_time\ttemperature_2m\tdewpoint_2m\twind_speed_10m\t"
+        "mslp\tK\tm s-1\tPa"),
 )
 
 #: The GOES ABI cloud-product front door.

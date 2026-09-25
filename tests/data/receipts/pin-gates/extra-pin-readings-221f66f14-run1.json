@@ -1,0 +1,94 @@
+{
+  "commit": "221f66f14",
+  "card": "NVIDIA GeForce RTX 4090",
+  "compute_capability": "8.9",
+  "cupy": "14.2.0",
+  "cuda_runtime": 13020,
+  "cuda_driver": 13030,
+  "fingerprint": {
+    "nvrtc_build": "13.3.33",
+    "nvrtc_build_id": "CL-37862127",
+    "nvrtc_library_sha256": "e51d197b3b0d2d9d850d29977423e6ac60661d429a59c440fc04e52b6fc6750a",
+    "cuda_driver_version": "13030",
+    "device_compute_capability": "89",
+    "cupy_version": "14.2.0",
+    "numpy_version": "2.5.3"
+  },
+  "nvrtc_build": "13.3.33",
+  "shinhong_ulp": {
+    "measured": {
+      "du": 93207,
+      "dv": 46603,
+      "dtheta": 0,
+      "dqv": 349526,
+      "dqc": 155602,
+      "dqi": 3055548,
+      "exch_h": 8,
+      "tke": 2022,
+      "el": 13,
+      "hpbl": 1,
+      "wstar": 1,
+      "delta": 1
+    },
+    "differing_bits": {
+      "du": 429,
+      "dv": 404,
+      "dtheta": 0,
+      "dqv": 450,
+      "dqc": 77,
+      "dqi": 18,
+      "exch_h": 534,
+      "tke": 751,
+      "el": 638,
+      "hpbl": 24,
+      "wstar": 6,
+      "delta": 42
+    },
+    "vs_rows": {
+      "13.0.48": {
+        "el": [
+          13,
+          14
+        ]
+      },
+      "12.9.86": {
+        "dv": [
+          46603,
+          1491308
+        ],
+        "tke": [
+          2022,
+          2005
+        ],
+        "el": [
+          13,
+          14
+        ]
+      }
+    }
+  },
+  "bl1_run_state_sha256": "854866c8c67f9c8ae8c058e7d4e1ba7365237466eaa76ebbbc8c2e188998e6ab",
+  "bl1_per_field_sha256_prefix": {
+    "u": "34fd6909a93384a7",
+    "v": "ceb30c44990ff575",
+    "w": "907338daa0d21813",
+    "thp": "9eeb224670f23c07",
+    "php": "e4c3f6dce4200714",
+    "mup": "492e8241b01d0dfb",
+    "qv": "9b2a513607d3764b",
+    "qc": "ad7facb2586fc6e9"
+  },
+  "sase_device": {
+    "c_nu": "0.0017352499078274765",
+    "f": "0.932584484076787",
+    "second_call_identical": true,
+    "c_nu_rel_vs_5090_device": 4.843987510532817e-10,
+    "f_rel_vs_5090_device": 1.4810136060458671e-08,
+    "c_nu_rel_vs_fp64": 1.8447049215237564e-07,
+    "f_rel_vs_fp64": 1.038948943198692e-08,
+    "golden_5090": {
+      "c_nu": "0.0017352499069869236",
+      "f": "0.9325844702650841"
+    }
+  }
+}

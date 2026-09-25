@@ -53,6 +53,40 @@
             "staggering": "none",
             "units": "K"
           },
+          "cloud_ice_mixing_ratio": {
+            "axes": [
+              "vertical",
+              "y",
+              "x"
+            ],
+            "location": "mass",
+            "missing_count": 0,
+            "sha256": "44f4c3b73850666d5d638da908cb9097d1c6e238699afea5b4f3f77f835034b9",
+            "shape": [
+              39,
+              1059,
+              1799
+            ],
+            "staggering": "none",
+            "units": "kg kg-1"
+          },
+          "cloud_water_mixing_ratio": {
+            "axes": [
+              "vertical",
+              "y",
+              "x"
+            ],
+            "location": "mass",
+            "missing_count": 0,
+            "sha256": "8d8fda61d7c6b105779a8e2181da593b115d5b14d7c1526ccdd1ded68e509f80",
+            "shape": [
+              39,
+              1059,
+              1799
+            ],
+            "staggering": "none",
+            "units": "kg kg-1"
+          },
           "eastward_wind": {
             "axes": [
               "vertical",
@@ -102,6 +136,23 @@
             "staggering": "none",
             "units": "m"
           },
+          "graupel_or_hail_mixing_ratio": {
+            "axes": [
+              "vertical",
+              "y",
+              "x"
+            ],
+            "location": "mass",
+            "missing_count": 0,
+            "sha256": "1c57da5ded1049f65261eb549fd19d706a0b41dddc1f39ddc05f2524dfd8b08e",
+            "shape": [
+              39,
+              1059,
+              1799
+            ],
+            "staggering": "none",
+            "units": "kg kg-1"
+          },
           "land_fraction": {
             "axes": [
               "y",
@@ -149,6 +200,23 @@
             "staggering": "none",
             "units": "m s-1"
           },
+          "rain_water_mixing_ratio": {
+            "axes": [
+              "vertical",
+              "y",
+              "x"
+            ],
+            "location": "mass",
+            "missing_count": 0,
+            "sha256": "c83aa069ab204d2bc8e0568aca5e0f594833db1110fcf2a578d4ccf5d38e06ef",
+            "shape": [
+              39,
+              1059,
+              1799
+            ],
+            "staggering": "none",
+            "units": "kg kg-1"
+          },
           "sea_ice_fraction": {
             "axes": [
               "y",
@@ -193,6 +261,23 @@
             ],
             "staggering": "none",
             "units": "m"
+          },
+          "snow_mixing_ratio": {
+            "axes": [
+              "vertical",
+              "y",
+              "x"
+            ],
+            "location": "mass",
+            "missing_count": 0,
+            "sha256": "427d818587be99b6b54753887363064cd3ef68fc6e59c1f0e2d4bd2f42e51c7d",
+            "shape": [
+              39,
+              1059,
+              1799
+            ],
+            "staggering": "none",
+            "units": "kg kg-1"
           },
           "snow_water_equivalent": {
             "axes": [
@@ -307,7 +392,7 @@
           }
         },
         "grid_fingerprint": "9691df23a99cee0d21d31655c29ebf20cb19366d6f3fa72b69ec7d955290d52b",
-        "header_sha256": "0a8ab051f2b33e693c79170b705980f61f7be7345454ea0dd4b54aeab90ba24c",
+        "header_sha256": "f28c5bf057e95c8a15276cb85a7804b37a264e88124c6bcf65ff39905fc12bec",
         "inputs": [
           {
             "name": "hrrr.t00z.wrfprsf00.grib2",
@@ -387,6 +472,40 @@
             "staggering": "none",
             "units": "K"
           },
+          "cloud_ice_mixing_ratio": {
+            "axes": [
+              "vertical",
+              "y",
+              "x"
+            ],
+            "location": "mass",
+            "missing_count": 0,
+            "sha256": "a8619f85559a3228946091c8742e3ae4d15840cf36317a69886be678b3dc2683",
+            "shape": [
+              39,
+              1059,
+              1799
+            ],
+            "staggering": "none",
+            "units": "kg kg-1"
+          },
+          "cloud_water_mixing_ratio": {
+            "axes": [
+              "vertical",
+              "y",
+              "x"
+            ],
+            "location": "mass",
+            "missing_count": 0,
+            "sha256": "69cbb9a1d86718f66b805602fe4649357ec3a648ba07a18b3c2524d1ad2c68a6",
+            "shape": [
+              39,
+              1059,
+              1799
+            ],
+            "staggering": "none",
+            "units": "kg kg-1"
+          },
           "eastward_wind": {
             "axes": [
               "vertical",
@@ -436,6 +555,23 @@
             "staggering": "none",
             "units": "m"
           },
+          "graupel_or_hail_mixing_ratio": {
+            "axes": [
+              "vertical",
+              "y",
+              "x"
+            ],
+            "location": "mass",
+            "missing_count": 0,
+            "sha256": "0e5044e9a84c63233f1fda81436ef49abb63a430c11beff736fac1dcfa998ae3",
+            "shape": [
+              39,
+              1059,
+              1799
+            ],
+            "staggering": "none",
+            "units": "kg kg-1"
+          },
           "land_fraction": {
             "axes": [
               "y",
@@ -483,6 +619,23 @@
             "staggering": "none",
             "units": "m s-1"
           },
+          "rain_water_mixing_ratio": {
+            "axes": [
+              "vertical",
+              "y",
+              "x"
+            ],
+            "location": "mass",
+            "missing_count": 0,
+            "sha256": "6a6e86ddea85dfd19ff1bda9c41e3d6554ac6b3f68600e40091d9eed7b040c85",
+            "shape": [
+              39,
+              1059,
+              1799
+            ],
+            "staggering": "none",
+            "units": "kg kg-1"
+          },
           "sea_ice_fraction": {
             "axes": [
               "y",
@@ -527,6 +680,23 @@
             ],
             "staggering": "none",
             "units": "m"
+          },
+          "snow_mixing_ratio": {
+            "axes": [
+              "vertical",
+              "y",
+              "x"
+            ],
+            "location": "mass",
+            "missing_count": 0,
+            "sha256": "797644f2b8d313ae69eb1aff66512a878cbfafa94b08b004a2ca80d6fd8db35e",
+            "shape": [
+              39,
+              1059,
+              1799
+            ],
+            "staggering": "none",
+            "units": "kg kg-1"
           },
           "snow_water_equivalent": {
             "axes": [
@@ -641,7 +811,7 @@
           }
         },
         "grid_fingerprint": "9691df23a99cee0d21d31655c29ebf20cb19366d6f3fa72b69ec7d955290d52b",
-        "header_sha256": "081bbf2f939e184013398acb10c40bd9504fa666d6c917aaae530a9788b0f48a",
+        "header_sha256": "4568ba3f16af523e2462bb413b89db05627c072b93fb55459cb733e7ca32f5bc",
         "inputs": [
           {
             "name": "hrrr.t00z.wrfprsf00.grib2",
@@ -673,7 +843,7 @@
     ],
     "mapping": {
       "name": "rw-wps-hrrr-prs-grib2.mapping.json",
-      "sha256": "6e17b6edcc2230262dbf072a72fd0b38a4a70e9812a76ea61d2b90fbd4301e54"
+      "sha256": "ac6453cd64eb9c9a63a9df7946b080d105aa63148b101ece45bf79110b82823a"
     },
     "schema": "gpuwm-mapped-parity-digest-v1",
     "source": "hrrr-prs",
@@ -686,15 +856,20 @@
           "decoded_direct_fields": [
             "air_temperature",
             "air_temperature_2m",
+            "cloud_ice_mixing_ratio",
+            "cloud_water_mixing_ratio",
             "eastward_wind",
             "eastward_wind_10m",
             "geopotential_height",
+            "graupel_or_hail_mixing_ratio",
             "land_fraction",
             "northward_wind",
             "northward_wind_10m",
+            "rain_water_mixing_ratio",
             "sea_ice_fraction",
             "skin_temperature",
             "snow_depth",
+            "snow_mixing_ratio",
             "snow_water_equivalent",
             "soil_temperature",
             "specific_humidity",
@@ -776,6 +951,120 @@
               ],
               "source_references": [
                 "hrrr.t00z.wrfprsf00.grib2:615"
+              ]
+            },
+            "cloud_ice_mixing_ratio": {
+              "axes": [
+                "vertical",
+                "y",
+                "x"
+              ],
+              "maximum": 0.00133,
+              "minimum": 0.0,
+              "missing": 0,
+              "sha256": "44f4c3b73850666d5d638da908cb9097d1c6e238699afea5b4f3f77f835034b9",
+              "shape": [
+                39,
+                1059,
+                1799
+              ],
+              "source_references": [
+                "hrrr.t00z.wrfprsf00.grib2:10",
+                "hrrr.t00z.wrfprsf00.grib2:24",
+                "hrrr.t00z.wrfprsf00.grib2:38",
+                "hrrr.t00z.wrfprsf00.grib2:52",
+                "hrrr.t00z.wrfprsf00.grib2:66",
+                "hrrr.t00z.wrfprsf00.grib2:80",
+                "hrrr.t00z.wrfprsf00.grib2:94",
+                "hrrr.t00z.wrfprsf00.grib2:108",
+                "hrrr.t00z.wrfprsf00.grib2:122",
+                "hrrr.t00z.wrfprsf00.grib2:136",
+                "hrrr.t00z.wrfprsf00.grib2:150",
+                "hrrr.t00z.wrfprsf00.grib2:164",
+                "hrrr.t00z.wrfprsf00.grib2:178",
+                "hrrr.t00z.wrfprsf00.grib2:192",
+                "hrrr.t00z.wrfprsf00.grib2:206",
+                "hrrr.t00z.wrfprsf00.grib2:220",
+                "hrrr.t00z.wrfprsf00.grib2:234",
+                "hrrr.t00z.wrfprsf00.grib2:248",
+                "hrrr.t00z.wrfprsf00.grib2:262",
+                "hrrr.t00z.wrfprsf00.grib2:276",
+                "hrrr.t00z.wrfprsf00.grib2:290",
+                "hrrr.t00z.wrfprsf00.grib2:304",
+                "hrrr.t00z.wrfprsf00.grib2:318",
+                "hrrr.t00z.wrfprsf00.grib2:332",
+                "hrrr.t00z.wrfprsf00.grib2:346",
+                "hrrr.t00z.wrfprsf00.grib2:360",
+                "hrrr.t00z.wrfprsf00.grib2:374",
+                "hrrr.t00z.wrfprsf00.grib2:388",
+                "hrrr.t00z.wrfprsf00.grib2:402",
+                "hrrr.t00z.wrfprsf00.grib2:416",
+                "hrrr.t00z.wrfprsf00.grib2:430",
+                "hrrr.t00z.wrfprsf00.grib2:444",
+                "hrrr.t00z.wrfprsf00.grib2:458",
+                "hrrr.t00z.wrfprsf00.grib2:472",
+                "hrrr.t00z.wrfprsf00.grib2:486",
+                "hrrr.t00z.wrfprsf00.grib2:500",
+                "hrrr.t00z.wrfprsf00.grib2:514",
+                "hrrr.t00z.wrfprsf00.grib2:528",
+                "hrrr.t00z.wrfprsf00.grib2:541"
+              ]
+            },
+            "cloud_water_mixing_ratio": {
+              "axes": [
+                "vertical",
+                "y",
+                "x"
+              ],
+              "maximum": 0.0047,
+              "minimum": 0.0,
+              "missing": 0,
+              "sha256": "8d8fda61d7c6b105779a8e2181da593b115d5b14d7c1526ccdd1ded68e509f80",
+              "shape": [
+                39,
+                1059,
+                1799
+              ],
+              "source_references": [
+                "hrrr.t00z.wrfprsf00.grib2:9",
+                "hrrr.t00z.wrfprsf00.grib2:23",
+                "hrrr.t00z.wrfprsf00.grib2:37",
+                "hrrr.t00z.wrfprsf00.grib2:51",
+                "hrrr.t00z.wrfprsf00.grib2:65",
+                "hrrr.t00z.wrfprsf00.grib2:79",
+                "hrrr.t00z.wrfprsf00.grib2:93",
+                "hrrr.t00z.wrfprsf00.grib2:107",
+                "hrrr.t00z.wrfprsf00.grib2:121",
+                "hrrr.t00z.wrfprsf00.grib2:135",
+                "hrrr.t00z.wrfprsf00.grib2:149",
+                "hrrr.t00z.wrfprsf00.grib2:163",
+                "hrrr.t00z.wrfprsf00.grib2:177",
+                "hrrr.t00z.wrfprsf00.grib2:191",
+                "hrrr.t00z.wrfprsf00.grib2:205",
+                "hrrr.t00z.wrfprsf00.grib2:219",
+                "hrrr.t00z.wrfprsf00.grib2:233",
+                "hrrr.t00z.wrfprsf00.grib2:247",
+                "hrrr.t00z.wrfprsf00.grib2:261",
+                "hrrr.t00z.wrfprsf00.grib2:275",
+                "hrrr.t00z.wrfprsf00.grib2:289",
+                "hrrr.t00z.wrfprsf00.grib2:303",
+                "hrrr.t00z.wrfprsf00.grib2:317",
+                "hrrr.t00z.wrfprsf00.grib2:331",
+                "hrrr.t00z.wrfprsf00.grib2:345",
+                "hrrr.t00z.wrfprsf00.grib2:359",
+                "hrrr.t00z.wrfprsf00.grib2:373",
+                "hrrr.t00z.wrfprsf00.grib2:387",
+                "hrrr.t00z.wrfprsf00.grib2:401",
+                "hrrr.t00z.wrfprsf00.grib2:415",
+                "hrrr.t00z.wrfprsf00.grib2:429",
+                "hrrr.t00z.wrfprsf00.grib2:443",
+                "hrrr.t00z.wrfprsf00.grib2:457",
+                "hrrr.t00z.wrfprsf00.grib2:471",
+                "hrrr.t00z.wrfprsf00.grib2:485",
+                "hrrr.t00z.wrfprsf00.grib2:499",
+                "hrrr.t00z.wrfprsf00.grib2:513",
+                "hrrr.t00z.wrfprsf00.grib2:527",
+                "hrrr.t00z.wrfprsf00.grib2:540"
               ]
             },
             "eastward_wind": {
@@ -909,6 +1198,63 @@
                 "hrrr.t00z.wrfprsf00.grib2:589"
               ]
             },
+            "graupel_or_hail_mixing_ratio": {
+              "axes": [
+                "vertical",
+                "y",
+                "x"
+              ],
+              "maximum": 0.00838,
+              "minimum": 0.0,
+              "missing": 0,
+              "sha256": "1c57da5ded1049f65261eb549fd19d706a0b41dddc1f39ddc05f2524dfd8b08e",
+              "shape": [
+                39,
+                1059,
+                1799
+              ],
+              "source_references": [
+                "hrrr.t00z.wrfprsf00.grib2:13",
+                "hrrr.t00z.wrfprsf00.grib2:27",
+                "hrrr.t00z.wrfprsf00.grib2:41",
+                "hrrr.t00z.wrfprsf00.grib2:55",
+                "hrrr.t00z.wrfprsf00.grib2:69",
+                "hrrr.t00z.wrfprsf00.grib2:83",
+                "hrrr.t00z.wrfprsf00.grib2:97",
+                "hrrr.t00z.wrfprsf00.grib2:111",
+                "hrrr.t00z.wrfprsf00.grib2:125",
+                "hrrr.t00z.wrfprsf00.grib2:139",
+                "hrrr.t00z.wrfprsf00.grib2:153",
+                "hrrr.t00z.wrfprsf00.grib2:167",
+                "hrrr.t00z.wrfprsf00.grib2:181",
+                "hrrr.t00z.wrfprsf00.grib2:195",
+                "hrrr.t00z.wrfprsf00.grib2:209",
+                "hrrr.t00z.wrfprsf00.grib2:223",
+                "hrrr.t00z.wrfprsf00.grib2:237",
+                "hrrr.t00z.wrfprsf00.grib2:251",
+                "hrrr.t00z.wrfprsf00.grib2:265",
+                "hrrr.t00z.wrfprsf00.grib2:279",
+                "hrrr.t00z.wrfprsf00.grib2:293",
+                "hrrr.t00z.wrfprsf00.grib2:307",
+                "hrrr.t00z.wrfprsf00.grib2:321",
+                "hrrr.t00z.wrfprsf00.grib2:335",
+                "hrrr.t00z.wrfprsf00.grib2:349",
+                "hrrr.t00z.wrfprsf00.grib2:363",
+                "hrrr.t00z.wrfprsf00.grib2:377",
+                "hrrr.t00z.wrfprsf00.grib2:391",
+                "hrrr.t00z.wrfprsf00.grib2:405",
+                "hrrr.t00z.wrfprsf00.grib2:419",
+                "hrrr.t00z.wrfprsf00.grib2:433",
+                "hrrr.t00z.wrfprsf00.grib2:447",
+                "hrrr.t00z.wrfprsf00.grib2:461",
+                "hrrr.t00z.wrfprsf00.grib2:475",
+                "hrrr.t00z.wrfprsf00.grib2:489",
+                "hrrr.t00z.wrfprsf00.grib2:503",
+                "hrrr.t00z.wrfprsf00.grib2:517",
+                "hrrr.t00z.wrfprsf00.grib2:531",
+                "hrrr.t00z.wrfprsf00.grib2:544"
+              ]
+            },
             "land_fraction": {
               "axes": [
                 "y",
@@ -1000,6 +1346,63 @@
                 "hrrr.t00z.wrfprsf00.grib2:622"
               ]
             },
+            "rain_water_mixing_ratio": {
+              "axes": [
+                "vertical",
+                "y",
+                "x"
+              ],
+              "maximum": 0.005110000000000001,
+              "minimum": 0.0,
+              "missing": 0,
+              "sha256": "c83aa069ab204d2bc8e0568aca5e0f594833db1110fcf2a578d4ccf5d38e06ef",
+              "shape": [
+                39,
+                1059,
+                1799
+              ],
+              "source_references": [
+                "hrrr.t00z.wrfprsf00.grib2:11",
+                "hrrr.t00z.wrfprsf00.grib2:25",
+                "hrrr.t00z.wrfprsf00.grib2:39",
+                "hrrr.t00z.wrfprsf00.grib2:53",
+                "hrrr.t00z.wrfprsf00.grib2:67",
+                "hrrr.t00z.wrfprsf00.grib2:81",
+                "hrrr.t00z.wrfprsf00.grib2:95",
+                "hrrr.t00z.wrfprsf00.grib2:109",
+                "hrrr.t00z.wrfprsf00.grib2:123",
+                "hrrr.t00z.wrfprsf00.grib2:137",
+                "hrrr.t00z.wrfprsf00.grib2:151",
+                "hrrr.t00z.wrfprsf00.grib2:165",
+                "hrrr.t00z.wrfprsf00.grib2:179",
+                "hrrr.t00z.wrfprsf00.grib2:193",
+                "hrrr.t00z.wrfprsf00.grib2:207",
+                "hrrr.t00z.wrfprsf00.grib2:221",
+                "hrrr.t00z.wrfprsf00.grib2:235",
+                "hrrr.t00z.wrfprsf00.grib2:249",
+                "hrrr.t00z.wrfprsf00.grib2:263",
+                "hrrr.t00z.wrfprsf00.grib2:277",
+                "hrrr.t00z.wrfprsf00.grib2:291",
+                "hrrr.t00z.wrfprsf00.grib2:305",
+                "hrrr.t00z.wrfprsf00.grib2:319",
+                "hrrr.t00z.wrfprsf00.grib2:333",
+                "hrrr.t00z.wrfprsf00.grib2:347",
+                "hrrr.t00z.wrfprsf00.grib2:361",
+                "hrrr.t00z.wrfprsf00.grib2:375",
+                "hrrr.t00z.wrfprsf00.grib2:389",
+                "hrrr.t00z.wrfprsf00.grib2:403",
+                "hrrr.t00z.wrfprsf00.grib2:417",
+                "hrrr.t00z.wrfprsf00.grib2:431",
+                "hrrr.t00z.wrfprsf00.grib2:445",
+                "hrrr.t00z.wrfprsf00.grib2:459",
+                "hrrr.t00z.wrfprsf00.grib2:473",
+                "hrrr.t00z.wrfprsf00.grib2:487",
+                "hrrr.t00z.wrfprsf00.grib2:501",
+                "hrrr.t00z.wrfprsf00.grib2:515",
+                "hrrr.t00z.wrfprsf00.grib2:529",
+                "hrrr.t00z.wrfprsf00.grib2:542"
+              ]
+            },
             "sea_ice_fraction": {
               "axes": [
                 "y",
@@ -1049,6 +1452,63 @@
               ],
               "source_references": [
                 "hrrr.t00z.wrfprsf00.grib2:614"
+              ]
+            },
+            "snow_mixing_ratio": {
+              "axes": [
+                "vertical",
+                "y",
+                "x"
+              ],
+              "maximum": 0.0061400000000000005,
+              "minimum": 0.0,
+              "missing": 0,
+              "sha256": "427d818587be99b6b54753887363064cd3ef68fc6e59c1f0e2d4bd2f42e51c7d",
+              "shape": [
+                39,
+                1059,
+                1799
+              ],
+              "source_references": [
+                "hrrr.t00z.wrfprsf00.grib2:12",
+                "hrrr.t00z.wrfprsf00.grib2:26",
+                "hrrr.t00z.wrfprsf00.grib2:40",
+                "hrrr.t00z.wrfprsf00.grib2:54",
+                "hrrr.t00z.wrfprsf00.grib2:68",
+                "hrrr.t00z.wrfprsf00.grib2:82",
+                "hrrr.t00z.wrfprsf00.grib2:96",
+                "hrrr.t00z.wrfprsf00.grib2:110",
+                "hrrr.t00z.wrfprsf00.grib2:124",
+                "hrrr.t00z.wrfprsf00.grib2:138",
+                "hrrr.t00z.wrfprsf00.grib2:152",
+                "hrrr.t00z.wrfprsf00.grib2:166",
+                "hrrr.t00z.wrfprsf00.grib2:180",
+                "hrrr.t00z.wrfprsf00.grib2:194",
+                "hrrr.t00z.wrfprsf00.grib2:208",
+                "hrrr.t00z.wrfprsf00.grib2:222",
+                "hrrr.t00z.wrfprsf00.grib2:236",
+                "hrrr.t00z.wrfprsf00.grib2:250",
+                "hrrr.t00z.wrfprsf00.grib2:264",
+                "hrrr.t00z.wrfprsf00.grib2:278",
+                "hrrr.t00z.wrfprsf00.grib2:292",
+                "hrrr.t00z.wrfprsf00.grib2:306",
+                "hrrr.t00z.wrfprsf00.grib2:320",
+                "hrrr.t00z.wrfprsf00.grib2:334",
+                "hrrr.t00z.wrfprsf00.grib2:348",
+                "hrrr.t00z.wrfprsf00.grib2:362",
+                "hrrr.t00z.wrfprsf00.grib2:376",
+                "hrrr.t00z.wrfprsf00.grib2:390",
+                "hrrr.t00z.wrfprsf00.grib2:404",
+                "hrrr.t00z.wrfprsf00.grib2:418",
+                "hrrr.t00z.wrfprsf00.grib2:432",
+                "hrrr.t00z.wrfprsf00.grib2:446",
+                "hrrr.t00z.wrfprsf00.grib2:460",
+                "hrrr.t00z.wrfprsf00.grib2:474",
+                "hrrr.t00z.wrfprsf00.grib2:488",
+                "hrrr.t00z.wrfprsf00.grib2:502",
+                "hrrr.t00z.wrfprsf00.grib2:516",
+                "hrrr.t00z.wrfprsf00.grib2:530",
+                "hrrr.t00z.wrfprsf00.grib2:543"
               ]
             },
             "snow_water_equivalent": {
@@ -1240,15 +1700,20 @@
           "decoded_direct_fields": [
             "air_temperature",
             "air_temperature_2m",
+            "cloud_ice_mixing_ratio",
+            "cloud_water_mixing_ratio",
             "eastward_wind",
             "eastward_wind_10m",
             "geopotential_height",
+            "graupel_or_hail_mixing_ratio",
             "land_fraction",
             "northward_wind",
             "northward_wind_10m",
+            "rain_water_mixing_ratio",
             "sea_ice_fraction",
             "skin_temperature",
             "snow_depth",
+            "snow_mixing_ratio",
             "snow_water_equivalent",
             "soil_temperature",
             "specific_humidity",
@@ -1330,6 +1795,120 @@
               ],
               "source_references": [
                 "hrrr.t00z.wrfprsf01.grib2:615"
+              ]
+            },
+            "cloud_ice_mixing_ratio": {
+              "axes": [
+                "vertical",
+                "y",
+                "x"
+              ],
+              "maximum": 0.0015300000000000001,
+              "minimum": 0.0,
+              "missing": 0,
+              "sha256": "a8619f85559a3228946091c8742e3ae4d15840cf36317a69886be678b3dc2683",
+              "shape": [
+                39,
+                1059,
+                1799
+              ],
+              "source_references": [
+                "hrrr.t00z.wrfprsf01.grib2:10",
+                "hrrr.t00z.wrfprsf01.grib2:24",
+                "hrrr.t00z.wrfprsf01.grib2:38",
+                "hrrr.t00z.wrfprsf01.grib2:52",
+                "hrrr.t00z.wrfprsf01.grib2:66",
+                "hrrr.t00z.wrfprsf01.grib2:80",
+                "hrrr.t00z.wrfprsf01.grib2:94",
+                "hrrr.t00z.wrfprsf01.grib2:108",
+                "hrrr.t00z.wrfprsf01.grib2:122",
+                "hrrr.t00z.wrfprsf01.grib2:136",
+                "hrrr.t00z.wrfprsf01.grib2:150",
+                "hrrr.t00z.wrfprsf01.grib2:164",
+                "hrrr.t00z.wrfprsf01.grib2:178",
+                "hrrr.t00z.wrfprsf01.grib2:192",
+                "hrrr.t00z.wrfprsf01.grib2:206",
+                "hrrr.t00z.wrfprsf01.grib2:220",
+                "hrrr.t00z.wrfprsf01.grib2:234",
+                "hrrr.t00z.wrfprsf01.grib2:248",
+                "hrrr.t00z.wrfprsf01.grib2:262",
+                "hrrr.t00z.wrfprsf01.grib2:276",
+                "hrrr.t00z.wrfprsf01.grib2:290",
+                "hrrr.t00z.wrfprsf01.grib2:304",
+                "hrrr.t00z.wrfprsf01.grib2:318",
+                "hrrr.t00z.wrfprsf01.grib2:332",
+                "hrrr.t00z.wrfprsf01.grib2:346",
+                "hrrr.t00z.wrfprsf01.grib2:360",
+                "hrrr.t00z.wrfprsf01.grib2:374",
+                "hrrr.t00z.wrfprsf01.grib2:388",
+                "hrrr.t00z.wrfprsf01.grib2:402",
+                "hrrr.t00z.wrfprsf01.grib2:416",
+                "hrrr.t00z.wrfprsf01.grib2:430",
+                "hrrr.t00z.wrfprsf01.grib2:444",
+                "hrrr.t00z.wrfprsf01.grib2:458",
+                "hrrr.t00z.wrfprsf01.grib2:472",
+                "hrrr.t00z.wrfprsf01.grib2:486",
+                "hrrr.t00z.wrfprsf01.grib2:500",
+                "hrrr.t00z.wrfprsf01.grib2:514",
+                "hrrr.t00z.wrfprsf01.grib2:528",
+                "hrrr.t00z.wrfprsf01.grib2:541"
+              ]
+            },
+            "cloud_water_mixing_ratio": {
+              "axes": [
+                "vertical",
+                "y",
+                "x"
+              ],
+              "maximum": 0.00529,
+              "minimum": 0.0,
+              "missing": 0,
+              "sha256": "69cbb9a1d86718f66b805602fe4649357ec3a648ba07a18b3c2524d1ad2c68a6",
+              "shape": [
+                39,
+                1059,
+                1799
+              ],
+              "source_references": [
+                "hrrr.t00z.wrfprsf01.grib2:9",
+                "hrrr.t00z.wrfprsf01.grib2:23",
+                "hrrr.t00z.wrfprsf01.grib2:37",
+                "hrrr.t00z.wrfprsf01.grib2:51",
+                "hrrr.t00z.wrfprsf01.grib2:65",
+                "hrrr.t00z.wrfprsf01.grib2:79",
+                "hrrr.t00z.wrfprsf01.grib2:93",
+                "hrrr.t00z.wrfprsf01.grib2:107",
+                "hrrr.t00z.wrfprsf01.grib2:121",
+                "hrrr.t00z.wrfprsf01.grib2:135",
+                "hrrr.t00z.wrfprsf01.grib2:149",
+                "hrrr.t00z.wrfprsf01.grib2:163",
+                "hrrr.t00z.wrfprsf01.grib2:177",
+                "hrrr.t00z.wrfprsf01.grib2:191",
+                "hrrr.t00z.wrfprsf01.grib2:205",
+                "hrrr.t00z.wrfprsf01.grib2:219",
+                "hrrr.t00z.wrfprsf01.grib2:233",
+                "hrrr.t00z.wrfprsf01.grib2:247",
+                "hrrr.t00z.wrfprsf01.grib2:261",
+                "hrrr.t00z.wrfprsf01.grib2:275",
+                "hrrr.t00z.wrfprsf01.grib2:289",
+                "hrrr.t00z.wrfprsf01.grib2:303",
+                "hrrr.t00z.wrfprsf01.grib2:317",
+                "hrrr.t00z.wrfprsf01.grib2:331",
+                "hrrr.t00z.wrfprsf01.grib2:345",
+                "hrrr.t00z.wrfprsf01.grib2:359",
+                "hrrr.t00z.wrfprsf01.grib2:373",
+                "hrrr.t00z.wrfprsf01.grib2:387",
+                "hrrr.t00z.wrfprsf01.grib2:401",
+                "hrrr.t00z.wrfprsf01.grib2:415",
+                "hrrr.t00z.wrfprsf01.grib2:429",
+                "hrrr.t00z.wrfprsf01.grib2:443",
+                "hrrr.t00z.wrfprsf01.grib2:457",
+                "hrrr.t00z.wrfprsf01.grib2:471",
+                "hrrr.t00z.wrfprsf01.grib2:485",
+                "hrrr.t00z.wrfprsf01.grib2:499",
+                "hrrr.t00z.wrfprsf01.grib2:513",
+                "hrrr.t00z.wrfprsf01.grib2:527",
+                "hrrr.t00z.wrfprsf01.grib2:540"
               ]
             },
             "eastward_wind": {
@@ -1463,6 +2042,63 @@
                 "hrrr.t00z.wrfprsf01.grib2:589"
               ]
             },
+            "graupel_or_hail_mixing_ratio": {
+              "axes": [
+                "vertical",
+                "y",
+                "x"
+              ],
+              "maximum": 0.014,
+              "minimum": 0.0,
+              "missing": 0,
+              "sha256": "0e5044e9a84c63233f1fda81436ef49abb63a430c11beff736fac1dcfa998ae3",
+              "shape": [
+                39,
+                1059,
+                1799
+              ],
+              "source_references": [
+                "hrrr.t00z.wrfprsf01.grib2:13",
+                "hrrr.t00z.wrfprsf01.grib2:27",
+                "hrrr.t00z.wrfprsf01.grib2:41",
+                "hrrr.t00z.wrfprsf01.grib2:55",
+                "hrrr.t00z.wrfprsf01.grib2:69",
+                "hrrr.t00z.wrfprsf01.grib2:83",
+                "hrrr.t00z.wrfprsf01.grib2:97",
+                "hrrr.t00z.wrfprsf01.grib2:111",
+                "hrrr.t00z.wrfprsf01.grib2:125",
+                "hrrr.t00z.wrfprsf01.grib2:139",
+                "hrrr.t00z.wrfprsf01.grib2:153",
+                "hrrr.t00z.wrfprsf01.grib2:167",
+                "hrrr.t00z.wrfprsf01.grib2:181",
+                "hrrr.t00z.wrfprsf01.grib2:195",
+                "hrrr.t00z.wrfprsf01.grib2:209",
+                "hrrr.t00z.wrfprsf01.grib2:223",
+                "hrrr.t00z.wrfprsf01.grib2:237",
+                "hrrr.t00z.wrfprsf01.grib2:251",
+                "hrrr.t00z.wrfprsf01.grib2:265",
+                "hrrr.t00z.wrfprsf01.grib2:279",
+                "hrrr.t00z.wrfprsf01.grib2:293",
+                "hrrr.t00z.wrfprsf01.grib2:307",
+                "hrrr.t00z.wrfprsf01.grib2:321",
+                "hrrr.t00z.wrfprsf01.grib2:335",
+                "hrrr.t00z.wrfprsf01.grib2:349",
+                "hrrr.t00z.wrfprsf01.grib2:363",
+                "hrrr.t00z.wrfprsf01.grib2:377",
+                "hrrr.t00z.wrfprsf01.grib2:391",
+                "hrrr.t00z.wrfprsf01.grib2:405",
+                "hrrr.t00z.wrfprsf01.grib2:419",
+                "hrrr.t00z.wrfprsf01.grib2:433",
+                "hrrr.t00z.wrfprsf01.grib2:447",
+                "hrrr.t00z.wrfprsf01.grib2:461",
+                "hrrr.t00z.wrfprsf01.grib2:475",
+                "hrrr.t00z.wrfprsf01.grib2:489",
+                "hrrr.t00z.wrfprsf01.grib2:503",
+                "hrrr.t00z.wrfprsf01.grib2:517",
+                "hrrr.t00z.wrfprsf01.grib2:531",
+                "hrrr.t00z.wrfprsf01.grib2:544"
+              ]
+            },
             "land_fraction": {
               "axes": [
                 "y",
@@ -1554,6 +2190,63 @@
                 "hrrr.t00z.wrfprsf01.grib2:622"
               ]
             },
+            "rain_water_mixing_ratio": {
+              "axes": [
+                "vertical",
+                "y",
+                "x"
+              ],
+              "maximum": 0.0134,
+              "minimum": 0.0,
+              "missing": 0,
+              "sha256": "6a6e86ddea85dfd19ff1bda9c41e3d6554ac6b3f68600e40091d9eed7b040c85",
+              "shape": [
+                39,
+                1059,
+                1799
+              ],
+              "source_references": [
+                "hrrr.t00z.wrfprsf01.grib2:11",
+                "hrrr.t00z.wrfprsf01.grib2:25",
+                "hrrr.t00z.wrfprsf01.grib2:39",
+                "hrrr.t00z.wrfprsf01.grib2:53",
+                "hrrr.t00z.wrfprsf01.grib2:67",
+                "hrrr.t00z.wrfprsf01.grib2:81",
+                "hrrr.t00z.wrfprsf01.grib2:95",
+                "hrrr.t00z.wrfprsf01.grib2:109",
+                "hrrr.t00z.wrfprsf01.grib2:123",
+                "hrrr.t00z.wrfprsf01.grib2:137",
+                "hrrr.t00z.wrfprsf01.grib2:151",
+                "hrrr.t00z.wrfprsf01.grib2:165",
+                "hrrr.t00z.wrfprsf01.grib2:179",
+                "hrrr.t00z.wrfprsf01.grib2:193",
+                "hrrr.t00z.wrfprsf01.grib2:207",
+                "hrrr.t00z.wrfprsf01.grib2:221",
+                "hrrr.t00z.wrfprsf01.grib2:235",
+                "hrrr.t00z.wrfprsf01.grib2:249",
+                "hrrr.t00z.wrfprsf01.grib2:263",
+                "hrrr.t00z.wrfprsf01.grib2:277",
+                "hrrr.t00z.wrfprsf01.grib2:291",
+                "hrrr.t00z.wrfprsf01.grib2:305",
+                "hrrr.t00z.wrfprsf01.grib2:319",
+                "hrrr.t00z.wrfprsf01.grib2:333",
+                "hrrr.t00z.wrfprsf01.grib2:347",
+                "hrrr.t00z.wrfprsf01.grib2:361",
+                "hrrr.t00z.wrfprsf01.grib2:375",
+                "hrrr.t00z.wrfprsf01.grib2:389",
+                "hrrr.t00z.wrfprsf01.grib2:403",
+                "hrrr.t00z.wrfprsf01.grib2:417",
+                "hrrr.t00z.wrfprsf01.grib2:431",
+                "hrrr.t00z.wrfprsf01.grib2:445",
+                "hrrr.t00z.wrfprsf01.grib2:459",
+                "hrrr.t00z.wrfprsf01.grib2:473",
+                "hrrr.t00z.wrfprsf01.grib2:487",
+                "hrrr.t00z.wrfprsf01.grib2:501",
+                "hrrr.t00z.wrfprsf01.grib2:515",
+                "hrrr.t00z.wrfprsf01.grib2:529",
+                "hrrr.t00z.wrfprsf01.grib2:542"
+              ]
+            },
             "sea_ice_fraction": {
               "axes": [
                 "y",
@@ -1603,6 +2296,63 @@
               ],
               "source_references": [
                 "hrrr.t00z.wrfprsf01.grib2:614"
+              ]
+            },
+            "snow_mixing_ratio": {
+              "axes": [
+                "vertical",
+                "y",
+                "x"
+              ],
+              "maximum": 0.00723,
+              "minimum": 0.0,
+              "missing": 0,
+              "sha256": "797644f2b8d313ae69eb1aff66512a878cbfafa94b08b004a2ca80d6fd8db35e",
+              "shape": [
+                39,
+                1059,
+                1799
+              ],
+              "source_references": [
+                "hrrr.t00z.wrfprsf01.grib2:12",
+                "hrrr.t00z.wrfprsf01.grib2:26",
+                "hrrr.t00z.wrfprsf01.grib2:40",
+                "hrrr.t00z.wrfprsf01.grib2:54",
+                "hrrr.t00z.wrfprsf01.grib2:68",
+                "hrrr.t00z.wrfprsf01.grib2:82",
+                "hrrr.t00z.wrfprsf01.grib2:96",
+                "hrrr.t00z.wrfprsf01.grib2:110",
+                "hrrr.t00z.wrfprsf01.grib2:124",
+                "hrrr.t00z.wrfprsf01.grib2:138",
+                "hrrr.t00z.wrfprsf01.grib2:152",
+                "hrrr.t00z.wrfprsf01.grib2:166",
+                "hrrr.t00z.wrfprsf01.grib2:180",
+                "hrrr.t00z.wrfprsf01.grib2:194",
+                "hrrr.t00z.wrfprsf01.grib2:208",
+                "hrrr.t00z.wrfprsf01.grib2:222",
+                "hrrr.t00z.wrfprsf01.grib2:236",
+                "hrrr.t00z.wrfprsf01.grib2:250",
+                "hrrr.t00z.wrfprsf01.grib2:264",
+                "hrrr.t00z.wrfprsf01.grib2:278",
+                "hrrr.t00z.wrfprsf01.grib2:292",
+                "hrrr.t00z.wrfprsf01.grib2:306",
+                "hrrr.t00z.wrfprsf01.grib2:320",
+                "hrrr.t00z.wrfprsf01.grib2:334",
+                "hrrr.t00z.wrfprsf01.grib2:348",
+                "hrrr.t00z.wrfprsf01.grib2:362",
+                "hrrr.t00z.wrfprsf01.grib2:376",
+                "hrrr.t00z.wrfprsf01.grib2:390",
+                "hrrr.t00z.wrfprsf01.grib2:404",
+                "hrrr.t00z.wrfprsf01.grib2:418",
+                "hrrr.t00z.wrfprsf01.grib2:432",
+                "hrrr.t00z.wrfprsf01.grib2:446",
+                "hrrr.t00z.wrfprsf01.grib2:460",
+                "hrrr.t00z.wrfprsf01.grib2:474",
+                "hrrr.t00z.wrfprsf01.grib2:488",
+                "hrrr.t00z.wrfprsf01.grib2:502",
+                "hrrr.t00z.wrfprsf01.grib2:516",
+                "hrrr.t00z.wrfprsf01.grib2:530",
+                "hrrr.t00z.wrfprsf01.grib2:543"
               ]
             },
             "snow_water_equivalent": {
@@ -1811,17 +2561,17 @@
       ],
       "mapping": {
         "name": "rw-wps-hrrr-prs-grib2.mapping.json",
-        "sha256": "6e17b6edcc2230262dbf072a72fd0b38a4a70e9812a76ea61d2b90fbd4301e54"
+        "sha256": "ac6453cd64eb9c9a63a9df7946b080d105aa63148b101ece45bf79110b82823a"
       },
       "materialization": {
         "frame_count": 2,
         "frame_header_sha256": [
-          "0a8ab051f2b33e693c79170b705980f61f7be7345454ea0dd4b54aeab90ba24c",
-          "081bbf2f939e184013398acb10c40bd9504fa666d6c917aaae530a9788b0f48a"
+          "f28c5bf057e95c8a15276cb85a7804b37a264e88124c6bcf65ff39905fc12bec",
+          "4568ba3f16af523e2462bb413b89db05627c072b93fb55459cb733e7ca32f5bc"
         ],
         "frame_header_sha256_portable": [
-          "877a434bb1ba489eb341b588e7ef8767ead2bee331679cf1df1648a29591915e",
-          "0f6791de558928a14d90f71199b9c3eea35db5cdfdc8dde3fa94ebb9dbea225b"
+          "42ae2fbdf716dbe451640c0f12c330c168b7a7f27d92f855849772c27ef51e73",
+          "8a1c7098d5faea3fe269eb68a9f9fceb4b3cefccb4b7358c9632a369e581e514"
         ],
         "portable_rule": "gpuwm-portable-frame-header-v1",
         "verdict": "PASS"

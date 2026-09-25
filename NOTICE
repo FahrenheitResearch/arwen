@@ -304,15 +304,16 @@ noahmp_glacier.cu, noahmp_leaves.cu, noahmp_vegeflux.cu and ruc.cu -- and
 three in Python: gpuwm/core/noahmp_libm.py, gpuwm/core/mynn_pbl.py and
 gpuwm/core/ruc.py.
 
-Two entries left that list in the ArWen 2.6.6 development lane, included
-in 2.7.0, and the reason is recorded here
-rather than left as a silent shrinkage. gpuwm/core/kernels/glibc_flt32.cuh
-carried FDLIBM's expm1f (s_expm1f.c) and lgammaf reduction (e_lgammaf_r.c)
-until the LGPL gamma transcription that was their only caller was deleted;
-they went with it. That deletion removed the only transcription of
-e_lgammaf_r.c anywhere in this repository, which is why lgammaf no longer
-appears in the list of routines above. The notice below is unchanged and
-still required by, and reproduced for, the twelve files that remain.
+Two entries left that list during ArWen 2.6.6 development, included in
+2.7.0, and the reason is recorded here rather than left as a silent
+shrinkage. gpuwm/core/kernels/glibc_flt32.cuh carried FDLIBM's expm1f
+(s_expm1f.c) and lgammaf reduction (e_lgammaf_r.c) as helper routines of
+ArWen's earlier Grell-Freitas gamma. When that gamma was replaced at 2.6.6
+nothing called them any more, and they were removed. That removal took out
+the only transcription of e_lgammaf_r.c anywhere in this repository, which
+is why lgammaf no longer appears in the list of routines above. The notice
+below is unchanged and still required by, and reproduced for, the twelve
+files that remain.
 
 FDLIBM's notice, preserved here as its sole condition requires, and
 also at licenses/LICENSE-FDLIBM-SunPro.txt and beside the code at
@@ -354,28 +355,20 @@ offered to a reader on the strength of these two notices.
 
 Material removed during 2.6.6 development and included in 2.7.0
 
-Through ArWen 2.6.5, gpuwm/core/kernels/glibc_flt32.cuh carried a
-transcription of glibc's own tgammaf -- gammaf_positive, gamma_product and
-the tgamma wrapper over them, about 85 lines. That code is glibc's own
-work and neither FDLIBM's nor Arm's: gamma_productf.c was written from
-nothing for glibc in 2013, at commit d8cd06db62d9, and has no FDLIBM,
-SunPro, Cygnus or Arm ancestor anywhere. It is FSF-copyright and
-LGPL-2.1-or-later. An Apache-2.0 distribution cannot carry that under its
-own grant, and no notice entry cures it, so it is deleted at 2.6.6 --
-together with the expm1f, exp2f and lgammaf helpers it was the only caller
-of -- and replaced by ArWen's own gamma, which shares none of glibc's
-machinery and is correctly rounded where glibc's is not. The replacement,
-and the deliberate divergence from WRF it creates, are documented in
-docs/gf_gamma_known_delta.md.
-
-The deletion is prospective, and saying so is part of the fix rather than
-an afterthought. Every gpuwm sdist and wheel up to and including 2.6.5,
-and every commit of the public repository up to the 2.6.5 tag, contains
-that transcription; a later commit does not undistribute an earlier one.
-The 2.7.0 distribution contains the removal. Anyone redistributing a gpuwm
-artifact at 2.6.5 or earlier is redistributing LGPL-2.1-or-later material
-under a notice that does not mention it, and should take 2.7.0 or later
-instead.
+Through ArWen 2.6.5, gpuwm/core/kernels/glibc_flt32.cuh carried ArWen's
+earlier float32 gamma for Grell-Freitas, together with three helper
+routines that nothing else called: expm1f and lgammaf (FDLIBM, above) and
+exp2f (Arm, above). At 2.6.6 that gamma was replaced by the current one,
+which is correctly rounded on every float32 argument the scheme can reach,
+where the reference it is measured against is not, and the three helpers
+were removed because nothing called them any more. The gamma in
+glibc_flt32.cuh, the earlier one and the current one alike, is ArWen's own
+work under this distribution's licence, and no third-party notice in this
+file applies to it. Earlier releases of this file described the earlier
+gamma as derived from glibc and advised against redistributing 2.6.5 and
+earlier; that description was wrong, and the advice built on it is
+withdrawn. The replacement, and the deliberate divergence from WRF it
+creates, are documented in docs/gf_gamma_known_delta.md.
 
 --------------------------------------------------------------------------
 

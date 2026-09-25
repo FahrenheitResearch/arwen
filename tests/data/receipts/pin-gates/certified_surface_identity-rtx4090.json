@@ -1,0 +1,26 @@
+{
+  "morrison_rte": {
+    "elapsed_seconds": 24.0,
+    "field_inventory_sha256": "217f1bd3fadfab1669ee802cdbe4bd4202bf329014b971e2ccfc16ccf4db568b",
+    "profile": "morrison_rte",
+    "sha256": "5ce45b7d9c399f345511c879e7e648aeff2c8edf1aa0c7aaecac362ce4d080b9"
+  },
+  "nssl2_rte": {
+    "elapsed_seconds": 24.0,
+    "field_inventory_sha256": "217f1bd3fadfab1669ee802cdbe4bd4202bf329014b971e2ccfc16ccf4db568b",
+    "profile": "nssl2_rte",
+    "sha256": "1a6e4d090fcfa0ba09ac76672f1c9ccff35962d5655dd1b283e1e5c3884d4e66"
+  },
+  "thompson_dudhia": {
+    "elapsed_seconds": 24.0,
+    "field_inventory_sha256": "217f1bd3fadfab1669ee802cdbe4bd4202bf329014b971e2ccfc16ccf4db568b",
+    "profile": "thompson_dudhia",
+    "sha256": "e7a7d6840968431c72f1515454687e0c5ed27ceab903dda22807c127387c3070"
+  },
+  "wsm6_dudhia": {
+    "elapsed_seconds": 24.0,
+    "field_inventory_sha256": "217f1bd3fadfab1669ee802cdbe4bd4202bf329014b971e2ccfc16ccf4db568b",
+    "profile": "wsm6_dudhia",
+    "sha256": "590e09e863f6b3c979846289156905239403179b89d52de217501a549c4df965"
+  }
+}

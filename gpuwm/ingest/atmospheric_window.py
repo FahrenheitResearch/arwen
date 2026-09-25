@@ -16,9 +16,24 @@ from gpuwm.ingest.grib import Era5Snapshot
 ATMOSPHERIC_FIELDS = frozenset({
     "T", "PRES", "SPFH", "U", "V", "GHT", "QC", "QR", "QI", "QS", "QG",
 })
+#: The canonical names of exactly the fields ATMOSPHERIC_FIELDS lists under
+#: their legacy names: the six thermodynamic and wind fields and the five
+#: hydrometeor masses (gpuwm.mapped_source.HYDROMETEOR_LEGACY_NAMES).  The
+#: two tables are one inventory read on two sides of the regular join, and
+#: the mapped engine's own copy (tools/rw_wps/crates/mapped-engine/src/
+#: window.rs, CANONICAL_ATMOSPHERIC_FIELDS) is the same list; a windowed
+#: frame crops every name here and expects every legacy name there at the
+#: window's shape.  When the five were missing here, a mapping that
+#: carried them delivered full-grid QC/QR/QI/QS/QG into a windowed
+#: snapshot expecting the window, and the preparation refused on the
+#: shape.  tests/test_atmospheric_window.py holds the three lists to each
+#: other.
 CANONICAL_ATMOSPHERIC_FIELDS = frozenset({
     "air_temperature", "air_pressure", "specific_humidity", "eastward_wind",
     "northward_wind", "geopotential_height",
+    "cloud_water_mixing_ratio", "rain_water_mixing_ratio",
+    "cloud_ice_mixing_ratio", "snow_mixing_ratio",
+    "graupel_or_hail_mixing_ratio",
 })
 WINDOW_SCHEMA = "gpuwm-mapped-atmospheric-window-v1"
 WINDOWED_FRAMESET_SCHEMA = "gpuwm-mapped-windowed-frameset-v1"

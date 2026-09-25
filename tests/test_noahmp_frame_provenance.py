@@ -967,12 +967,13 @@ def test_this_platforms_row_is_what_the_card_compiles_to(tmp_path):
 
 def test_the_cpu_only_check_route_prices_noahmp_from_the_ceiling_and_names_the_unread_card(
         recorded, present, monkeypatch):
-    """``gpuwm check`` with GPU readiness unjudged prices from metadata on
-    the reference profile.  For scheme 4 that used to be a refusal naming
-    the reference card; now it is the estimate every other scheme gets on
-    this route, with a basis that says the Noah-MP frames came from the
-    ceiling, what kept this machine's card unread, and how to make the
-    price exact.  A declared card on this route is priced the same way."""
+    """``gpuwm check`` with GPU readiness unjudged and no card answering
+    its probe prices from metadata on the reference profile.  For scheme
+    4 that used to be a refusal naming the reference card; now it is the
+    estimate every other scheme gets on this route, with a basis that
+    says the Noah-MP frames came from the ceiling, what kept this
+    machine's card unread, and how to make the price exact.  A declared
+    card on this route is priced the same way."""
     import argparse
 
     exp = experiment()
@@ -981,10 +982,9 @@ def test_the_cpu_only_check_route_prices_noahmp_from_the_ceiling_and_names_the_u
     monkeypatch.setattr(pf, "config_forcing_source", lambda *a, **k: None)
     args = argparse.Namespace(config="unused.toml", column_chunk=None,
                               forcing_interval_s=None, vram_gib=None)
-    required = pf._required_memory_without_device(
-        exp, args, card_unread="this machine's GPU readiness is info "
-                               "(device not touched), so its card was not "
-                               "read on this route")
+    required = pf._required_memory_without_kernels(
+        exp, args, readiness="this machine's GPU readiness is info "
+                             "(device not touched)")
     assert required["status"] == "estimated"
     assert required["alloc_estimate_bytes"] > 0
     basis = required["basis"]
@@ -997,23 +997,31 @@ def test_the_cpu_only_check_route_prices_noahmp_from_the_ceiling_and_names_the_u
     assert "not measured on this card" in basis
     assert "measure_noahmp_frames.py measure" in basis
     assert pf.MEASURED_LOCAL_MEMORY_PROFILE.name not in basis
-    # No reason handed in: the route still says it reads no card.
-    assert "reads no card" in pf._required_memory_without_device(exp, args)["basis"]
+    assert "GPUWM_NO_LOCAL_GPU is set" in basis
+    assert required["device_read"] is False
+    assert required["local_memory_profile"] == pf.MEASURED_LOCAL_MEMORY_PROFILE.name
+    # No verdict handed in: the route still says the card was not read.
+    assert "was not read on this route" in pf._required_memory_without_kernels(exp, args)["basis"]
     # A declared card on this route is a machine that is elsewhere: priced
     # from the ceiling like any other unread card.
     args.vram_gib = 24.0
-    declared = pf._required_memory_without_device(exp, args)
+    declared = pf._required_memory_without_kernels(exp, args)
     assert declared["status"] == "estimated"
     assert "priced from the ceiling" in declared["basis"]
     # Scheme 2 on the same route is untouched: the plain basis, no
     # Noah-MP clause.
-    required = pf._required_memory_without_device(experiment(lsm=2), args)
+    required = pf._required_memory_without_kernels(experiment(lsm=2), args)
     assert required["status"] == "estimated"
     assert required["basis"] == ("CPU-only metadata; resident alternative with "
                                  "conservative reference GPU overhead")
 
 
-def _cpu_only_check_parser(monkeypatch, exp):
+def _cpu_only_check_parser(monkeypatch, exp, tmp_path):
+    """The parser and the configuration path ``check_main`` is handed.
+
+    The experiment is pinned, but the door reads the file's own text for
+    its ``[fetch]`` hints before it loads anything, so the path has to
+    be a readable TOML file and not a name."""
     import argparse
 
     from gpuwm import doctor
@@ -1029,17 +1037,19 @@ def _cpu_only_check_parser(monkeypatch, exp):
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="command", required=True)
     pf.register_cli(sub)
-    return parser
+    config = tmp_path / "config.toml"
+    config.write_text("[experiment]\nname = \"pinned\"\n", encoding="utf-8")
+    return parser, str(config)
 
 
 def test_check_main_on_the_cpu_only_route_prices_noahmp_and_prints_the_basis(
-        recorded, present, monkeypatch, capsys):
+        recorded, present, monkeypatch, capsys, tmp_path):
     """The door a user without a judged card runs: the estimate is made,
     the basis is printed where the number is, and the portable planning
     command is offered exactly as it is for every other scheme."""
-    parser = _cpu_only_check_parser(monkeypatch, experiment())
+    parser, config = _cpu_only_check_parser(monkeypatch, experiment(), tmp_path)
     for flags in ([], ["--json"]):
-        args = parser.parse_args(["check", "unused.toml", *flags])
+        args = parser.parse_args(["check", config, *flags])
         code = pf.check_main(args)
         out = capsys.readouterr().out
         assert code == 2
@@ -1057,14 +1067,14 @@ def test_check_main_on_the_cpu_only_route_prices_noahmp_and_prints_the_basis(
 
 
 def test_check_main_estimates_and_states_the_bound_when_no_reading_exists(
-        monkeypatch, capsys):
+        monkeypatch, capsys, tmp_path):
     """A tree with no usable Noah-MP row still produces an estimate and
     still offers the portable planning command.  The units are priced at
     the assumed bound and the basis says so where the number is."""
     monkeypatch.setattr(kfr, "NOAHMP_COMPOSED_FRAME_RECORDINGS", ())
-    parser = _cpu_only_check_parser(monkeypatch, experiment())
+    parser, config = _cpu_only_check_parser(monkeypatch, experiment(), tmp_path)
     for flags in ([], ["--json"]):
-        args = parser.parse_args(["check", "unused.toml", *flags])
+        args = parser.parse_args(["check", config, *flags])
         code = pf.check_main(args)
         out = capsys.readouterr().out
         assert code == 2

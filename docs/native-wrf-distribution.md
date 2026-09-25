@@ -1,8 +1,27 @@
 # RW-WPS native stock-WRF initialization distributions 0.1.1
 
 The Linux and Windows x86-64 bundles install the dedicated `rw-wps` Python distribution with
-HRRR, ERA5, GFS, 20CRv3, and declarative mapped adapters, and supplies five
-prebuilt Rust GRIB bridges. The wheel retains the internal `gpuwm.*` module
+HRRR, ERA5, GFS, 20CRv3, ICON global, and declarative mapped adapters, and
+supply the prebuilt Rust bridges declared in `BUNDLED_BRIDGES`
+(`gpuwm/native_wrf_distribution.py`), which is the one place a bundle's
+contents are written down:
+
+| bridge | built from | needed by |
+| --- | --- | --- |
+| `grib1_bridge` | `tools/grib1_bridge` | the ERA5 route |
+| `grib2_inventory` | `tools/grib1_bridge` | every generic GRIB2 prep route |
+| `grib2_dump` | `tools/grib1_bridge` | every generic GRIB2 prep route |
+| `gfs_grib2_bridge` | `tools/grib1_bridge` | the GFS front door |
+| `hrrr_grib2_bridge` | `tools/grib1_bridge` | the HRRR front door |
+| `gdt101_remap` | `tools/grib1_bridge` | every source on a GDT-101 unstructured mesh, ICON global among them |
+| `rw_fetch` | `tools/rustwx` | the rust fetch backbone |
+
+The table is the declaration the builders read: the option each takes, the
+environment variable the installed launcher binds, the workspace the release
+build compiles and the identity probe the packager runs all come off the same
+row, so a bridge a shipped source names cannot be absent from the bundle.
+
+The wheel retains the internal `gpuwm.*` module
 namespace for source compatibility but omits the forecast driver, supervisor,
 dycore/physics executors, verification suite, and forecast-only data tables.
 The adapters emit `wrfinput_d01..dNN` and root-only `wrfbdy_d01` directly.

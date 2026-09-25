@@ -405,6 +405,32 @@ your card. When you size for a card that is not in the machine
 sold at that capacity, which over-prices every other card in the class
 rather than under-pricing any.
 
+That device is what EVERY device-scaled term of a declared card's
+estimate is priced against, in `gpuwm domain` and in `gpuwm check`
+alike: the CUDA context, the local-memory backing store, the per-scheme
+column workspaces and the shared radiation chunk workspace. The
+radiation workspace is device-scaled because the batched chains size
+their chunk to saturate the card, and an unstated device is not the
+conservative reading of that: the shortwave chain has no width ceiling,
+so with no device named it takes a fixed width (2,048 columns) that the
+reference device saturates past (2,560).
+
+The device is ONE of the two terms the two doors have to read the same
+way before the envelope the wizard prints for the file it writes is the
+envelope `gpuwm check` reads back out of that file. The other is the
+retained forcing-interval count, which follows from the boundary
+cadence: a configuration with no staged case and no cadence hint now
+answers that from the recorded producer's own registry row at both
+doors, where the check used to fall back to a six-hourly default while
+the wizard had already sized on the producer's hourly one.
+
+MEASURED, `gpuwm domain --point=39.7,-96.6 --card 16gb --ladder 12-3
+--source hrrr --cycle 2026-09-17T18 --explain`: the wizard prints
+`peak envelope ... = 13.74 GiB` inside a 14.54 GiB budget with 0.80 GiB
+to spare, and the `gpuwm check` it then runs on the file it has just
+written prints `BINDING PHASE: forecast needs 13.74 GiB` and passes,
+rc 0. One file, one number, two doors.
+
 ### Windows / WDDM: the 1.75 multiplier is retired (measured, 2026-08-19)
 
 The multiplier came from ONE run: the four-domain reference forecast

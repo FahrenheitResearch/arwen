@@ -27,6 +27,9 @@ if str(REPO) not in sys.path:
 
 from tools.build_native_wrf_distribution import build_distribution  # noqa: E402
 from gpuwm.native_wrf_distribution import (  # noqa: E402
+    BRIDGE_WORKSPACES,
+    BUNDLED_BRIDGES,
+    CPU_BACKEND_LIBRARY,
     CUDA_KERNEL_SOURCES,
     HRRR_HELPERS,
     PYTHON_DISTRIBUTION,
@@ -332,6 +335,19 @@ _CORE_MODULES = {
     "sase_limits.py",
     "state.py",
     "thompson_contract.py",
+    # The mp=28 real-data cold start closes cloud droplet, rain and ice
+    # number over the analyzed mass through the scheme's own entry block
+    # (gpuwm/ingest/real.py, staged above), and that block is the host
+    # mirror gpuwm/core/thompson_entry.py: numpy at module scope, its
+    # gamma moments from thompson_aerosol_contract.py, whose only other
+    # internal reaches are thompson_contract.py (staged) and, function-
+    # locally, gpuwm.physics_compat (staged); the contract's exp/log are
+    # correctly_rounded_libm.py, 75 lines of the decimal module.  Three
+    # leaf modules, no CuPy and no forecast executor, so a preparation-only
+    # install starts an mp=28 case with the same numbers the full one does.
+    "thompson_entry.py",
+    "thompson_aerosol_contract.py",
+    "correctly_rounded_libm.py",
     # state.py allocates WDM6's three number prognostics by NAME and reads
     # that tuple from `wdm6_constants.WDM6_NUMBER_SPECIES` rather than
     # copying the spelling, so an mp_physics=16 config cannot be loaded
@@ -563,17 +579,6 @@ _OPTIONAL_STAGED_IMPORTS = {
         "gpuwm/core/ruc_contract.py instead would pull "
         "gpuwm.core.noahmp_mynn_contract and gpuwm.ingest.ruc_soil in "
         "behind it for two integer tuples.",
-    ("gpuwm/table_assets.py", "gpuwm.core.thompson_aerosol_contract"):
-        "THE mp=28 ACTIVATION TABLE'S PIN, and only that.  The import is "
-        "function-local inside stage_classic_tables' packaged-copy arm, "
-        "which completes a staged table root for a scheme this wheel "
-        "cannot run.  Nothing staged reaches it: the arm belongs to "
-        "`gpuwm fetch-tables`, whose only wiring is table_assets."
-        "register_cli() from gpuwm/cli.py, and cli.py is excluded above; "
-        "fetch_tables_main has no other caller in the tree.  Staging "
-        "gpuwm/core/thompson_aerosol_contract.py instead would pull "
-        "gpuwm.core.correctly_rounded_libm in behind it -- a forecast-side "
-        "libm this wheel stages nowhere -- for one TableAsset tuple.",
     ("gpuwm/core/state.py", "gpuwm.core.preflight"):
         "CUDA forecast scratch-preflight path; RW-WPS constructs host state",
     ("gpuwm/core/uh_diag.py", "gpuwm.core.streaming"):
@@ -1103,7 +1108,6 @@ def build_release(args: argparse.Namespace) -> dict[str, object]:
     if dirty:
         raise RuntimeError("refusing to build RW-WPS from a dirty source tree")
 
-    manifest = REPO / "tools" / "grib1_bridge" / "Cargo.toml"
     source_date_epoch = subprocess.check_output(
         ["git", "-C", str(REPO), "show", "-s", "--format=%ct", "HEAD"],
         text=True,
@@ -1140,26 +1144,36 @@ def build_release(args: argparse.Namespace) -> dict[str, object]:
             target_dir=cargo_target,
             source_date_epoch=source_date_epoch,
         )
-        _run([
-            "cargo",
-            "build",
-            "--manifest-path",
-            str(manifest),
-            "--release",
-            "--locked",
-            "--offline",
-        ], cwd=manifest.parent, env=environment)
+        # One build per workspace the bundle's declaration names, into
+        # one target directory, which is the shape the release bridge
+        # builder already uses.  Reading the workspaces off the table
+        # instead of hard-coding the decoder one is what makes a bridge
+        # that lives elsewhere -- rw_fetch does -- actually get built:
+        # this command used to compile only tools/grib1_bridge and then
+        # hand the packager a namespace with no rw_fetch in it at all.
+        for workspace in BRIDGE_WORKSPACES:
+            manifest = REPO / workspace / "Cargo.toml"
+            if not manifest.is_file():
+                raise FileNotFoundError(
+                    f"the standalone bundle declares bridges from "
+                    f"{workspace} and this checkout has no {manifest}")
+            _run([
+                "cargo",
+                "build",
+                "--manifest-path",
+                str(manifest),
+                "--release",
+                "--locked",
+                "--offline",
+            ], cwd=manifest.parent, env=environment)
         native = cargo_target / "release"
         distribution_args = argparse.Namespace(
             wheel=wheels[0],
-            grib1_bridge=native / "grib1_bridge",
-            grib2_inventory=native / "grib2_inventory",
-            grib2_dump=native / "grib2_dump",
-            gfs_bridge=native / "gfs_grib2_bridge",
-            hrrr_bridge=native / "hrrr_grib2_bridge",
-            cpu_backend=native / "libgpuwm_preprocess_cpu.so",
+            cpu_backend=native / CPU_BACKEND_LIBRARY,
             output_dir=output,
             archive=archive,
+            **{bridge.dest: native / bridge.name
+               for bridge in BUNDLED_BRIDGES},
         )
         result = build_distribution(distribution_args)
 

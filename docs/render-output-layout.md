@@ -264,3 +264,238 @@ that token afterwards.  A concurrent render into the same case is working
 in a store that cannot carry this door's token, whenever it opened it, so
 it is never swept.  The partial delivery is left alone: it is the evidence
 of what failed.
+
+## Which products a render actually asks for
+
+`--products` names a request; the catalog decides what of it this store
+can draw.  Every NAMED slug whose catalog row is not `renderable` is
+dropped before the renderer is launched and reported as a skip carrying
+the engine's own reason, in `render-summary.json` under
+`skipped_families`.  The request is checked against exactly the files
+that invocation will render: one file on the per-file route, the whole
+series store under `--series`.
+
+This is not tidiness.  `rw_wrfbatch` answers `batch render incomplete`
+and exits nonzero when its batch summary carries any failure, and a
+product it is handed and cannot draw sometimes fails rather than
+skips -- so ONE product can discard the whole invocation's verdict.
+Measured on 2.7.5: the shipped `snow` preset, whose product list names
+`var:SNOW` and `var:SNOWH`, over a thirteen-frame five-minute child
+series -- 143 pictures drawn and the render still exited 1, because
+those two variables are not in the store.  Under `gpuwm downscale`
+that render is the finalize stage of a finished child, so the run
+reported `Forecast failed` over six hours of integration that had gone
+fine.
+
+What is dropped, and why:
+
+| the catalog says | example | what happens |
+| --- | --- | --- |
+| `renderable` | `2m_temperature` | asked for |
+| `missing-fields` | `10m_wind_gusts`, no `wind_gust_10m_agl` stored | dropped, the missing selectors named |
+| `blocked` | `qpf_6h` on a two-hour run | dropped, "6-h QPF requires forecast hour >= 6" |
+| `excluded` | `qpf_1h` on a sub-hourly history | dropped, "exact-time ordinal axis; fixed-hour windows are undefined on it" |
+| no row, `var:` family | `var:SNOWH` | dropped: the generic catalog enumerates the store's 2-D variables, so a missing row is proof -- but only when the listing carried generic rows at all; one that carried none enumerated nothing, and the term is forwarded for the renderer to answer |
+| no row, group keyword | `all`, `heavy` | asked for: the engine expands a group itself and leaves out what it cannot draw |
+| `mesh:`, `meshdiff:` | `mesh:cell_area` | dropped at both doors: drawn from a mesh file's cell boundaries, and no door here passes `--mesh-grid` |
+| `xsec:`, no `--section` | `xsec:QICE` | dropped at both doors: a section is cut along a line and this invocation composed none |
+| `xsec:` with `--section` | `xsec:QICE` | asked for: the section lane cuts it from the frames themselves |
+
+Whether a forwarded product costs you the render depends on its
+family, which is why every refused product is dropped and not only
+the dangerous ones.  Measured on 2.7.5: a forwarded `missing-fields`
+or `blocked` product is SKIPPED by the renderer and does not change
+the exit code -- `10m_wind_gusts`, `precipitation_type` and
+`cloud_cover` forwarded onto a downscaled child, and `qpf_6h` onto a
+two-hour store, all exit 0.  A forwarded `var:` term the store has no
+variable for, a `mesh:` or `xsec:` term, and a fixed-hour windowed
+product on an exact-time ordinal axis (the `windowed-ordinal-axis` and
+`windowed-needs-whole-hour-frames` codes) FAIL it: a thirteen-frame
+sub-hourly series with `qpf_1h` forwarded into it answers
+`rendered=13 skipped=0 failed=13` and exits 1, while the same call
+without that one slug exits 0.  The door cannot tell in advance which
+store will do which, so it asks the catalog and drops whatever the
+catalog refused.
+
+A group keyword on its own (`--products all`) is never checked and costs
+no availability pass: the engine expands it and leaves out what it
+cannot draw.  A slug spelled out BESIDE a group still is, because a
+named slug is a promise.
+
+The three STORELESS families -- `mesh:`, `meshdiff:` and `xsec:` --
+are decided before the listing is even asked, because a store listing
+cannot decide them and must not try.  The renderer's own answer to one
+it cannot draw is PER INVOCATION and arrives before a single picture:
+a `mesh:` term with no `--mesh-grid` is a usage error at argument
+validation, a `mesh:` term standing beside store products is refused at
+the entry to the batch render because the two read different inputs,
+and an `xsec:` term with no `--section` is refused before the store
+render starts.  So both doors drop such a term per PRODUCT and draw
+the rest, which is what the renderer will not do.  `gpuwm render` names
+the term, its reason and the way out on stderr and in
+`render-summary.json`, and refuses outright only when the drop leaves
+nothing to draw.  `gpuwm downscale` drops it before the child integrates
+and carries the surviving spec in its plan document, so the finalize
+render -- which IS `gpuwm render` -- draws what the request left; that
+door refuses before the parent archive is opened only when the drop
+leaves nothing, because that child would integrate for its full length
+and then draw nothing.
+
+Two things are still failures and still stop the render.  A product
+the catalog called `renderable` that then broke is a real defect and
+is reported as one.  And when the availability listing itself cannot be
+read, the request is sent unchanged -- so the import or launch failure
+underneath stays visible -- with a `note:` saying the question was
+never answered, because that is the one path on which a NAMED product
+these frames cannot draw still reaches the renderer.
+
+### Sub-hourly history and the fixed-hour windows
+
+Fixed-hour windowed products -- `qpf_1h`, `qpf_6h`, `qpf_24h`,
+`uh_2to5km_1h_max`, `10m_wind_1h_max`, the `2m_temp_0_24h_*` family --
+are defined in whole forecast hours.  A history cadence that does not
+land on whole hours puts the store on an exact-time ordinal axis, where
+those windows are undefined, and the catalog excludes them by name.  A
+ten-minute child is the ordinary case: it draws every instantaneous
+product for every frame and its `total_qpf` (a stored run-total, not a
+window), and its render summary names the windowed ones it skipped.
+Ask for whole-hour history if the windows are the point.
+
+### When a child's render fails anyway
+
+`gpuwm downscale` refuses with one sentence, exit 2, and keeps the
+forecast's own verdict: `report.json` stays `PASS` for the integration
+and carries a `products` block of its own with `status`, the reason,
+`drawn_early` (what the early render published from the first frame),
+`pictures_on_disk` (what the picture tree holds when the render stage
+failed), the render command, and `renderer_output` -- the render stage's
+own last lines.  The frames, the checkpoints and the report are the
+evidence and are kept; the pictures can be redrawn from the frames at
+any time with the command the refusal prints.
+
+Look in the picture tree before redrawing anything.  A series render
+draws frame by frame and fails at its batch summary, so a render that
+exited 1 has normally drawn every frame's other products: the measured
+2.7.5 `snow` run above left 143 pictures, eleven for each of its
+thirteen frames, and only the two products it could not draw are
+missing.  The refusal states that count.
+
+### What a run that did not finish leaves behind
+
+A different outcome, and the opposite instruction.  A child that stops
+partway through its forecast KEEPS every picture its early render had
+already published, and nothing under the render directory is removed.
+The directory then holds three things a reader needs:
+
+* `DID-NOT-FINISH.txt` at its top: where the forecast stopped (model
+  second and step, of how many), why, how many pictures are here, which
+  frames were written before the stop, and that everything here was
+  drawn before it.  Nothing in the folder is a picture of the state the
+  run stopped in.
+* `render-summary.json` with `status` set to `did-not-finish`,
+  `pictures_on_disk` counted from the tree, and `banner_path`.  A
+  delivery that published PNGs without an invocation receipt gets a
+  summary written for it here, its `count_basis` saying the count came
+  from the tree, because the presence of this file is what tells a run
+  browser there are pictures at all.
+* Whatever the early render itself wrote, `first-products.json`
+  included.
+
+A child that stops inside its forecast writes `report.json` as well,
+whatever stopped it, and it says the same thing: `result` `FAIL` with
+the capsule naming what stopped the run under `failure` -- or, where
+the stop composed no capsule, that block's `summary`, `message` and
+`error_type` -- and a `products` block whose `status` is `KEPT`,
+carrying `pictures_on_disk` and the banner's path.
+The banner, the summary and the report are one account of one run, and
+no failure path removes anything from this directory.
+
+A picture tree that cannot be LISTED is its own reading, in all three
+documents: the count is null, `pictures_on_disk_error` carries the
+error, and the banner says the folder could not be listed rather than
+that it is empty.  A tree nobody could read is not a tree with nothing
+in it, and printing the second over the first tells a reader whose
+pictures are behind a permission wall or a dropped mount that they have
+none.  A directory that was never created is still the empty case.
+
+The run's event stream carries a `warning` with code
+`early_render_kept`; `gpuwm.runplan.WARNING_CODES` is the vocabulary
+those codes come from.  Before 2.7.6 the pictures were removed instead,
+so the reader of a stopped run opened an empty folder.
+
+## Vertical sections: the line, and how tall the cut is drawn
+
+An `xsec:` term in `--products` is a vertical cut, not a store product.
+It needs a line -- `--section lat,lon,lat,lon` or a JSON file.  A term
+with no line reaches the engine and is refused there, with the frames
+already open; `gpuwm downscale` is the one door that reads the pair at
+plan time, because a chain composes no section line of its own and a
+forecast is paid for before its pictures are drawn.
+
+The height axis is fitted to the air in the cut, up to a ceiling.  That
+ceiling is `--section-top-km`, 1 to 40 km, and the engine uses 14 km
+when nothing names one.  Fourteen kilometres is the right default for a
+storm; it is the wrong frame for anything shallow, because a feature a
+kilometre deep is then drawn in the bottom fourteenth of the picture and
+nothing in it can be read.  Give the ceiling the depth of what is being
+looked at:
+
+```
+gpuwm render --products xsec:tk --section 37.75,-123.6,37.75,-121.2 \
+    --section-top-km 3 --out png wrfout_d01_*
+```
+
+The rest of the family is on the same door: `--isotherms` is the
+isotherm set drawn over every cut, `--section-across KM` adds a second
+frame perpendicular to the line through the fill's strongest column, and
+`--section-size WxH` sets the size a cut is drawn at (absent, a section
+is landscape 2:1 at the map's width, because a vertical cut handed the
+map's own size comes out portrait -- the shape it is least readable in).
+
+`render-summary.json` records the ceiling every invocation drew to, in
+`section_tops_km`, so two pictures of one line can be told apart by
+their receipt rather than by eye.  The list is capped at eight distinct
+ceilings and `additional_section_tops_km` counts what the cap dropped.
+
+The fill's colour bar is fitted to the air the cut actually holds.  A
+bar that starts at zero is what makes an empty column read as the bottom
+of the ramp, so it is kept while the fill still uses at least half of
+it -- mixing ratio, reflectivity and wind speed all reach down toward
+zero.  A field measured from absolute zero does not: a kelvin cut three
+kilometres deep spans under thirty degrees somewhere above 290, and on a
+bar starting at zero that is under a tenth of the ramp and the whole cut
+comes out one colour.  Those fills start at the lowest value on the cut
+instead, and the bottom band of the ramp is then drawn solid rather than
+faded out, because the fade exists to hide absence and there is no
+absence in it.
+
+A level list on the fill term names the bar instead: `xsec:QCLOUD=0.01,0.1`
+draws every frame on 0.01 to 0.1 g kg-1, the `SECTIONFILL` receipt says
+`rule=named`, and a frame with no signal keeps that bar rather than a 0 to
+1 placeholder, so a series of cuts of one line is a series of pictures on
+one bar.  The list may run into the next term on the same token
+(`xsec:QCLOUD=0.01,0.1/wa`); the comma before the last level is the
+list's own and does not split the product.
+
+A `~log` fill is drawn in log10 and its colour bar prints the field's own
+numbers at the decades, 0.1, 1, 10 g kg-1, with the 2x and 5x steps when
+fewer than three whole decades fit on the bar; the units line says (log
+scale).  The receipt's `lo` and `hi` for such a fill are the decades the
+bar spans, which `rule=log-floor` or `rule=named` says.
+
+Mixing ratios are drawn in grams per kilogram on every route.  The section
+route always was; a stored plane in kg kg-1 drawn through `var:` or
+`mesh:` now goes to g kg-1 first, keyed on the units attribute the file
+carries and never on the variable's name, and only then takes the
+power-of-a-thousand decade a range still needs.
+
+A fill that gives up the zero anchor is therefore drawn on its own
+frame's range, so two cuts of one line an hour apart can be drawn on two
+different bars and neither picture says so.  `render-summary.json`
+carries that record: `section_fills` holds one row per cut drawn --
+`family`, the `lo` and `hi` its bar spans, whether the bottom band is
+`absence`, and the `rule` that set the two numbers (`zero-anchor`,
+`own-minimum`, `crosses-zero`, `log-floor` or `symmetric`).  A series of
+cuts is compared through that record rather than by colour.  The list is
+capped at eight distinct rows and `additional_section_fills` counts what
+the cap dropped.

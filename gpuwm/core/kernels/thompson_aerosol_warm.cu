@@ -1482,6 +1482,14 @@ extern "C" __global__ void thompson_aa_warm_source_network(
     // cold half; leaving the warm half contracted was an internal
     // inconsistency, not a decision.  Same tie-break as "THE SHARED FITS" in
     // thompson_aerosol_common.cuh: the authority is WRF, not mp=8.
+    // Entry rain and graupel as WRF holds them after :1878-1905 and
+    // :1915-1949 (zero where the mixing ratio is at or below R1), for the
+    // source-stage removals at :3088-3091 and :3157-3159 below.
+    const float qr_entry_wrf = qr[idx] > THOMPSON_AA_R1 ? qr[idx] : 0.0f;
+    const float nr_entry_wrf = qr[idx] > THOMPSON_AA_R1 ? nr[idx] : 0.0f;
+    const float qg_entry_wrf = qg[idx] > THOMPSON_AA_R1 ? qg[idx] : 0.0f;
+    const float ng_entry_wrf = qg[idx] > THOMPSON_AA_R1
+        ? graupel_number_per_kg[idx] : 0.0f;
     qc[idx] = fmaxf(0.0f, thompson_aa_sub(qc[idx],
         thompson_aa_mul((float)(cloud_sink * (double)orho), dt)));
     qr[idx] = fmaxf(0.0f, thompson_aa_add(qr[idx],
@@ -1499,9 +1507,69 @@ extern "C" __global__ void thompson_aa_warm_source_network(
         graupel_number_per_kg[idx],
         thompson_aa_mul((float)(graupel_number_rate * (double)orho), dt));
     const double vapor_rate = snow_vapor_rate + graupel_vapor_rate;
-    qv[idx] = fmaxf(1.0e-10f, thompson_aa_sub(qv0,
-        thompson_aa_mul((float)(vapor_rate * (double)orho), dt)));
+    // The entry vapour plus the tendency, unfloored: WRF floors the running
+    // vapour once, at the terminal apply (:3974); see the cold network.
+    qv[idx] = thompson_aa_sub(qv[idx],
+        thompson_aa_mul((float)(vapor_rate * (double)orho), dt));
     thompson_aa_bound_rain_number(qr[idx] * rho, rho, &nr[idx]);
+    // :3067-3091.  Where the post-source rain concentration is at or below R1
+    // WRF discards the call's rain sources and removes the entry rain:
+    // qrten = -qr1d*odts, nrten = -nr1d*odts.  The number bound above zeroes
+    // only the number; the mass has to go too.
+    if (!(thompson_aa_mul(qr[idx], rho) > THOMPSON_AA_R1)) {
+        qr[idx] = thompson_aa_add(qr_entry_wrf, thompson_aa_mul(
+            thompson_aa_mul(-qr_entry_wrf, inverse_dt), dt));
+        nr[idx] = thompson_aa_add(nr_entry_wrf, thompson_aa_mul(
+            thompson_aa_mul(-nr_entry_wrf, inverse_dt), dt));
+    }
+    // :3118-3160, the graupel mass/number balance, which WRF runs for
+    // non-hail-aware Thompson too.  At or below R1 the graupel and its
+    // private number are removed; otherwise the private number is reset so
+    // the median volume diameter stays in [D0r, 25.4 mm].  calc_refl10cm
+    // reads that number: without the balance the saved reflectivity differs
+    // from WRF v4.6.1 by up to 8.7 dB in 505 to 939 cells of every saved
+    // forecast frame, and graupel at or below R1 as a concentration survives.
+    {
+        const float xrg = thompson_aa_mul(qg[idx], rho);
+        if (!(xrg > THOMPSON_AA_R1)) {
+            qg[idx] = thompson_aa_add(qg_entry_wrf, thompson_aa_mul(
+                thompson_aa_mul(-qg_entry_wrf, inverse_dt), dt));
+            graupel_number_per_kg[idx] = thompson_aa_add(ng_entry_wrf,
+                thompson_aa_mul(thompson_aa_mul(-ng_entry_wrf, inverse_dt),
+                                dt));
+        } else {
+            // REAL(4) throughout except lamg, which is DOUBLE (:1597).
+            const float am_g = 3.1415926536f * 400.0f / 6.0f;
+            const float mvd_numerator = 3.0f + 0.0f + 0.672f;
+            const float shadow_m3 =
+                thompson_aa_mul(graupel_number_per_kg[idx], rho);
+            const float xng = fmaxf(THOMPSON_AA_R2, shadow_m3);
+            double lamg = (double)thompson_aa_powf_cr(
+                thompson_aa_div(thompson_aa_mul(thompson_aa_mul(am_g, 6.0f),
+                                                xng), xrg),
+                1.0f / 3.0f);
+            const float mvd_g = (float)((double)mvd_numerator / lamg);
+            bool bounded = false;
+            if (mvd_g > 25.4e-3f) {
+                lamg = (double)thompson_aa_div(mvd_numerator, 25.4e-3f);
+                bounded = true;
+            } else if (mvd_g < 50.0e-6f) {
+                lamg = (double)thompson_aa_div(mvd_numerator, 50.0e-6f);
+                bounded = true;
+            }
+            if (bounded) {
+                const float xng_bounded = (float)(
+                    (double)thompson_aa_mul(1.0f / 6.0f, xrg)
+                    * pow(lamg, 3.0) / (double)am_g);
+                const float ngten = thompson_aa_mul(thompson_aa_mul(
+                    thompson_aa_sub(xng_bounded,
+                                    thompson_aa_mul(ng_entry_wrf, rho)),
+                    inverse_dt), thompson_aa_div(1.0f, rho));
+                graupel_number_per_kg[idx] = thompson_aa_add(
+                    ng_entry_wrf, thompson_aa_mul(ngten, dt));
+            }
+        }
+    }
 
     // --- the three mp=28 accumulators, :2963-2994 ------------------------
     // pni_wfz / pni_iha / pni_inu are identically zero on an ambient-warm

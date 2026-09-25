@@ -1,10 +1,9 @@
 /* Emit the CORRECTLY ROUNDED float32 gamma for the GF gamma fixture.
  *
- * Why this exists.  Through ArWen 2.6.5 gfk_tgamma was a transcription of
- * glibc's LGPL-2.1-or-later e_gammaf_r.c / gamma_productf.c and was graded
- * against gf-libm-tgammaf.csv, a recording of what glibc 2.39 returns.  That
- * code is gone (licence: an Apache-2.0 distribution cannot carry it) and the
- * kernel now computes the correctly rounded value instead.  Grading against
+ * Why this exists.  Through ArWen 2.6.5 gfk_tgamma was ArWen's earlier gamma,
+ * graded against gf-libm-tgammaf.csv, a recording of what glibc 2.39
+ * returns.  That gamma is gone and the kernel now computes the correctly
+ * rounded value instead.  Grading against
  * "what one binary returned" no longer describes the contract, so this tool
  * writes the oracle that does: the mathematically correct answer.
  *

@@ -17,6 +17,89 @@ import numpy as np
 from gpuwm.core.ozone_contract import cam_ozone_domain_ids
 
 
+# ---------------------------------------------------------------------------
+# How a domain obtained its ozone, named once.
+# ---------------------------------------------------------------------------
+#
+# WRF v4.7.1, EM_CORE, under ``o3input = 2``: ``oznini`` reads the packaged
+# climatology and interpolates it to a domain's OWN XLAT, and the radiation
+# driver runs ``ozn_time_int``/``ozn_p_int`` on that domain's own columns,
+# both guarded by ``o3input .EQ. 2 .AND. id .EQ. 1``
+# (phys/module_physics_init.F:2203-2212, phys/module_radiation_driver.F:
+# 1801-1823).  A NEST does neither; it receives the root's field through the
+# parent-to-child forcing stream the Registry declares on the variable
+# (``rdf=(p2c)``, Registry/Registry.EM_COMMON:1264).
+#
+# So the question WRF answers is "is this domain a nest?", not "is this grid
+# a refinement of another forecast?".  These four names are the four answers
+# gpuwm can give, and each one is written into the radiation identity that
+# reaches a restart manifest and into the run's own report.
+
+#: ``o3input = 0``: the legacy wrapper builds O3DATA from pressure and
+#: latitude inside lwrad/swrad prep and reads no climatology at all.
+ROUTING_WRAPPER_O3DATA = "wrapper-o3data"
+
+#: A resident root (``id == 1``): the climatology chain on its own grid.
+ROUTING_ROOT_CLIMATOLOGY = "root-climatology"
+
+#: A resident nest: the parent's retained field, SINT-interpolated onto the
+#: child grid, updating exactly when the parent's does.
+ROUTING_PARENT_INTERPOLATED = "parent-interpolated"
+
+#: A child integrated with no resident parent (``gpuwm.offline_child_run``,
+#: the ndown-equivalent route).  That domain is configured as a WRF ROOT and
+#: reads its lateral boundaries from a file rather than from a live parent:
+#: ``specified = true``, ``nested = false``, and the route stamps
+#: ``parent_id = 0`` on its own ticks.  WRF's own answer for such a domain is
+#: the climatology on its own grid, which is what this route evaluates.
+#: Named apart from :data:`ROUTING_ROOT_CLIMATOLOGY` because the grid IS a
+#: refinement of an archived forecast, and a reader of the report is owed
+#: that distinction rather than being left to infer it from ``parent_id``.
+ROUTING_CHILD_GRID_CLIMATOLOGY = "child-grid-climatology"
+
+OZONE_ROUTINGS = frozenset((
+    ROUTING_WRAPPER_O3DATA, ROUTING_ROOT_CLIMATOLOGY,
+    ROUTING_PARENT_INTERPOLATED, ROUTING_CHILD_GRID_CLIMATOLOGY))
+
+
+def resolve_ozone_routing(declared, *, o3input, has_parent):
+    """The routing name an adapter records, checked against how it was built.
+
+    ``declared`` is the constructing route's own word for what it did, or
+    ``None`` to take the name from the construction alone.  A declared name
+    that contradicts the construction is refused rather than recorded: this
+    string is what a report and a restart manifest are read from, and a
+    wrong one sends a reader looking for a parent field that was never
+    there.  The way out of the refusal is to pass the name that matches the
+    construction, or to pass ``None`` and take the derived one.
+    """
+    derived = (ROUTING_WRAPPER_O3DATA if o3input == 0 else
+               ROUTING_PARENT_INTERPOLATED if has_parent else
+               ROUTING_ROOT_CLIMATOLOGY)
+    if declared is None:
+        return derived
+    if declared not in OZONE_ROUTINGS:
+        raise ValueError(
+            f"unknown ozone routing {declared!r}; the recorded names are "
+            f"{sorted(OZONE_ROUTINGS)}")
+    permitted = {derived}
+    if derived == ROUTING_ROOT_CLIMATOLOGY:
+        # The climatology-on-its-own-grid arithmetic is one chain; only the
+        # route differs, so a route may say which of the two it is.
+        permitted.add(ROUTING_CHILD_GRID_CLIMATOLOGY)
+    if declared not in permitted:
+        raise ValueError(
+            f"ozone routing {declared!r} contradicts how this adapter was "
+            f"built (o3input={o3input}, "
+            f"parent provider {'given' if has_parent else 'absent'}), which "
+            f"obtains ozone by {derived!r}; a report carrying the declared "
+            "name would send a reader after an ozone source this run never "
+            f"had; declare {sorted(permitted)} or pass ozone_routing=None to "
+            "take the derived name")
+    return declared
+
+
+
 def _host(value):
     if type(value).__module__.split(".")[0] == "cupy":
         import cupy as cp
@@ -42,7 +125,8 @@ class CamOzoneState:
     def __post_init__(self):
         if not isinstance(self.start_time, datetime):
             raise TypeError("CAM ozone start_time must be a datetime")
-        if self.mode not in ("root-climatology", "legacy-root", "parent-interpolated"):
+        if self.mode not in (ROUTING_ROOT_CLIMATOLOGY, "legacy-root",
+                             ROUTING_PARENT_INTERPOLATED):
             raise ValueError("unknown CAM ozone producer mode")
         self.latitude_deg = np.ascontiguousarray(_host(self.latitude_deg), dtype=np.float32)
         self.longitude_deg = np.ascontiguousarray(_host(self.longitude_deg), dtype=np.float32)
@@ -56,7 +140,7 @@ class CamOzoneState:
 
     def evaluate(self, pressure, elapsed_seconds):
         """The existing WRF CAM chain, in Pa and FP32, on model layers."""
-        if self.mode != "root-climatology":
+        if self.mode != ROUTING_ROOT_CLIMATOLOGY:
             raise ValueError("only the root CAM producer may evaluate climatology")
         from gpuwm.ingest import wrf_ozone
         p = np.asarray(_host(pressure), dtype=np.float32)
@@ -120,7 +204,7 @@ def attach_cam_ozone(state, cfg, owner):
     if getattr(driver, "o3rad", None) is None:
         driver.o3rad = cp.zeros(state.p.shape, dtype=cp.float32)
     driver.call_counts.setdefault("cam_ozone", 0)
-    if owner.mode == "parent-interpolated":
+    if owner.mode == ROUTING_PARENT_INTERPOLATED:
         from gpuwm.core.radiation_composition import legacy_radiation_adapter
         legacy = legacy_radiation_adapter(driver.radiation_callable)
         if legacy is not None and legacy.o3input == 2:
@@ -138,8 +222,8 @@ def cam_ozone_setup(*, exp, dc, grid):
     legacy_root = (4 in radiation_scheme_ids(cfg)
                    and rrtmg_variant(cfg) == RRTMG_VARIANT_LEGACY
                    and cfg.o3input == 2)
-    mode = ("parent-interpolated" if dc.parent_id else
-            "legacy-root" if legacy_root else "root-climatology")
+    mode = (ROUTING_PARENT_INTERPOLATED if dc.parent_id else
+            "legacy-root" if legacy_root else ROUTING_ROOT_CLIMATOLOGY)
     latitude, longitude = grid.latlon_mass()
     return CamOzoneState(exp.start_time, latitude, longitude, mode, exp.column_chunk)
 
@@ -147,7 +231,7 @@ def cam_ozone_setup(*, exp, dc, grid):
 def ozone_parent_for(owner):
     """Use the common retained carrier for a derived nested consumer."""
     return (DriverOzoneProvider() if owner is not None
-            and owner.mode == "parent-interpolated" else None)
+            and owner.mode == ROUTING_PARENT_INTERPOLATED else None)
 
 
 def configure_cam_ozone(state, cfg, *, exp, dc, grid):
@@ -165,7 +249,7 @@ def transfer_parent_ozone(node, registration):
                                       domain_call_counts)
     driver = getattr(node.state, "physics", None)
     owner = getattr(driver, "cam_ozone", None)
-    if owner is None or owner.mode != "parent-interpolated":
+    if owner is None or owner.mode != ROUTING_PARENT_INTERPOLATED:
         return 0
     parent = node.parent.state
     parent_driver = getattr(parent, "physics", None)

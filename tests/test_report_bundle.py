@@ -1295,3 +1295,55 @@ def test_an_extra_log_outside_the_run_directory_is_collected(
     assert cli.main(["report", str(run), "--log", str(stray),
                      "--dry-run"]) == 0
     assert "logs/terminal.log" in capsys.readouterr().out
+
+
+def test_the_home_directory_rule_is_one_function_every_caller_shares():
+    """The release gates write records with it, so it is public and whole.
+
+    The four shapes a home-directory prefix takes all collapse to the
+    one placeholder, including the drive mounted into a Linux box: that
+    spelling matched neither the drive-anchored rule (no drive letter)
+    nor the POSIX one (a word character sits in front of its ``Users``
+    segment), so a record written from such a box kept the account name
+    under a rule set that says it removes home-directory prefixes of
+    any absolute path.
+
+    Every shape is assembled rather than written out, for the reason
+    :data:`POSIX_HOME` gives: the shipped-tree scan reads this file too.
+    """
+
+    back = chr(92)
+    windows = "C:" + back + back + "Users" + back + back + PLANTED["username"]
+    shapes = (
+        POSIX_HOME + "/gpuwm/out",
+        windows + back + back + "gpuwm",
+        "C:/Us" + "ers/" + PLANTED["username"] + "/gpuwm",
+        "/mnt/c/Us" + "ers/" + PLANTED["username"] + "/gpuwm",
+        "/Us" + "ers/" + PLANTED["username"] + "/Library",
+        "/ro" + "ot/gpuwm",
+    )
+    for shape in shapes:
+        cleaned = report_bundle.redact_home_directories(shape)
+        assert cleaned.startswith(report_bundle.PLACEHOLDERS["home_directory"])
+        assert PLANTED["username"] not in cleaned, shape
+
+    hits = []
+    text = "a " + " b ".join(shapes) + " c"
+    assert PLANTED["username"] not in report_bundle.redact_home_directories(
+        text, on_hit=lambda: hits.append(1))
+    assert len(hits) == len(shapes)
+
+    # An absolute path that names no account survives: the bar is a
+    # PER-USER prefix, not any absolute path, and a bundle that lost
+    # /usr/local would lose the answer it was collected for.
+    benign = "/usr/local/share/wps-geog and /tmp/oracle and /var/cache"
+    assert report_bundle.redact_home_directories(benign) == benign
+    assert report_bundle.redact_home_directories("") == ""
+
+
+def test_the_redactor_still_counts_every_home_directory_it_removes():
+    """Sharing the rule must not cost the manifest its tally."""
+
+    redactor = report_bundle.Redactor(environ={})
+    redactor.apply(f"one {POSIX_HOME}/a two {POSIX_HOME}/b")
+    assert redactor.counts["home_directory"] == 2

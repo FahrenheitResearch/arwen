@@ -3422,3 +3422,33 @@ fn every_surface_catalog_row_can_be_resolved_from_some_store() {
         );
     }
 }
+
+#[test]
+fn the_column_plane_rows_ask_for_the_selectors_the_wrfout_import_writes() {
+    for (slug, key) in [
+        ("isotherm_height_0c", "geopotential_height_isotherm_0c"),
+        ("isotherm_height_minus10c", "geopotential_height_isotherm_minus10c"),
+        ("isotherm_height_minus20c", "geopotential_height_isotherm_minus20c"),
+        ("supercooled_water_path", "supercooled_liquid_water_path_entire_atmosphere"),
+        ("supercooled_water_path_0_3km", "supercooled_liquid_water_path_0m_to_3000m_agl"),
+        ("supercooled_water_path_3_6km", "supercooled_liquid_water_path_3000m_to_6000m_agl"),
+        ("cloud_water_column_max", "cloud_water_mixing_ratio_column_maximum"),
+        ("rain_water_column_max", "rain_water_mixing_ratio_column_maximum"),
+        ("cloud_ice_column_max", "cloud_ice_mixing_ratio_column_maximum"),
+        ("snow_column_max", "snow_mixing_ratio_column_maximum"),
+        ("graupel_column_max", "graupel_mixing_ratio_column_maximum"),
+    ] {
+        let requirements = plot_recipe_store_requirements(slug).unwrap_or_else(|_| panic!("{slug}"));
+        let keys: Vec<String> = requirements
+            .iter()
+            .map(|requirement| requirement.selector.expect("a canonical selector").key())
+            .collect();
+        assert_eq!(keys, vec![key.to_string()], "{slug}");
+        let recipe = plot_recipe(slug).unwrap();
+        assert!(
+            selector_supported_for_model(recipe.filled.selector.unwrap(), ModelId::WrfGdex),
+            "{slug} is not supported on the wrfout route"
+        );
+        assert!(plot_recipe_fetch_plan(slug, ModelId::WrfGdex).is_ok(), "{slug}");
+    }
+}

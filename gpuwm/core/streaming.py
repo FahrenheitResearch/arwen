@@ -3704,6 +3704,10 @@ def _twin_rrtmg_legacy(scheme, cls, lat, lon):
     restart identity; ``ozone_parent`` is the child-domain o3rad routing,
     which is ``None`` on every domain that can stream today because a nest
     is refused upstream, and is carried anyway rather than assumed.
+    ``ozone_routing`` is the NAME the domain gave that routing, and it is
+    part of the restart identity too: an offline child's tiles say
+    ``child-grid-climatology`` because the domain does, and a twin left to
+    derive its own would report a root's field for a refined grid.
 
     Only the geography is replaced, which is the whole point: the tile's
     own ``latitude_deg``/``longitude_deg`` drive ``interp_ozone_to_latitudes``
@@ -3715,6 +3719,7 @@ def _twin_rrtmg_legacy(scheme, cls, lat, lon):
                column_chunk=scheme.column_chunk,
                o3input=scheme.o3input,
                ozone_parent=scheme._ozone_provider,
+               ozone_routing=scheme.ozone_routing,
                longwave=scheme.longwave, shortwave=scheme.shortwave,
                trace_gas_overrides=getattr(scheme, "trace_gas_overrides", None))
 
@@ -3785,7 +3790,8 @@ _TWIN_RECIPES = {
         build=_twin_rrtmg_legacy,
         reproduces=frozenset({"start_time", "latitude_deg", "longitude_deg",
                               "p_top", "column_chunk", "ozone_parent",
-                              "o3input", "longwave", "shortwave", "trace_gas_overrides"}),
+                              "ozone_routing", "o3input", "longwave",
+                              "shortwave", "trace_gas_overrides"}),
         # WRF's radiation call counter; the domain's adapter has stepped
         # when a buffer is built mid-run, a fresh twin has not, and that
         # difference is not dropped policy.

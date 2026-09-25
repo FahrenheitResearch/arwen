@@ -495,7 +495,8 @@ def _cadence_ticks(label: str, seconds: Fraction, step_ticks: int,
 
 
 def resolve_clock(exp: ExperimentConfig, *,
-                  lbc_interval_s: float | None = None) -> TickClock:
+                  lbc_interval_s: float | None = None,
+                  live_born_children=()) -> TickClock:
     """Resolve the experiment's exact-rational clock into integer ticks.
 
     ``fractions.Fraction`` appears HERE ONLY (config resolution, section
@@ -514,6 +515,11 @@ def resolve_clock(exp: ExperimentConfig, *,
     configuration (T2); when given it becomes the d01 dtbc-reset
     calendar (share/mediation_integrate.F:1522), validated as an exact
     whole number of root steps.
+
+    ``live_born_children`` is forwarded to
+    :func:`gpuwm.experiment.validate_boundary_timing`: the grid ids of
+    children initialized from their live parent at their start, which
+    the forcing-seam rule does not bind.
     """
     # Lazy: physics.py imports cupy at module scope; the clock itself is
     # pure-CPU config machinery.
@@ -529,7 +535,8 @@ def resolve_clock(exp: ExperimentConfig, *,
                 "number of seconds for the boundary-forcing clock.")
         validate_boundary_timing(
             exp, int(lbc_interval_s),
-            source="runtime input catalog lbc_interval_s")
+            source="runtime input catalog lbc_interval_s",
+            live_born_children=live_born_children)
 
     dt_exact = {dc.grid_id: exp.dt_exact(dc.grid_id) for dc in exp.domains}
     tick_den = lcm(*(dt.denominator for dt in dt_exact.values()))

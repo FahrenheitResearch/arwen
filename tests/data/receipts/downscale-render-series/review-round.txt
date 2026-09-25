@@ -1,0 +1,73 @@
+The review round's readings, node-1 (RTX 4090), lane tip bc4fea782 over the
+sealed 2.7.5 manylinux and data wheels. Every module the lane changes was
+copied over the wheel's own, so the bridges and every dependency are the
+sealed ones; the sha256 prefixes below are from the run log.
+
+  render.py            lane=d2ade781a5ec8bd7  venv=d2ade781a5ec8bd7  wheel=c2a8856c6a97d6ef
+  rustwx.py            lane=73c1e2475bc121cd  venv=73c1e2475bc121cd  wheel=24a137ff350f3a7d
+  go_cli.py            lane=0c5ed7246634face  venv=0c5ed7246634face  wheel=0b66ce0160a6237e
+  offline_child_run.py lane=cc7571c59f13be84  venv=cc7571c59f13be84  wheel=4732b5dc7e8c46dc
+  downscale.py         lane=aa6e4d4211cc8dcd  venv=aa6e4d4211cc8dcd  wheel=0e302c73075ac1ed
+  tui_products.py      lane=d1e613f4cb222c41  venv=d1e613f4cb222c41  wheel=7b65aa2262c95c5b
+
+FOCUSED, 19 files, tip versus the lane base c36f4c1f1 in the same venv:
+
+  tip   6 failed, 558 passed, 53 skipped
+  base  6 failed, 525 passed, 53 skipped   (the two lane-added files excluded,
+                                            they do not exist at the base)
+
+The six are the same six, name for name, at both ends, so none of them is
+this lane's:
+
+  test_render_rust.py::test_doctor_reports_the_rust_renderer
+  test_render_history_selection.py::test_the_front_door_refuses_by_name_and_leaves_no_run_directory
+  test_render_history_selection.py::test_the_front_door_draws_the_surviving_product_and_says_what_died
+  test_offline_child_tiles.py::test_off_binds_the_dycore_step_itself
+  test_research_catalog.py::test_research_capability_manifest_is_bound_to_the_actual_import_and_window_contracts
+  test_research_workspaces.py::test_native_sources_preserve_companions_and_labels_are_not_data_paths[20crv3]
+
+The first three need the wrf (wrf-rust) package this venv has no build of.
+The research-catalog one is a sha256 authority block in
+gpuwm/data/tui/research-diagnostics.json over two Rust files this lane does
+not touch: tools/rustwx/crates/rw-wrfbatch/src/wrf_process.rs and
+.../local_import.rs both differ from the recorded digest at the lane base.
+
+CONTRACT SET, the 23 files the publication workflow names:
+
+  tip   1 failed, 769 passed, 22 skipped, 97 subtests passed
+  base  0 failed, 770 passed, 22 skipped, 97 subtests passed
+
+The single delta is
+test_release_version_declaration.py::test_the_declared_version_is_never_behind_the_changelog,
+because this branch carries a 2.7.6 heading while pyproject.toml still
+declares 2.7.5. integrate/2.7.6 already declares 2.7.6, so it goes green on
+merge, and this lane runs no bump.
+
+THE PICKER DOOR on the installed package, python -m gpuwm.tui_products
+--catalog, with the real renderer catalog answering:
+
+  engine: rust
+  basis:  the packaged lane record only. What a given run can draw is decided
+          by that run's own store catalog at render time; a product it cannot
+          draw is dropped before the renderer is launched and named, with the
+          engine's own reason, in that render's summary
+  general states 3: 10m_wind_gusts, cloud_cover, precipitation_type
+  snow    states 7: 10m_wind_gusts, categorical_freezing_rain,
+                    categorical_ice_pellets, categorical_snow,
+                    precipitation_type, wetbulb_2m, wind_chill_2m
+
+Before this round the same document folded in the renderer build's fileless
+requirement rows, which called sixteen of the snow preset's twenty-one
+products undrawable, 2m_temperature and 500mb_height_winds among them, on a
+run that then drew 143 pictures of exactly those products.
+
+THE ADMISSION DOOR, unchanged by this round and re-read on the same package:
+
+  REFUSED   composite_reflectivity,mesh:cell_area
+  REFUSED   composite_reflectivity,xsec:wa
+  ADMITTED  2m_temperature,composite_reflectivity,var:SNOW
+
+THE ACCESSORS no door calls, after the removal:
+
+  still present: none
+  catalog_verdict present: True

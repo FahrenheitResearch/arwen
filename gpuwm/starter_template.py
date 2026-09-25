@@ -282,9 +282,16 @@ def fit_main(args):
     starter = Starter(args.template, out)
     wps = out.with_suffix(".namelist.wps")
     receipt = out.with_suffix(".fit.json")
-    if out == starter.path or any(p.exists() for p in (out, wps, receipt)):
+    # Every path this door MAY publish, not the three it always publishes.
+    # On the native regional route a fitted copy carries that route's
+    # namelists too, and a create-only door that checks a subset of what
+    # it writes replaces a file it promised to preserve.
+    from gpuwm.hrrr_route_inputs import route_input_paths
+    if out == starter.path or any(p.exists() for p in
+                                  (out, wps, receipt, *route_input_paths(out).values())):
         raise ValueError("Choose a new --out path: domain-fit never overwrites the "
-                         "starter, an existing configuration, WPS file, or fit receipt.")
+                         "starter, an existing configuration, WPS file, fit receipt "
+                         "or route companion.")
     raw = starter.raw
     source = args.source or raw.get("fetch", {}).get("source")
     if not source:
@@ -400,7 +407,8 @@ def fit_main(args):
     # Complete companion validation and final repricing of exactly published bytes.
     text = render_tables(final)
     from gpuwm.experiment import build_experiment_from_config_tables
-    published = build_experiment_from_config_tables(tomllib.loads(text),
+    published_tables = tomllib.loads(text)
+    published = build_experiment_from_config_tables(published_tables,
                 source=str(out), base_dir=out.parent)
     phases = dw._sizing_phases(published, free_bytes=free, source=source, machine=target_machine,
                               forcing_interval_seconds=interval,
@@ -427,7 +435,8 @@ def fit_main(args):
         print(f"  {key}: {before!r} -> {after!r}")
     print(phases.verdict(budget))
     if not args.write:
-        print("Preview only. Add --write to create this configuration and its WPS file.")
+        print("Preview only. Add --write to create this configuration, the fit "
+              "receipt, and every file its input route reads beside it.")
         return 0
     proof = dict(template=str(starter.path), template_sha256=starter.sha256,
                  output=str(out), output_sha256=hashlib.sha256(text.encode("utf-8")).hexdigest(),
@@ -443,12 +452,27 @@ def fit_main(args):
         proof["selected_hardware"] = hardware_identity
     if host_identity is not None:
         proof["selected_host_memory"] = host_identity
+    # WHAT A SAVED COPY CARRIES is the route's question, and it is
+    # answered in one place for every door that saves one. A fit is a
+    # saved copy of a forecast exactly as an edit is: on the native
+    # regional route the run reads namelists beside the TOML, and a copy
+    # published without them is refused at the prepare precheck before
+    # anything is fetched or started. Rendered from the FITTED tables, so
+    # the layout this fit just chose is what those namelists declare.
+    from gpuwm.hrrr_route_inputs import candidate_companions
+    companions = candidate_companions(
+        out, published, wps_text=wps_text,
+        source=(published_tables.get("fetch") or {}).get("source"))
+    proof["route_companions"] = [str(path) for path, _text in companions]
     out.parent.mkdir(parents=True, exist_ok=True)
     # Exclusive creation: never replace a file that appeared during the fit.
-    _publish_new_files(((wps, wps_text),
+    _publish_new_files((*companions,
                        (receipt, json.dumps(proof, indent=2, default=str) + "\n"),
                        (out, text)))
-    print(f"Created {out}\nCreated {wps}\nFit receipt: {receipt}")
+    print(f"Created {out}")
+    for path, _text in companions:
+        print(f"Created {path}")
+    print(f"Fit receipt: {receipt}")
     if fetch or "case_data" in raw:
         print(f"Next: gpuwm go {_command_path(out)} --dry-run")
         print("Then remove --dry-run to prepare fresh inputs and run. No forecast has started.")
@@ -711,9 +735,15 @@ def tiles_main(args):
     out = args.out.expanduser().resolve()
     wps = out.with_suffix(".namelist.wps")
     receipt = out.with_suffix(".tiles.json")
-    if out == authority.source or any(path.exists() for path in (out, wps, receipt)):
+    # Every path this door MAY publish, as at the fit door and for the
+    # same reason: on the native regional route a tiled copy carries that
+    # route's namelists, and a create-only door must check what it writes.
+    from gpuwm.hrrr_route_inputs import route_input_paths
+    if out == authority.source or any(path.exists() for path in
+                                      (out, wps, receipt, *route_input_paths(out).values())):
         raise ValueError("Choose a new --out path: domain-tiles never overwrites the "
-                         "source, an existing configuration, WPS file, or tile receipt.")
+                         "source, an existing configuration, WPS file, tile receipt "
+                         "or route companion.")
     original, raw = _tiles_tables(authority, args.mode)
     text = emit_experiment_toml(raw)
     experiment = build_experiment_from_config_tables(
@@ -728,6 +758,16 @@ def tiles_main(args):
                 and wps_text is None):
             raise ValueError(f"The source configuration needs its WPS companion "
                              f"{source_wps}; no files were written.")
+    from gpuwm.runplan import candidate_route_chain
+    if (wps_text is None and candidate_route_chain(
+            (raw.get("fetch") or {}).get("source")) == "prepared:hrrr"):
+        # Named rather than written short: the regional route reads that
+        # namelist beside the configuration, so a copy published without
+        # one is refused at the prepare precheck instead of running.
+        raise ValueError(f"The source configuration needs its WPS companion "
+                         f"{source_wps}, which the regional route reads beside it. "
+                         "Emit the source again with gpuwm domain, which writes the "
+                         "whole set, then copy that; no files were written.")
     proof = _tiles_memory_plan(authority.source, experiment, original=original)
     if hashlib.sha256(authority.source.read_bytes()).hexdigest() != authority.sha256:
         raise ValueError("The source configuration changed during planning; review it again.")
@@ -759,7 +799,8 @@ def tiles_main(args):
     if not proof["ingest_priced"]:
         print("Preprocessing is not priced for this input route; this estimate covers the forecast.")
     if not args.write:
-        print("Preview only. Add --write to create this configuration. No forecast has started.")
+        print("Preview only. Add --write to create this configuration and every "
+              "file its input route reads beside it. No forecast has started.")
         return 0
     proof.update(template=str(authority.source), template_sha256=authority.sha256,
                  output=str(out), output_sha256=hashlib.sha256(text.encode("utf-8")).hexdigest(),
@@ -774,7 +815,18 @@ def tiles_main(args):
         proof["source_wps"] = str(source_wps)
         proof["source_wps_sha256"] = hashlib.sha256(wps_payload).hexdigest()
         proof["wps_sha256"] = hashlib.sha256(wps_text.encode("utf-8")).hexdigest()
-        files.append((wps, wps_text))
+        # Through the one helper every door that saves a copy of a
+        # forecast calls: a tile copy is such a copy, and on the native
+        # regional route the run reads namelists beside the TOML that a
+        # copy of the TOML and the WPS file alone does not carry.
+        # Rendered from the TILED tables, so the tiling just chosen is
+        # what those namelists declare.
+        from gpuwm.hrrr_route_inputs import candidate_companions
+        companions = candidate_companions(
+            out, experiment, wps_text=wps_text,
+            source=(raw.get("fetch") or {}).get("source"))
+        proof["route_companions"] = [str(path) for path, _text in companions]
+        files.extend(companions)
     files.extend(((receipt, json.dumps(proof, indent=2, default=str) + "\n"),
                   (out, text)))
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -805,7 +857,8 @@ def register_cli(subparsers):
     parser.add_argument("--start-time", help="explicit new UTC start; otherwise preserve template")
     parser.add_argument("--hours", type=float, help="explicit new duration; otherwise preserve template")
     parser.add_argument("--out", type=Path, required=True, help="new ordinary TOML path")
-    parser.add_argument("--write", action="store_true", help="write reviewed TOML, WPS and fit receipt")
+    parser.add_argument("--write", action="store_true", help="write the reviewed TOML, "
+                        "the fit receipt, and every file its input route reads beside it")
     parser.set_defaults(func=fit_main)
     tiles = subparsers.add_parser(
         "domain-tiles", help="review an automatic tile-streaming copy; preserve forecast settings")
@@ -813,5 +866,6 @@ def register_cli(subparsers):
     tiles.add_argument("--out", type=Path, required=True, help="new ordinary TOML path")
     tiles.add_argument("--mode", choices=("auto", "on"), default="auto",
                        help="auto streams when needed; on forces planner-selected streaming")
-    tiles.add_argument("--write", action="store_true", help="create the reviewed TOML and tile receipt")
+    tiles.add_argument("--write", action="store_true", help="create the reviewed TOML, "
+                       "the tile receipt, and every file its input route reads beside it")
     tiles.set_defaults(func=tiles_main)

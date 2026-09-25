@@ -1,8 +1,10 @@
 """The mp_physics=8 freeze gate -- WP-00 of the mp_physics=28 port.
 
-This is the merge criterion for every other package on the
-``feature/mp28-thompson-aerosol-aware`` branch.  Run it at the tip of each
-package's work before that work is considered landable.
+This was the merge criterion for every other package on the
+``feature/mp28-thompson-aerosol-aware`` branch.  The port is landed and
+shipped; what the file guards from now on is stated under RE-FROZEN
+2026-09-17 below, and ``tools/release/precut_gpu_gate.py`` runs it on the
+release node before every cut.
 
 WHAT IT PROVES, AND WHY THAT IS ENOUGH
 --------------------------------------
@@ -44,6 +46,93 @@ New mp=28 files are expected and permitted everywhere: the gate pins what
 existed and ignores additions.  It never passes because something was
 deleted -- every pinned name must still be present.
 
+RE-FROZEN 2026-09-17 (lane/2.7.6-pin-gates), AND WHAT A RED DIGEST MEANS
+------------------------------------------------------------------------
+The mp=28 port is landed and shipped, so "mp=28 has not touched mp=8" is
+no longer a merge criterion anyone waits on.  What the digests still
+catch is an edit to an mp=8 unit that ships without a reading of what it
+did to mp=8 results.  4ae7913df (fix(mp8): preserve rain concentration
+and condensation history, in 2.7.4) is the case in point: it edited
+thompson.cu, thompson.py and the adapter's launcher arguments, shipped
+its reading (quoted below), and did NOT re-freeze here, so seven
+assertions in this file were red on the 2.7.4 tip 7417342a8 and the
+2.7.5 tip c36f4c1f1 while the release contract set, which runs no GPU
+pin, never ran them.  Confirmed on node-1 at fc639c51f: 7 failed, 14
+passed, 1 skipped.  tools/release/precut_gpu_gate.py now runs this file
+before a cut.
+
+Decision per assertion, under the gate law (a gate names the concrete
+breakage it prevents) and the retire-its-guards law:
+
+* KEPT, re-frozen at 4ae7913df with its reading: the thompson.cu file
+  digest, the assembled compile-string digest, the 65-module digest
+  table, the thompson.py digest and launch inventory, the constant-Nt_c
+  site inventory (all R1) and the recorded launcher call graph (R6).
+  The breakage each prevents from now on: an mp=8 result change shipped
+  with no reading.  A red digest therefore means "a frozen unit was
+  edited by a commit that shipped no reading of its own": the fixer
+  records one (a fixture, a test and a page, as 4ae7913df did) and
+  re-freezes here citing it.  Each failure text says so.
+* KEPT unchanged, their breakage still exists and is named in each
+  docstring: the preamble / common.cuh / CUDA_DEFINES pins (a constant
+  change moves every scheme silently), the loader inertness check, R2
+  the classic table contract, R3 extra_moist_species, R4 the allocation
+  surface and the scratch arena aliasing contract, R5 the edge field
+  codes, R6 n_mass, F1 the 92 oracle CSVs, F2 the four-file rebuild
+  exception and its inverted witness.
+* RETIRED: none.  Every assertion names a breakage still possible.
+
+THE READING 4ae7913df SHIPPED, quoted from its fixture, test and page.
+tests/fixtures/thompson-active-collision.json holds three complete
+classic column calls (saturated, subsaturated, supersaturated: 274.15 K,
+80000 Pa, qc 0.001, qr 0.0003, qs 0.0002, qg 0.0002 kg/kg, nr 30000/kg,
+dt 10 s) generated through the pinned WRF v4.6.1 driver at
+d66e442fccc04111067e29274c9f9eaccc3cef28 by
+tools/thompson_wrf461_oracle/active_collision_fixture.py.  After one
+call the saturated column's lowest level goes qr 3.000e-04 to 3.331e-04,
+nr 30000 to 30450.35, qc 1.000e-03 to 9.525e-04, theta 292.1977 to
+292.1955 K, with surface rainncv 0.025264 mm, snowncv 0.004562 mm and
+graupelncv 0.011440 mm; the subsaturated column, where rain evaporation
+runs, goes qr 3.000e-04 to 2.968e-04, nr 30000 to 29332.79, qc 1.000e-03
+to 4.002e-04, theta 292.1977 to 290.7510 K, rainncv 0.023742 mm; the
+supersaturated column goes qr to 3.331e-04, nr to 30450.46, qc to
+1.218e-03, theta to 292.8959 K, rainncv 0.025276 mm.
+tests/test_thompson_active_collision.py holds the CUDA adapter to those
+columns at rtol 1e-5 and atol 3e-11 on the mass fields, rtol 1e-5 and
+atol 0.03 on the number fields, 2 ULP of the field on theta and rtol
+1e-5, atol 5e-8 on the surface totals, on both the output-due and the
+ordinary route, and pins the two mechanisms directly: the rain density
+formed before cloud adjustment is refreshed only when evaporation runs
+(rho against 0.99 rho at rtol 3e-7), and a positive condensation marker
+leaves rain, number, temperature and vapour bit-identical through the
+same-call evaporation.  docs/thompson-active-collision-accounting.md
+records the source-stage ledger residual of about -9.13 and -10.27 J/kg
+for the two ten-second source cases, present in the reference too, and
+that warm and cold collision arithmetic and the canonical tables are
+unchanged.  The CHANGELOG 2.7.4 entry is the one-line form.
+
+RE-FROZEN 2026-09-24 by the WRF v4.6.1 real-column repairs, and the
+reading they shipped.  thompson.cu, thompson.py and _apply_thompson moved
+in thirteen commits (ce303c3e5, 217e84e18, 3c1b51317, 08f1f9373,
+6bd61312c, c4f3fcc70, 4d6e551ef, e39adb262, 8a504a23a, a9b054c2a,
+9298324cc, 3b57369fe, 7727fda3c), each a WRF v4.6.1 rule the classic
+port did not follow, cited to module_mp_thompson.F in the kernel.  The
+reading is tools/thompson_real_column_parity --mp 8, which runs WRF's own
+Fortran beside the port's kernels compiled for the host on 137,200
+columns of seven saved real-data states: before the repairs 54,390
+(forecast) and 35,290 (analysis) process-rate cells and 100,744 and
+58,594 final-state cells differed from WRF beyond 1e-2 unexplained by
+rounding, and the echo by up to 43.9 dB; after them no rate does except
+the two rounding decides, 1 and 6 final-state cells do (rounding
+residues), and the echo is within 0.045 dB.  The committed classic
+fixture tests/data/thompson_real_columns_wrf461_mp8.npz holds that in
+tests/test_thompson_real_column_host_parity.py (no rate and no
+final-state quantity beyond 1e-2 unexplained, echo within 0.05 dB, exit
+temperature within 1e-5).  The 92 classic oracle CSVs (F1) are unchanged;
+tools/thompson_real_column_parity/README.md and
+docs/public/validation/mp28-column-evidence.md say what closed and what
+remains.
+
 This module does not import cupy in its own source and opens no device: the
 loader capture replaces ``cupy.RawModule`` with a recorder before any
 compile can happen.
@@ -56,6 +145,8 @@ import sys
 from pathlib import Path
 
 import pytest
+
+from conftest import requires_cupy
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -102,13 +193,25 @@ FROZEN_COMMIT_ORIGINAL = "789f61181fb0b198ace10775f3ea184eb5e786a3"
 
 # -- R1 --------------------------------------------------------------------
 
+#: RE-FROZEN 2026-09-17 at 4ae7913df's thompson.cu (fix(mp8): preserve
+#: rain concentration and condensation history), whose reading is
+#: tests/fixtures/thompson-active-collision.json, tests/test_thompson_
+#: active_collision.py and docs/thompson-active-collision-accounting.md;
+#: the docstring's "RE-FROZEN" section quotes it.  Previously
+#: 3ca6b7e9/8cb23f0a (340875 chars) from the 1.4.1 re-anchor.
+#: RE-FROZEN 2026-09-24 at 7727fda3c's thompson.cu, the last of the
+#: thirteen real-column repairs the docstring's second reading lists.
+#: Previously 938bf573/f9b8547f (343097 chars) from 4ae7913df.  The
+#: compile string is the loader's preamble plus the file (thompson takes no
+#: extra header): measured without cupy by the receipt's reconstruction,
+#: which at 4ae7913df's bytes gives the loader-captured f9b8547f exactly.
 THOMPSON_CU_SHA256 = (
-    "3ca6b7e902d2d77ca9881a66eb484141df552c8ea30a0076bd07023e7255e760")
+    "d77977dc2479d97245aa11068b9e38fbdb9b8b6fb4c6acfcdb386ceb699ea262")
 #: sha256 of ``_preamble() + thompson.cu`` -- the exact string nvrtc sees.
 #: THIS is the mp=8 numerics guarantee.
 THOMPSON_COMPILED_SOURCE_SHA256 = (
-    "8cb23f0a78b1e48a402266fd4f841b2facdc7a3ee4b7d53e3c5482aae973775d")
-THOMPSON_COMPILED_SOURCE_LEN = 340875
+    "e2ea318527e1cea3f3be5bc1d2224ed09d5cbfaf556da22b10fdcea879b3dc47")
+THOMPSON_COMPILED_SOURCE_LEN = 373200
 
 COMMON_CUH_SHA256 = (
     "c78b17cb02ef67a2ad24d19e06e1129d7d5bcda74b972b38470fd33a6e58ff43")
@@ -125,8 +228,17 @@ CUDA_DEFINES_PIN = {
     "SVPT0": 273.15, "RHOWATER": 1000.0, "EP2": 0.6217504332755632,
 }
 
+#: RE-FROZEN 2026-09-17 at 4ae7913df's thompson.py (launch_rain_evaporation
+#: gained source_density and condensation_marker, launch_cloud_saturation_
+#: adjust gained condensation_marker; __all__ is unchanged).  Previously
+#: ede422fe.
+#: RE-FROZEN 2026-09-24 at 7727fda3c's thompson.py: 217e84e18 added
+#: launch_microphysics_columns (WRF's per-column no_micro flag, :2020) to
+#: __all__, and the other moving commits gave existing launchers new
+#: keyword inputs (cloud_presence, density_carries_rain_presence,
+#: melt_rain_density, micro_columns).  Previously 6e446a46 from 4ae7913df.
 THOMPSON_PY_SHA256 = (
-    "ede422fe6c2acba76771e40aabd231ad0edf8b391db5923535f67ac0b85f70e8")
+    "b952306f3a01f1a2239a56d41d9112f5e8b48d21f3268e7abd731160ae61d8a0")
 
 #: ``gpuwm/core/thompson.py::__all__`` verbatim, in declaration order.
 #: mp=28 launchers live in the new ``thompson_aerosol_*.py`` modules; not
@@ -147,6 +259,7 @@ THOMPSON_PY_ALL = (
     "launch_graupel_cloud_riming",
     "launch_graupel_fallout_column_mask",
     "launch_hydrometeor_column_mask",
+    "launch_microphysics_columns",
     "launch_graupel_sedimentation",
     "launch_graupel_melting",
     "launch_graupel_sublimation",
@@ -178,7 +291,7 @@ THOMPSON_PY_ALL = (
 
 #: The constant-Nt_c inventory, MEASURED on the frozen tree.  Every line
 #: here hardcodes what mp=28 must make prognostic.  Recorded so that a
-#: reviewer can see the port never "fixed" one of them in place, and so
+#: reader can see the port never "fixed" one of them in place, and so
 #: that the claim in the port spec is checkable rather than asserted.
 #:
 #: NOTE, and this corrects the spec's summary paragraph: the measured
@@ -186,12 +299,25 @@ THOMPSON_PY_ALL = (
 #: one CORRECT 2730.0f -- ``calc_effectRad`` genuinely uses WRF's integer
 #: ``g_ratio`` PARAMETER there -- and the 272.0f site is line 1007, not
 #: 1006.
+#:
+#: RE-FROZEN 2026-09-17: 4ae7913df added lines to thompson.cu and every
+#: site below moved down by 22 (through old line 2094) or 49 (from old
+#: line 2903); the counts are still 13 / 6 / 2 / 3 and no site was
+#: edited.  Previously 343, 895, 1012, 2094, 2903, 2970, 3187, 3793, 4018,
+#: 4141, 4273, 4693, 6945 / 343, 895, 1012, 4018, 4141, 4693 / 901, 1020 /
+#: 3946, 4359, 7018.
+#:
+#: RE-FROZEN 2026-09-24: the real-column repairs added lines to
+#: thompson.cu above every site; the counts are still 13 / 6 / 2 / 3 and
+#: no site was edited.  Previously 365, 917, 1034, 2116, 2952, 3019, 3236,
+#: 3842, 4067, 4190, 4322, 4742, 6994 / 365, 917, 1034, 4067, 4190, 4742 /
+#: 923, 1042 / 3995, 4408, 7067.
 THOMPSON_CU_LITERAL_SITES = {
-    "100.0e6f": [343, 895, 1012, 2094, 2903, 2970, 3187, 3793, 4018, 4141,
-                 4273, 4693, 6945],
-    "2730.0f": [343, 895, 1012, 4018, 4141, 4693],
-    "272.0f": [901, 1020],
-    "cloud_number_bin = 65": [3946, 4359, 7018],
+    "100.0e6f": [404, 1028, 1145, 2391, 3265, 3332, 3558, 4238, 4518, 4641,
+                 4773, 5193, 7484],
+    "2730.0f": [404, 1028, 1145, 4518, 4641, 5193],
+    "272.0f": [1034, 1153],
+    "cloud_number_bin = 65": [4446, 4859, 7566],
 }
 
 #: Every ``.cu`` translation unit present at the frozen commit, as
@@ -550,7 +676,7 @@ FROZEN_MODULE_DIGESTS = {
     # is an mp=8 translation unit, so the mp=8 numerics guarantee this file
     # exists to protect is untouched.
     #
-    # The pins move; the mp18 default lane's OUTPUT does not.  That is the
+    # The pins move; the mp18 default path's OUTPUT does not.  That is the
     # justification, and it is measured rather than argued: with these exact
     # bytes, tools/nssl2_mp18_digest_probe.py reproduces all 30 committed
     # SHA-256 field digests in evidence/nssl2-variants/mp18-digest-baseline
@@ -717,8 +843,8 @@ FROZEN_MODULE_DIGESTS = {
         # above, which was looking for extents.  Harmless while nine was the
         # only geometry; at six it divides by 0.01 where the grid says 0.05,
         # and the kernel returned a ground heat flux five times too large --
-        # MEASURED as grdflx -337.1 W m-2 against the host lane's -67.4 on
-        # the same column, before the fix.
+        # MEASURED as grdflx -337.1 W m-2 against the host path's -67.4
+        # on the same column, before the fix.
         #
         # WHY THIS ROW MAY MOVE FOR IT.  At nine levels
         # ruc_soil_layer_depth[1] IS 0.01f and [0] IS 0.00f, so the
@@ -801,8 +927,31 @@ FROZEN_MODULE_DIGESTS = {
         'bcc7090fbbb8ea307bd6dd6c65ab9b8a3f56948c4752ae3d744127b450d20161',
         'bc03ed595bacc546d8e041fbb1d11b5bb3b3b90760ef06ea1dd1f0f18b4de931'),
     'thompson': (
-        '3ca6b7e902d2d77ca9881a66eb484141df552c8ea30a0076bd07023e7255e760',
-        '8cb23f0a78b1e48a402266fd4f841b2facdc7a3ee4b7d53e3c5482aae973775d'),
+        # RE-FROZEN 2026-09-17 at 4ae7913df (fix(mp8): preserve rain
+        # concentration and condensation history, shipped in 2.7.4): the
+        # rain mass and number concentrations formed before cloud
+        # adjustment persist until evaporation refreshes them at its own
+        # incoming density, and a positive condensation decision
+        # suppresses same-call rain evaporation, as WRF's
+        # module_mp_thompson.F:3236, :3502 and :3568 do.  Its reading is
+        # tests/fixtures/thompson-active-collision.json (three complete
+        # classic columns through the pinned v4.6.1 driver),
+        # tests/test_thompson_active_collision.py (the adapter holds
+        # them at rtol 1e-5 on the mass and number fields and 2 ULP on
+        # theta, and pins both mechanisms directly) and docs/thompson-
+        # active-collision-accounting.md; the module docstring quotes
+        # the numbers.  It did not re-freeze this entry, so the seven
+        # thompson assertions in this file were red on the 2.7.4 and
+        # 2.7.5 tips.  Previously 3ca6b7e9/8cb23f0a from the 1.4.1
+        # re-anchor.
+        # RE-FROZEN 2026-09-24 at 7727fda3c by the thirteen WRF v4.6.1
+        # real-column repairs the module docstring's second reading lists
+        # (the process rates, final state and echo of classic Thompson held
+        # to WRF's own Fortran on 137,200 saved real-data columns, echo from
+        # up to 43.9 dB off to within 0.045 dB).  Previously
+        # 938bf573/f9b8547f from 4ae7913df.
+        'd77977dc2479d97245aa11068b9e38fbdb9b8b6fb4c6acfcdb386ceb699ea262',
+        'e2ea318527e1cea3f3be5bc1d2224ed09d5cbfaf556da22b10fdcea879b3dc47'),
     'uh_diag': (
         'cbfc98e8d025a4511fd7f8a41ca4bd163c261da4a48dec22bb979ec5a496b14e',
         '9dc88c6e14b2aaaa4249a9f844dc231f105431623375c988a2894e322de2f3ea'),
@@ -996,6 +1145,7 @@ SCRATCH_SLOT_REGISTRY_MP8 = {
     'mp_thompson_frozen_reference_temperature': (4, 6, 8),
     'mp_thompson_graupel_melt_marker': (4, 6, 8),
     'mp_thompson_graupel_number_shadow': (4, 6, 8),
+    'mp_thompson_micro_columns': (6, 8),
     'mp_thompson_rain_reference_density': (4, 6, 8),
     'mp_thompson_snow_melt_marker': (4, 6, 8),
     'mp_thompson_snow_velocity_boost': (4, 6, 8),
@@ -1023,8 +1173,15 @@ NEST_FIELD_KINDS_MP8 = (
 )
 STATE_ARRAY_SHAPES_DIGEST = (
     '9bf527776f97f6e401d5c8084b31a58015f36c388eabba5dc3cc4eaefbaa124c')
+#: RE-PINNED 2026-09-24: one slot added by 217e84e18,
+#: ``mp_thompson_micro_columns`` (ny, nx), WRF's per-column no_micro flag
+#: (module_mp_thompson.F:1646, :2020).  _apply_thompson takes it from the
+#: entry state and the phase cleanup reads it for the terminal vapour floor
+#: (:3974); its lifetime audit row is beeb8394a's.  Nothing else in the
+#: arena moved, and the slot aliases no other buffer.  Was
+#: cfa4fe7ed787889825d504ebb122e0a7042cc8de177ae33367b6cfc8f3ec6d2c.
 SCRATCH_SLOT_REGISTRY_DIGEST = (
-    'cfa4fe7ed787889825d504ebb122e0a7042cc8de177ae33367b6cfc8f3ec6d2c')
+    'f00b1b1748fba27988bdedfde16ed05f3559a5e0bbd33cad474d7bef35d41949')
 ORACLE_FIXTURE_COUNT = 92
 #: RE-PINNED with the corrected oracle, not with an edit.  The Thompson
 #: oracle lane found that five committed fixtures were the output of a
@@ -1053,6 +1210,19 @@ EDGE_FIELD_CODES_PIN = {
 ADAPTER_CALLS_NO_REFL = (
     ('save_pre_mp_theta', (
         '<_HostAdapterState>',
+     ), {}),
+    # 217e84e18: WRF's per-column no_micro flag (:1646, :2020), taken on
+    # the entry state before any source kernel.
+    ('launch_microphysics_columns', (
+        'state.qc',
+        'state.qi',
+        'state.qr',
+        'state.qs',
+        'state.qg',
+        'scratch[mp_thompson_temperature]',
+        'state.p',
+        'state.qv',
+        'scratch[mp_thompson_micro_columns]',
      ), {}),
     ('launch_classic_graupel_number_init', (
         'state.qg',
@@ -1100,10 +1270,6 @@ ADAPTER_CALLS_NO_REFL = (
         'state.qr',
         'scratch[mp_rainncv]',
      ), {}),
-    ('launch_hydrometeor_column_mask', (
-        'state.qc',
-        'scratch[mp_snowncv]',
-     ), {}),
     ('launch_graupel_fallout_column_mask', (
         'scratch[mp_thompson_frozen_reference_temperature]',
         'state.qg',
@@ -1119,7 +1285,21 @@ ADAPTER_CALLS_NO_REFL = (
             'scratch[mp_thompson_frozen_reference_density]',
         'reference_temperature':
             'scratch[mp_thompson_frozen_reference_temperature]',
+        # 4ae7913df: the positive-condensation decision is held in the
+        # full-theta scratch (saved already) and read by rain evaporation.
+        'condensation_marker':
+            'scratch[mp_th]',
+        # 6bd61312c: WRF's L_qc as the adjustment leaves it (:3485), held
+        # in the rain reference density until rain evaporation rewrites it.
+        'cloud_presence':
+            'scratch[mp_thompson_rain_reference_density]',
     }),
+    # 6bd61312c: the cloud fallout's ANY(L_qc) column gate (:3645) is taken
+    # from the adjustment's L_qc, not from the post-source cloud.
+    ('launch_hydrometeor_column_mask', (
+        'scratch[mp_thompson_rain_reference_density]',
+        'scratch[mp_snowncv]',
+     ), {}),
     ('launch_rain_evaporation', (
         'state.qr',
         'state.nr',
@@ -1132,6 +1312,18 @@ ADAPTER_CALLS_NO_REFL = (
             'scratch[mp_thompson_graupel_melt_marker]',
         'reference_density':
             'scratch[mp_thompson_rain_reference_density]',
+        # 4ae7913df: the rain concentrations formed before cloud
+        # adjustment persist until evaporation actually refreshes them
+        # (source_density), and a positive condensation decision
+        # suppresses same-call rain evaporation (condensation_marker).
+        'condensation_marker':
+            'scratch[mp_th]',
+        'source_density':
+            'scratch[mp_thompson_frozen_reference_density]',
+        # 7727fda3c: the evaporation writes WRF's L_qr (:3236) and the
+        # :3568 rewrite into the rain reference density.
+        'density_carries_rain_presence':
+            'True',
     }),
     ('launch_cloud_sedimentation', (
         'state.qc',
@@ -1183,6 +1375,12 @@ ADAPTER_CALLS_NO_REFL = (
             'state.nr',
         'melt_rain_qr':
             'state.qr',
+        # 4d6e551ef and 7727fda3c: melting snow blends with the rain pass's
+        # own fall speed (:3612-3634, :3722-3724), read from its density.
+        'melt_rain_density':
+            'scratch[mp_thompson_rain_reference_density]',
+        'melt_rain_density_carries_presence':
+            'True',
         'reference_density':
             'scratch[mp_thompson_frozen_reference_density]',
         'reference_temperature':
@@ -1228,6 +1426,9 @@ ADAPTER_CALLS_NO_REFL = (
             'True',
         'reference_density':
             'scratch[mp_thompson_rain_reference_density]',
+        # 7727fda3c: the rain fallout reads L_qr from that density.
+        'density_carries_rain_presence':
+            'True',
     }),
     ('launch_final_phase_cleanup', (
         'state.qc',
@@ -1236,7 +1437,12 @@ ADAPTER_CALLS_NO_REFL = (
         'scratch[mp_thompson_temperature]',
         'state.p',
         'state.qv',
-     ), {}),
+     ), {
+        # 217e84e18: the terminal vapour floor (:3974) skips the columns
+        # WRF leaves at its no-microphysics exit (:2020).
+        'micro_columns':
+            'scratch[mp_thompson_micro_columns]',
+    }),
     ('launch_classic_graupel_number_finalize', (
         'state.qg',
         'scratch[mp_thompson_temperature]',
@@ -1268,6 +1474,19 @@ ADAPTER_CALLS_WITH_REFL = (
     ('save_pre_mp_theta', (
         '<_HostAdapterState>',
      ), {}),
+    # 217e84e18: WRF's per-column no_micro flag (:1646, :2020), taken on
+    # the entry state before any source kernel.
+    ('launch_microphysics_columns', (
+        'state.qc',
+        'state.qi',
+        'state.qr',
+        'state.qs',
+        'state.qg',
+        'scratch[mp_thompson_temperature]',
+        'state.p',
+        'state.qv',
+        'scratch[mp_thompson_micro_columns]',
+     ), {}),
     ('launch_classic_graupel_number_init', (
         'state.qg',
         'scratch[mp_thompson_temperature]',
@@ -1314,10 +1533,6 @@ ADAPTER_CALLS_WITH_REFL = (
         'state.qr',
         'scratch[mp_rainncv]',
      ), {}),
-    ('launch_hydrometeor_column_mask', (
-        'state.qc',
-        'scratch[mp_snowncv]',
-     ), {}),
     ('launch_graupel_fallout_column_mask', (
         'scratch[mp_thompson_frozen_reference_temperature]',
         'state.qg',
@@ -1333,7 +1548,21 @@ ADAPTER_CALLS_WITH_REFL = (
             'scratch[mp_thompson_frozen_reference_density]',
         'reference_temperature':
             'scratch[mp_thompson_frozen_reference_temperature]',
+        # 4ae7913df: the positive-condensation decision is held in the
+        # full-theta scratch (saved already) and read by rain evaporation.
+        'condensation_marker':
+            'scratch[mp_th]',
+        # 6bd61312c: WRF's L_qc as the adjustment leaves it (:3485), held
+        # in the rain reference density until rain evaporation rewrites it.
+        'cloud_presence':
+            'scratch[mp_thompson_rain_reference_density]',
     }),
+    # 6bd61312c: the cloud fallout's ANY(L_qc) column gate (:3645) is taken
+    # from the adjustment's L_qc, not from the post-source cloud.
+    ('launch_hydrometeor_column_mask', (
+        'scratch[mp_thompson_rain_reference_density]',
+        'scratch[mp_snowncv]',
+     ), {}),
     ('launch_rain_evaporation', (
         'state.qr',
         'state.nr',
@@ -1346,6 +1575,18 @@ ADAPTER_CALLS_WITH_REFL = (
             'scratch[mp_thompson_graupel_melt_marker]',
         'reference_density':
             'scratch[mp_thompson_rain_reference_density]',
+        # 4ae7913df: the rain concentrations formed before cloud
+        # adjustment persist until evaporation actually refreshes them
+        # (source_density), and a positive condensation decision
+        # suppresses same-call rain evaporation (condensation_marker).
+        'condensation_marker':
+            'scratch[mp_th]',
+        'source_density':
+            'scratch[mp_thompson_frozen_reference_density]',
+        # 7727fda3c: the evaporation writes WRF's L_qr (:3236) and the
+        # :3568 rewrite into the rain reference density.
+        'density_carries_rain_presence':
+            'True',
     }),
     ('launch_cloud_sedimentation', (
         'state.qc',
@@ -1397,6 +1638,12 @@ ADAPTER_CALLS_WITH_REFL = (
             'state.nr',
         'melt_rain_qr':
             'state.qr',
+        # 4d6e551ef and 7727fda3c: melting snow blends with the rain pass's
+        # own fall speed (:3612-3634, :3722-3724), read from its density.
+        'melt_rain_density':
+            'scratch[mp_thompson_rain_reference_density]',
+        'melt_rain_density_carries_presence':
+            'True',
         'reference_density':
             'scratch[mp_thompson_frozen_reference_density]',
         'reference_temperature':
@@ -1442,6 +1689,9 @@ ADAPTER_CALLS_WITH_REFL = (
             'True',
         'reference_density':
             'scratch[mp_thompson_rain_reference_density]',
+        # 7727fda3c: the rain fallout reads L_qr from that density.
+        'density_carries_rain_presence':
+            'True',
     }),
     ('launch_final_phase_cleanup', (
         'state.qc',
@@ -1450,7 +1700,12 @@ ADAPTER_CALLS_WITH_REFL = (
         'scratch[mp_thompson_temperature]',
         'state.p',
         'state.qv',
-     ), {}),
+     ), {
+        # 217e84e18: the terminal vapour floor (:3974) skips the columns
+        # WRF leaves at its no-microphysics exit (:2020).
+        'micro_columns':
+            'scratch[mp_thompson_micro_columns]',
+    }),
     ('launch_classic_graupel_number_finalize', (
         'state.qg',
         'scratch[mp_thompson_temperature]',
@@ -1515,11 +1770,23 @@ def test_thompson_cu_is_byte_frozen(r1):
     """The single most important assertion in the port."""
     module = r1["modules"]["thompson"]
     assert module["file_sha256"] == THOMPSON_CU_SHA256, (
-        "gpuwm/core/kernels/thompson.cu was edited.  It is byte-frozen: "
-        "the entire mp=8 numerics guarantee is that its compiled source "
-        "string never moves.  mp=28 kernels belong in new .cu files.")
+        "gpuwm/core/kernels/thompson.cu was edited by a commit that has not "
+        "re-frozen this file, so an mp=8 result change is shipping without "
+        "its reading.  If the commit shipped one (a fixture, a test and a "
+        "page, as 4ae7913df did), re-freeze THOMPSON_CU_SHA256, the "
+        "compile-string digest and the FROZEN_MODULE_DIGESTS entry here "
+        "citing it; if it shipped none, record one first.  mp=28 kernels "
+        "still belong in their own .cu files.")
 
 
+# NEEDS CUPY INSTALLED, and opens no device: the compile string this
+# assertion reads is captured by driving the real loader with a recording
+# RawModule; without cupy the receipt falls back to `reconstructed`
+# (preamble plus file), which is not the string nvrtc compiles (the loader
+# assembles rrtmgp_rte with a header the reconstruction lacks), so the
+# digest cannot be read here.  Green on the release node's card
+# (proof/node-reds-276).
+@requires_cupy
 def test_thompson_compiled_source_string_is_frozen(r1):
     """Identical source string => identical PTX => identical FP results.
 
@@ -1531,9 +1798,13 @@ def test_thompson_compiled_source_string_is_frozen(r1):
     assert module["capture_method"] == "loader-capture", (
         "the compile string was reconstructed instead of captured from the "
         "real loader; the inertness claim is then unproven")
-    assert module["compiled_source_len"] == THOMPSON_COMPILED_SOURCE_LEN
+    moved = ("the string nvrtc compiles for thompson.cu moved and this file "
+             "was not re-frozen: an mp=8 result change is shipping without "
+             "its reading.  Re-freeze THOMPSON_COMPILED_SOURCE_SHA256 and "
+             "_LEN here citing the commit's reading, or record one first.")
+    assert module["compiled_source_len"] == THOMPSON_COMPILED_SOURCE_LEN, moved
     assert (module["compiled_source_sha256"]
-            == THOMPSON_COMPILED_SOURCE_SHA256)
+            == THOMPSON_COMPILED_SOURCE_SHA256), moved
 
 
 def test_preamble_and_common_header_are_frozen(r1):
@@ -1543,6 +1814,7 @@ def test_preamble_and_common_header_are_frozen(r1):
     assert r1["cuda_defines"] == CUDA_DEFINES_PIN
 
 
+@requires_cupy
 def test_every_frozen_kernel_module_is_unchanged(r1):
     """All 65 pre-existing translation units, file AND compile string.
 
@@ -1563,7 +1835,12 @@ def test_every_frozen_kernel_module_is_unchanged(r1):
                 "actual": (got["file_sha256"],
                            got["compiled_source_sha256"]),
             }
-    assert not drift, f"kernel source drift: {drift}"
+    assert not drift, (
+        f"kernel source drift: {drift}.  A frozen unit was edited by a "
+        "commit that has not re-frozen it here, so its result change is "
+        "shipping without its reading.  Re-freeze the entry with a comment "
+        "naming the commit and the reading it shipped, as the annotated "
+        "entries in FROZEN_MODULE_DIGESTS do, or record the reading first.")
 
 
 def test_loader_hook_is_inert_for_every_frozen_module(r1):
@@ -1603,7 +1880,12 @@ def test_loader_hook_is_inert_for_every_frozen_module(r1):
 
 
 def test_thompson_py_has_no_new_launcher(r1):
-    assert r1["thompson_py_sha256"] == THOMPSON_PY_SHA256
+    assert r1["thompson_py_sha256"] == THOMPSON_PY_SHA256, (
+        "gpuwm/core/thompson.py was edited by a commit that has not "
+        "re-frozen this file; if it shipped a reading of what it did to "
+        "mp=8, re-freeze THOMPSON_PY_SHA256 here citing it, else record one "
+        "first.  The two assertions below say whether the launch inventory "
+        "itself moved.")
     assert r1["thompson_py_all"] == THOMPSON_PY_ALL
     assert (r1["thompson_py_launch_symbols"]
             == tuple(sorted(THOMPSON_PY_ALL))), (
@@ -1618,7 +1900,12 @@ def test_constant_droplet_number_inventory_is_unchanged(r1):
     which the source digests would also catch, but this failure names the
     physics.
     """
-    assert r1["thompson_cu_literal_sites"] == THOMPSON_CU_LITERAL_SITES
+    assert r1["thompson_cu_literal_sites"] == THOMPSON_CU_LITERAL_SITES, (
+        "the constant-droplet-number sites in thompson.cu moved.  Counts "
+        "that changed mean a site was edited in place; counts that held "
+        "with shifted lines mean the file gained or lost lines above them, "
+        "and this pin moves with the digests: re-freeze it here beside "
+        "them, citing the commit's reading.")
 
 
 # ==========================================================================
@@ -1784,12 +2071,20 @@ def test_apply_thompson_issues_the_identical_launcher_sequence():
     change to accommodate it.
     """
     recorded = _as_tuple(freeze.record_adapter_calls(refl_10cm_due=False))
-    assert recorded == ADAPTER_CALLS_NO_REFL
+    assert recorded == ADAPTER_CALLS_NO_REFL, (
+        "_apply_thompson's launcher sequence moved and this pin was not "
+        "re-frozen: an mp=8 trajectory change is shipping without its "
+        "reading.  Re-pin ADAPTER_CALLS_NO_REFL and _WITH_REFL here with a "
+        "comment on the changed call naming the commit and its reading, as "
+        "the 4ae7913df entries do, or record the reading first.")
 
 
 def test_apply_thompson_reflectivity_call_graph_is_unchanged():
     recorded = _as_tuple(freeze.record_adapter_calls(refl_10cm_due=True))
-    assert recorded == ADAPTER_CALLS_WITH_REFL
+    assert recorded == ADAPTER_CALLS_WITH_REFL, (
+        "_apply_thompson's output-due launcher sequence moved and this pin "
+        "was not re-frozen; re-pin it beside ADAPTER_CALLS_NO_REFL with the "
+        "commit's reading, or record one first.")
 
 
 def test_adapter_still_feeds_cloud_sedimentation_the_lower_w_slice():

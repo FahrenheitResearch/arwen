@@ -58,6 +58,13 @@ class WrfTreeInputs:
     boundaries: object
     source: str = 'wrfinput'
     statics_corridor: object | None = None
+    #: The prepared door's physics-profile assertion
+    #: (:class:`gpuwm.prepared_domain_tree_forecast.PreparedTreeInputs`).
+    #: The tree runner reads it on every source when it writes the run
+    #: report, so the WRF-input doors carry it with the same default: a
+    #: stock real.exe pair completed its simulation and then failed with
+    #: AttributeError before the report was written.
+    physics_profile_assertion: Mapping[str, object] | None = None
 
 
 @dataclass(frozen=True)

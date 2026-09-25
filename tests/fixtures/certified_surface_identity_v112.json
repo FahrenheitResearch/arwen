@@ -1,26 +1,28 @@
 {
+  "captured_at_commit": "7463651257943712fe5d6caf58ae00bda9debbba",
+  "card": "NVIDIA GeForce RTX 4090",
   "morrison_rte": {
     "elapsed_seconds": 24.0,
-    "field_inventory_sha256": "77a004176d274621b918e5f083b67a4c1a819d9cba605797d4b419ef099ae9a9",
+    "field_inventory_sha256": "217f1bd3fadfab1669ee802cdbe4bd4202bf329014b971e2ccfc16ccf4db568b",
     "profile": "morrison_rte",
-    "sha256": "441014710d61ff4d2f18368f2e8a94232b6c8143a23094f782e8172d005ceaad"
+    "sha256": "5ce45b7d9c399f345511c879e7e648aeff2c8edf1aa0c7aaecac362ce4d080b9"
   },
   "nssl2_rte": {
     "elapsed_seconds": 24.0,
-    "field_inventory_sha256": "77a004176d274621b918e5f083b67a4c1a819d9cba605797d4b419ef099ae9a9",
+    "field_inventory_sha256": "217f1bd3fadfab1669ee802cdbe4bd4202bf329014b971e2ccfc16ccf4db568b",
     "profile": "nssl2_rte",
-    "sha256": "fc79652ed007e4c37a451d31971e1d843c4e46c72505ab8a7278569ebaea4cab"
+    "sha256": "1a6e4d090fcfa0ba09ac76672f1c9ccff35962d5655dd1b283e1e5c3884d4e66"
   },
   "thompson_dudhia": {
     "elapsed_seconds": 24.0,
-    "field_inventory_sha256": "77a004176d274621b918e5f083b67a4c1a819d9cba605797d4b419ef099ae9a9",
+    "field_inventory_sha256": "217f1bd3fadfab1669ee802cdbe4bd4202bf329014b971e2ccfc16ccf4db568b",
     "profile": "thompson_dudhia",
-    "sha256": "842a0911c39b136c7e5e3531c82b0aacce10bdd077fa4b679dc4a2a649dc0e0e"
+    "sha256": "e7a7d6840968431c72f1515454687e0c5ed27ceab903dda22807c127387c3070"
   },
   "wsm6_dudhia": {
     "elapsed_seconds": 24.0,
-    "field_inventory_sha256": "77a004176d274621b918e5f083b67a4c1a819d9cba605797d4b419ef099ae9a9",
+    "field_inventory_sha256": "217f1bd3fadfab1669ee802cdbe4bd4202bf329014b971e2ccfc16ccf4db568b",
     "profile": "wsm6_dudhia",
-    "sha256": "f4fafb379c839fe456016e2a06dc18325a6b9d60e8aad172c03e3fcbd4c999ef"
+    "sha256": "590e09e863f6b3c979846289156905239403179b89d52de217501a549c4df965"
   }
 }

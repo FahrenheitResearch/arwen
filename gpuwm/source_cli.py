@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import contextlib
-import contextvars
 from datetime import datetime
 from dataclasses import dataclass
 from typing import Callable
@@ -15,11 +13,10 @@ import math
 import os
 from pathlib import Path
 import re
-import subprocess
 import sys
 import tempfile
 
-from gpuwm import __version__
+from gpuwm import __version__, command_output
 from gpuwm.explain import add_explain_flag, explain_enabled
 from gpuwm.source_adapters import (
     AdapterStatus,
@@ -2895,25 +2892,25 @@ def _compact_input_argv(command: list[str]) -> tuple[Path, list[str]] | None:
     return Path(name), rest + ["--input-list", name]
 
 
-_ADAPTER_OUTPUT = contextvars.ContextVar("adapter_output", default=None)
-
-
-@contextlib.contextmanager
-def redirect_adapter_output(stdout, stderr):
-    """Let an in-process launch retain output from its adapter subprocess."""
-    token = _ADAPTER_OUTPUT.set((stdout, stderr))
-    try:
-        yield
-    finally:
-        _ADAPTER_OUTPUT.reset(token)
+# The registry and its two helpers are :mod:`gpuwm.command_output`'s,
+# not this module's, and the names here are that one object under this
+# module's spelling.  This file is a program as well as a library:
+# ``python -m gpuwm.source_cli`` -- how the nowcast door runs the
+# preparation stage -- executes it once as ``__main__`` and again under
+# its package name the moment :mod:`gpuwm.prep_output` imports it, and
+# a registry defined here would then exist twice.  It did: the host
+# opened its diagnostic log, printed "Details: <path>" and set the
+# redirect on the imported copy, while the copy actually launching the
+# preparation read its own empty registry, launched on inherited
+# handles, and left that advertised file zero bytes for the whole run.
+# The child's refusal went to the terminal, where only the last few
+# lines of it survived into the caller's report.
+_ADAPTER_OUTPUT = command_output.ADAPTER_OUTPUT
+redirect_adapter_output = command_output.redirect_adapter_output
 
 
 def _run_adapter_command(command):
-    streams = _ADAPTER_OUTPUT.get()
-    if streams is None:
-        return subprocess.run(command, check=False)
-    from gpuwm.command_output import run_streamed
-    return run_streamed(command, *streams)
+    return command_output.run_adapter_command(command)
 
 
 def _run_native_adapter(command: list[str]) -> int:

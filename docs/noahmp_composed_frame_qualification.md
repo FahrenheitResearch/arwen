@@ -231,8 +231,10 @@ subprocess through `profile_from_device_probe`) and answers one of two ways:
   whenever there is one.
 * **it has none** -- the card's platform was not read (an explicit profile
   with no compile platform, `--vram-gib` for a machine elsewhere,
-  `GPUWM_NO_LOCAL_GPU`, no runtime, `gpuwm check`'s CPU-only route), or the
-  pair has no reading, or its row went stale -- the frames are the
+  `GPUWM_NO_LOCAL_GPU`, no runtime, `gpuwm check`'s CPU-only route on a
+  machine whose card did not answer its probe or whose probe read no
+  platform), or the pair has no reading, or its row went stale -- the frames
+  are the
   element-wise **ceiling** over every row that describes this tree, the same
   rule every standalone kernel gets on an unrecorded platform
   (`KERNEL_MAX_LOCAL_SIZE_BYTES` is itself that ceiling), and the basis reads
@@ -258,7 +260,8 @@ beside the fit verdict in its summary, `NON-POOL BASIS: ...` under `--explain`
 (`non_pool_basis(profile, exp)`, the card sentence followed by the Noah-MP
 sentence), carries the same text in the `non_pool_basis` field of `--json`,
 and on the CPU-only route (GPU readiness unjudged) puts it in the estimate's
-`basis` beside what kept the card unread.  `gpuwm downscale --point` prices a
+`basis` beside the card it read through the estimate's probe, or beside what
+kept the card unread.  `gpuwm downscale --point` prices a
 Noah-MP parent from the profile the sizing probe read under `--auto-vram` and
 from the ceiling for `--card` / `--vram-gib` targets.
 
@@ -272,8 +275,10 @@ the reference geometry -- the retired `CARD_CLASS_MULTIPROCESSORS` defect is
 a declared card priced on a smaller card's SMs, and
 `test_an_absent_card_is_priced_on_its_own_geometry_from_the_ceiling` holds it
 shut.  The present card is read once per process
-(`live_device_local_memory_profile` keeps the first read, which is also the
-only one that can measure the bare context).
+(`live_device_local_memory_profile` keeps the first read; a profile is the
+card's name, shader census, stack limit and compile platform, so a second
+read is the same profile, and the bare context is priced from the census at
+`MODELLED_BARE_CONTEXT_BYTES_PER_RESIDENT_THREAD` rather than sampled).
 
 One refusal remains, and it names the tool: a tree with **no usable Noah-MP
 reading at all** -- no row, or every row read from a different source, option

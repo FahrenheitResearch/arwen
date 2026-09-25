@@ -47,7 +47,7 @@
 //! `meshdiff:` subtracts a reference frame cell by cell and draws the result
 //! on a zero-centred diverging scale.  The reference comes from
 //! `--mesh-reference PATH` the way `--minus-store-root` gives the store
-//! lane's `diff:` family its reference: a directory holding the other leg's
+//! route's `diff:` family its reference: a directory holding the other leg's
 //! frames (matched by file name) or a single file when a single frame is
 //! rendered.  `--mesh-labels A,B` names the two legs; the default is
 //! `TREATMENT,CONTROL`.
@@ -58,6 +58,13 @@
 //! regrid it exists to avoid.
 
 use std::path::{Path, PathBuf};
+
+// The decade shift a colorbar needs to say a number at all.  It lives in
+// `rustwx-products` beside the style that carries it, because the generic
+// `var:` route needs exactly the same arithmetic on exactly the same
+// grounds and two copies would be two answers.  Re-exported here so this
+// module's own path keeps working.
+pub use rustwx_products::viewer::{display_exponent, grams_per_kilogram, scaled_units};
 
 use rustwx_render::{
     ColorScale, CoreField2D, CoreGridShape, CoreLatLonGrid, CoreProductKey, DiscreteColorScale,
@@ -1023,45 +1030,39 @@ fn render_one(
         ));
     }
 
-    // A colorbar whose every tick reads `0` measures nothing.  The tick
-    // formatter carries one decimal, and a hydrometeor mixing ratio is
-    // 1e-4 kg kg-1, so the whole ladder printed `0` and the panel reported
-    // no number at all.  The remedy is generic and driven by the RANGE, not
-    // by any variable's name: the values move onto a power-of-a-thousand
-    // scale that puts the largest of them in 1-1000, and the decade is
-    // stated in the units so the reader can put it back.
-    let exponent = display_exponent(finite_min.abs().max(finite_max.abs()));
-    let factor = 10f64.powi(-exponent);
-    if exponent != 0 {
-        for cell in cells.iter_mut() {
-            cell.value = cell.value.map(|value| value * factor);
-        }
-        finite_min *= factor;
-        finite_max *= factor;
-    }
-    let display_units = scaled_units(units, exponent);
+    // The band this panel is drawn on: the named range clamps first, in
+    // the field's own units, and only then is the decade taken, so one
+    // exponent covers the cells, the levels and the legend.
+    let band = mesh_band(units, finite_min, finite_max, product.range);
 
-    // A named range is in the FIELD's units, so it takes the same decade
-    // shift the values did; and its floor is the mask, so a cell below it
-    // shows the mesh rather than the ramp's bottom colour.
-    if let Some((lo, hi)) = product.range {
-        let lo = lo * factor;
-        let hi = hi.map(|hi| hi * factor);
+    // The named range's floor is also the mask, so a cell below it shows
+    // the mesh rather than the ramp's bottom colour.  It is applied in the
+    // field's units, before the decade moves anything.
+    if let Some(floor) = band.mask_below {
         for cell in cells.iter_mut() {
             if let Some(value) = cell.value {
-                if value < lo {
+                if value < floor {
                     cell.value = None;
                 }
             }
         }
-        finite_min = lo;
-        finite_max = hi.unwrap_or(finite_max.max(lo * 1.000_001 + 1.0e-9));
     }
+    if band.factor != 1.0 {
+        for cell in cells.iter_mut() {
+            cell.value = cell.value.map(|value| value * band.factor);
+        }
+    }
+    let finite_min = band.display_min;
+    let finite_max = band.display_max;
+    let display_units = band.display_units;
 
     let scale = if product.difference {
         diverging_scale(finite_min.abs().max(finite_max.abs()))
     } else {
-        let style = rustwx_products::viewer::generic_style_for_store_variable(
+        // The PRESCALED entry: this route has already moved its own decade,
+        // and the entry that takes a decade off the range it is handed
+        // would take a second one off a clamped range.
+        let style = rustwx_products::viewer::generic_style_for_prescaled_store_variable(
             &product.field,
             &display_units,
             Some((finite_min as f32, finite_max as f32)),
@@ -1149,30 +1150,82 @@ fn render_one(
     Ok(output)
 }
 
-/// The power of a thousand that puts `max_abs` in 1-1000, or 0 when it is
-/// already there.  Powers of a thousand, not of ten, so the decade in the
-/// units is one a reader recognises (1e-3, 1e-6, 1e3) rather than an
-/// arbitrary shift.
-pub fn display_exponent(max_abs: f64) -> i32 {
-    if !max_abs.is_finite() || max_abs <= 0.0 {
-        return 0;
-    }
-    if (1.0..1000.0).contains(&max_abs) {
-        return 0;
-    }
-    ((max_abs.log10() / 3.0).floor() * 3.0) as i32
+/// One mesh panel's band: the decade its legend speaks in, the bounds its
+/// levels are cut on, and the field-unit floor below which a cell takes the
+/// empty fill.
+#[derive(Debug, Clone, PartialEq)]
+struct MeshBand {
+    /// Power of a thousand the display values carry; 0 means unscaled.
+    exponent: i32,
+    /// Multiply a field-unit value by this to get a display value.
+    factor: f64,
+    /// The units with that decade stated in them.
+    display_units: String,
+    /// The levels' bounds, in display units.
+    display_min: f64,
+    display_max: f64,
+    /// Field-unit floor below which a cell is dropped, when the token
+    /// named a range.
+    mask_below: Option<f64>,
 }
 
-/// `1e-6 kg kg^{-1}`: the units with the decade the values were moved onto.
-pub fn scaled_units(units: &str, exponent: i32) -> String {
-    if exponent == 0 {
-        return units.to_string();
-    }
-    let units = units.trim();
-    if units.is_empty() {
-        format!("1e{exponent}")
-    } else {
-        format!("1e{exponent} {units}")
+/// Settle a panel's range and then its decade, in that order.
+///
+/// WHAT BREAKAGE THIS PREVENTS (gate law, CLAUDE.md): levels cut on one
+/// decade colouring cells that sit on another.  A `@LO[..HI]` range is in
+/// the FIELD's units, and the decade used to be taken off the raw data
+/// before the clamp was applied, so a mixing ratio clamped three decades
+/// below its own peak had its legend stating the data's decade while its
+/// levels were cut on the range's: the fill sat a thousand-fold off its own
+/// bar.  Taking the decade off the CLAMPED bounds fixes both halves at
+/// once, because the bar then states the decade the levels were actually
+/// cut on, and a narrow low band gets ticks that read as numbers rather
+/// than the row of `0` this family's remedy exists to prevent.
+fn mesh_band(
+    units: &str,
+    finite_min: f64,
+    finite_max: f64,
+    range: Option<(f64, Option<f64>)>,
+) -> MeshBand {
+    let (lo, hi, mask_below) = match range {
+        Some((lo, hi)) => {
+            let top = match hi {
+                Some(hi) => hi,
+                None => {
+                    let observed = finite_max.max(lo);
+                    if observed > lo {
+                        observed
+                    } else {
+                        // Every cell sits at or below the floor and no
+                        // ceiling was named.  Ordered levels still have to
+                        // exist, and the nudge is RELATIVE or it is a
+                        // different nudge on every decade.
+                        let nudge = if lo == 0.0 { 1.0 } else { lo.abs() * 1.0e-6 };
+                        lo + nudge
+                    }
+                }
+            };
+            (lo, top, Some(lo))
+        }
+        None => (finite_min, finite_max, None),
+    };
+    // A mass mixing ratio is drawn in grams per kilogram, keyed on the
+    // file's units attribute, before the decade is taken: the section
+    // route speaks g kg-1 and this route spoke kg kg-1 of the same air.
+    let (grams_factor, units) = match grams_per_kilogram(units) {
+        Some((factor, units)) => (factor, units),
+        None => (1.0, units),
+    };
+    let (lo, hi) = (lo * grams_factor, hi * grams_factor);
+    let exponent = display_exponent(lo.abs().max(hi.abs()));
+    let factor = 10f64.powi(-exponent) * grams_factor;
+    MeshBand {
+        exponent,
+        factor,
+        display_units: scaled_units(units, exponent),
+        display_min: lo * factor / grams_factor,
+        display_max: hi * factor / grams_factor,
+        mask_below,
     }
 }
 
@@ -1353,6 +1406,81 @@ mod tests {
         assert_eq!(display_exponent(4.2e7), 6);
         assert_eq!(display_exponent(0.0), 0);
         assert_eq!(scaled_units("", -3), "1e-3");
+    }
+
+    #[test]
+    fn a_named_range_and_the_decade_settle_in_that_order() {
+        // The measurement this pins is arithmetic, not a card run: a
+        // condensate frame whose peak is three decades above the band the
+        // token asks for.  The decade used to be taken off the peak and the
+        // clamp applied afterwards, so the legend stated the peak's decade
+        // while the levels were cut on the band's.
+        // In grams per kilogram the band is 1e-4 to 1e-3, a decade below
+        // one, so it reads 0.1 to 1 against 1e-3 g kg-1.
+        let band = mesh_band("kg kg-1", 2.0e-8, 4.0e-3, Some((1.0e-7, Some(1.0e-6))));
+        assert_eq!(band.exponent, -3, "the decade is the CLAMPED band's");
+        assert_eq!(band.display_units, "1e-3 g kg-1");
+        assert_eq!(band.mask_below, Some(1.0e-7));
+        assert!((band.display_min - 0.1).abs() < 1.0e-12, "{}", band.display_min);
+        assert!((band.display_max - 1.0).abs() < 1.0e-12, "{}", band.display_max);
+
+        // And the levels the panel is drawn with bracket the cells it
+        // colours: one cell inside the band, scaled by the same factor.
+        let style = rustwx_products::viewer::generic_style_for_prescaled_store_variable(
+            "qi",
+            &band.display_units,
+            Some((band.display_min as f32, band.display_max as f32)),
+        );
+        assert_eq!(
+            style.convert,
+            rustwx_products::viewer::UnitConvert::None,
+            "the prescaled entry may never take a second decade"
+        );
+        let ColorScale::Discrete(scale) = style.scale else {
+            panic!("a discrete scale");
+        };
+        let cell = 5.0e-7 * band.factor;
+        let lowest = *scale.levels.first().expect("levels");
+        let highest = *scale.levels.last().expect("levels");
+        assert!(
+            lowest <= cell && cell <= highest,
+            "a cell inside the band fell outside its own levels: {cell} not in {lowest}..{highest}"
+        );
+        // The style is asked for the band in f32, as the panel asks for
+        // it, so the tolerance is the f32 round trip and not zero.
+        assert!(
+            (lowest - 0.1).abs() < 1.0e-6 && (highest - 1.0).abs() < 1.0e-6,
+            "{lowest}..{highest} is not the band 0.1..1.0"
+        );
+    }
+
+    #[test]
+    fn an_unranged_panel_keeps_the_decade_of_its_own_data() {
+        // 4e-3 kg kg-1 is 4 g kg-1: grams first, and then no decade.
+        let band = mesh_band("kg kg-1", 2.0e-8, 4.0e-3, None);
+        assert_eq!(band.exponent, 0);
+        assert_eq!(band.display_units, "g kg-1");
+        assert_eq!(band.mask_below, None);
+        assert!((band.display_max - 4.0).abs() < 1.0e-9, "{}", band.display_max);
+        assert!((band.factor - 1000.0).abs() < 1.0e-9, "{}", band.factor);
+        // Any other units keep the decade remedy as it was.
+        let smoke = mesh_band("kg m-3", 2.0e-8, 4.0e-3, None);
+        assert_eq!(smoke.exponent, -3);
+        assert_eq!(smoke.display_units, "1e-3 kg m-3");
+
+        // A floor with no ceiling takes the observed maximum as its top,
+        // and a floor no cell reaches still gets ordered levels on a nudge
+        // that is relative, so it is the same nudge on every decade.
+        let floor_only = mesh_band("kg kg-1", 2.0e-8, 4.0e-3, Some((1.0e-7, None)));
+        assert!((floor_only.display_max - 4.0).abs() < 1.0e-9);
+        assert_eq!(floor_only.exponent, 0);
+        let starved = mesh_band("kg kg-1", 0.0, 1.0e-9, Some((1.0e-7, None)));
+        assert!(
+            starved.display_max > starved.display_min,
+            "{starved:?} has no levels to cut"
+        );
+        let zero_floor = mesh_band("m", 0.0, 0.0, Some((0.0, None)));
+        assert!(zero_floor.display_max > zero_floor.display_min, "{zero_floor:?}");
     }
 
     #[test]

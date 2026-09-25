@@ -1,21 +1,23 @@
 """The cycling ensemble's on-disk generation: format, identity, ring.
 
-Pure tests: no network, no GPU, no model.  The arrays here are tiny
-stand-ins for the driver's host snapshots -- what is under test is the
-boundary contract (what is written, what is refused, what resumes),
-not the physics that fills it.
+Pure tests: no network, no GPU, no model.  The restart sets here are
+tiny stand-ins with a real restart header and the writer's own member
+naming -- what is under test is the boundary contract (what is copied,
+what is refused, what resumes), not the physics that fills a set.
 """
 from __future__ import annotations
 
 import json
+import uuid
 
 import numpy as np
 import pytest
 
 from tools.da_ensemble_state import (
-    CONTROL, MIN_SLOTS, SCHEMA, EnsembleIdentity, EnsembleStateError,
-    latest_generation, manifest_path, pending_path, read_generation,
-    read_manifest, slot_dir, snapshot_path, trajectory_key,
+    CONTROL, MIN_SLOTS, RETIRED_SCHEMA, SCHEMA, EnsembleIdentity,
+    EnsembleStateError, latest_generation, manifest_path,
+    nested_trajectories, pending_path, read_generation, read_manifest,
+    restart_dir, slot_dir, trajectory_key, trajectory_name,
     trajectory_names, validate_resume, write_generation)
 
 
@@ -37,11 +39,41 @@ def variant(field: str, value) -> EnsembleIdentity:
     return EnsembleIdentity(**base)
 
 
-def snapshots_for(members: int, *, fields=("u", "v")) -> dict:
+_HEADER_KEY = "__gpuwm_restart_header__"
+
+
+def write_fake_set(directory, *, domain_ids=(1,), fill: float = 1.0,
+                   instant: str = "2026-01-01_00_15_00"):
+    """A stand-in tree checkpoint set: real header, real member naming.
+
+    One member per domain id, all sharing the instant and the set id in
+    their names exactly as ``write_tree_restart`` names them, each with
+    the header the restart owner reads the domain set from.  Returns the
+    root member, which is what the driver hands the generation writer.
+    """
+    directory.mkdir(parents=True, exist_ok=True)
+    set_id = uuid.uuid4().hex
+    root = None
+    for gid in domain_ids:
+        header = {"format_version": 6, "domain_ids": sorted(domain_ids),
+                  "grid_id": int(gid), "elapsed_seconds": 900.0}
+        path = directory / f"gpuwmrst_d{int(gid):02d}_{instant}__{set_id}.npz"
+        np.savez(path,
+                 **{_HEADER_KEY: np.frombuffer(
+                     json.dumps(header).encode("utf-8"), dtype=np.uint8),
+                    "state/u": np.full((4, 6, 8), fill, np.float32)})
+        if int(gid) == min(int(d) for d in domain_ids):
+            root = path
+    return root
+
+
+def sets_for(tmp_path, members: int, *, nested=()) -> dict:
     out = {}
     for index, name in enumerate(trajectory_names(members)):
-        out[name] = {f: np.full((4, 6, 8), index + 1, np.float32)
-                     for f in fields}
+        ids = (1, 2) if name in nested else (1,)
+        out[name] = write_fake_set(
+            tmp_path / "stage" / trajectory_key(name), domain_ids=ids,
+            fill=index + 1)
     return out
 
 
@@ -67,6 +99,12 @@ class TestTrajectoryNaming:
     def test_empty_ensemble_refused(self):
         with pytest.raises(EnsembleStateError, match="at least one"):
             trajectory_names(0)
+
+    def test_keys_round_trip_to_names(self):
+        for name in trajectory_names(3):
+            assert trajectory_name(trajectory_key(name)) == name
+        with pytest.raises(EnsembleStateError, match="not a trajectory"):
+            trajectory_name("member-3")
 
 
 # ---------------------------------------------------------------------------
@@ -97,71 +135,102 @@ class TestSlotRing:
 # writing and reading one generation
 # ---------------------------------------------------------------------------
 class TestRoundTrip:
-    def test_snapshots_and_pending_survive_exactly(self, tmp_path):
+    def test_restart_sets_and_pending_survive_exactly(self, tmp_path):
         ident = identity(2)
-        snaps = snapshots_for(2)
+        sets = sets_for(tmp_path, 2)
         pend = {CONTROL: None,
                 0: {"u": np.full((4, 6, 8), 0.5, np.float32)},
                 1: {"u": np.full((4, 6, 8), -0.5, np.float32)}}
-        write_generation(tmp_path, identity=ident, elapsed_seconds=900.0,
-                         leg_number=3, snapshots=snaps, pending=pend)
-        back_snaps, back_pend, manifest = read_generation(tmp_path, ident)
+        out = tmp_path / "gen"
+        write_generation(out, identity=ident, elapsed_seconds=900.0,
+                         leg_number=3, restarts=sets, pending=pend)
+        back_sets, back_pend, manifest = read_generation(out, ident)
         assert manifest["schema"] == SCHEMA
         assert manifest["elapsed_seconds"] == 900.0
         assert manifest["leg_number"] == 3
         for name in trajectory_names(2):
-            for field, values in snaps[name].items():
-                assert np.array_equal(back_snaps[name][field], values)
+            copied = back_sets[name]
+            assert copied.is_file()
+            assert copied.name == sets[name].name
+            assert copied.parent == restart_dir(out, name)
+            assert copied.read_bytes() == sets[name].read_bytes()
         assert back_pend[CONTROL] is None
         assert np.array_equal(back_pend[0]["u"], pend[0]["u"])
 
     def test_control_without_pending_is_recorded_as_absent(self, tmp_path):
         ident = identity(1)
-        write_generation(tmp_path, identity=ident, elapsed_seconds=0.0,
-                         leg_number=0, snapshots=snapshots_for(1),
+        out = tmp_path / "gen"
+        write_generation(out, identity=ident, elapsed_seconds=0.0,
+                         leg_number=0, restarts=sets_for(tmp_path, 1),
                          pending={CONTROL: None, 0: None})
-        manifest = read_manifest(tmp_path)
+        manifest = read_manifest(out)
         assert "pending" not in manifest["trajectories"]["control"]
         assert "pending" not in manifest["trajectories"]["m000"]
-        assert not pending_path(tmp_path, 0).exists()
+        assert not pending_path(out, 0).exists()
 
-    def test_every_trajectory_has_a_snapshot_file(self, tmp_path):
+    def test_every_trajectory_has_its_set_copied_whole(self, tmp_path):
         ident = identity(2)
-        write_generation(tmp_path, identity=ident, elapsed_seconds=0.0,
-                         leg_number=0, snapshots=snapshots_for(2),
-                         pending={})
-        for name in trajectory_names(2):
-            assert snapshot_path(tmp_path, name).is_file()
+        out = tmp_path / "gen"
+        sets = sets_for(tmp_path, 2, nested=(CONTROL,))
+        write_generation(out, identity=ident, elapsed_seconds=0.0,
+                         leg_number=0, restarts=sets, pending={})
+        manifest = read_manifest(out)
+        control = manifest["trajectories"]["control"]
+        assert control["domain_ids"] == [1, 2]
+        assert set(control["restart_members"]) == {"1", "2"}
+        for member in control["restart_members"].values():
+            assert (restart_dir(out, CONTROL) / member).is_file()
+        assert manifest["trajectories"]["m000"]["domain_ids"] == [1]
+        assert nested_trajectories(manifest) == [CONTROL]
 
     def test_missing_trajectory_is_refused_before_anything_is_written(
             self, tmp_path):
         ident = identity(3)
-        snaps = snapshots_for(3)
-        del snaps[2]
+        sets = sets_for(tmp_path, 3)
+        del sets[2]
+        out = tmp_path / "gen"
         with pytest.raises(EnsembleStateError, match="missing"):
-            write_generation(tmp_path, identity=ident,
+            write_generation(out, identity=ident,
                              elapsed_seconds=0.0, leg_number=0,
-                             snapshots=snaps, pending={})
-        assert not manifest_path(tmp_path).exists()
+                             restarts=sets, pending={})
+        assert not manifest_path(out).exists()
 
-    def test_snapshot_field_inventory_is_recorded(self, tmp_path):
+    def test_a_set_with_a_member_missing_is_refused_whole(self, tmp_path):
         ident = identity(1)
-        write_generation(
-            tmp_path, identity=ident, elapsed_seconds=0.0, leg_number=0,
-            snapshots=snapshots_for(1, fields=("u", "v", "qv")),
-            pending={})
-        entry = read_manifest(tmp_path)["trajectories"]["m000"]
-        assert entry["snapshot_fields"] == ["qv", "u", "v"]
+        sets = sets_for(tmp_path, 1, nested=(CONTROL,))
+        out = tmp_path / "gen"
+        write_generation(out, identity=ident, elapsed_seconds=0.0,
+                         leg_number=0, restarts=sets, pending={})
+        manifest = read_manifest(out)
+        gone = manifest["trajectories"]["control"]["restart_members"]["2"]
+        (restart_dir(out, CONTROL) / gone).unlink()
+        with pytest.raises(EnsembleStateError, match="not there"):
+            read_generation(out, ident)
+
+    def test_rewriting_a_slot_replaces_the_old_set(self, tmp_path):
+        ident = identity(1)
+        out = tmp_path / "gen"
+        first = sets_for(tmp_path / "a", 1, nested=(CONTROL,))
+        write_generation(out, identity=ident, elapsed_seconds=0.0,
+                         leg_number=0, restarts=first, pending={})
+        second = sets_for(tmp_path / "b", 1)
+        write_generation(out, identity=ident, elapsed_seconds=900.0,
+                         leg_number=1, restarts=second,
+                         pending={CONTROL: None, 0: None})
+        kept = sorted(p.name for p in restart_dir(out, CONTROL).iterdir())
+        assert kept == [second[CONTROL].name], kept
 
     def test_valid_time_and_note_ride_along(self, tmp_path):
         ident = identity(1)
-        write_generation(tmp_path, identity=ident, elapsed_seconds=60.0,
-                         leg_number=1, snapshots=snapshots_for(1),
+        out = tmp_path / "gen"
+        write_generation(out, identity=ident, elapsed_seconds=60.0,
+                         leg_number=1, restarts=sets_for(tmp_path, 1),
                          pending={}, valid_time="2026-08-05T06:00:00Z",
                          note="carried")
-        manifest = read_manifest(tmp_path)
+        manifest = read_manifest(out)
         assert manifest["valid_time"] == "2026-08-05T06:00:00Z"
         assert manifest["note"] == "carried"
+        assert "gpuwm.io.restart" in manifest["contract"]
 
 
 # ---------------------------------------------------------------------------
@@ -175,21 +244,23 @@ class TestIdentity:
         ("prepared_content_sha256", "d" * 64)])
     def test_every_field_is_checked(self, tmp_path, field, value):
         ident = identity(2)
-        write_generation(tmp_path, identity=ident, elapsed_seconds=0.0,
-                         leg_number=0, snapshots=snapshots_for(2),
+        out = tmp_path / "gen"
+        write_generation(out, identity=ident, elapsed_seconds=0.0,
+                         leg_number=0, restarts=sets_for(tmp_path, 2),
                          pending={})
         with pytest.raises(EnsembleStateError, match=field):
-            read_generation(tmp_path, variant(field, value))
+            read_generation(out, variant(field, value))
 
     def test_all_differences_are_reported_not_just_the_first(
             self, tmp_path):
         ident = identity(2)
-        write_generation(tmp_path, identity=ident, elapsed_seconds=0.0,
-                         leg_number=0, snapshots=snapshots_for(2),
+        out = tmp_path / "gen"
+        write_generation(out, identity=ident, elapsed_seconds=0.0,
+                         leg_number=0, restarts=sets_for(tmp_path, 2),
                          pending={})
         other = identity(2, nx=99, nz=99)
         with pytest.raises(EnsembleStateError) as caught:
-            read_generation(tmp_path, other)
+            read_generation(out, other)
         assert "nx" in str(caught.value) and "nz" in str(caught.value)
 
     def test_matching_identity_passes(self):
@@ -206,7 +277,7 @@ class TestIdentity:
 # ---------------------------------------------------------------------------
 class TestCompletionMarker:
     def test_no_manifest_means_no_generation(self, tmp_path):
-        (tmp_path / "snap_control.npz").write_bytes(b"not a npz")
+        (tmp_path / "pend_control.npz").write_bytes(b"not a npz")
         with pytest.raises(EnsembleStateError, match="never finished"):
             read_manifest(tmp_path)
 
@@ -217,16 +288,35 @@ class TestCompletionMarker:
         with pytest.raises(EnsembleStateError, match="schema"):
             read_manifest(tmp_path)
 
+    def test_an_atmosphere_only_generation_is_refused_by_name(self, tmp_path):
+        """A retired generation carried no soil, surface or accumulators.
+
+        Resuming it would restart every one of those from the prepared
+        background at that instant, which is the defect the restart-set
+        generation closed, so the refusal names the format, what it
+        lacks and the way out.
+        """
+        manifest_path(tmp_path).parent.mkdir(parents=True, exist_ok=True)
+        manifest_path(tmp_path).write_text(
+            json.dumps({"schema": RETIRED_SCHEMA, "leg_number": 4}),
+            encoding="utf-8")
+        with pytest.raises(EnsembleStateError) as refusal:
+            read_manifest(tmp_path)
+        message = str(refusal.value)
+        assert RETIRED_SCHEMA in message and SCHEMA in message
+        assert "soil" in message and "prepared background" in message
+
     def test_rewriting_a_slot_clears_the_old_marker_first(self, tmp_path):
         ident = identity(1)
-        write_generation(tmp_path, identity=ident, elapsed_seconds=0.0,
-                         leg_number=0, snapshots=snapshots_for(1),
+        out = tmp_path / "gen"
+        write_generation(out, identity=ident, elapsed_seconds=0.0,
+                         leg_number=0, restarts=sets_for(tmp_path, 1),
                          pending={})
-        write_generation(tmp_path, identity=ident, elapsed_seconds=900.0,
-                         leg_number=1, snapshots=snapshots_for(1),
+        write_generation(out, identity=ident, elapsed_seconds=900.0,
+                         leg_number=1, restarts=sets_for(tmp_path, 1),
                          pending={})
-        assert read_manifest(tmp_path)["leg_number"] == 1
-        assert (tmp_path / "ensemble-manifest.json.superseded").is_file()
+        assert read_manifest(out)["leg_number"] == 1
+        assert (out / "ensemble-manifest.json.superseded").is_file()
 
 
 # ---------------------------------------------------------------------------
@@ -242,10 +332,10 @@ class TestLatestGeneration:
         ident = identity(1)
         write_generation(slot_dir(tmp_path, 0), identity=ident,
                          elapsed_seconds=1800.0, leg_number=2,
-                         snapshots=snapshots_for(1), pending={})
+                         restarts=sets_for(tmp_path / "a", 1), pending={})
         write_generation(slot_dir(tmp_path, 1), identity=ident,
                          elapsed_seconds=900.0, leg_number=1,
-                         snapshots=snapshots_for(1), pending={})
+                         restarts=sets_for(tmp_path / "b", 1), pending={})
         found = latest_generation(tmp_path)
         assert found is not None
         directory, manifest = found
@@ -256,10 +346,24 @@ class TestLatestGeneration:
         ident = identity(1)
         write_generation(slot_dir(tmp_path, 0), identity=ident,
                          elapsed_seconds=900.0, leg_number=1,
-                         snapshots=snapshots_for(1), pending={})
+                         restarts=sets_for(tmp_path / "a", 1), pending={})
         torn = slot_dir(tmp_path, 1)
         torn.mkdir(parents=True, exist_ok=True)
-        (torn / "snap_control.npz").write_bytes(b"half a write")
+        (torn / "pend_control.npz").write_bytes(b"half a write")
+        directory, manifest = latest_generation(tmp_path)
+        assert directory == slot_dir(tmp_path, 0)
+        assert manifest["leg_number"] == 1
+
+    def test_a_retired_slot_is_looked_past(self, tmp_path):
+        ident = identity(1)
+        write_generation(slot_dir(tmp_path, 0), identity=ident,
+                         elapsed_seconds=900.0, leg_number=1,
+                         restarts=sets_for(tmp_path / "a", 1), pending={})
+        old = slot_dir(tmp_path, 1)
+        old.mkdir(parents=True, exist_ok=True)
+        manifest_path(old).write_text(
+            json.dumps({"schema": RETIRED_SCHEMA, "leg_number": 9}),
+            encoding="utf-8")
         directory, manifest = latest_generation(tmp_path)
         assert directory == slot_dir(tmp_path, 0)
         assert manifest["leg_number"] == 1

@@ -593,9 +593,19 @@ def test_the_binding_phase_verdict_agrees_with_the_exit_code(tmp_path):
     assert "BINDING PHASE" in text, text[-3000:]
     line = text.split("BINDING PHASE", 1)[1].split("\n", 1)[0]
     fits = "it fits the" in line
-    assert fits == (out.returncode != 4), (
-        f"rc {out.returncode} against a BINDING PHASE line that says "
-        f"{'fits' if fits else 'does not fit'}: {line.strip()}")
+    if fits:
+        assert out.returncode != 4, (
+            f"rc 4 against a BINDING PHASE line that says it fits: "
+            f"{line.strip()}")
+    else:
+        # A non-fitting envelope exits 4 when every gate passed and 1
+        # when a gate failed as well ("the harder verdict wins", and the
+        # report prints which); on a 4.00 GiB declared budget the
+        # estimate gate fails too, so 1 is the exit this configuration
+        # earns (proof/node-reds-276).  What may not happen is 0.
+        assert out.returncode in (1, 4), (
+            f"rc {out.returncode} against a BINDING PHASE line that says "
+            f"does not fit: {line.strip()}")
 
 
 # ---------------------------------------------------------------------------

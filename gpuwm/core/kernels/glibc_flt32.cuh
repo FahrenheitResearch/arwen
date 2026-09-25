@@ -232,9 +232,9 @@ __device__ float gfk_exp(float x)
 
 // e_exp2f.c (exp2f), s_expm1f.c (expm1f) and e_lgammaf_r.c (lgammaf) were
 // transcribed here through 2.6.5 and are DELETED at 2.6.6.  Their only
-// caller anywhere in this tree was the LGPL gamma block this file used to
-// end with: glibc's gammaf reaches Gamma through exp(lgamma), rescales the
-// result with exp2f and corrects the rescaling with expm1f.  That block is
+// caller anywhere in this tree was the earlier gamma this file used to end
+// with, which used all three on its way to Gamma; with nothing else calling
+// them they had no reason to stay.  That earlier gamma is
 // gone, and ArWen's own gamma that replaced it evaluates no logarithm, no
 // exponential and no exp2 at all, so all three functions became dead to the
 // physics and survived only as slots of the gf_libm_unary_probe TEST
@@ -341,16 +341,16 @@ __device__ float gfk_pow(float x, float y)
 // gfk_tgamma -- ArWen's own float32 gamma.  ORIGINAL WORK, Apache-2.0.
 // ==========================================================================
 //
-// WHAT THIS REPLACED, AND WHY.  Until 2.6.5 this file ended with
-// gfk_gamma_product / gfk_gammaf_positive / gfk_tgamma, a line-for-line
-// transcription of glibc's dbl-64/gamma_productf.c and flt-32/e_gammaf_r.c.
-// A provenance audit established that both are glibc-authored, FSF-copyright
-// and LGPL-2.1-or-later with NO permissive upstream: gamma_productf.c was
-// created from nothing by glibc commit d8cd06db62d9 (2013) and has no FDLIBM,
-// SunPro, Cygnus or ARM ancestor anywhere.  An Apache-2.0 distribution cannot
-// carry it and no NOTICE entry can cure that, so it is gone.  Nothing from it
-// survives below: no constant, no branch structure, no algorithm.  This code
-// evaluates no lgamma, performs no exponentiation, and calls nothing.
+// WHAT THIS REPLACED.  Until 2.6.5 this file ended with ArWen's earlier
+// gamma, gfk_gamma_product / gfk_gammaf_positive / gfk_tgamma, which
+// returned the same float32 words as glibc 2.39's tgammaf and so carried
+// that function's rounding errors.  Like the code below, it was this
+// project's own work under the project's licence.  2.6.6 replaced it with
+// the correctly rounded gamma below; the measurement is further down and
+// in docs/gf_gamma_known_delta.md.  Nothing from the earlier gamma
+// survives below: no constant, no branch structure, no algorithm.  This
+// code evaluates no lgamma, performs no exponentiation, and calls
+// nothing.
 //
 // HOW IT WAS DERIVED.  Gamma on [1,2) is a degree-9 polynomial on each of 16
 // equal segments; every other positive argument reduces to [1,2) by the

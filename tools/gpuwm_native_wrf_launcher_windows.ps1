@@ -106,6 +106,8 @@ try {
     $env:GPUWM_GRIB2_INVENTORY = Join-Path $Root "libexec\bridges\grib2_inventory.exe"
     $env:GPUWM_GRIB2_DUMP = Join-Path $Root "libexec\bridges\grib2_dump.exe"
     $env:GPUWM_GFS_GRIB2_BRIDGE = Join-Path $Root "libexec\bridges\gfs_grib2_bridge.exe"
+    $env:GPUWM_GDT101_REMAP = Join-Path $Root "libexec\bridges\gdt101_remap.exe"
+    $env:GPUWM_RW_FETCH = Join-Path $Root "libexec\bridges\rw_fetch.exe"
     $env:GPUWM_CPU_PREPROCESS_BRIDGE = Join-Path $Root "libexec\bridges\gpuwm_preprocess_cpu.dll"
     $env:GPUWM_NATIVE_DISTRIBUTION_MANIFEST = Join-Path $Root "manifest.json"
 

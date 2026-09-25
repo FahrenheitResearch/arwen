@@ -1462,6 +1462,79 @@ def _build_static_routed(
     return fields
 
 
+def _sampled_terrain(dom, selection: GeogSelection, require_coverage) -> np.ndarray:
+    """``HGT_M`` for one sampler: the terrain block, in one place.
+
+    average_gcell(4.0)+four_pt+average_4pt, fill 0, one
+    smoother-desmoother pass (choice arbitrated by geo_em HGT_M).  The
+    full field set and :func:`build_terrain` both come through here, so
+    a terrain survey cannot be a second opinion about the terrain a run
+    will integrate.
+    """
+
+    topo = GeogDataset(selection.path("terrain"))
+    win = dom.window(topo)
+    require_coverage("terrain", topo, win)
+    hgt_e = dom.continuous(topo, win, 0)
+    return smth_desmth_special(hgt_e, passes=1)[dom.crop]
+
+
+def build_terrain(grid, geog_root, halo: int = HALO, *,
+                  selection: GeogSelection | None = None) -> np.ndarray:
+    """Only ``HGT_M``, from the same sampler the field set is built with.
+
+    THE COST THIS EXISTS FOR.  The vertical coordinate a run can use is
+    fixed by the HIGHEST ground the run can touch
+    (:mod:`gpuwm.vertical_adaptation`), which has to be known before the
+    first coordinate is built -- and for a following nest that means the
+    whole corridor its parent spans at CHILD resolution.  MEASURED on the
+    800x640 corridor of a 200x160 12 km parent: 75.10 s to build the
+    complete field set, 2.37 s to build this one.  Asking for thirty
+    fields to read one array's maximum is what made the survey look
+    unaffordable.
+
+    WHICH IMPLEMENTATION THIS IS, deliberately.  :func:`build_static`
+    routes to the Rust static-fields crate by default and falls back to
+    the numpy reference; this function is the numpy reference's own
+    terrain block (:func:`_sampled_terrain`, extracted so the two cannot
+    drift), because the crate's seam builds a whole field set and has no
+    terrain-only entry point.  The two are pinned equal by the crate's
+    golden tests, and were measured equal element for element against the
+    ROUTED build with the crate present, on all three fields that run's
+    survey reads -- the 12 km parent, the 3 km nest and that corridor --
+    max absolute difference 0.0 m and the same peak on each
+    (evidence/hybrid-etac-derivation-20260916/terrain-route-equality.json
+    carries the comparison and both timings).
+
+    Nothing is taken on trust downstream of that: the survey chooses a
+    QUANTIZED etac strictly below the bound it computed, and the base
+    state built later from the run's real arrays still runs WRF's own
+    monotonic check (``gpuwm.core.grid.make_base_state``,
+    ``gpuwm.ingest.real._make_real_base_serial``).  A terrain
+    disagreement large enough to matter would refuse with its remedy,
+    not integrate a folded coordinate.
+
+    ``halo`` and ``selection`` mean exactly what they mean to
+    :func:`build_static`.
+    """
+
+    root = Path(geog_root)
+    selection = (GeogSelection.fallback(root) if selection is None
+                 else selection)
+    if selection.root != root:
+        raise ValueError(
+            f"GeogSelection root {selection.root} does not match "
+            f"geog_root {root}")
+    dom = _DomainSampler(grid, halo)
+
+    def require_coverage(field: str, ds: GeogDataset, win) -> None:
+        dom.require_source_coverage(ds, win, field=field)
+
+    with perf_timing.stage("static.build_terrain",
+                           cells=int(grid.e_we) * int(grid.e_sn)):
+        return _sampled_terrain(dom, selection, require_coverage)
+
+
 def _build_static(
         grid, geog_root, halo: int = HALO, *,
         selection: GeogSelection | None = None,
@@ -1487,15 +1560,7 @@ def _build_static(
                     f"duplicate static source-coverage field {field!r}")
             source_coverage_report[field] = evidence
 
-    # --- terrain: average_gcell(4.0)+four_pt+average_4pt, fill 0, one
-    #     smoother-desmoother pass (choice arbitrated by geo_em HGT_M) -----
-    topo = GeogDataset(selection.path("terrain"))
-    win = dom.window(topo)
-    require_coverage("terrain", topo, win)
-    hgt_e = dom.continuous(topo, win, 0)
-    hgt_e = smth_desmth_special(hgt_e, passes=1)
-    out["HGT_M"] = hgt_e[crop]
-    del win
+    out["HGT_M"] = _sampled_terrain(dom, selection, require_coverage)
 
     # --- landuse -> LANDUSEF / LANDMASK / LU_INDEX ------------------------
     lu_ds = GeogDataset(selection.path("landuse"))

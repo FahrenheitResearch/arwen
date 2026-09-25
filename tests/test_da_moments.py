@@ -873,3 +873,281 @@ def test_rho_one_inactive_increments_stay_bitwise_zero(n_number_fields):
             f"{name}: rho=1 must leave every inactive increment bitwise "
             "zero, whatever the length of the state vector")
         assert not np.signbit(values).any(), "and positive zero at that"
+
+
+# ---------------------------------------------------------------------------
+# Part 4 -- Thompson: the scheme that refused, and the block that answers
+# ---------------------------------------------------------------------------
+#
+# A real-radar cycle on aerosol-aware Thompson (mp_physics=28) hit the
+# same signature from the other side: the hydrometeor analysis left 1 834
+# cells holding mass with a number moment clipped to zero -- 212 cloud,
+# 1 056 rain, 566 ice -- and because no repair authority for the scheme
+# was registered, the guard refused and the reflectivity and hydrometeor
+# analyses could not run at all.  The authority was there the whole time,
+# inside the scheme: mp_thompson's entry block sets exactly these numbers
+# from exactly these masses before it computes a single process rate.
+
+#: 1/alt on the state, i.e. the density the scheme is handed.
+_THOMPSON_RHO = 0.9
+
+_THOMPSON_PAIRS = (("qc", "nc"), ("qr", "nr"), ("qi", "ni"))
+
+
+def _thompson_state(shape=(2, 3, 4), *, masses=None, numbers=None,
+                    rho=_THOMPSON_RHO):
+    """An mp=28 state whose named species hold mass with zero number."""
+
+    state = {name: np.zeros(shape) for pair in _THOMPSON_PAIRS
+             for name in pair}
+    state.update({name: np.zeros(shape)
+                  for name in ("qv", "qs", "qg", "nwfa", "nifa")})
+    state["alt"] = np.full(shape, 1.0 / rho)
+    for field, value in (masses or {}).items():
+        state[field][0, 0, 0] = value
+    for field, value in (numbers or {}).items():
+        state[field][0, 0, 0] = value
+    return state
+
+
+def test_the_aerosol_aware_scheme_is_registered_with_its_own_moments():
+    scheme = moments.scheme_moments(28)
+    assert scheme.name == "Thompson aerosol-aware"
+    assert [pair.mass for pair in scheme.pairs] == ["qc", "qr", "qi"]
+    assert scheme.number_fields == ("nc", "nr", "ni")
+    # The aerosol tracers are prognostic and have no mass to pair with,
+    # so they are carried and never treated as half of a broken pair.
+    assert scheme.unpaired == ("nwfa", "nifa")
+    # R1, the scheme's own activity gate, not the module's default.
+    assert scheme.q_threshold == 1.0e-12
+    assert scheme.repair_authority == moments.THOMPSON_REPAIR_AUTHORITY
+
+
+def test_the_guard_stops_refusing_the_cycle_that_could_not_run():
+    """The 1 834-cell signature, reproduced and then repaired."""
+
+    shape = (8, 16, 16)
+    state = _thompson_state(shape)
+    rng = np.random.default_rng(20260918)
+    # An increment that adds condensate mass to cells the background left
+    # clear, which is what a reflectivity analysis does.
+    for mass, count in (("qc", 212), ("qr", 1056), ("qi", 566)):
+        flat = rng.choice(state[mass].size, size=count, replace=False)
+        state[mass].reshape(-1)[flat] = 1.0e-4
+
+    report = moments.moment_consistency_report(state, mp_physics=28)
+    assert report["offending_cells_total"] == 1834
+    assert report["consistent"] is False
+
+    repaired, receipt = moments.repair_moments(state, mp_physics=28)
+    assert receipt["repaired"] is True
+    assert receipt["repaired_cells_total"] == 1834
+    assert receipt["authority"] == moments.THOMPSON_REPAIR_AUTHORITY
+    for mass, number in _THOMPSON_PAIRS:
+        active = state[mass] > 1.0e-12
+        assert np.all(repaired[number][active] > 0.0)
+
+    after = dict(state)
+    after.update(repaired)
+    assert moments.moment_consistency_report(
+        after, mp_physics=28)["consistent"] is True
+
+
+def test_the_repaired_rain_number_is_the_schemes_own_millimetre_drop():
+    """Invert the number back through the scheme's own distribution.
+
+    module_mp_thompson.F:1883 states the rule in one line -- rain mass
+    that arrives without a number is a 1 mm median volume drop.  The
+    repaired number must reproduce that diameter, because the diameter
+    is the physics and the number is only how the scheme stores it.
+    """
+
+    mass = 1.0e-3
+    repaired, _ = moments.repair_moments(
+        _thompson_state(masses={"qr": mass}), mp_physics=28)
+    am_r = 3.1415926536 * 1000.0 / 6.0
+    per_volume = repaired["nr"][0, 0, 0] * _THOMPSON_RHO
+    lamr = (am_r * 6.0 * per_volume / (mass * _THOMPSON_RHO)) ** (1.0 / 3.0)
+    assert (3.672 / lamr) == pytest.approx(1.0e-3, rel=1.0e-6)
+
+
+def test_the_repaired_ice_number_is_the_schemes_own_ceiling():
+    """:1855-1856 -- a 5 um crystal, capped at 999e3 m^-3.
+
+    Any ice mass a radar analysis creates is far above the ~5e-9
+    kg m^-3 where that cap starts to bind, so the repaired ice number is
+    the ceiling itself, and it is a per-VOLUME ceiling: the state's own
+    per-kilogram number is the ceiling divided by the density.
+    """
+
+    repaired, _ = moments.repair_moments(
+        _thompson_state(masses={"qi": 1.0e-4}), mp_physics=28)
+    assert repaired["ni"][0, 0, 0] == pytest.approx(
+        999.0e3 / _THOMPSON_RHO, rel=1.0e-6)
+
+
+def test_the_repaired_cloud_number_is_the_schemes_largest_droplet():
+    """:1830-1841 -- nc floors at 2 m^-3, so the size clamp decides.
+
+    With no droplets at all the entry block's first lambda implies drops
+    far larger than the scheme allows, the ``xDc > 2*D0r`` arm fires, and
+    the rediagnosed number is the one that puts the distribution at a
+    100 um mean diameter.  Checked against the clamp's own arithmetic
+    rather than against a number copied out of a previous run.
+    """
+
+    from gpuwm.core.thompson_aerosol_contract import (AM_R, CCE2, CCG1,
+                                                      OCG2)
+
+    mass = 1.0e-3
+    repaired, _ = moments.repair_moments(
+        _thompson_state(masses={"qc": mass}), mp_physics=28)
+    nu_c = 15                      # MIN(15, NINT(1000e6/2) + 2)
+    lamc = CCE2[nu_c] / (50.0e-6 * 2.0)
+    expected = CCG1[nu_c] * OCG2[nu_c] * (mass * _THOMPSON_RHO) / AM_R \
+        * lamc ** 3.0
+    assert repaired["nc"][0, 0, 0] * _THOMPSON_RHO == pytest.approx(
+        expected, rel=1.0e-5)
+    assert expected < 1999.0e6, "the droplet ceiling must not be what bound"
+
+
+def test_removing_all_the_mass_zeroes_the_number():
+    """The reverse case, and the same block's answer to it.
+
+    :1900-1904: at or below R1 the entry block zeroes the mass AND the
+    number.  An increment that takes all of a species' mass away leaves
+    the number standing, and the repair puts it where the scheme will.
+    """
+
+    state = _thompson_state(masses={"qr": 1.0e-14}, numbers={"nr": 5.0e4})
+    report = moments.moment_consistency_report(state, mp_physics=28)
+    assert report["stranded_number_cells_total"] == 1
+    assert report["offending_cells_total"] == 0
+    # Not a NaN risk, so not a refusal: the state stays "consistent" and
+    # the cell is repaired anyway.
+    assert report["consistent"] is True
+
+    repaired, receipt = moments.repair_moments(state, mp_physics=28)
+    assert receipt["stranded_cells_repaired"] == 1
+    assert repaired["nr"][0, 0, 0] == 0.0
+
+
+def test_the_thompson_repair_is_a_no_op_on_consistent_cells():
+    """Healthy pairs are not a second analysis nobody asked for."""
+
+    state = _thompson_state(masses={"qr": 1.0e-3}, numbers={"nr": 8.0e4})
+    state["qi"][1, 1, 1] = 2.0e-5
+    state["ni"][1, 1, 1] = 4.0e5
+    report = moments.moment_consistency_report(state, mp_physics=28)
+    assert report["consistent"] is True
+    assert report["stranded_number_cells_total"] == 0
+    repaired, receipt = moments.repair_moments(state, mp_physics=28)
+    assert repaired == {}
+    assert receipt["repaired"] is False
+    assert receipt["repaired_cells_total"] == 0
+
+
+@pytest.mark.parametrize("rho", [0.4, 0.9, 1.25])
+def test_the_thompson_repair_depends_on_density_only_where_it_must(rho):
+    """Cloud and rain cancel it; ice keeps it, through the ceiling alone.
+
+    Stated as a property rather than as three numbers, because the
+    property is what makes the repair safe to run on a state whose
+    density this module had to reconstruct.
+    """
+
+    masses = {"qc": 1.0e-3, "qr": 1.0e-3, "qi": 1.0e-4}
+    reference = moments.repair_moments(
+        _thompson_state(masses=masses, rho=_THOMPSON_RHO), mp_physics=28)[0]
+    repaired = moments.repair_moments(
+        _thompson_state(masses=masses, rho=rho), mp_physics=28)[0]
+    for number in ("nc", "nr"):
+        assert repaired[number][0, 0, 0] == pytest.approx(
+            reference[number][0, 0, 0], rel=1.0e-6)
+    assert repaired["ni"][0, 0, 0] == pytest.approx(
+        reference["ni"][0, 0, 0] * _THOMPSON_RHO / rho, rel=1.0e-6)
+
+
+def test_a_thompson_repair_without_a_density_is_refused_by_name():
+    state = _thompson_state(masses={"qr": 1.0e-3})
+    del state["alt"]
+    with pytest.raises(MomentPolicyError, match="no 'alt'"):
+        moments.repair_moments(state, mp_physics=28)
+
+
+def test_the_two_schemes_that_share_their_spellings_are_not_guessed_at():
+    """nc/nr/ni belong to Morrison and to Thompson-28 alike.
+
+    Before the Thompson repair existed, that spelling set could only be
+    Morrison's, and the detected-structure arm said so.  It can now be
+    either, and the two schemes answer a depleted pair differently, so
+    the arm names the ambiguity instead of picking.
+    """
+
+    state = _thompson_state(masses={"qr": 1.0e-3})
+    with pytest.raises(MomentPolicyError, match="Pass mp_physics"):
+        moments.repair_moments(state)
+    # A snow or graupel moment still identifies Morrison on its own.
+    morrison = moments.repair_moments(_broken_state())[1]
+    assert morrison["authority"] == moments.MORRISON_REPAIR_AUTHORITY
+
+
+def test_every_scalar_the_mirror_uses_is_the_device_headers_own():
+    """One spelling of each constant, enforced rather than asserted.
+
+    The mirror and the CUDA header are two transcriptions of the same
+    Fortran.  If they can drift, the analysis and the forecast disagree
+    about what the scheme is, so the header is parsed and compared here.
+    """
+
+    import re
+    from pathlib import Path
+
+    from gpuwm.core import thompson_entry
+
+    header = (Path(thompson_entry.__file__).resolve().parents[1]
+              / "core" / "kernels" / "thompson_aerosol_common.cuh")
+    defines = dict(re.findall(
+        r"#define\s+(THOMPSON_AA_\w+)\s+([0-9.eE+-]+)f?\s",
+        header.read_text()))
+    for name, (define, _) in thompson_entry.CUH_SCALARS.items():
+        assert define in defines, f"{define} is not in the device header"
+        from gpuwm.core import thompson_aerosol_contract as contract
+        from gpuwm.core import thompson_aerosol_state as aerosol_state
+        for owner in (thompson_entry, contract, aerosol_state):
+            ours = getattr(owner, name, None)
+            if ours is not None:
+                break
+        assert ours is not None, f"nothing in the tree spells {name}"
+        assert float(np.float32(ours)) == pytest.approx(
+            float(np.float32(float(defines[define]))), rel=1.0e-7), (
+                f"{name} disagrees with {define}")
+
+
+def _thompson_duck_state(shape=(2, 3, 4), rho=_THOMPSON_RHO):
+    import types
+
+    state = types.SimpleNamespace()
+    for pair in _THOMPSON_PAIRS:
+        for name in pair:
+            setattr(state, name, np.zeros(shape, np.float32))
+    for name in ("thp", "qv", "qs", "qg", "nwfa", "nifa"):
+        setattr(state, name, np.zeros(shape, np.float32))
+    state.alt = np.full(shape, np.float32(1.0 / rho), np.float32)
+    return state
+
+
+def test_the_live_state_writer_repairs_a_thompson_analysis():
+    """The door the cycle actually goes through, at mp_physics=28."""
+
+    state = _thompson_duck_state()
+    increments = {name: np.full((2, 3, 4), 1.0e-4, np.float32)
+                  for name in ("qc", "qr", "qi")}
+    receipt = apply_increments(state, increments, mp_physics=28,
+                               moment_policy="single-moment-with-repair")
+    assert receipt["moments"]["repaired"] is True
+    assert receipt["moments"]["repaired_cells_total"] == 72
+    assert receipt["moments"]["authority"] == (
+        moments.THOMPSON_REPAIR_AUTHORITY)
+    for number in ("nc", "nr", "ni"):
+        assert float(getattr(state, number).min()) > 0.0

@@ -1,0 +1,73 @@
+{
+  "schema": "arwen.precut-gpu-gate.v1",
+  "scope": "GPU pin tests on the release node's card before export",
+  "full_release_qualification": false,
+  "status": "ERROR",
+  "pin_set": "tests/gpu_pin_set.txt",
+  "candidate": "0fc629772bfb1eaca4f409fff16eb59dcab93a1d",
+  "previous_receipt": {
+    "path": "precut-gpu-gate-0fc629772.2.json",
+    "sha256": "03498ce27fb8d7bac59b638dda2a5eb7cd6325f56f3223681c8803c9d59fbe01"
+  },
+  "pin_set_source": "candidate",
+  "tests": [
+    "tests/test_coriolis_map.py",
+    "tests/test_mp8_frozen.py",
+    "tests/test_omega_column_scan.py",
+    "tests/test_openbc.py::test_advection_periodic_path_bitwise_regression",
+    "tests/test_diff6_boundary_face.py::test_periodic_path_bitwise_identical_to_base",
+    "tests/test_diff6_boundary_face.py::test_forced_path_changes_only_the_seam_faces",
+    "tests/test_mynn_noah_surface_identity.py",
+    "tests/test_surface_certified_identity.py",
+    "tests/test_shinhong_runtime.py::test_off_path_bl1_micro_run_state_hash_is_pinned",
+    "tests/test_shinhong_wrf461_parity.py::test_shinhong_cuda_column_holds_its_measured_distance_from_wrf",
+    "tests/test_sase_gpu.py::test_dynamic_solve_device_real_lift_golden",
+    "tests/test_feedback.py::test_feedback_zero_output_is_pinned_and_costs_nothing",
+    "tests/test_ysu_wrf461_parity.py::test_ysu_cuda_column_holds_its_measured_distance_from_wrf",
+    "tests/test_ysu_wrf461_parity.py::test_ysu_momentum_is_this_far_from_wrfs_own_ctopo_driver_path",
+    "tests/test_noah_wrf461_parity.py::test_noah_cuda_column_holds_its_measured_distance_from_wrf"
+  ],
+  "files": [
+    "tests/test_coriolis_map.py",
+    "tests/test_diff6_boundary_face.py",
+    "tests/test_feedback.py",
+    "tests/test_mp8_frozen.py",
+    "tests/test_mynn_noah_surface_identity.py",
+    "tests/test_noah_wrf461_parity.py",
+    "tests/test_omega_column_scan.py",
+    "tests/test_openbc.py",
+    "tests/test_sase_gpu.py",
+    "tests/test_shinhong_runtime.py",
+    "tests/test_shinhong_wrf461_parity.py",
+    "tests/test_surface_certified_identity.py",
+    "tests/test_ysu_wrf461_parity.py"
+  ],
+  "remote_directory": "<home>/agent-scratch/pin-gates-276/gate/run-30cb99418bf1446989dd7c1af8c818db",
+  "card": {
+    "name": "NVIDIA GeForce RTX 4090",
+    "compute_capability": "8.9",
+    "cupy": "14.2.0",
+    "cuda_runtime": 13020,
+    "cuda_driver": 13030,
+    "device_count": 1,
+    "nvrtc": "13.3.33",
+    "nvrtc_build_id": "CL-37862127",
+    "nvrtc_library_sha256": "e51d197b3b0d2d9d850d29977423e6ac60661d429a59c440fc04e52b6fc6750a",
+    "compiles": true,
+    "driver": "610.57.04",
+    "other_compute_processes": [],
+    "other_compute_processes_at_probe": [],
+    "idle_wait_seconds": 0,
+    "other_compute_processes_during": [
+      "1185024, <home>/area1-venv/bin/python, 390 MiB"
+    ],
+    "other_compute_processes_after": [
+      "1185024, <home>/area1-venv/bin/python, 390 MiB"
+    ]
+  },
+  "structured_report": "<home>/agent-scratch/pin-gates-276/gate/run-30cb99418bf1446989dd7c1af8c818db/gpu-pins-30cb99418bf1446989dd7c1af8c818db.xml",
+  "process_exit": 0,
+  "output_tail": "<home>/agent-scratch/pin-gates-276/gate/run-30cb99418bf1446989dd7c1af8c818db/gpuwm/__init__.py\n............................................s........................... [ 76%]\n......................                                                   [100%]\n=============================== warnings summary ===============================\ntests/test_surface_certified_identity.py::test_four_certified_noah_profiles_match_the_v112_trajectory_bytes\n  <frozen importlib._bootstrap>:491: RuntimeWarning: numpy.ndarray size changed, may indicate binary incompatibility. Expected 16 from C header, got 96 from PyObject\n\ntests/test_surface_certified_identity.py: 14 warnings\n  <home>/agent-scratch/pin-gates-276/gate/run-30cb99418bf1446989dd7c1af8c818db/gpuwm/core/rrtmgp.py:1043: DeprecationWarning: Setting the shape on a NumPy array has been deprecated in NumPy 2.5.\n  As an alternative, you can create a new view using np.reshape (with copy=False if needed).\n    values = chartostring(variable[:])\n\n-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html\n93 passed, 1 skipped, 15 warnings in 5.69s\nARWEN-APPS-DURING\n1185024, <home>/area1-venv/bin/python, 390 MiB\nARWEN-APPS-AFTER\n1185024, <home>/area1-venv/bin/python, 390 MiB\nARWEN-APPS-END\n",
+  "error": "Another compute process held the card while the pins ran, so this run is a discarded reading, not a pass and not a failure: 1185024, <home>/area1-venv/bin/python, 390 MiB; 1185024, <home>/area1-venv/bin/python, 390 MiB. Wait for the card to be free and run again.",
+  "elapsed_seconds": 30.9
+}

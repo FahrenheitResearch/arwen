@@ -836,3 +836,18 @@ fn polygon_holes_exclude_cells_from_area_summary() {
     assert_eq!(summary.valid_cell_count, 2);
     assert_eq!(summary.mean, Some(20.0));
 }
+
+#[test]
+fn isotherm_and_column_maximum_selectors_have_stable_keys() {
+    let zero = FieldSelector::isotherm_celsius(CanonicalField::GeopotentialHeight, 0);
+    assert_eq!(zero.key(), "geopotential_height_isotherm_0c");
+    let cold = FieldSelector::isotherm_celsius(CanonicalField::GeopotentialHeight, -20);
+    assert_eq!(cold.key(), "geopotential_height_isotherm_minus20c");
+    assert_eq!(cold.to_string(), "geopotential_height@-20C_isotherm");
+    let peak = FieldSelector::column_maximum(CanonicalField::CloudWaterMixingRatio);
+    assert_eq!(peak.key(), "cloud_water_mixing_ratio_column_maximum");
+    assert_eq!(peak.native_units(), "kg/kg");
+    let path = FieldSelector::height_layer_agl(CanonicalField::SupercooledLiquidWaterPath, 0, 3000);
+    assert_eq!(path.key(), "supercooled_liquid_water_path_0m_to_3000m_agl");
+    assert_eq!(path.native_units(), "g/m^2");
+}

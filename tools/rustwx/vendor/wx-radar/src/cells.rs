@@ -591,6 +591,8 @@ mod tests {
                 azimuth_spacing: 1.0,
                 nyquist_velocity: None,
                 radial_status: 1,
+                collection_time_ms: 0,
+                collection_date: 0,
                 moments: vec![MomentData {
                     product: RadarProduct::Reflectivity,
                     gate_count: 500,

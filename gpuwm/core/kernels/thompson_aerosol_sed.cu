@@ -352,9 +352,15 @@ __device__ __forceinline__ void thompson_aa_cloud_sediment_impl(
 
     for (int k = 0; k < nz; ++k) {
         const size_t idx = IDX3(k, j, i);
-        const float qc_new = thompson_aa_add(
+        // Cloud at or below R1 is carried to the phase cleanup, which
+        // freezes any positive cloud below HGFR and adds melted ice to it
+        // above 0 C before it removes what is left at or below R1, as WRF's
+        // :3943-3966 and terminal :4007-4009 do.  Removing it here took it
+        // out of both: cloud that WRF keeps at 1.6e-12 to 2.0e-12 kg/kg,
+        // with its droplets, came back as zero on saved real-data columns
+        // (tools/thompson_real_column_parity).
+        qc[idx] = thompson_aa_add(
             qc_initial[k], thompson_aa_mul(qc_tendency[k], dt));
-        qc[idx] = qc_new <= THOMPSON_AA_R1 ? 0.0f : qc_new;
         if (out_cloud_number != nullptr) out_cloud_number[idx] = cloud_number[k];
     }
 }
@@ -625,7 +631,32 @@ extern "C" __global__ void thompson_aa_final_phase_cleanup(
     if (qi[idx] <= THOMPSON_AA_R1) {
         qi[idx] = 0.0f;
         ni[idx] = 0.0f;
-    } else {
+    } else if (qi[idx] * rho > THOMPSON_AA_R1) {
         thompson_aa_bound_ice_number(qi[idx] * rho, rho, &ni[idx]);
+    } else {
+        // :4025-4039 tests the MIXING RATIO and keeps both mass and number.
+        // The shared bound tests the concentration (right for the source
+        // stage at :3036-3055, wrong here) and zeroed the number of ice that
+        // sediments into thin air aloft while keeping its mass: 12 to 72
+        // levels of every saved 19,600-column real-data frame.  WRF's
+        // per-kilogram form:
+        const float am_i = THOMPSON_AA_AM_I;
+        const float qi_local = qi[idx];
+        const float ni_local = fmaxf(thompson_aa_div(THOMPSON_AA_R2, rho),
+                                     ni[idx]);
+        double lami = (double)thompson_aa_powf_cr(
+            thompson_aa_div(thompson_aa_mul(thompson_aa_mul(am_i, 6.0f),
+                                            ni_local), qi_local),
+            1.0f / 3.0f);
+        const float xdi = (float)(4.0 * (1.0 / lami));
+        if (xdi < 5.0e-6f) {
+            lami = (double)thompson_aa_div(4.0f, 5.0e-6f);
+        } else if (xdi > 300.0e-6f) {
+            lami = (double)thompson_aa_div(4.0f, 300.0e-6f);
+        }
+        ni[idx] = (float)fmin(
+            (double)thompson_aa_div(thompson_aa_mul(1.0f / 6.0f, qi_local),
+                                    am_i) * pow(lami, 3.0),
+            999.0e3 / (double)rho);
     }
 }

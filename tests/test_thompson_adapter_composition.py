@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import csv
 import os
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -61,7 +62,18 @@ class _HostAdapterState:
 
 
 def _record_adapter_call(monkeypatch, *, refl_due: bool):
-    """Run the real adapter while replacing every GPU launcher with a spy."""
+    """Run the real adapter while replacing every GPU launcher with a spy.
+
+    No real kernel may be reached from this call: every gpuwm binding of the
+    kernel loader is replaced by one that fails the gate by name.  The
+    breakage that prevents: the per-column microphysics flag launch
+    (``launch_microphysics_columns``, the no-microphysics column exit) joined
+    the adapter without joining the spy list, so on the host backend, which
+    accepts NumPy arrays, the real kernel ran and the gate stayed green
+    without recording the launch it exists to see, and on a card the same
+    call raised cupy's TypeError (THOMPSON-CARD 4.1, RTX 4090, b2e0bc80).
+    """
+    import gpuwm.core.kernels as kernel_loader
     import gpuwm.core.microphysics as microphysics
     import gpuwm.core.refl as refl
     import gpuwm.core.thompson as thompson
@@ -86,6 +98,7 @@ def _record_adapter_call(monkeypatch, *, refl_due: bool):
         "launch_graupel_sedimentation",
         "launch_hydrometeor_column_mask",
         "launch_ice_sedimentation",
+        "launch_microphysics_columns",
         "launch_rain_evaporation",
         "launch_rain_sedimentation",
         "launch_snow_sedimentation",
@@ -93,6 +106,22 @@ def _record_adapter_call(monkeypatch, *, refl_due: bool):
     )
     for name in launcher_names:
         monkeypatch.setattr(thompson, name, spy(name))
+
+    def unspied(loader_name):
+        def refuse(module_name, func, *args, **kwargs):
+            raise AssertionError(
+                f"_apply_thompson reached the real kernel {module_name}:"
+                f"{func} through {loader_name}, from a launcher this gate "
+                "does not spy; add the launcher to launcher_names and pin "
+                "its place in the call graph")
+        return refuse
+
+    for loader_name in ("get_kernel", "get_kernel_int_defines"):
+        loader = getattr(kernel_loader, loader_name)
+        for module in list(sys.modules.values()):
+            if (getattr(module, "__name__", "").startswith("gpuwm.")
+                    and getattr(module, loader_name, None) is loader):
+                monkeypatch.setattr(module, loader_name, unspied(loader_name))
 
     table_owner = object()
     monkeypatch.setattr(
@@ -149,6 +178,7 @@ def test_adapter_composes_all_thompson_phases_independently_of_output_cadence(
     assert "reflectivity" not in names_off
 
     ordered_phases = (
+        "launch_microphysics_columns",
         "launch_classic_graupel_number_init",
         "launch_warm_frozen_source_network_from_owner",
         "launch_frozen_vapor_network_from_owner",
@@ -167,6 +197,13 @@ def test_adapter_composes_all_thompson_phases_independently_of_output_cadence(
         assert names_off.count(name) == 1, (name, names_off)
 
     position = {name: names_off.index(name) for name in ordered_phases}
+    # WRF's column exit (:1646, :1827-1990, :2020) is decided on the entry
+    # state, before any source process runs.
+    assert position["launch_microphysics_columns"] < min(
+        position["launch_classic_graupel_number_init"],
+        position["launch_warm_frozen_source_network_from_owner"],
+        position["launch_frozen_vapor_network_from_owner"],
+    )
     assert position["launch_classic_graupel_number_init"] < min(
         position["launch_warm_frozen_source_network_from_owner"],
         position["launch_frozen_vapor_network_from_owner"],
@@ -217,6 +254,22 @@ def test_adapter_composes_all_thompson_phases_independently_of_output_cadence(
             calls, "launch_graupel_sedimentation")
         _, final_args, _ = _named_call(
             calls, "launch_classic_graupel_number_finalize")
+        # The flag is written into the one (ny, nx) scratch slot the phase
+        # cleanup reads, which carries WRF's terminal vapour floor only in
+        # the columns that had microphysics (:3974).
+        _, columns_args, columns_kwargs = _named_call(
+            calls, "launch_microphysics_columns")
+        _, _cleanup_args, cleanup_kwargs = _named_call(
+            calls, "launch_final_phase_cleanup")
+        micro_columns = state._scratch["mp_thompson_micro_columns"]
+        assert micro_columns.shape == state.p.shape[1:]
+        assert not columns_kwargs, columns_kwargs
+        assert len(columns_args) == 9, len(columns_args)
+        assert columns_args[8] is micro_columns
+        assert columns_args[0] is state.qc
+        assert columns_args[4] is state.qg
+        assert columns_args[7] is state.qv
+        assert cleanup_kwargs["micro_columns"] is micro_columns
         assert init_args[4] is shadow
         assert warm_args[5] is shadow
         assert warm_args[6] is state._scratch[

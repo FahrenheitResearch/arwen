@@ -116,7 +116,10 @@ G3_GATE = 2.0e-6
 #:     ``tests/test_thompson_aerosol_adapter.py::_G3_RESIDUALS`` for what is
 #:     and is not claimed about where the change came from.
 #:   * three WP-08 sedimentation columns joined the deck; ``wp08-freeze`` and
-#:     ``wp08-nusweep`` carry residuals 1.4x and 2.3x the gate.
+#:     ``wp08-nusweep`` carried residuals 1.4x and 2.3x the gate.
+#:   * ``wp08-freeze`` LEFT the table when the rain fallout was handed WRF's
+#:     L_qr (nr 2.7239e-06 -> 4.006e-07 at level 0 on the RTX 4090 and the
+#:     RTX 5090; 8.012e-08 on the host build of the kernels).
 #:   * ``aero-cloud-freeze-nc``'s effc_m and ``aero-ice-demott-idxin``'s qc
 #:     fell inside the gate and left the table.
 _PUBLISHED_G3: dict[str, dict[str, float]] = {
@@ -124,7 +127,6 @@ _PUBLISHED_G3: dict[str, dict[str, float]] = {
     "aero-cold-overlap": {
         "qc": 1.0000e+00, "nc_per_kg": 1.0000e+00, "effc_m": 8.1018e-01,
         "nr_per_kg": 1.2613e-04, "qr": 4.4426e-05},
-    "wp08-freeze": {"nr_per_kg": 2.7239e-06},
     "wp08-nusweep": {"qr": 4.6424e-06},
 }
 
@@ -133,7 +135,8 @@ _PUBLISHED_G3: dict[str, dict[str, float]] = {
 #: gate must be moved here in the same change that updates the evidence
 #: document, or the document silently understates the port.
 #:
-#: 18 of 22.  ``aero-drop-evap`` and ``aero-ice-demott-idxin`` joined at
+#: 19 of 22.  ``wp08-freeze`` joined when the rain fallout was handed WRF's
+#: L_qr.  ``aero-drop-evap`` and ``aero-ice-demott-idxin`` joined at
 #: WP-13a.  ``aero-reduces-to-classic`` joined at the 1.4.1 merge, and it is
 #: worth being exact about why, because this file used to name it as the
 #: standing example of the two files disagreeing: this file applies the FLAT
@@ -161,6 +164,7 @@ _G3_CLEAN_FIXTURES = (
     "aero-scav-rain",
     "aero-sfc-emit",
     "aero-warm-overlap",
+    "wp08-freeze",
     "wp08-melt",
 )
 
@@ -277,8 +281,9 @@ def test_the_set_of_fixtures_clearing_the_gate_is_exactly_what_is_published():
     closing a residual fails here until ``_G3_CLEAN_FIXTURES``, the
     ``_PUBLISHED_G3`` row and the document's table are all updated together.
 
-    MEASURED: 17 of 22 clean under this file's gate, 16 of the 19 spec'd
-    fixtures plus ``wp08-melt``.  ``aero-drop-evap`` and
+    MEASURED: 19 of 22 clean under this file's gate, 17 of the 19 spec'd
+    fixtures plus ``wp08-freeze`` and ``wp08-melt``.  ``wp08-freeze`` joined
+    when the rain fallout was handed WRF's L_qr.  ``aero-drop-evap`` and
     ``aero-ice-demott-idxin`` joined when WP-13a restored WRF's level-wise
     sedimentation density; ``aero-ice-koop`` joined earlier, when WP-06 closed
     the homogeneous-haze-freezing rate gap.
@@ -308,9 +313,9 @@ def test_the_set_of_fixtures_clearing_the_gate_is_exactly_what_is_published():
         ``test_every_g3_residual_is_published_in_ulps_as_well_as_relative``.
 
     The genuinely unexceptioned count -- 23 quantities, no exclusion, no
-    carve-out -- is 17 of 22, and is pinned in the adapter file by
+    carve-out -- is 18 of 22, and is pinned in the adapter file by
     ``test_the_unexceptioned_g3_table_is_printed_and_its_count_pinned``.  The
-    two counts USED TO coincide and no longer do: 18 here, 17 there.  They
+    two counts USED TO coincide and no longer do: 19 here, 18 there.  They
     were always DIFFERENT MEASUREMENTS asserted separately on purpose, and
     the divergence is the level-6 exclusion this file inherits and that one
     does not.
@@ -331,7 +336,7 @@ def test_the_set_of_fixtures_clearing_the_gate_is_exactly_what_is_published():
     assert not set(_PUBLISHED_G3) & expected, (
         "a fixture is published both clean and with a residual: "
         f"{sorted(set(_PUBLISHED_G3) & expected)}")
-    assert len(clean) == 18 and len(matrix) == 22, (len(clean), len(matrix))
+    assert len(clean) == 19 and len(matrix) == 22, (len(clean), len(matrix))
     aero = sorted(name for name in clean if name.startswith("aero-"))
     assert len(aero) == 17, aero
 

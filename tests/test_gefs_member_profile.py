@@ -1,6 +1,6 @@
 """GEFS through the gauntlet: an ensemble member is TABLE DATA end to end.
 
-Round 1 proved a deterministic model enters as three packaged JSON
+A deterministic model was already proved to enter as three packaged JSON
 documents plus registry rows.  This file pins the ensemble twin of that
 shape: the SAME three documents and rows give one *member* of NCEP's
 global ensemble a runnable IC route, on top of the member-addressing

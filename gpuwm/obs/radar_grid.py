@@ -600,11 +600,25 @@ def write_radar_grid(path: str | Path, observations: GriddedObservations,
                     dtype=np.float64)
             times = dataset.createVariable("radar_valid_time", "S1",
                                            ("radar", "ntime"))
-            times.description = ("per-radar volume start time; the file-level "
+            times.description = ("per-radar volume start time from the "
+                                 "Archive-II header; the file-level "
                                  "valid_time is the analysis time")
             times[:] = _char_array(
                 [radar["valid_time"] for radar in observations.radars],
                 TIME_WIDTH)
+            # When each radar's volume was scanned and when it could first
+            # be had.  Written as the same fixed-width character rows as the
+            # start above, blank where the pack or the feed did not say, so
+            # a reader can tell "unknown" from a time.  The analysis
+            # assimilates every sweep at the file's valid_time; these three
+            # are the receipt of how far each radar's gates sit from it.
+            for name, key, description in _RADAR_INSTANT_VARIABLES:
+                variable = dataset.createVariable(name, "S1",
+                                                  ("radar", "ntime"))
+                variable.description = description
+                variable[:] = _char_array(
+                    [radar.get(key) or "" for radar in observations.radars],
+                    TIME_WIDTH)
 
         payload = temp.read_bytes()
         digest = hashlib.sha256(payload).hexdigest()
@@ -671,10 +685,11 @@ def read_radar_grid(path: str | Path, *,
                 "the caller is asking for two different grids")
         expected_grid_identity = demanded
 
-    # One netCDF4 open for the METADATA -- the global attributes and the two
+    # One netCDF4 open for the METADATA -- the global attributes and the
     # character variables -- before any decode, because the bridge can see
     # neither.  See :func:`_read_metadata`.
-    attributes, ids, times = _read_metadata(path)
+    attributes, strings = _read_metadata(path)
+    ids, times = strings["radar_id"], strings["radar_valid_time"]
 
     # Every OBSERVATION -- value, error, count, mask, beam component and
     # coordinate -- is decoded by ``rw_netcdf``.  Masking is turned off for
@@ -785,18 +800,44 @@ def read_radar_grid(path: str | Path, *,
     # bridge's unit of work, and re-indexing the file three times per radar
     # would be three more of them for numbers already in hand.
     for index, site in enumerate(ids):
-        result["radars"].append({
+        entry = {
             "id": site,
             "lat_deg": float(result["variables"]["radar_lat"][index]),
             "lon_deg": float(result["variables"]["radar_lon"][index]),
             "alt_m": float(result["variables"]["radar_alt"][index]),
             "valid_time": times[index],
-        })
+        }
+        # A file written before the instants existed carries no such
+        # variable; one written since carries a blank row where the pack or
+        # the feed did not say.  Both read as None, which is "unknown", and
+        # never as the start time standing in for the end.
+        for name, key, _ in _RADAR_INSTANT_VARIABLES:
+            rows = strings.get(name) or []
+            value = rows[index] if index < len(rows) else ""
+            entry[key] = value or None
+        result["radars"].append(entry)
     return result
 
 
-#: The two variables the Rust decoder cannot hand back.
-_CHARACTER_VARIABLES = ("radar_id", "radar_valid_time")
+#: Per-radar collection and availability instants: variable name, the key
+#: they travel under in ``observations.radars`` and the read-back document,
+#: and the description the file carries.
+_RADAR_INSTANT_VARIABLES = (
+    ("radar_start_time", "start_time",
+     "earliest radial collection instant in the radar's volume, from the "
+     "Message-31 header clock; blank when the pack did not carry it"),
+    ("radar_end_time", "end_time",
+     "latest radial collection instant in the radar's volume: when the "
+     "volume was complete; blank when the pack did not carry it"),
+    ("radar_availability_time", "availability_time",
+     "when the feed published the volume (the archive object's "
+     "LastModified); blank when the acquisition did not record it"),
+)
+
+#: The character variables the Rust decoder cannot hand back: the two every
+#: file carries and the three instants files written since 2.7.6 carry.
+_CHARACTER_VARIABLES = ("radar_id", "radar_valid_time") + tuple(
+    name for name, _, _ in _RADAR_INSTANT_VARIABLES)
 
 
 def _is_character(variable) -> bool:
@@ -808,8 +849,8 @@ def _is_character(variable) -> bool:
     return np.dtype(variable.dtype).kind in ("S", "U", "O")
 
 
-def _read_metadata(path: Path) -> tuple[dict, list[str], list[str]]:
-    """The global attributes, radar ids and timestamps, in ONE netCDF4 open.
+def _read_metadata(path: Path) -> tuple[dict, dict[str, list[str]]]:
+    """The global attributes and every character variable, in ONE netCDF4 open.
 
     This is the ONLY netCDF4 read left in this module.  Two things force it,
     and both are the same shape of quiet wrong:
@@ -833,15 +874,17 @@ def _read_metadata(path: Path) -> tuple[dict, list[str], list[str]]:
     with netCDF4.Dataset(path, "r") as dataset:
         attributes = {name: dataset.getncattr(name)
                       for name in dataset.ncattrs()}
-        # A file that carries neither character variable is not refused
-        # here: the schema and structure checks in the caller run first and
-        # say WHICH contract the file breaks.  An absent id array reaches
-        # the caller as an empty list, which its radar-count check names.
-        strings = [
-            _read_strings(dataset.variables[name][:])
-            if name in dataset.variables else []
-            for name in _CHARACTER_VARIABLES]
-        return attributes, strings[0], strings[1]
+        # A file that carries no character variable is not refused here:
+        # the schema and structure checks in the caller run first and say
+        # WHICH contract the file breaks.  An absent id array reaches the
+        # caller as an empty list, which its radar-count check names; an
+        # absent instant variable is a file written before the instants
+        # existed and reads as unknown.
+        strings = {
+            name: (_read_strings(dataset.variables[name][:])
+                   if name in dataset.variables else [])
+            for name in _CHARACTER_VARIABLES}
+        return attributes, strings
 
 
 def radar_plane(document: dict, name: str, index: int):

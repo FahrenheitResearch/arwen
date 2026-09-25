@@ -1,0 +1,798 @@
+//! Derived 2-D planes read straight off a wrfout's native columns, for
+//! catalog rows no `getvar` diagnostic writes:
+//!
+//! * the height of a named isotherm (0, -10 and -20 C), the lowest
+//!   crossing above the ground and NaN where the column never crosses;
+//! * the supercooled liquid water path, whole column and in two layers,
+//!   integrated with the model's own dry-air mass per level;
+//! * the column maximum of each hydrometeor mixing ratio, so a
+//!   condensate map is one row a user can name instead of a stored
+//!   plane spelled `var:`;
+//! * a simulated infrared brightness temperature, the temperature at the
+//!   level where the column's cloud optical depth reaches one, and the
+//!   skin temperature where it never does.
+//!
+//! Every plane goes to the store under a canonical selector, so the
+//! catalog rows in `rustwx-models` resolve it the way they resolve every
+//! other stored field, and the import's planned-field preview lists it.
+//! The arithmetic is on plain slices so it can be pinned on a synthetic
+//! column without a file.
+
+use rustwx_core::{CanonicalField, FieldSelector, GridProjection, LatLonGrid};
+use wrf_core::WrfFile;
+
+use crate::wrf_process::{WrfHourFields, WrfProcessOptions, WrfProductGroup, push_canonical_values};
+
+/// Gravity, the constant the model's own column-mass measure uses.
+const G: f64 = 9.81;
+/// Kelvin at 0 C.
+const T_FREEZE_K: f64 = 273.15;
+/// Mass absorption coefficients for the simulated infrared brightness
+/// temperature, in m2 kg-1: cloud liquid and cloud ice, as the WRF
+/// cloud-top temperature diagnostic uses them.
+const IR_ABSORPTION_LIQUID: f64 = 0.145;
+const IR_ABSORPTION_ICE: f64 = 0.272;
+/// The optical depth, integrated from the model top, at which the column
+/// is opaque and its temperature there is the brightness temperature.
+const IR_OPAQUE_OPTICAL_DEPTH: f64 = 1.0;
+
+/// One catalog row this module writes: the store name a product resolves,
+/// the filter key `--only` and `--skip` match beside it, and the row's
+/// canonical selector and units.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ColumnPlane {
+    pub filter_key: &'static str,
+    pub store_name: &'static str,
+    pub units: &'static str,
+    pub kind: ColumnPlaneKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ColumnPlaneKind {
+    IsothermHeight { celsius: i16 },
+    SupercooledWaterPath { bottom_m: Option<u16>, top_m: Option<u16> },
+    ColumnMaximum { variable: &'static str, field: CanonicalField },
+    SimulatedInfrared,
+}
+
+impl ColumnPlane {
+    pub(crate) fn selector(&self) -> FieldSelector {
+        match self.kind {
+            ColumnPlaneKind::IsothermHeight { celsius } => {
+                FieldSelector::isotherm_celsius(CanonicalField::GeopotentialHeight, celsius)
+            }
+            ColumnPlaneKind::SupercooledWaterPath {
+                bottom_m: Some(bottom_m),
+                top_m: Some(top_m),
+            } => FieldSelector::height_layer_agl(
+                CanonicalField::SupercooledLiquidWaterPath,
+                bottom_m,
+                top_m,
+            ),
+            ColumnPlaneKind::SupercooledWaterPath { .. } => {
+                FieldSelector::entire_atmosphere(CanonicalField::SupercooledLiquidWaterPath)
+            }
+            ColumnPlaneKind::ColumnMaximum { field, .. } => FieldSelector::column_maximum(field),
+            ColumnPlaneKind::SimulatedInfrared => FieldSelector::nominal_top(
+                CanonicalField::SimulatedInfraredBrightnessTemperature,
+            ),
+        }
+    }
+}
+
+/// The rows, in the order they are written.  A table, so a new layer or a
+/// new hydrometeor is a row here and a recipe row in `rustwx-models`.
+pub(crate) const COLUMN_PLANE_CATALOG: &[ColumnPlane] = &[
+    ColumnPlane {
+        filter_key: "isotherm",
+        store_name: "isotherm_height_0c",
+        units: "m",
+        kind: ColumnPlaneKind::IsothermHeight { celsius: 0 },
+    },
+    ColumnPlane {
+        filter_key: "isotherm",
+        store_name: "isotherm_height_minus10c",
+        units: "m",
+        kind: ColumnPlaneKind::IsothermHeight { celsius: -10 },
+    },
+    ColumnPlane {
+        filter_key: "isotherm",
+        store_name: "isotherm_height_minus20c",
+        units: "m",
+        kind: ColumnPlaneKind::IsothermHeight { celsius: -20 },
+    },
+    ColumnPlane {
+        filter_key: "supercooled",
+        store_name: "supercooled_water_path",
+        units: "g m-2",
+        kind: ColumnPlaneKind::SupercooledWaterPath {
+            bottom_m: None,
+            top_m: None,
+        },
+    },
+    ColumnPlane {
+        filter_key: "supercooled",
+        store_name: "supercooled_water_path_0_3km",
+        units: "g m-2",
+        kind: ColumnPlaneKind::SupercooledWaterPath {
+            bottom_m: Some(0),
+            top_m: Some(3000),
+        },
+    },
+    ColumnPlane {
+        filter_key: "supercooled",
+        store_name: "supercooled_water_path_3_6km",
+        units: "g m-2",
+        kind: ColumnPlaneKind::SupercooledWaterPath {
+            bottom_m: Some(3000),
+            top_m: Some(6000),
+        },
+    },
+    ColumnPlane {
+        filter_key: "QCLOUD",
+        store_name: "cloud_water_column_max",
+        units: "kg kg-1",
+        kind: ColumnPlaneKind::ColumnMaximum {
+            variable: "QCLOUD",
+            field: CanonicalField::CloudWaterMixingRatio,
+        },
+    },
+    ColumnPlane {
+        filter_key: "QRAIN",
+        store_name: "rain_water_column_max",
+        units: "kg kg-1",
+        kind: ColumnPlaneKind::ColumnMaximum {
+            variable: "QRAIN",
+            field: CanonicalField::RainWaterMixingRatio,
+        },
+    },
+    ColumnPlane {
+        filter_key: "QICE",
+        store_name: "cloud_ice_column_max",
+        units: "kg kg-1",
+        kind: ColumnPlaneKind::ColumnMaximum {
+            variable: "QICE",
+            field: CanonicalField::CloudIceMixingRatio,
+        },
+    },
+    ColumnPlane {
+        filter_key: "QSNOW",
+        store_name: "snow_column_max",
+        units: "kg kg-1",
+        kind: ColumnPlaneKind::ColumnMaximum {
+            variable: "QSNOW",
+            field: CanonicalField::SnowMixingRatio,
+        },
+    },
+    ColumnPlane {
+        filter_key: "QGRAUP",
+        store_name: "graupel_column_max",
+        units: "kg kg-1",
+        kind: ColumnPlaneKind::ColumnMaximum {
+            variable: "QGRAUP",
+            field: CanonicalField::GraupelMixingRatio,
+        },
+    },
+    ColumnPlane {
+        filter_key: "simulated_ir",
+        store_name: "simulated_ir_brightness_temperature",
+        units: "K",
+        kind: ColumnPlaneKind::SimulatedInfrared,
+    },
+];
+
+/// The store names the current selection would write, for the planned
+/// field preview.  Static: a hydrometeor the file does not carry is
+/// skipped at process time with a note, like every other planned field.
+pub(crate) fn planned_store_fields(options: &WrfProcessOptions) -> Vec<String> {
+    COLUMN_PLANE_CATALOG
+        .iter()
+        .filter(|plane| {
+            options.should_process(
+                plane.filter_key,
+                Some(plane.store_name),
+                WrfProductGroup::Diagnostic,
+            )
+        })
+        .map(|plane| plane.store_name.to_string())
+        .collect()
+}
+
+/// A column's native fields for one frame, read once and shared by every
+/// plane that needs them.
+struct Columns {
+    nz: usize,
+    cells: usize,
+    /// Temperature, K, `[nz, cells]`.
+    temperature_k: Vec<f64>,
+    /// Height above mean sea level, m, `[nz, cells]`.
+    height_msl_m: Vec<f64>,
+    /// Terrain height, m, `[cells]`.
+    terrain_m: Vec<f64>,
+}
+
+impl Columns {
+    fn read(file: &WrfFile, timeidx: usize) -> Result<Self, String> {
+        let nz = file.nz;
+        let cells = file.ny * file.nx;
+        let temperature_k = file
+            .temperature(timeidx)
+            .map_err(|err| format!("read temperature: {err}"))?;
+        let height_msl_m = file
+            .height_msl(timeidx)
+            .map_err(|err| format!("read height: {err}"))?;
+        let terrain_m = file
+            .terrain(timeidx)
+            .map_err(|err| format!("read terrain: {err}"))?;
+        if temperature_k.len() != nz * cells
+            || height_msl_m.len() != nz * cells
+            || terrain_m.len() != cells
+        {
+            return Err(format!(
+                "column fields are not {nz}x{cells}: temperature {}, height {}, terrain {}",
+                temperature_k.len(),
+                height_msl_m.len(),
+                terrain_m.len()
+            ));
+        }
+        Ok(Self {
+            nz,
+            cells,
+            temperature_k: temperature_k.to_vec(),
+            height_msl_m: height_msl_m.to_vec(),
+            terrain_m: terrain_m.to_vec(),
+        })
+    }
+
+    /// Height above ground, m, `[nz, cells]`.
+    fn height_agl_m(&self) -> Vec<f64> {
+        self.height_msl_m
+            .iter()
+            .enumerate()
+            .map(|(index, height)| height - self.terrain_m[index % self.cells])
+            .collect()
+    }
+}
+
+/// The dry-air mass per unit area of every model layer, kg m-2,
+/// `[nz, cells]`: `(C1H[k] * MU + C2H[k]) * (-DNW[k]) / g`, the model's own
+/// eta-coordinate column mass, exact in the discretisation, with MU the
+/// total dry column mass (MU + MUB).  A file without the hybrid
+/// coefficients is on the terrain-following coordinate, where C1H is one
+/// and C2H is zero.  A file without `DNW` but with the full eta levels
+/// `ZNW` (this tree's own history stream writes the levels and not the
+/// thicknesses) takes each thickness as the difference of the two full
+/// levels its layer sits between; a file with neither has no layer mass,
+/// and the note names the two variables either of which would give it one.
+fn layer_dry_mass(file: &WrfFile, timeidx: usize, nz: usize, cells: usize) -> Result<Vec<f64>, String> {
+    let read = |name: &str| {
+        file.read_var(name, timeidx)
+            .map_err(|err| format!("read {name}: {err}"))
+    };
+    let mu = read("MU")?;
+    let mub = read("MUB")?;
+    let dnw = if file.has_var("DNW") {
+        read("DNW")?
+    } else if file.has_var("ZNW") {
+        eta_layer_thickness(&read("ZNW")?)
+    } else {
+        return Err(String::from(
+            "neither DNW nor ZNW is in the file, so no layer has a dry-air mass; write the eta levels (ZNW) or the layer thicknesses (DNW) into the history stream",
+        ));
+    };
+    if mu.len() != cells || mub.len() != cells || dnw.len() != nz {
+        return Err(format!(
+            "column mass fields are not {nz} levels over {cells} cells: MU {}, MUB {}, DNW {}",
+            mu.len(),
+            mub.len(),
+            dnw.len()
+        ));
+    }
+    let (c1h, c2h) = if file.has_var("C1H") && file.has_var("C2H") {
+        let c1h = read("C1H")?;
+        let c2h = read("C2H")?;
+        if c1h.len() != nz || c2h.len() != nz {
+            return Err(format!(
+                "hybrid coefficients are not {nz} levels: C1H {}, C2H {}",
+                c1h.len(),
+                c2h.len()
+            ));
+        }
+        (c1h, c2h)
+    } else {
+        (vec![1.0; nz], vec![0.0; nz])
+    };
+    Ok(layer_dry_mass_from(&mu, &mub, &dnw, &c1h, &c2h, nz, cells))
+}
+
+/// WRF's `DNW` from its full eta levels `ZNW`: `ZNW[k+1] - ZNW[k]`, one
+/// value per mass layer, negative because eta falls with height.
+pub(crate) fn eta_layer_thickness(znw: &[f64]) -> Vec<f64> {
+    znw.windows(2).map(|pair| pair[1] - pair[0]).collect()
+}
+
+/// See [`layer_dry_mass`]; the arithmetic on slices.
+pub(crate) fn layer_dry_mass_from(
+    mu: &[f64],
+    mub: &[f64],
+    dnw: &[f64],
+    c1h: &[f64],
+    c2h: &[f64],
+    nz: usize,
+    cells: usize,
+) -> Vec<f64> {
+    let mut mass = vec![0.0; nz * cells];
+    for k in 0..nz {
+        for cell in 0..cells {
+            let column = mu[cell] + mub[cell];
+            mass[k * cells + cell] = (c1h[k] * column + c2h[k]) * (-dnw[k]) / G;
+        }
+    }
+    mass
+}
+
+/// The height of the isotherm `isotherm_k` in every column: the LOWEST
+/// crossing above the ground, in either direction, interpolated linearly
+/// in height between the two levels that bracket it, in the units of
+/// `height` (MSL or AGL, the caller's choice).  A column whose
+/// temperature never reaches the isotherm is NaN, which is what a map
+/// paints as nothing rather than as a height of zero.  A level exactly on
+/// the isotherm is the crossing.
+pub(crate) fn isotherm_height(
+    temperature_k: &[f64],
+    height: &[f64],
+    nz: usize,
+    cells: usize,
+    isotherm_k: f64,
+) -> Vec<f32> {
+    let mut out = vec![f32::NAN; cells];
+    if nz == 0 {
+        return out;
+    }
+    for (cell, slot) in out.iter_mut().enumerate() {
+        let excess = |k: usize| temperature_k[k * cells + cell] - isotherm_k;
+        if excess(0) == 0.0 {
+            *slot = height[cell] as f32;
+            continue;
+        }
+        for k in 0..nz.saturating_sub(1) {
+            let below = excess(k);
+            let above = excess(k + 1);
+            if !(below.is_finite() && above.is_finite()) {
+                continue;
+            }
+            if above == 0.0 {
+                *slot = height[(k + 1) * cells + cell] as f32;
+                break;
+            }
+            if (below < 0.0) != (above < 0.0) {
+                let fraction = below / (below - above);
+                let z0 = height[k * cells + cell];
+                let z1 = height[(k + 1) * cells + cell];
+                *slot = (z0 + fraction * (z1 - z0)) as f32;
+                break;
+            }
+        }
+    }
+    out
+}
+
+/// The largest value in each column, NaN where no level is finite.
+pub(crate) fn column_maximum(field: &[f64], nz: usize, cells: usize) -> Vec<f32> {
+    let mut out = vec![f32::NAN; cells];
+    for (cell, slot) in out.iter_mut().enumerate() {
+        let mut best = f64::NEG_INFINITY;
+        for k in 0..nz {
+            let value = field[k * cells + cell];
+            if value.is_finite() && value > best {
+                best = value;
+            }
+        }
+        if best.is_finite() {
+            *slot = best as f32;
+        }
+    }
+    out
+}
+
+/// The path of `mixing_ratio` (kg kg-1) through every column, g m-2:
+/// the sum over levels of the ratio times the layer's dry-air mass, taken
+/// only on levels colder than 0 C and, when bounds are given, only on
+/// levels whose height above ground lies in `[bottom_m, top_m)`.  A level
+/// is counted whole or not at all: the layer bounds fall on the model's
+/// own levels, which is the resolution the answer has.
+pub(crate) fn supercooled_water_path(
+    mixing_ratio: &[f64],
+    temperature_k: &[f64],
+    layer_mass: &[f64],
+    height_agl_m: &[f64],
+    nz: usize,
+    cells: usize,
+    bounds_m: Option<(f64, f64)>,
+) -> Vec<f32> {
+    let mut out = vec![0.0f32; cells];
+    for (cell, slot) in out.iter_mut().enumerate() {
+        let mut path = 0.0f64;
+        for k in 0..nz {
+            let index = k * cells + cell;
+            if !(temperature_k[index] < T_FREEZE_K) {
+                continue;
+            }
+            if let Some((bottom, top)) = bounds_m {
+                let z = height_agl_m[index];
+                if !(z >= bottom && z < top) {
+                    continue;
+                }
+            }
+            let q = mixing_ratio[index];
+            if q.is_finite() && q > 0.0 {
+                path += q * layer_mass[index];
+            }
+        }
+        *slot = (path * 1000.0) as f32;
+    }
+    out
+}
+
+/// A simulated infrared brightness temperature, K: integrating cloud
+/// optical depth downward from the model top with the mass absorption
+/// coefficients above, the temperature at the level where the depth
+/// reaches one (interpolated in depth between the level above and the
+/// level that crosses), and the skin temperature where the whole column
+/// stays thinner than that.  Liquid is cloud water; ice is cloud ice plus
+/// snow, the split the tree's own radiation code makes.
+pub(crate) fn simulated_infrared_brightness_temperature(
+    cloud_water: &[f64],
+    cloud_ice: &[f64],
+    snow: Option<&[f64]>,
+    temperature_k: &[f64],
+    layer_mass: &[f64],
+    skin_temperature_k: &[f64],
+    nz: usize,
+    cells: usize,
+) -> Vec<f32> {
+    let mut out = vec![f32::NAN; cells];
+    for (cell, slot) in out.iter_mut().enumerate() {
+        let mut depth_above = 0.0f64;
+        let mut temperature_above = f64::NAN;
+        let mut found = None;
+        for k in (0..nz).rev() {
+            let index = k * cells + cell;
+            let liquid = cloud_water[index].max(0.0);
+            let ice = cloud_ice[index].max(0.0) + snow.map_or(0.0, |snow| snow[index].max(0.0));
+            let depth = depth_above
+                + (IR_ABSORPTION_LIQUID * liquid + IR_ABSORPTION_ICE * ice) * layer_mass[index];
+            let temperature = temperature_k[index];
+            if depth >= IR_OPAQUE_OPTICAL_DEPTH {
+                let fraction = if depth > depth_above {
+                    (IR_OPAQUE_OPTICAL_DEPTH - depth_above) / (depth - depth_above)
+                } else {
+                    1.0
+                };
+                found = Some(if temperature_above.is_finite() {
+                    temperature_above + fraction * (temperature - temperature_above)
+                } else {
+                    temperature
+                });
+                break;
+            }
+            depth_above = depth;
+            temperature_above = temperature;
+        }
+        *slot = found.unwrap_or(skin_temperature_k[cell]) as f32;
+    }
+    out
+}
+
+/// Write every selected column plane for one frame.  A plane whose inputs
+/// the file does not carry (a scheme without graupel, a file without
+/// TSK) is a note, never a failed import.
+pub(crate) fn push_column_planes(
+    fields: &mut WrfHourFields,
+    file: &WrfFile,
+    timeidx: usize,
+    grid: &LatLonGrid,
+    projection: Option<GridProjection>,
+    options: &WrfProcessOptions,
+    progress: &mut dyn FnMut(String),
+) {
+    let selected: Vec<&ColumnPlane> = COLUMN_PLANE_CATALOG
+        .iter()
+        .filter(|plane| {
+            options.should_process(
+                plane.filter_key,
+                Some(plane.store_name),
+                WrfProductGroup::Diagnostic,
+            )
+        })
+        .collect();
+    if selected.is_empty() {
+        return;
+    }
+    progress("Reading native columns for the isotherm, water path and hydrometeor planes".into());
+    let columns = match Columns::read(file, timeidx) {
+        Ok(columns) => columns,
+        Err(err) => {
+            fields.notes.push(format!("column planes skipped: {err}"));
+            return;
+        }
+    };
+    if columns.cells != grid.shape.len() {
+        fields.notes.push(format!(
+            "column planes skipped: {} cells in the file, {} in the grid",
+            columns.cells,
+            grid.shape.len()
+        ));
+        return;
+    }
+    let (nz, cells) = (columns.nz, columns.cells);
+    let mut layer_mass: Option<Vec<f64>> = None;
+    let mut height_agl: Option<Vec<f64>> = None;
+    let mut hydrometeor: std::collections::BTreeMap<&'static str, Option<std::rc::Rc<Vec<f64>>>> =
+        std::collections::BTreeMap::new();
+    let mut read_hydrometeor = |name: &'static str| -> Option<std::rc::Rc<Vec<f64>>> {
+        hydrometeor
+            .entry(name)
+            .or_insert_with(|| {
+                if !file.has_var(name) {
+                    return None;
+                }
+                match file.read_var(name, timeidx) {
+                    Ok(values) if values.len() == nz * cells => Some(std::rc::Rc::new(values)),
+                    _ => None,
+                }
+            })
+            .clone()
+    };
+    for plane in selected {
+        let values = match plane.kind {
+            ColumnPlaneKind::IsothermHeight { celsius } => isotherm_height(
+                &columns.temperature_k,
+                &columns.height_msl_m,
+                nz,
+                cells,
+                T_FREEZE_K + f64::from(celsius),
+            ),
+            ColumnPlaneKind::ColumnMaximum { variable, .. } => match read_hydrometeor(variable) {
+                Some(field) => column_maximum(&field, nz, cells),
+                None => {
+                    fields
+                        .notes
+                        .push(format!("{} skipped: {variable} not in the file", plane.store_name));
+                    continue;
+                }
+            },
+            ColumnPlaneKind::SupercooledWaterPath { bottom_m, top_m } => {
+                let Some(cloud_water) = read_hydrometeor("QCLOUD") else {
+                    fields
+                        .notes
+                        .push(format!("{} skipped: QCLOUD not in the file", plane.store_name));
+                    continue;
+                };
+                if layer_mass.is_none() {
+                    match layer_dry_mass(file, timeidx, nz, cells) {
+                        Ok(mass) => layer_mass = Some(mass),
+                        Err(err) => {
+                            fields.notes.push(format!("{} skipped: {err}", plane.store_name));
+                            continue;
+                        }
+                    }
+                }
+                let height_agl = height_agl.get_or_insert_with(|| columns.height_agl_m());
+                supercooled_water_path(
+                    &cloud_water,
+                    &columns.temperature_k,
+                    layer_mass.as_deref().expect("set above"),
+                    height_agl,
+                    nz,
+                    cells,
+                    match (bottom_m, top_m) {
+                        (Some(bottom), Some(top)) => Some((f64::from(bottom), f64::from(top))),
+                        _ => None,
+                    },
+                )
+            }
+            ColumnPlaneKind::SimulatedInfrared => {
+                let (Some(cloud_water), Some(cloud_ice)) =
+                    (read_hydrometeor("QCLOUD"), read_hydrometeor("QICE"))
+                else {
+                    fields.notes.push(format!(
+                        "{} skipped: QCLOUD and QICE are both needed",
+                        plane.store_name
+                    ));
+                    continue;
+                };
+                let snow = read_hydrometeor("QSNOW");
+                let skin = match file.read_var("TSK", timeidx) {
+                    Ok(values) if values.len() == cells => values,
+                    _ => {
+                        fields
+                            .notes
+                            .push(format!("{} skipped: TSK not in the file", plane.store_name));
+                        continue;
+                    }
+                };
+                if layer_mass.is_none() {
+                    match layer_dry_mass(file, timeidx, nz, cells) {
+                        Ok(mass) => layer_mass = Some(mass),
+                        Err(err) => {
+                            fields.notes.push(format!("{} skipped: {err}", plane.store_name));
+                            continue;
+                        }
+                    }
+                }
+                simulated_infrared_brightness_temperature(
+                    &cloud_water,
+                    &cloud_ice,
+                    snow.as_ref().map(|snow| snow.as_slice()),
+                    &columns.temperature_k,
+                    layer_mass.as_deref().expect("set above"),
+                    &skin,
+                    nz,
+                    cells,
+                )
+            }
+        };
+        progress(format!("Computing {}", plane.store_name));
+        push_canonical_values(
+            fields,
+            grid,
+            projection.clone(),
+            plane.store_name,
+            plane.selector(),
+            plane.units,
+            values,
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// One column per test, levels bottom to top.
+    fn column(values: &[f64]) -> Vec<f64> {
+        values.to_vec()
+    }
+
+    #[test]
+    fn the_isotherm_is_the_lowest_crossing_and_nan_where_the_column_never_crosses() {
+        let height = column(&[100.0, 600.0, 1100.0, 1600.0, 2100.0]);
+        // 5 C at the ground, cooling 4 K per level: 0 C between levels 1
+        // and 2, a quarter of the way up.
+        let warm = column(&[278.15, 274.15, 270.15, 266.15, 262.15]);
+        let z0 = isotherm_height(&warm, &height, 5, 1, 273.15)[0];
+        assert!((z0 - 725.0).abs() < 1e-3, "{z0}");
+        // -10 C is crossed between levels 3 and 4.
+        let z10 = isotherm_height(&warm, &height, 5, 1, 263.15)[0];
+        assert!((z10 - 1975.0).abs() < 1e-3, "{z10}");
+        // -20 C is never reached.
+        assert!(isotherm_height(&warm, &height, 5, 1, 253.15)[0].is_nan());
+        // An inversion: cold ground, warm aloft, then cold again.  The
+        // lowest crossing is the one going warm, not the one going cold.
+        let inverted = column(&[271.15, 275.15, 274.15, 270.15, 262.15]);
+        let z = isotherm_height(&inverted, &height, 5, 1, 273.15)[0];
+        assert!((z - 350.0).abs() < 1e-3, "{z}");
+        // A level exactly on the isotherm is the crossing.
+        let exact = column(&[280.15, 273.15, 260.15]);
+        let z = isotherm_height(&exact, &column(&[0.0, 500.0, 1000.0]), 3, 1, 273.15)[0];
+        assert!((z - 500.0).abs() < 1e-9, "{z}");
+        // Two cells share the level loop: the second is the cold one.
+        let two = vec![278.15, 262.15, 274.15, 261.15, 270.15, 260.15];
+        let heights = vec![0.0, 0.0, 500.0, 500.0, 1000.0, 1000.0];
+        let out = isotherm_height(&two, &heights, 3, 2, 273.15);
+        assert!((out[0] - 625.0).abs() < 1e-3, "{}", out[0]);
+        assert!(out[1].is_nan());
+    }
+
+    #[test]
+    fn the_column_maximum_ignores_holes_and_is_nan_on_an_empty_column() {
+        let field = vec![1.0, f64::NAN, 3.0, f64::NAN, 2.0, f64::NAN];
+        let out = column_maximum(&field, 3, 2);
+        assert_eq!(out[0], 3.0);
+        assert!(out[1].is_nan());
+    }
+
+    #[test]
+    fn the_supercooled_path_counts_only_cold_levels_inside_the_layer() {
+        // Four levels, one cell: 1 kg m-2 of dry air per level, 1 g kg-1 of
+        // cloud water on every level, the two upper levels below freezing.
+        let q = column(&[1e-3, 1e-3, 1e-3, 1e-3]);
+        let t = column(&[280.0, 275.0, 270.0, 265.0]);
+        let mass = column(&[1.0, 1.0, 1.0, 1.0]);
+        let z = column(&[500.0, 1500.0, 2500.0, 3500.0]);
+        let whole = supercooled_water_path(&q, &t, &mass, &z, 4, 1, None)[0];
+        assert!((whole - 2.0).abs() < 1e-6, "{whole} g m-2");
+        let low = supercooled_water_path(&q, &t, &mass, &z, 4, 1, Some((0.0, 3000.0)))[0];
+        assert!((low - 1.0).abs() < 1e-6, "{low} g m-2");
+        let high = supercooled_water_path(&q, &t, &mass, &z, 4, 1, Some((3000.0, 6000.0)))[0];
+        assert!((high - 1.0).abs() < 1e-6, "{high} g m-2");
+        // A warm column has none, and a negative ratio is not water.
+        let warm = column(&[290.0, 285.0, 280.0, 275.0]);
+        assert_eq!(supercooled_water_path(&q, &warm, &mass, &z, 4, 1, None)[0], 0.0);
+        let negative = column(&[-1e-3, 1e-3, -1e-3, 1e-3]);
+        let out = supercooled_water_path(&negative, &t, &mass, &z, 4, 1, None)[0];
+        assert!((out - 1.0).abs() < 1e-6, "{out}");
+    }
+
+    #[test]
+    fn the_layer_mass_is_the_models_own_measure() {
+        // Terrain-following coordinate: mass = mu * (-dnw) / g.
+        let mass = layer_dry_mass_from(&[500.0], &[80_000.0], &[-0.02, -0.03], &[1.0, 1.0], &[0.0, 0.0], 2, 1);
+        assert!((mass[0] - 80_500.0 * 0.02 / G).abs() < 1e-9);
+        assert!((mass[1] - 80_500.0 * 0.03 / G).abs() < 1e-9);
+        // Hybrid: the c2h term is mass the column does not scale.
+        let hybrid = layer_dry_mass_from(&[500.0], &[80_000.0], &[-0.02], &[0.5], &[1000.0], 1, 1);
+        assert!((hybrid[0] - (0.5 * 80_500.0 + 1000.0) * 0.02 / G).abs() < 1e-9);
+    }
+
+    #[test]
+    fn the_layer_thickness_is_the_difference_of_the_full_levels() {
+        assert_eq!(eta_layer_thickness(&[1.0, 0.75, 0.5, 0.0]), vec![-0.25, -0.25, -0.5]);
+        assert!(eta_layer_thickness(&[1.0]).is_empty());
+        // The mass it gives is the mass DNW gives.
+        let from_levels = layer_dry_mass_from(
+            &[500.0],
+            &[80_000.0],
+            &eta_layer_thickness(&[1.0, 0.98, 0.95]),
+            &[1.0, 1.0],
+            &[0.0, 0.0],
+            2,
+            1,
+        );
+        assert!((from_levels[0] - 80_500.0 * 0.02 / G).abs() < 1e-6);
+        assert!((from_levels[1] - 80_500.0 * 0.03 / G).abs() < 1e-6);
+    }
+
+    #[test]
+    fn the_brightness_temperature_is_the_opaque_level_or_the_skin() {
+        // Three levels: a thick liquid cloud on the middle one.  With
+        // 1000 kg m-2 of air per layer (a 100 hPa layer), 0.145 * q * 1000
+        // reaches one at q = 6.9 g kg-1; a 20 g kg-1 cloud is opaque inside
+        // the level.
+        let qc = column(&[0.0, 0.02, 0.0]);
+        let qi = column(&[0.0, 0.0, 0.0]);
+        let t = column(&[290.0, 270.0, 250.0]);
+        let mass = column(&[1000.0, 1000.0, 1000.0]);
+        let skin = vec![300.0];
+        let tb = simulated_infrared_brightness_temperature(&qc, &qi, None, &t, &mass, &skin, 3, 1)[0];
+        // The depth goes from 0 above the level to 2.9 through it; one is
+        // reached 34.5 percent of the way down from the level above (250 K)
+        // toward the cloud level (270 K).
+        let expected = 250.0 + (1.0 / 2.9) * 20.0;
+        assert!((f64::from(tb) - expected).abs() < 1e-3, "{tb} vs {expected}");
+        // No cloud: the skin temperature.
+        let clear = column(&[0.0, 0.0, 0.0]);
+        let tb = simulated_infrared_brightness_temperature(&clear, &qi, None, &t, &mass, &skin, 3, 1)[0];
+        assert_eq!(tb, 300.0);
+        // Snow counts as ice: a thick anvil on the top level reads its own
+        // temperature.
+        let snow = column(&[0.0, 0.0, 0.05]);
+        let tb = simulated_infrared_brightness_temperature(&clear, &qi, Some(&snow), &t, &mass, &skin, 3, 1)[0];
+        assert_eq!(tb, 250.0);
+    }
+
+    #[test]
+    fn every_catalog_row_has_a_selector_the_recipe_catalog_can_resolve() {
+        for plane in COLUMN_PLANE_CATALOG {
+            let selector = plane.selector();
+            let slug = rustwx_models::built_in_plot_recipes()
+                .iter()
+                .find(|recipe| recipe.filled.selector == Some(selector))
+                .map(|recipe| recipe.slug);
+            assert!(
+                slug.is_some(),
+                "{} ({}) has no catalog row asking for it",
+                plane.store_name,
+                selector.key()
+            );
+        }
+        let planned = planned_store_fields(&WrfProcessOptions::default());
+        assert_eq!(planned.len(), COLUMN_PLANE_CATALOG.len());
+        let skipped = planned_store_fields(&WrfProcessOptions {
+            skip: vec!["supercooled".to_string()],
+            ..WrfProcessOptions::default()
+        });
+        assert_eq!(planned.len() - skipped.len(), 3);
+    }
+}

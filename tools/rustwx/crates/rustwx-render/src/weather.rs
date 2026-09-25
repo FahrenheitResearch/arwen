@@ -32,6 +32,13 @@ pub enum WeatherPalette {
     GeopotAnomaly,
     Precip,
     ShadedOverlay,
+    /// Sequential blues into purple for a supercooled liquid water path.
+    SupercooledWater,
+    /// Sequential greens into blues for a hydrometeor mixing ratio.
+    Hydrometeor,
+    /// Purple through green and yellow to red for the height of an
+    /// isotherm: a low freezing level is the cold end.
+    IsothermHeight,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -836,6 +843,9 @@ pub fn weather_palette(palette: WeatherPalette) -> Vec<Color> {
         WeatherPalette::GeopotAnomaly => colormaps::geopot_anomaly(100),
         WeatherPalette::Precip => colormaps::precip_in(),
         WeatherPalette::ShadedOverlay => colormaps::shaded_overlay(),
+        WeatherPalette::SupercooledWater => supercooled_water_palette(),
+        WeatherPalette::Hydrometeor => hydrometeor_palette(),
+        WeatherPalette::IsothermHeight => isotherm_height_palette(),
     };
 
     colors.into_iter().map(Into::into).collect()
@@ -935,84 +945,158 @@ pub fn srh_scale_levels() -> Vec<f64> {
     ])
 }
 
-fn advection_palette() -> Vec<crate::color::Rgba> {
-    const ADVECTION_HEX: [&str; 9] = [
-        "#0b3c5d", "#328cc1", "#74b3ce", "#d9ecf2", "#f7f7f7", "#f3d9ca", "#e39b7b", "#c75d43",
-        "#8f2d1f",
-    ];
+// -----------------------------------------------------------------------
+// Fixed-range product palettes defined here rather than in `colormaps`.
+//
+// Each one is a plain anchor table, named so the crate's palette rule
+// can be held against it: no RUN of neutral anchors may leave a stretch
+// of a range with no colour in it.  That rule is a rule about product
+// palettes, not about one file, so the guard in `colormaps` reads these
+// as well as its own (`fixed_range_tables`).
+// -----------------------------------------------------------------------
 
-    ADVECTION_HEX
-        .into_iter()
-        .map(rgba_from_hex)
-        .collect::<Vec<_>>()
+const ADVECTION: &[&str] = &[
+    "#0b3c5d", "#328cc1", "#74b3ce", "#d9ecf2", "#f7f7f7", "#f3d9ca", "#e39b7b", "#c75d43",
+    "#8f2d1f",
+];
+
+const ECAPE_RATIO: &[&str] = &[
+    "#7f1d1d", "#b91c1c", "#dc2626", "#f97316", "#f59e0b", "#facc15", "#fde047", "#bef264",
+    "#84cc16", "#22c55e", "#15803d",
+];
+
+const ECAPE: &[&str] = &[
+    "#f7fbff", "#deebf7", "#c6dbef", "#9ecae1", "#6baed6", "#31a354", "#fdd049", "#fdae61",
+    "#f46d43", "#d73027", "#7f0000", "#4d004b",
+];
+
+const CIN: &[&str] = &[
+    "#35004f", "#5f006d", "#8b0f6f", "#b52e57", "#d95f35", "#f29f3d", "#f7d77a",
+];
+
+const NCAPE: &[&str] = &[
+    "#f7fbff", "#deebf7", "#c6dbef", "#9ecae1", "#6baed6", "#31a354", "#fed976", "#fd8d3c",
+    "#bd0026",
+];
+
+const SCP: &[&str] = &[
+    "#f7fbff", "#c6dbef", "#6baed6", "#2171b5", "#31a354", "#ffd92f", "#fc8d59", "#d7301f",
+    "#7f0000", "#54278f",
+];
+
+const HEIGHT_AGL: &[&str] = &[
+    "#ffffe5", "#fff7bc", "#fee391", "#fec44f", "#fe9929", "#ec7014", "#cc4c02", "#8c2d04",
+];
+
+const EQUILIBRIUM_LEVEL: &[&str] = &[
+    "#f7fcfd", "#e0ecf4", "#bfd3e6", "#9ebcda", "#8c96c6", "#8c6bb1", "#88419d", "#810f7c",
+    "#4d004b",
+];
+
+const TORNADIC_EHI: &[&str] = &[
+    "#fff7bc", "#fee391", "#fec44f", "#fe9929", "#ec7014", "#cc4c02", "#8c2d04", "#4d004b",
+];
+
+const TORNADIC_TTS: &[&str] = &[
+    "#f7fcf5", "#c7e9c0", "#74c476", "#31a354", "#006d2c", "#fdd049", "#f16913", "#a63603",
+];
+
+const VIOLENT_TORNADO: &[&str] = &[
+    "#edf8fb", "#b2e2e2", "#66c2a4", "#238b45", "#fdd049", "#fdae6b", "#e6550d", "#7f2704",
+    "#4a1486",
+];
+
+const SUPERCOOLED_WATER: &[&str] = &[
+    "#d0e1f2", "#b3cde3", "#9ecae1", "#6baed6", "#4292c6", "#2171b5", "#08519c", "#08306b",
+    "#54278f", "#7a0177",
+];
+
+const HYDROMETEOR: &[&str] = &[
+    "#d5f0cf", "#ccebc5", "#a8ddb5", "#7bccc4", "#4eb3d3", "#2b8cbe", "#0868ac", "#084081",
+    "#4a1486",
+];
+
+const ISOTHERM_HEIGHT: &[&str] = &[
+    "#5e4fa2", "#3288bd", "#66c2a5", "#abdda4", "#d9ef8b", "#fee08b", "#fdae61", "#f46d43",
+    "#d53e4f", "#9e0142",
+];
+
+/// Every fixed-range product palette defined in THIS file, by name and
+/// anchors, for the crate's neutral-run guard.
+#[cfg(test)]
+pub(crate) fn fixed_range_tables() -> Vec<(&'static str, Vec<&'static str>)> {
+    vec![
+        ("supercooled water", SUPERCOOLED_WATER.to_vec()),
+        ("hydrometeor", HYDROMETEOR.to_vec()),
+        ("isotherm height", ISOTHERM_HEIGHT.to_vec()),
+        ("advection", ADVECTION.to_vec()),
+        ("ecape ratio", ECAPE_RATIO.to_vec()),
+        ("ecape", ECAPE.to_vec()),
+        ("convective inhibition", CIN.to_vec()),
+        ("normalized cape", NCAPE.to_vec()),
+        ("supercell composite", SCP.to_vec()),
+        ("height above ground", HEIGHT_AGL.to_vec()),
+        ("equilibrium level", EQUILIBRIUM_LEVEL.to_vec()),
+        ("tornadic energy helicity", TORNADIC_EHI.to_vec()),
+        ("tornadic tilt", TORNADIC_TTS.to_vec()),
+        ("violent tornado", VIOLENT_TORNADO.to_vec()),
+    ]
+}
+
+fn advection_palette() -> Vec<crate::color::Rgba> {
+    palette_from_hex(ADVECTION)
 }
 
 fn ecape_ratio_palette() -> Vec<crate::color::Rgba> {
-    const ECAPE_RATIO_HEX: [&str; 11] = [
-        "#7f1d1d", "#b91c1c", "#dc2626", "#f97316", "#f59e0b", "#facc15", "#fde047", "#bef264",
-        "#84cc16", "#22c55e", "#15803d",
-    ];
-
-    palette_from_hex(&ECAPE_RATIO_HEX)
+    palette_from_hex(ECAPE_RATIO)
 }
 
 fn ecape_palette() -> Vec<crate::color::Rgba> {
-    palette_from_hex(&[
-        "#f7fbff", "#deebf7", "#c6dbef", "#9ecae1", "#6baed6", "#31a354", "#fdd049", "#fdae61",
-        "#f46d43", "#d73027", "#7f0000", "#4d004b",
-    ])
+    palette_from_hex(ECAPE)
 }
 
 fn cin_palette() -> Vec<crate::color::Rgba> {
-    palette_from_hex(&[
-        "#35004f", "#5f006d", "#8b0f6f", "#b52e57", "#d95f35", "#f29f3d", "#f7d77a",
-    ])
+    palette_from_hex(CIN)
 }
 
 fn ncape_palette() -> Vec<crate::color::Rgba> {
-    palette_from_hex(&[
-        "#f7fbff", "#deebf7", "#c6dbef", "#9ecae1", "#6baed6", "#31a354", "#fed976", "#fd8d3c",
-        "#bd0026",
-    ])
+    palette_from_hex(NCAPE)
 }
 
 fn scp_palette() -> Vec<crate::color::Rgba> {
-    palette_from_hex(&[
-        "#f7fbff", "#c6dbef", "#6baed6", "#2171b5", "#31a354", "#ffd92f", "#fc8d59", "#d7301f",
-        "#7f0000", "#54278f",
-    ])
+    palette_from_hex(SCP)
 }
 
 fn height_agl_palette() -> Vec<crate::color::Rgba> {
-    palette_from_hex(&[
-        "#ffffe5", "#fff7bc", "#fee391", "#fec44f", "#fe9929", "#ec7014", "#cc4c02", "#8c2d04",
-    ])
+    palette_from_hex(HEIGHT_AGL)
 }
 
 fn equilibrium_level_palette() -> Vec<crate::color::Rgba> {
-    palette_from_hex(&[
-        "#f7fcfd", "#e0ecf4", "#bfd3e6", "#9ebcda", "#8c96c6", "#8c6bb1", "#88419d", "#810f7c",
-        "#4d004b",
-    ])
+    palette_from_hex(EQUILIBRIUM_LEVEL)
+}
+
+fn supercooled_water_palette() -> Vec<crate::color::Rgba> {
+    palette_from_hex(SUPERCOOLED_WATER)
+}
+
+fn hydrometeor_palette() -> Vec<crate::color::Rgba> {
+    palette_from_hex(HYDROMETEOR)
+}
+
+fn isotherm_height_palette() -> Vec<crate::color::Rgba> {
+    palette_from_hex(ISOTHERM_HEIGHT)
 }
 
 fn tornadic_ehi_palette() -> Vec<crate::color::Rgba> {
-    palette_from_hex(&[
-        "#fff7bc", "#fee391", "#fec44f", "#fe9929", "#ec7014", "#cc4c02", "#8c2d04", "#4d004b",
-    ])
+    palette_from_hex(TORNADIC_EHI)
 }
 
 fn tornadic_tts_palette() -> Vec<crate::color::Rgba> {
-    palette_from_hex(&[
-        "#f7fcf5", "#c7e9c0", "#74c476", "#31a354", "#006d2c", "#fdd049", "#f16913", "#a63603",
-    ])
+    palette_from_hex(TORNADIC_TTS)
 }
 
 fn violent_tornado_palette() -> Vec<crate::color::Rgba> {
-    palette_from_hex(&[
-        "#edf8fb", "#b2e2e2", "#66c2a4", "#238b45", "#fdd049", "#fdae6b", "#e6550d", "#7f2704",
-        "#4a1486",
-    ])
+    palette_from_hex(VIOLENT_TORNADO)
 }
 
 fn palette_from_hex(values: &[&str]) -> Vec<crate::color::Rgba> {

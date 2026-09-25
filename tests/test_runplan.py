@@ -24,6 +24,8 @@ from pathlib import Path
 
 import pytest
 
+from conftest import requires_cupy
+
 from gpuwm import explain
 from gpuwm.runplan import (EVENT_SCHEMA, EVENT_TAGS, EVENTS_FILENAME,
                            MANIFEST_FILENAME, MANIFEST_SCHEMA, PLAN_SCHEMA,
@@ -729,6 +731,15 @@ def test_both_runner_mains_accept_an_observer(runner):
     assert parameter.kind is inspect.Parameter.KEYWORD_ONLY
 
 
+# NEEDS CUPY INSTALLED, and opens no device.  The eighteen tests marked
+# below run the real `gpuwm go` / `gpuwm run-plan` chain with its stages
+# stubbed; without the array library the door refuses before the first
+# stage (`this command needs cupy ... Refusing here, before the fetch
+# stage`) and returns 2, so the events, the handoffs and the exit codes
+# these tests hold are never produced.  Measured on the Linux release
+# node: every one red in a venv without cupy, every one green in the
+# same tree with cupy-cuda13x installed (proof/node-reds-276).
+@requires_cupy
 def test_a_passing_prepared_run_ends_with_completed_not_failed(
         tmp_path, monkeypatch):
     """The severity-one regression: every good run announced failure.
@@ -813,6 +824,7 @@ def test_every_intent_key_declares_how_it_reaches_the_chain():
             delivery.startswith("go:"), (key, delivery)
 
 
+@requires_cupy
 def test_go_delivered_intent_keys_are_forwarded_to_the_chain(
         tmp_path, monkeypatch):
     import gpuwm.go_cli as go_cli
@@ -840,6 +852,7 @@ def test_go_delivered_intent_keys_are_forwarded_to_the_chain(
     assert Path(seen["data_dir"]) == data
 
 
+@requires_cupy
 def test_a_run_option_beats_the_intents_copy_of_the_same_key(
         tmp_path, monkeypatch):
     import gpuwm.go_cli as go_cli
@@ -1117,6 +1130,7 @@ def _executed_staged_chain(tmp_path, monkeypatch):
             read_events(plan.run_dir / EVENTS_FILENAME), plan)
 
 
+@requires_cupy
 def test_the_staged_chain_composes_prep_from_the_fetch_handoff(
         tmp_path, monkeypatch):
     """The preparation argv IS the fetch route's published binding, plus
@@ -1142,6 +1156,7 @@ def test_the_staged_chain_composes_prep_from_the_fetch_handoff(
     assert Path(appended[7]) == plan.run_dir / "chain" / "prep"
 
 
+@requires_cupy
 def test_the_staged_chain_binds_the_forecast_off_the_bundle(
         tmp_path, monkeypatch):
     staged, _argv, events, plan = _executed_staged_chain(
@@ -1165,6 +1180,10 @@ def test_the_staged_chain_binds_the_forecast_off_the_bundle(
     assert Path(str(render[1]["render"])) == plan.run_dir / "chain" / "png"
 
 
+# NEEDS CUPY INSTALLED, and opens no device: this test asserts the staged
+# chain's own refusal names prep-arguments.json; without cupy the run-plan
+# door refuses first and names the missing wheel instead.
+@requires_cupy
 def test_the_staged_chain_refuses_a_fetch_with_no_handoff(
         tmp_path, monkeypatch):
     """A legacy-shaped fetch directory cannot feed the staged prep."""
@@ -1221,6 +1240,7 @@ def _staged_hrrr_chain(tmp_path, monkeypatch, **plan_overrides):
     return staged, read_events(plan.run_dir / EVENTS_FILENAME)
 
 
+@requires_cupy
 def test_the_hrrr_chain_passes_the_wps_namelist_to_the_preparer(
         tmp_path, monkeypatch):
     """The whole point of this increment.
@@ -1240,6 +1260,7 @@ def test_the_hrrr_chain_passes_the_wps_namelist_to_the_preparer(
     assert namelist.is_file()
 
 
+@requires_cupy
 def test_the_hrrr_prepare_command_is_the_wizards_printed_one(
         tmp_path, monkeypatch):
     """Every flag the documented chain passes, and the cycle it spells."""
@@ -1266,6 +1287,7 @@ def test_the_hrrr_prepare_command_is_the_wizards_printed_one(
         hashlib.sha256(manifest.read_bytes()).hexdigest()
 
 
+@requires_cupy
 def test_the_hrrr_fetch_argv_comes_from_the_configs_own_fetch_hints(
         tmp_path, monkeypatch):
     staged, _events = _staged_hrrr_chain(tmp_path, monkeypatch)
@@ -1281,6 +1303,7 @@ def test_the_hrrr_fetch_argv_comes_from_the_configs_own_fetch_hints(
     build_parser().parse_args(["fetch", *fetch])
 
 
+@requires_cupy
 def test_the_hrrr_chain_emits_the_stages_in_the_documented_order(
         tmp_path, monkeypatch):
     _staged, events = _staged_hrrr_chain(tmp_path, monkeypatch)
@@ -1288,6 +1311,7 @@ def test_the_hrrr_chain_emits_the_stages_in_the_documented_order(
     assert started[:2] == ["fetch", "prepare"]
 
 
+@requires_cupy
 def test_the_physics_profile_is_passed_only_when_the_plan_states_it(
         tmp_path, monkeypatch):
     """The route owns its physics gate; this layer must not invent one."""
@@ -1386,6 +1410,7 @@ def test_render_products_is_a_run_option_on_the_prepared_route(tmp_path):
     assert plan.run_options["render_products"] is None
 
 
+@requires_cupy
 def test_the_run_option_is_stamped_onto_the_namespace_go_reads(
         tmp_path, monkeypatch):
     import gpuwm.go_cli as go_cli
@@ -2459,6 +2484,7 @@ def _run(tmp_path, stubbed_runtime, *, plan_overrides=None, **stub):
     return code, run_dir, read_events(run_dir / EVENTS_FILENAME)
 
 
+@requires_cupy
 def test_a_completed_run_emits_its_events_in_order_with_a_dense_sequence(
         tmp_path, stubbed_runtime):
     code, run_dir, events = _run(tmp_path, stubbed_runtime)
@@ -2503,6 +2529,7 @@ def test_a_completed_run_emits_its_events_in_order_with_a_dense_sequence(
     assert completed["outputs_committed"] == 2
 
 
+@requires_cupy
 def test_an_output_is_announced_only_after_the_progress_that_precedes_it_is(
         tmp_path, stubbed_runtime):
     """Ordering is the contract; a consumer builds a timeline from it."""
@@ -2555,6 +2582,7 @@ def test_reattach_replay_yields_exactly_the_event_list_that_was_emitted(
     assert read_events(manifest["events_path"]) == replayed
 
 
+@requires_cupy
 def test_the_supervisors_own_heartbeat_is_the_one_that_gets_written(
         tmp_path, stubbed_runtime):
     """No second progress writer: this front door composes with theirs."""
@@ -2569,6 +2597,7 @@ def test_the_supervisors_own_heartbeat_is_the_one_that_gets_written(
     assert heartbeat.model_elapsed_seconds == 3600.0
 
 
+@requires_cupy
 def test_a_failed_run_emits_failed_last_and_exits_nonzero(
         tmp_path, stubbed_runtime):
     code, _run_dir, events = _run(tmp_path, stubbed_runtime,
@@ -2587,6 +2616,7 @@ def test_a_failed_run_emits_failed_last_and_exits_nonzero(
     assert closing[-1]["outcome"] == "failed"
 
 
+@requires_cupy
 def test_a_failure_during_preparation_names_the_stage_it_failed_in(
         tmp_path, stubbed_runtime):
     code, _run_dir, events = _run(tmp_path, stubbed_runtime,
@@ -2619,6 +2649,7 @@ def test_a_dry_run_resolves_the_plan_and_stops_before_any_device_work(
     assert any(record["event"] == "resolved_plan" for record in events)
 
 
+@requires_cupy
 def test_the_resolved_plan_event_carries_the_snapshot_and_the_resolutions(
         tmp_path, stubbed_runtime):
     _code, _run_dir, events = _run(tmp_path, stubbed_runtime)
@@ -2630,6 +2661,10 @@ def test_the_resolved_plan_event_carries_the_snapshot_and_the_resolutions(
                for entry in resolved["automatic_resolutions"])
 
 
+# NEEDS CUPY INSTALLED, and opens no device: this test runs the execution
+# road and reads its stdout; without cupy the door refuses ahead of it and
+# there is no stream to mirror.
+@requires_cupy
 def test_the_stream_is_mirrored_to_stdout_line_for_line(
         tmp_path, stubbed_runtime, capsys):
     stubbed_runtime()
@@ -2936,6 +2971,7 @@ def test_the_real_command_exits_zero_and_prints_only_the_event_stream(
     assert (run_dir / MANIFEST_FILENAME).is_file()
 
 
+@requires_cupy
 def test_the_real_command_keeps_stdout_pure_through_a_talking_pipeline(
         tmp_path):
     """The regression the dry-run test could not see.
@@ -3164,6 +3200,10 @@ def test_the_query_doors_refuse_an_absent_config_at_exit_2(tmp_path):
         assert result.stdout == ""
 
 
+# NEEDS CUPY INSTALLED, and opens no device: this test asserts the road
+# classifies an absent configuration as a PlanError; without cupy it meets
+# CapabilityMissing first.
+@requires_cupy
 def test_the_execution_road_calls_an_absent_config_a_plan_defect(tmp_path):
     """Same input, the road that runs.
 
@@ -3356,3 +3396,74 @@ def test_a_stop_during_a_stage_exits_130_like_a_stop_between_stages(
     if stop == "go_returned_130":
         assert failed["error_class"] == "ChainInterrupted"
         assert failed["message"] == "interrupted during render"
+
+
+# ---------------------------------------------------------------------------
+# The warning vocabulary
+# ---------------------------------------------------------------------------
+#
+# WHAT BREAKAGE THIS PINS (gate law).  ``warning`` is ONE tag, and what a
+# reader switches on is the ``code`` inside it.  That code was a free
+# string documented nowhere: a route could invent one, and the record it
+# wrote was a line every other reader of the stream dropped on the floor.
+# The tags have been a closed tuple since this module existed; the codes
+# now have the same guarantee, checked against the package's own source
+# so a code added to a route and not to the table fails here.
+
+
+def _emitted_warning_codes() -> dict[str, set[str]]:
+    """Every literal ``warn``/``emit`` code in the package, by module."""
+
+    import re
+
+    import gpuwm
+
+    package = Path(gpuwm.__file__).parent
+    # The two spellings a code is written in: an observer's
+    # ``warn("code", ...)`` -- or the private ``_warn`` a publisher holds
+    # -- and the direct ``emit("warning", code="code", ...)``.  A code
+    # ASSEMBLED at runtime matches neither, which is why the one family
+    # that does that is spelled as a prefix in the table.
+    pattern = re.compile(
+        r'(?:\b_?warn\(\s*"([a-z0-9_]+)"'
+        r'|emit\(\s*"warning"\s*,\s*code\s*=\s*"([a-z0-9_]+)")')
+    found: dict[str, set[str]] = {}
+    for path in sorted(package.rglob("*.py")):
+        text = path.read_text(encoding="utf-8")
+        for first, second in pattern.findall(text):
+            found.setdefault(first or second, set()).add(
+                str(path.relative_to(package).as_posix()))
+    return found
+
+
+def test_every_warning_code_this_package_emits_is_in_the_vocabulary():
+    from gpuwm.runplan import WARNING_CODES, WARNING_CODE_PREFIXES
+
+    undocumented = {
+        code: sorted(modules)
+        for code, modules in _emitted_warning_codes().items()
+        if code not in WARNING_CODES
+        and not code.startswith(WARNING_CODE_PREFIXES)}
+    assert undocumented == {}, (
+        "a warning code reached the event stream without a line in "
+        "gpuwm.runplan.WARNING_CODES saying what it means")
+
+
+def test_every_documented_warning_code_says_what_it_means():
+    from gpuwm.runplan import WARNING_CODES
+
+    assert WARNING_CODES
+    for code, meaning in WARNING_CODES.items():
+        assert code == code.lower() and " " not in code, code
+        assert isinstance(meaning, str) and len(meaning) > 20, code
+
+
+def test_a_run_that_did_not_finish_has_a_code_for_its_kept_pictures():
+    """The code this lane added, and the fields a reader keys on: how
+    many pictures are on disk and where the banner beside them is."""
+
+    from gpuwm.runplan import WARNING_CODES
+
+    meaning = WARNING_CODES["early_render_kept"]
+    assert "KEPT" in meaning
+    assert "banner" in meaning

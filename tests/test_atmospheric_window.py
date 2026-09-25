@@ -1,6 +1,8 @@
 """Original geometry and full donors remain authoritative under local packing."""
 from dataclasses import replace
 import json
+from pathlib import Path
+import re
 
 import numpy as np
 import pytest
@@ -260,3 +262,75 @@ def test_declared_projection_and_scan_order_keep_all_horizontal_bytes(source, tm
 def test_window_descriptor_requires_real_original_grid_bounds(shape, rows, columns):
     with pytest.raises(ValueError, match="atmospheric window"):
         AtmosphericWindow(shape, rows, columns)
+
+
+# ---------------------------------------------------------------------------
+# The window's inventory is one list read on three sides
+# ---------------------------------------------------------------------------
+#
+# The regular join expects every legacy atmospheric name (ATMOSPHERIC_FIELDS)
+# at the window's shape, the frame crops every CANONICAL name, and the mapped
+# engine crops the names its own window.rs constant admits.  When the five
+# hydrometeors were in the first list and not the other two, a mapping that
+# carried them delivered full-grid QC/QR/QI/QS/QG into a windowed snapshot
+# expecting the window, and the preparation refused on the shape.
+
+_ROOT = Path(__file__).resolve().parents[1]
+_WINDOW_RS = (_ROOT / "tools" / "rw_wps" / "crates" / "mapped-engine" / "src"
+              / "window.rs")
+
+
+def _rust_window_inventory():
+    text = _WINDOW_RS.read_text(encoding="utf-8")
+    start = text.index("const CANONICAL_ATMOSPHERIC_FIELDS: &[&str] = &[")
+    body = text[start:text.index("];", start)]
+    return frozenset(re.findall(r'"([a-z_]+)"', body))
+
+
+def test_the_three_window_inventories_are_one_list():
+    from gpuwm.ingest.atmospheric_window import CANONICAL_ATMOSPHERIC_FIELDS
+    from gpuwm.mapped_source import HYDROMETEOR_LEGACY_NAMES
+
+    legacy_of = {
+        "air_temperature": "T", "air_pressure": "PRES",
+        "specific_humidity": "SPFH", "eastward_wind": "U",
+        "northward_wind": "V", "geopotential_height": "GHT",
+        **HYDROMETEOR_LEGACY_NAMES,
+    }
+    assert frozenset(legacy_of) == CANONICAL_ATMOSPHERIC_FIELDS
+    assert frozenset(legacy_of.values()) == ATMOSPHERIC_FIELDS
+    assert _rust_window_inventory() == CANONICAL_ATMOSPHERIC_FIELDS
+
+
+def test_a_windowed_snapshot_carries_the_hydrometeors_at_the_window(
+        monkeypatch, tmp_path):
+    monkeypatch.setattr(fixture, "_NY", 31)
+    monkeypatch.setattr(fixture, "_NX", 37)
+    frame = fixture._one_frame()
+    fields = dict(frame.fields)
+    cloud = fields["air_temperature"].values.copy() * 0.0
+    cloud += 1.0e-6 * np.arange(cloud.size, dtype=np.float64).reshape(cloud.shape)
+    fields["cloud_water_mixing_ratio"] = replace(
+        fields["air_temperature"], name="cloud_water_mixing_ratio",
+        units="kg kg-1", values=cloud,
+        source_references=("fixture:cloud_water_mixing_ratio",))
+    frame = replace(frame, fields=fields)
+    directory = fixture.engine_bridge.write_frameset(tmp_path / "frames", (frame,))
+    authority = tmp_path / "authority"
+    authority.write_text("atmospheric-window witness")
+    bundle = fixture._bundle(directory, authority)
+    sequence = bundle.regular_snapshots().for_grids((target(),))
+    snapshot = sequence[0]
+    assert isinstance(snapshot, WindowedAtmosphericSnapshot)
+    window = snapshot.window
+    assert window.shape != (31, 37), "the target must select a real window"
+    for name in ("QC", "T", "PRES"):
+        assert snapshot.fields[name].shape == (
+            len(snapshot.levels_hpa), *window.shape), name
+    # The window is the source's own bytes over the window, nothing rebased.
+    rows, columns = window.rows, window.columns
+    np.testing.assert_array_equal(
+        snapshot.fields["QC"],
+        cloud[:, rows[0]:rows[1], columns[0]:columns[1]])
+    full = snapshot.full_snapshot()
+    assert full.fields["QC"].shape == (len(snapshot.levels_hpa), 31, 37)

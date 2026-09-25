@@ -124,10 +124,10 @@ BASELINE_PINNED: dict[str, str] = {
     # d0c23dad0 feat(cumulus): New Tiedtke joins as cu_physics = 16 -- the glibc
     # float32 transcendentals leave gf.cu for the shared glibc_flt32.cuh the
     # loader prepends; a move, not an edit (517 non-trivial lines out, 517 in)
-    # RE-PINNED at 2.7.0 by the gamma licence cut.  What moved, and the
+    # RE-PINNED at 2.7.0 by the gamma replacement.  What moved, and the
     # measurement that says the new behaviour is right:
-    #   * the LGPL transcription of glibc's tgammaf is gone from the header
-    #     this unit prepends, replaced by ArWen's own gamma, which is
+    #   * ArWen's earlier gamma is gone from the header this unit
+    #     prepends, replaced by ArWen's own correctly rounded gamma, which is
     #     CORRECTLY ROUNDED on all 59,768,833 float32 of [0.25, 36] where
     #     glibc 2.39 is not on 23,575,230 of them (39.4440 per cent, worst 6
     #     ULP).  Measured against a 113-bit tgammaq oracle;
@@ -163,8 +163,13 @@ BASELINE_PINNED: dict[str, str] = {
     # Composed licence + parity source independently checked before this pin:
     # gamma CPU/device gates and the kbcon-layer probe: 17 passed
     # on 2026-09-04. Neither standalone branch digest names these bytes.
+    # RE-PINNED at 2.7.6 from 334c55ab764732be by the notice correction: the
+    # comments at lines 62-65 and 2820 stop describing the earlier gamma as
+    # derived from glibc.  Comments only, measured: with // and /* */
+    # comments removed the file is byte-identical to the 334c55ab bytes, and
+    # it keeps its 4,061 lines, so every line number cited above still holds.
     "gf":
-        "334c55ab764732be73d94504d54cb60ad7ca8bf12dbca879d7b3fc3f869d4386",
+        "2ca7ac7bbeb01627ddeff8819b103c07081b6962125fb68d8f688627370184d6",
     # 1ee7f0be0 tiles: name the streamed-run config table, and part it from cycle streaming
     "health_tile":
         "2943d5e226a61487aefbe7f191dc120420a4cfe3f96deef19c90c2bb8c15bead",
@@ -250,29 +255,127 @@ BASELINE_PINNED: dict[str, str] = {
     "shinhong_validation":
         "e3714616c403a3f272600499164cf9b0215879d567dadcda31287dd33c600b87",
     # c1563f187 fix(release-scan): the gate reads by content, and sees an escaped path
+    # RE-PINNED 2026-09-24 by the WRF v4.6.1 real-column repairs.  What
+    # moved is WRF's own rule in each case, cited to module_mp_thompson.F
+    # in the kernel, and the measurement that says the new behaviour is
+    # right is tools/thompson_real_column_parity: WRF's Fortran run beside
+    # the port's kernels compiled for the host on 137,200 columns of seven
+    # saved real-data states, where every mp=28 process rate now agrees
+    # to float32 rounding (17 rates had differed beyond 1 percent at up
+    # to 2,457 levels a frame) and the echo within 0.024 dB (up to 8.7 dB
+    # off in 505 to 939 cells of every forecast frame before); the
+    # committed fixture tests/data/thompson_real_columns_wrf461.npz holds
+    # it in tests/test_thompson_real_column_host_parity.py.
+    # ce303c3e5: 5 micron crystals for number-less entry ice
+    # (:1855-1858), the snow-cloud table's zero 6 micron bin (:4936),
+    # the D0i minimum crystal mass (:2649, :2713), the graupel
+    # sublimation number gate (:2703), the source-stage rain and
+    # graupel balances (:3067-3091, :3118-3160); 217e84e18: the running
+    # vapour carried unfloored (:3974); 08f1f9373: the ice mass/number
+    # balance above 0 C (:3033-3055).
+    # Previously ff9efd45815288a6.
     "thompson_aerosol_cold":
-        "ff9efd45815288a6a79ff4cad0c5d06feba18c16728597d45cb2bb0ee9bc5188",
+        "42fcf4c2d28a8e2be98e05dc0b169a08e0fe611dab69c27b0b62b4b6e9840abb",
     # 0ebda6608 snapshot(mp28): the recovered aerosol-aware Thompson port, re-parented to it
     "thompson_aerosol_probe":
         "a83d3c9f8157b5702b504350ee93572c34378390917f8c037bf2762b27b0a91e",
     # c1563f187 fix(release-scan): the gate reads by content, and sees an escaped path
+    # RE-PINNED 2026-09-24 by the WRF v4.6.1 real-column repairs.  What
+    # moved is WRF's own rule in each case, cited to module_mp_thompson.F
+    # in the kernel, and the measurement that says the new behaviour is
+    # right is tools/thompson_real_column_parity: WRF's Fortran run beside
+    # the port's kernels compiled for the host on 137,200 columns of seven
+    # saved real-data states, where every mp=28 process rate now agrees
+    # to float32 rounding (17 rates had differed beyond 1 percent at up
+    # to 2,457 levels a frame) and the echo within 0.024 dB (up to 8.7 dB
+    # off in 505 to 939 cells of every forecast frame before); the
+    # committed fixture tests/data/thompson_real_columns_wrf461.npz holds
+    # it in tests/test_thompson_real_column_host_parity.py.
+    # ce303c3e5: the adjustment exports L_qc (:3485) and the rain
+    # evaporation writes L_qr and the :3568 rewrite into the rain
+    # reference density (:3236); 217e84e18: the running vapour carried
+    # unfloored (:3974).
+    # Previously b54711ac9e07dfe8.
     "thompson_aerosol_sat":
-        "b54711ac9e07dfe843378f53402b5c2bddb324e7bb90b1fff6629eed7540aea6",
+        "44d3fb82ecfc49aea7711d09a73262802299fa4889406c8ec547210053ee5c04",
     # c1563f187 fix(release-scan): the gate reads by content, and sees an escaped path
+    # RE-PINNED 2026-09-24 by the WRF v4.6.1 real-column repairs.  What
+    # moved is WRF's own rule in each case, cited to module_mp_thompson.F
+    # in the kernel, and the measurement that says the new behaviour is
+    # right is tools/thompson_real_column_parity: WRF's Fortran run beside
+    # the port's kernels compiled for the host on 137,200 columns of seven
+    # saved real-data states, where every mp=28 process rate now agrees
+    # to float32 rounding (17 rates had differed beyond 1 percent at up
+    # to 2,457 levels a frame) and the echo within 0.024 dB (up to 8.7 dB
+    # off in 505 to 939 cells of every forecast frame before); the
+    # committed fixture tests/data/thompson_real_columns_wrf461.npz holds
+    # it in tests/test_thompson_real_column_host_parity.py.
+    # ce303c3e5: the terminal ice bound in its per-kilogram form
+    # (:4024-4040) and the terminal bounds on the density the rain
+    # evaporation left (:3572); c4f3fcc70: cloud at or below 1e-12
+    # kg/kg carried to the phase cleanup (:3943-3966).
+    # Previously d234db58a7d3cbb1.
     "thompson_aerosol_sed":
-        "d234db58a7d3cbb1c8442f00f3c1b587b1cde9486afa690ddf948f0c851531d7",
+        "8380f654e902a4ecabb7d9b44c5be30f210d12ae3e0fdf6c93e1d93c8748abf1",
     # c1563f187 fix(release-scan): the gate reads by content, and sees an escaped path
+    # RE-PINNED 2026-09-24 by the WRF v4.6.1 real-column repairs.  What
+    # moved is WRF's own rule in each case, cited to module_mp_thompson.F
+    # in the kernel, and the measurement that says the new behaviour is
+    # right is tools/thompson_real_column_parity: WRF's Fortran run beside
+    # the port's kernels compiled for the host on 137,200 columns of seven
+    # saved real-data states, where every mp=28 process rate now agrees
+    # to float32 rounding (17 rates had differed beyond 1 percent at up
+    # to 2,457 levels a frame) and the echo within 0.024 dB (up to 8.7 dB
+    # off in 505 to 939 cells of every forecast frame before); the
+    # committed fixture tests/data/thompson_real_columns_wrf461.npz holds
+    # it in tests/test_thompson_real_column_host_parity.py.
+    # 217e84e18: WRF's no-microphysics column exit (:1646, :2020), the
+    # new thompson_aa_micro_columns flag kernel, and the terminal apply
+    # flooring vapour at 1e-10 in every other column (:3974); the final
+    # vapour, nwfa and nifa have no unexplained cell on any frame.
+    # Previously 856c00e10f3fb4cf.
     "thompson_aerosol_state":
-        "856c00e10f3fb4cf802308ea86196a688d8bb75f5dcdb760f77e4e83b170ca50",
+        "a64cc5d86f2cfa0908cbff1ec0c0109b8e1fa2eba4947792aab362b9a260a7a8",
     # c1563f187 fix(release-scan): the gate reads by content, and sees an escaped path
+    # RE-PINNED 2026-09-24 by the WRF v4.6.1 real-column repairs.  What
+    # moved is WRF's own rule in each case, cited to module_mp_thompson.F
+    # in the kernel, and the measurement that says the new behaviour is
+    # right is tools/thompson_real_column_parity: WRF's Fortran run beside
+    # the port's kernels compiled for the host on 137,200 columns of seven
+    # saved real-data states, where every mp=28 process rate now agrees
+    # to float32 rounding (17 rates had differed beyond 1 percent at up
+    # to 2,457 levels a frame) and the echo within 0.024 dB (up to 8.7 dB
+    # off in 505 to 939 cells of every forecast frame before); the
+    # committed fixture tests/data/thompson_real_columns_wrf461.npz holds
+    # it in tests/test_thompson_real_column_host_parity.py.
+    # ce303c3e5: the source-stage rain and graupel balances
+    # (:3067-3091, :3118-3160); 217e84e18: the running vapour carried
+    # unfloored (:3974).
+    # Previously 031fa75543cb9408.
     "thompson_aerosol_warm":
-        "031fa75543cb940821354a5a5eeb619a33edf192598bc416e8e1ac0a99f3daa0",
+        "446212647a18e1660da8a65c417f975facaa789ff207691049853946ac0b5f51",
     # 02cfd5301 feat(les): km_opt=2 restart carrier, lateral-boundary arm, TKE budget
     "tke_budget":
         "c7f6dc37f15b25fccbea50deef0c6d595c08b2ee4762f14eef169b654d54fccb",
-    # 5165b9485 chore(wdm6): the divergence gets a citation, the constants get one home
+    # RE-PINNED 2026-09-20 after three commits moved the file and none
+    # re-pinned it (red on every box since 2026-09-13; proof/node-reds-276):
+    #   * 07d1ef7e3 (2026-09-12) fix(physics): publish current WDM6
+    #     checkpoint identity -- the published registry row and the
+    #     kernel's identity comment;
+    #   * 0a7fc061f (2026-09-12) fix(physics): bound evolving WDM6 rain
+    #     transport time -- every receiving layer covered by the existing
+    #     fall-speed envelope, conservative interface transfers kept,
+    #     temporal refinement verified independently
+    #     (tests/test_wdm6_sedimentation.py, docs/wdm6_oracle_known_deltas.md);
+    #   * a3f158bef (2026-09-13) the substep count is checked before it is
+    #     converted to a signed counter; an unrepresentable count or an
+    #     invalid density/thickness stops the affected column and reports
+    #     a failed call through the health path, normal schedules
+    #     unchanged and no iteration cap applied
+    #     (tests/test_wdm6_count_safety.py, tests/test_wdm6_count_cuda.py).
+    # The bytes below are a3f158bef's.
     "wdm6":
-        "b9a370f5cc9c480c1fa19b41c5c2ce4a395710ce3dae787141f627de15b5a062",
+        "6f528e1b1df03047f48df9c2d495560896ba17d2ec2bcd3c1206748b2156b705",
     # 5165b9485 chore(wdm6): the divergence gets a citation, the constants get one home
     "wdm6_refl":
         "5dff160d671d68c2236c964bfac94e0b8f275a6897b8840f860c0e1ddbf9fdcf",
@@ -294,7 +397,11 @@ PINNED.update(BASELINE_PINNED)
 # header assembly is independently checked by test_kernel_loader_inert.py.
 PINNED_HEADERS = {
     "common.cuh": _FROZEN.COMMON_CUH_SHA256,
-    "glibc_flt32.cuh": "794c7d4123bb0642a7ad99ad0ba8ddd98f5e845553c41ece4872ce9a16e3fa77",
+    # RE-PINNED at 2.7.6 from 794c7d4123bb0642 by the notice correction: the
+    # comments at lines 235-237 and 344-353 stop describing the earlier gamma
+    # as derived from glibc.  Comments only, measured: with comments removed
+    # the header is byte-identical, and it keeps its 552 lines.
+    "glibc_flt32.cuh": "b647335d355aefb5d9ece1726ff23667a01f09c8b263c136bd8a94764e904d4f",
     "rrtmgp_planck_common.cuh": "4e1a8214ea8e2a3dbd88cc2cda260a21ff678d98acf4f22c971ba0b51b4eba36",
     "thompson_aerosol_common.cuh": "07f5c144180b95dbc218480784c9cdaaeaf5ce6614180074a92299400906f97d",
 }
@@ -360,6 +467,7 @@ def test_the_kernel_source_is_byte_identical_to_its_pin(module: str) -> None:
         "disappeared")
     digest = hashlib.sha256(source.read_bytes()).hexdigest()
     where = ("RE_PINNED_DRIFT" if module in RE_PINNED_DRIFT
+             else "BASELINE_PINNED in this file" if module in BASELINE_PINNED
              else "tests/test_mp8_frozen.py FROZEN_MODULE_DIGESTS")
     assert digest == PINNED[module], (
         f"gpuwm/core/kernels/{module}.cu changed.\n"

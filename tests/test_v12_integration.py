@@ -1332,8 +1332,13 @@ def test_every_observed_variable_in_the_file_is_three_dimensional(tmp_path):
     path, _ = two_radar_grid_file(tmp_path / "obs.nc", grid)
     plane = ("level", "south_north", "west_east")
     volume = ("radar",) + plane
+    # The per-radar rows are the georeference and the clock of each
+    # contributing volume (its header start, its first and last radial
+    # instants and when the feed published it), never a quantity.
     georeference = {"XLAT", "XLONG", "HGT", "radar_id", "radar_lat",
-                    "radar_lon", "radar_alt", "radar_valid_time"}
+                    "radar_lon", "radar_alt", "radar_valid_time",
+                    "radar_start_time", "radar_end_time",
+                    "radar_availability_time"}
     with netCDF4.Dataset(path, "r") as dataset:
         observed = {name: variable.dimensions
                     for name, variable in dataset.variables.items()
@@ -1505,13 +1510,18 @@ def test_the_cycle_driver_applies_the_policy_and_receipts_it(tmp_path):
     def runner(*, base_config, member_dir, index, seed, perturbation,
                perturbation_options, run_seconds=None, **_):
         member_dir.mkdir(parents=True, exist_ok=True)
-        np.savez(member_dir / "gpuwmrst_000060.npz",
+        checkpoint = member_dir / "gpuwmrst_000060.npz"
+        np.savez(checkpoint,
                  **{"state/qr": background_qr,
                     "state/thp": np.zeros(shape, np.float32)})
-        sha = f"{index:064d}"
+        # The publication compares this receipt against the checkpoint's
+        # own content hash (2860ca865); a placeholder digest is refused as
+        # "the background state differs from its forecast receipt", so the
+        # stub receipts the bytes it wrote the way a real runner does.
+        sha = checkpoint_state_sha256(checkpoint)
         return MemberOutcome(
             index=index, seed=seed, member_dir=member_dir,
-            initial_state_sha256=sha, final_state_sha256=sha,
+            initial_state_sha256=f"{index:064d}", final_state_sha256=sha,
             wall_seconds=1.0, sim_seconds=60.0, wrfout_count=0,
             last_checkpoint=None, perturbation={})
 

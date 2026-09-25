@@ -52,8 +52,13 @@ them.
 **Every line where we are smaller or simpler.**  Fewer members (10 vs
 36).  A fifth of the domain area.  One radar instead of a national mosaic
 plus two satellite products plus conventional and mesonet data.  Radial
-velocity only -- and reflectivity assimilation is what actually places
-and maintains storms, so this is the weaker half of radar DA.  Two
+velocity only -- and reflectivity assimilation is what places storms,
+so this is the half of radar DA that moves placement.  (It is not the
+strictly better half: on one measured case, with the reflectivity
+insertion that precedes the first analysis turned off, assimilating
+reflectivity and hydrometeors beside the winds collapsed the storm
+faster than assimilating the winds alone.  The wider set corrects
+condensate the background already has; it does not conjure it.)  Two
 analysis variables instead of the full state.  Ninety minutes of cycling
 where WoFS spins up for two hours *before* it launches its first
 forecast.  A 90-minute forecast against WoFS's six hours.  No physics
@@ -345,9 +350,10 @@ one.  What the receipts do contain:
   1.166 -> 0.795 -> 0.885 over six cycles: it sagged and then
   **self-recovered** as the storm grew.  That is a filter operating with
   its margin visible.
-- In round 2, `N = 10` stabilised near 0.73 where **`N = 2` collapsed**
-  (`evidence/da-demo/live-fire-2/`).  That is our own evidence, on our own
-  system, that the small-`N` failure is real and is not far below 10.
+- In the second live-fire exercise, `N = 10` stabilised near 0.73 where
+  **`N = 2` collapsed** (`evidence/da-demo/live-fire-2/`).  That is our
+  own evidence, on our own system, that the small-`N` failure is real and
+  is not far below 10.
 
 I could not find a published study establishing a *minimum* member count
 for storm-scale ensemble DA, and I am not going to cite one that does not

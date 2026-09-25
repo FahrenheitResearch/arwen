@@ -173,9 +173,15 @@ class TestOptInCapabilitiesStayOff:
         solve_device="cuda", horizontal_loc_m=12000.0,
         vertical_loc_m=3000.0, length_scale_km=50.0, source="gfs")
 
-    def test_the_nest_is_not_in_the_front_door_argv(self):
-        # Cost model basis is "computed ... not measured"; the measured
-        # A/B had not run.  Opt in on tools/da_cycle_prepared.py.
+    def test_the_nest_is_not_in_the_argv_of_a_run_that_did_not_ask(self):
+        # The nest is REACHABLE from the front door now and still OFF
+        # unless an extent is named, which is how the cycle driver is
+        # asked as well.  What this pins is the other half: a run that
+        # names no extent builds the argv it built before the flags
+        # existed.  The default stays off because no controlled cost
+        # pair exists: the attempt recorded in
+        # evidence/da-demo/defaults-provenance.json had its two arms
+        # meet different card loads, so nothing is measured yet.
         argv = cycle_cmd(plan=plan(), **self.ARGV)
         assert not [a for a in argv if str(a).startswith("--nest")]
 
@@ -184,11 +190,18 @@ class TestOptInCapabilitiesStayOff:
         argv = cycle_cmd(plan=plan(), **self.ARGV)
         assert "--member-workers" not in argv
 
-    def test_the_front_door_offers_no_flag_for_either(self):
-        for flag in ("--nest-half-width-km", "--nest-members",
-                     "--member-workers"):
-            with pytest.raises(SystemExit):
-                parsed(flag, "1")
+    def test_the_front_door_offers_no_flag_for_concurrent_members(self):
+        # --nest-* left this refusal when the nest was wired through:
+        # there is something to turn on now, and the receipt above
+        # carries the reading that retired the pin.  --member-workers
+        # is not in this tree at all, so there is still nothing to
+        # offer and the refusal is the truth about it.
+        with pytest.raises(SystemExit):
+            parsed("--member-workers", "1")
+
+    def test_the_nest_flags_are_accepted_and_carried(self):
+        args = parsed("--nest-half-width-km", "45")
+        assert args.nest_half_width_km == 45.0
 
 
 # ---------------------------------------------------------------------------

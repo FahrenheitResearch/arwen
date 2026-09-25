@@ -480,6 +480,7 @@ def test_no_existing_profile_changed_its_microphysics():
         "kessler-mp1-ysu-mm5-noah-dudhia-v1": 1,
         "thompson-mp8-ysu-mm5-noah-validation-v1": 8,
         "thompson-mp8-ysu-mm5-noah-rrtmg-legacy-v1": 8,
+        "thompson-mp8-ysu-mm5-noah-rte-rrtmgp-v1": 8,
         "thompson-mp8-shinhong-mm5-noah-rrtmg-legacy-v1": 8,
         "morrison-mp10-ysu-mm5-noah-kf-rte-rrtmgp-v1": 10,
         "nssl2-mp18-ysu-mm5-noah-kf-rte-rrtmgp-validation-candidate-v1": 18,
@@ -513,7 +514,7 @@ def test_no_existing_profile_changed_its_microphysics():
     # forcing source it was registered on.
     aggregate_kf = template_ids_with_components(
         microphysics="wsm6-mp6", cumulus="kain-fritsch",
-        radiation="rte-rrtmgp-legacy-aggregate")
+        radiation="rte-rrtmgp")
     assert len(aggregate_kf) == 1
     assert single_domain_runtime_switches(aggregate_kf[0])["mp_physics"] == 6
 

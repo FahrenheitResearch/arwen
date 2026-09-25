@@ -86,15 +86,27 @@ if ! command -v powershell.exe >/dev/null 2>&1; then
     # Linux and macOS arm: the process table through ps, which is the
     # same question the Windows arm asks CIM.  ps failing is the query
     # failing; grep finding nothing is an answer, not a failure.
-    if ps -eo pid=,args= >/dev/null 2>&1; then
-        running=$(ps -eo pid=,args= 2>/dev/null | grep -E 'python' | grep -E "${PATTERNS}" | grep -v -E 'grep -E' | cut -c1-130 | sed '/^[[:space:]]*$/d') || true
+    # -ww: unlimited width.  Without it procps cuts each line at 80
+    # columns wherever COLUMNS=80 is set or no terminal answers (a
+    # pytest-xdist worker is both), and a forecast launched as
+    # `<venv>/bin/python <wrapper>.py out.json --prepared-root ...` keeps
+    # every flag this gate matches past column 80 -- the exact wrapper
+    # shape the 2026-08-29 blind spot was about, invisible again on the
+    # Linux release node (proof/node-reds-276).  The Windows arm below
+    # reads the whole CommandLine and never had this cut.
+    if ps -eww -o pid=,args= >/dev/null 2>&1; then
+        running=$(ps -eww -o pid=,args= 2>/dev/null | grep -E 'python' | grep -E "${PATTERNS}" | grep -v -E 'grep -E' | cut -c1-130 | sed '/^[[:space:]]*$/d') || true
     else
         query_failed=1
     fi
 else
+    # The CIM query answers CRLF.  The carriage return is deleted
+    # through tr's two-character escape, so this file carries no CR
+    # byte of its own (the line-ending hook refuses one) and the line
+    # feeds stay, which keeps the listing one process per line.
 running=$(powershell.exe -NoProfile -Command   "Get-CimInstance Win32_Process -Filter \"Name='python.exe'\" |
      Where-Object { \$_.CommandLine -match '${PATTERNS}' } |
-     ForEach-Object { \"\$(\$_.ProcessId)  \$(\$_.CommandLine.Substring(0,[Math]::Min(120,\$_.CommandLine.Length)))\" }"   2>/dev/null | tr -d '' | sed '/^[[:space:]]*$/d') || query_failed=1
+     ForEach-Object { \"\$(\$_.ProcessId)  \$(\$_.CommandLine.Substring(0,[Math]::Min(120,\$_.CommandLine.Length)))\" }"   2>/dev/null | tr -d '\r' | sed '/^[[:space:]]*$/d') || query_failed=1
 fi
 
 # FAIL CLOSED: a gate that passes when its instrument breaks is the very

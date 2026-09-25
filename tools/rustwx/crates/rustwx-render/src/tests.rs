@@ -568,12 +568,191 @@ fn published_georeference_survives_the_crop_on_a_regional_lambert_panel() {
     );
 }
 
-/// The residual refusal.  On every normal path the three passes now
-/// report their offsets and the rectangle follows the map, so nothing
-/// reaches the `plot_rect_describes_the_png == false` branch -- the
-/// condition is constructed directly here (a pass whose adjusted
-/// rectangle would fall outside the written image) to pin that it still
-/// withholds rather than publishes.
+/// A moved rectangle that overhangs the written image is clipped to the
+/// pixels that survive, and the extent is cut by the same fraction, so a
+/// point lands on the same pixel through the clipped pair as through the
+/// unclipped one.  Only a rectangle with no surviving pixel is `None`.
+#[test]
+fn a_moved_plot_rectangle_is_clipped_to_the_written_image() {
+    // Inside: unchanged, nothing cut.
+    let fits = clip_plot_rect_to_image(18, 46, 700, 500, 800, 600).unwrap();
+    assert_eq!((fits.x, fits.y, fits.width, fits.height), (18, 46, 700, 500));
+    assert_eq!((fits.left, fits.right, fits.top, fits.bottom), (0.0, 0.0, 0.0, 0.0));
+    // Recentred past the right edge by 186 px on an 800-px image: the
+    // right 168 px of the 764-px rectangle are gone.
+    let right = clip_plot_rect_to_image(18 + 186, 64, 764, 518, 800, 600).unwrap();
+    assert_eq!((right.x, right.y, right.width, right.height), (204, 64, 596, 518));
+    assert!((right.right - 168.0 / 763.0).abs() < 1e-12);
+    assert_eq!((right.left, right.top, right.bottom), (0.0, 0.0, 0.0));
+    // Cut on the left and the top: the origin is clamped to zero.
+    let corner = clip_plot_rect_to_image(-50, -10, 700, 500, 800, 600).unwrap();
+    assert_eq!((corner.x, corner.y, corner.width, corner.height), (0, 0, 650, 490));
+    assert!((corner.left - 50.0 / 699.0).abs() < 1e-12);
+    assert!((corner.top - 10.0 / 499.0).abs() < 1e-12);
+    // Nothing survives: entirely to the right, or a zero-size rectangle.
+    assert!(clip_plot_rect_to_image(800, 64, 764, 518, 800, 600).is_none());
+    assert!(clip_plot_rect_to_image(18, 64, 0, 518, 800, 600).is_none());
+}
+
+/// The published transform through a clipped rectangle is the transform
+/// through the unclipped one: the extent is cut by the fraction the
+/// rectangle was, so every surviving pixel keeps its projected
+/// coordinate.
+#[test]
+fn a_clipped_georeference_places_a_point_where_the_unclipped_one_did() {
+    let (request, _) = global_request_with_projected_domain();
+    let extent = request.projected_domain.as_ref().unwrap().extent.clone();
+    let unclipped = georeference::PanelGeoReference::new(
+        800,
+        600,
+        PlotRect { x: 204, y: 64, width: 764, height: 518 },
+        request.resolved_projection.unwrap(),
+        extent.clone(),
+        request.geographic_bounds.unwrap(),
+    );
+    let clip = clip_plot_rect_to_image(204, 64, 764, 518, 800, 600).unwrap();
+    let image_timing = RenderImageTiming {
+        map_x: clip.x,
+        map_y: clip.y,
+        map_w: clip.width,
+        map_h: clip.height,
+        image_w: 800,
+        image_h: 600,
+        map_clip_left: clip.left,
+        map_clip_right: clip.right,
+        map_clip_top: clip.top,
+        map_clip_bottom: clip.bottom,
+        plot_rect_describes_the_png: true,
+        ..RenderImageTiming::default()
+    };
+    let (published, reason) = panel_georeference_for_save(&request, &image_timing);
+    assert_eq!(reason, None);
+    let published = published.expect("a clipped rectangle with area publishes");
+    assert_eq!(published.plot_rect_px.width, 596);
+    assert!(published.extent.x_max < extent.x_max, "the extent's east edge was cut");
+    assert_eq!(published.extent.x_min, extent.x_min);
+    // A point in the surviving part of the map: the same pixel either
+    // way, to floating point.
+    let (x, y) = published.projection.project(30.0, -100.0);
+    let (ux, uy) = unclipped.projected_to_pixel(x, y).expect("inside the unclipped rectangle");
+    let (cx, cy) = published.projected_to_pixel(x, y).expect("inside the clipped rectangle");
+    assert!((ux - cx).abs() < 1e-6 && (uy - cy).abs() < 1e-6, "({ux},{uy}) vs ({cx},{cy})");
+}
+
+/// A regional grid drawn in a frame wider than its data: the production
+/// projected-grid frame recentres the content by more than the map's
+/// margin, so the moved rectangle overhangs the written image.  The
+/// sidecar was withheld for exactly this ("moved the map in a way its
+/// reported offset cannot describe") on a correctly drawn map.  Now the
+/// rectangle is clipped and the published transform lands on the drawn
+/// markers.
+#[test]
+fn a_recentred_grid_that_overhangs_the_image_still_publishes_a_clipped_georeference() {
+    let mut lat = Vec::new();
+    let mut lon = Vec::new();
+    for row in 0..16 {
+        for col in 0..26 {
+            lat.push(30.0 + row as f32);
+            lon.push(-110.0 + col as f32);
+        }
+    }
+    // The frame reaches 25 degrees east of the data.
+    let bounds = (-110.0, -60.0, 30.0, 45.0);
+    let mut options = ProjectedMapBuildOptions::from_bounds(bounds, 1.6)
+        .with_projection(ProjectionSpec::LambertConformal {
+            standard_parallel_1_deg: 33.0,
+            standard_parallel_2_deg: 45.0,
+            central_meridian_deg: -96.0,
+        })
+        .without_basemap();
+    options.domain.reference_latitude_deg = Some(39.0);
+    let projected = build_projected_map_with_options(&lat, &lon, &options).unwrap();
+    let resolved = resolved_projection_for_options(&lat, &lon, &options.domain).unwrap();
+    let shape = GridShape::new(26, 16).unwrap();
+    let values: Vec<f32> = (0..shape.len()).map(|value| value as f32).collect();
+    let grid = LatLonGrid::new(shape, lat.clone(), lon.clone()).unwrap();
+    let field = Field2D::new(ProductKey::named("georef_pixel_probe"), "K", grid, values).unwrap();
+    let mut request = MapRenderRequest::contour_only(field);
+    request.width = 800;
+    request.height = 600;
+    request.projected_domain = Some(projected.domain());
+    request.resolved_projection = Some(resolved);
+    request.geographic_bounds = Some(bounds);
+    request.domain_frame = Some(DomainFrame::model_data_default());
+    // Three points inside the frame the grid draws.
+    let points = [(33.0, -105.0), (36.5, -97.0), (34.0, -92.5)];
+    let colors = [
+        Color::rgba(255, 0, 255, 255),
+        Color::rgba(0, 200, 0, 255),
+        Color::rgba(255, 140, 0, 255),
+    ];
+    let projected_points =
+        project_geographic_points_with_options(&lat, &lon, &options, &points).unwrap();
+    for ((x, y), color) in projected_points.iter().zip(colors) {
+        request.projected_points.push(ProjectedPointOverlay {
+            x: *x,
+            y: *y,
+            color,
+            radius_px: 4,
+            width_px: 3,
+            shape: ProjectedMarkerShape::Plus,
+        });
+    }
+    let path = std::env::temp_dir().join(format!(
+        "rustwx-georef-overhang-{}.png",
+        std::process::id()
+    ));
+    let timing = save_png_profile(&request, &path).unwrap();
+    let final_image = image::load_from_memory_with_format(
+        &std::fs::read(&path).unwrap(),
+        ImageFormat::Png,
+    )
+    .unwrap()
+    .to_rgba8();
+    let _ = std::fs::remove_file(&path);
+
+    let image_timing = &timing.png_timing.image_timing;
+    // The tester tested: the recentre must have moved the map past the
+    // image's edge, or this panel is not the case this test is about.
+    assert!(
+        image_timing.map_clip_right > 0.05 && image_timing.postprocess_offset_x > 0,
+        "the recentre did not push the map past the image's edge (clip right {}, offset {}), \
+         so this test is not measuring the clip -- change the frame until it does",
+        image_timing.map_clip_right,
+        image_timing.postprocess_offset_x
+    );
+    assert!(image_timing.plot_rect_describes_the_png);
+    assert!(
+        image_timing.map_x + image_timing.map_w <= image_timing.image_w,
+        "the clipped rectangle must lie inside the written image"
+    );
+    let georeference = timing
+        .georeference
+        .expect("a recentred regional panel whose rectangle overhangs must still publish");
+    assert_eq!(
+        (georeference.image_width_px, georeference.image_height_px),
+        (final_image.width(), final_image.height())
+    );
+    let mut worst = 0.0f64;
+    for (point, color) in points.iter().zip(colors) {
+        let truth = marker_centroid(&final_image, color)
+            .unwrap_or_else(|| panic!("marker {color:?} not found in the written PNG"));
+        let (px, py) = georeference
+            .lonlat_to_pixel(point.0, point.1)
+            .expect("a point inside the surviving map must land on a pixel");
+        worst = worst.max(((px - truth.0).powi(2) + (py - truth.1).powi(2)).sqrt());
+    }
+    assert!(
+        worst < 2.0,
+        "published transform misses the drawn markers by {worst} px"
+    );
+}
+
+/// The residual refusal: a rectangle with no surviving pixel.  On every
+/// other path the passes report their offsets and the rectangle follows
+/// the map, clipped where it overhangs, so the
+/// `plot_rect_describes_the_png == false` branch is constructed directly
+/// here to pin that it still withholds rather than publishes.
 #[test]
 fn an_unreportable_map_move_still_withholds_the_georeference() {
     let (request, _) = global_request_with_projected_domain();

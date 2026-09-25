@@ -73,6 +73,9 @@ def test_default_source_discovery_records_exact_authority_and_preserves_files(tm
     result, receipt = recover_supplied_soil(path, fields, {'START_DATE': '2026-09-12_00:00:00'})
     assert calls[0][1].name == 'met_em.d01.2026-09-12_00_00_00.nc'
     assert set(receipt['input_files']) == {'wrfinput', 'met_em', 'authority'}
+    assert set(receipt['source_selection']) == {'met_em', 'authority'}
+    assert 'met_em.d01.2026-09-12_00_00_00.nc' in receipt['source_selection']['met_em']
+    assert 'Vtable' in receipt['source_selection']['authority']
     assert receipt['authority'] == calls[0][2]
     assert all(len(item['sha256']) == 64 for item in receipt['input_files'].values())
     np.testing.assert_array_equal(result['SMOIS'], .25)
@@ -141,3 +144,62 @@ def test_supervised_worker_keeps_original_source_directory(tmp_path, monkeypatch
     command = commands[0]
     assert Path(command[command.index('--soil-source') + 1]) == canonical_path(source)
     assert '--_worker' in command and '--_output-owner' in command
+
+
+def test_a_reader_refusal_names_the_two_source_files_this_run_read(tmp_path, monkeypatch):
+    """The reported refusal named the wrfinput and neither source file.
+
+    A user pointing `--soil-source` at a WPS directory holding several
+    cycles and several domains cannot check a layer refusal against the
+    right pair unless the pair is named, together with the rule that
+    picked it.  The reader's own sentence is carried through whole.
+    """
+
+    from gpuwm import netcdf_bridge
+    _source(tmp_path)
+    path = tmp_path / 'wrfinput_d01'
+    path.write_bytes(b'wrf')
+
+    def refuse(wrfinput, met_em, authority):
+        raise netcdf_bridge.NetcdfDecodeError(
+            f'Source-layer soil recovery failed for {wrfinput}: rw_netcdf: '
+            'SOILM: the source stacks 6 soil layer(s) and the authority '
+            'declares only 3 layer(s)')
+
+    monkeypatch.setattr(netcdf_bridge, 'recover_wrf_soil', refuse)
+    with pytest.raises(ValueError) as refused:
+        recover_supplied_soil(path, _fields(), {'START_DATE': '2026-09-12_00:00:00'})
+    text = str(refused.value)
+    assert 'met_em.d01.2026-09-12_00_00_00.nc' in text
+    assert '2026-09-12_00:00:00' in text
+    assert 'Vtable' in text
+    assert 'stacks 6 soil layer(s)' in text
+    # The way out of THIS refusal is the declaration, not the search:
+    # the user pointing --soil-source at the producing directory has
+    # already done everything the discovery remedy asks for.
+    assert 'declares 2 source soil layer(s)' in text
+    assert 'ncdump -h' in text and 'SOIL_LEVELS' in text
+    assert 'wrf-soil-authority.d01.json' in text
+    assert 'Keep the matching first met_em file' not in text
+
+
+def test_a_refusal_about_the_wrong_files_keeps_the_discovery_remedy(tmp_path, monkeypatch):
+    """A coordinate refusal IS answered by finding the right pair."""
+
+    from gpuwm import netcdf_bridge
+    _source(tmp_path)
+    path = tmp_path / 'wrfinput_d01'
+    path.write_bytes(b'wrf')
+
+    def refuse(wrfinput, met_em, authority):
+        raise netcdf_bridge.NetcdfDecodeError(
+            f'Source-layer soil recovery failed for {wrfinput}: rw_netcdf: '
+            'source and target horizontal coordinates differ: XLAT_M/XLAT')
+
+    monkeypatch.setattr(netcdf_bridge, 'recover_wrf_soil', refuse)
+    with pytest.raises(ValueError) as refused:
+        recover_supplied_soil(path, _fields(), {'START_DATE': '2026-09-12_00:00:00'})
+    text = str(refused.value)
+    assert 'XLAT_M/XLAT' in text
+    assert '--soil-source DIR' in text
+    assert 'ncdump -h' not in text

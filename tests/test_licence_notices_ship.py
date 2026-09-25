@@ -37,8 +37,14 @@ WHAT THIS FILE ASSERTS
 6.  Every first-party crate carrying a third-party licence marker, and every
     upstream Fortran project a first-party crate cites, is named in the NOTICE.
     This is the check that would have caught NumPy and MPAS.
-7.  The LGPL gamma transcription deleted at 2.7.0 stays deleted, and so do the
-    two glibc-only libm fragments removed with it.
+7.  The earlier Grell-Freitas gamma replaced at 2.7.0 stays deleted, and so
+    do the two glibc-only libm fragments removed at the same release.
+8.  No shipped licence text, kernel header or document describes the
+    Grell-Freitas gamma in ``glibc_flt32.cuh`` as a transcription, as LGPL,
+    as FSF copyright or as glibc's work.  Both gammas, the earlier one and
+    the current one, are this project's own work (ruling of 2026-09-12); an
+    earlier development record said otherwise and was wrong, and the claim
+    came back into the tree three times from that record before this pin.
 
 It reads text.  No CUDA, no compiler, no network, no device.
 """
@@ -468,26 +474,27 @@ def test_every_upstream_a_first_party_crate_transcribes_is_notified() -> None:
 # ---------------------------------------------------------------------------
 # 6.  what 2.7.0 removed stays removed
 # ---------------------------------------------------------------------------
-_LGPL_GAMMA_DEFINITION = re.compile(
+_EARLIER_GAMMA_DEFINITION = re.compile(
     r"^\s*(?:__device__|static|float|double)\s+.*"
     r"\b(gfk_gammaf_positive|gfk_gamma_product|gfk_lgamma_pos)\s*\(", re.M)
 
 
-def test_the_lgpl_gamma_transcription_stays_deleted() -> None:
-    """glibc's gammaf_positive / __gamma_productf are FSF-copyright and
-    LGPL-2.1-or-later with no permissive upstream.  No notice cures that; only
-    deletion does, and only staying deleted keeps it cured."""
+def test_the_earlier_gamma_stays_deleted() -> None:
+    """The earlier gamma returned glibc's tgammaf words, rounding errors
+    included, and the root NOTICE records its removal and that of its lgammaf
+    helper.  Its return would bring the errors back and make that record
+    wrong."""
     _requires_source_tree()
     back = [p.name for p in _kernel_sources()
-            if _LGPL_GAMMA_DEFINITION.search(_read(p))]
-    assert back == [], f"the LGPL gamma transcription is back in: {back}"
+            if _EARLIER_GAMMA_DEFINITION.search(_read(p))]
+    assert back == [], f"the earlier gamma is back in: {back}"
 
     fingerprints = ("exp2_adj", "x_adj_mant", "gamma_coeff", "0xBB360B61",
                     "0x3A500D01")
     for path in _kernel_sources():
         text = _decommented(_read(path))
         hit = [token for token in fingerprints if token in text]
-        assert hit == [], f"{path.name} carries glibc gamma fingerprints: {hit}"
+        assert hit == [], f"{path.name} carries the earlier gamma's fingerprints: {hit}"
 
 
 def test_the_two_glibc_only_libm_fragments_stay_removed() -> None:
@@ -517,3 +524,85 @@ def test_the_two_glibc_only_libm_fragments_stay_removed() -> None:
     assert "if ix == 0:" not in body, (
         "gpuwm/core/noahmp_libm.py's tanhf has taken glibc's redundant zero "
         "guard back")
+
+
+# ---------------------------------------------------------------------------
+# 8. The Grell-Freitas gamma is this project's own work
+# ---------------------------------------------------------------------------
+#
+# The 2.7.0 development record described the earlier gamma in
+# glibc_flt32.cuh as a line-for-line transcription of glibc's tgammaf under
+# the LGPL.  That finding was wrong: both the earlier gamma and the current
+# one were written here, under this project's licence.  The wrong record was
+# copied into NOTICE, the kernel headers, the gamma note and the tests, and
+# every later reader of the tree re-derived it from those copies; the claim
+# was removed and returned three times before 2.7.6.  This pin makes the
+# fourth return a red test instead of a rediscovery.  Earlier releases'
+# changelog entries are history and are not read here.
+
+_GAMMA_SURFACES = (
+    "NOTICE", "README.md", "PROVENANCE.md", "docs/gf_gamma_known_delta.md",
+    "gpuwm/core/kernels/LICENSE-third-party.txt",
+    "gpuwm/core/kernels/glibc_flt32.cuh", "gpuwm/core/kernels/gf.cu",
+)
+_GAMMA_SURFACE_GLOBS = ("licenses/*", "gpuwm-data/licenses/*",
+                        "docs/public/**/*.md", "docs/manual/*.md")
+
+# Phrases that only ever appeared in the withdrawn description.
+_WITHDRAWN_PHRASES = (
+    "transcription of glibc's own", "transcription of glibc's tgammaf",
+    "glibc's own tgammaf", "lgpl gamma", "gamma transcription",
+    "e_gammaf_r.c", "gamma_productf.c", "glibc-authored", "glibc-derived gamma",
+)
+
+# A sentence that names the Grell-Freitas gamma and, in the same breath,
+# calls it transcribed, LGPL, FSF copyright or glibc's work.
+_GAMMA_NAMES = re.compile(
+    r"(gfk_tgamma|gfk_gammaf_positive|gfk_gamma_product|gammaf_positive|"
+    r"gamma_product|grell-freitas gamma|gf gamma|own gamma|earlier gamma|"
+    r"current gamma|the gamma in glibc_flt32|tgamma wrapper)")
+_PROVENANCE_CLAIMS = re.compile(
+    r"(transcri\w*|\blgpl\b|\bfsf\b|glibc's own work|glibc-authored|"
+    r"derived from glibc|glibc-derived)")
+
+# A sentence that names the gamma next to one of those words in order to deny
+# the claim, or to describe the helper routines it once called, is not a hit.
+_DENIALS = ("not a transcription", "own work", "own gamma", "arwen's earlier gamma",
+            "arwen's current gamma", "whose only caller", "withdrawn",
+            "that description was wrong")
+
+
+def _gamma_surface_files() -> list[pathlib.Path]:
+    files = [ROOT / rel for rel in _GAMMA_SURFACES]
+    for pattern in _GAMMA_SURFACE_GLOBS:
+        files.extend(p for p in ROOT.glob(pattern) if p.is_file())
+    return sorted(set(files))
+
+
+def _prose_sentences(text: str):
+    """Sentences of a text or a comment block, with comment markers dropped."""
+    lines = [re.sub(r"^\s*(//|#|\*)\s?", "", line) for line in text.splitlines()]
+    flat = re.sub(r"\s+", " ", " ".join(lines))
+    return [s.strip() for s in re.split(r"(?<=[.!?])\s+", flat) if s.strip()]
+
+
+def test_the_grell_freitas_gamma_is_never_described_as_glibc_work() -> None:
+    """Assertion 8: the withdrawn description does not come back anywhere
+    a user or a licence reader can see it."""
+    _requires_source_tree()
+    hits = []
+    for path in _gamma_surface_files():
+        text = _read(path)
+        lowered = text.lower()
+        for phrase in _WITHDRAWN_PHRASES:
+            if phrase in lowered:
+                hits.append(f"{path.relative_to(ROOT).as_posix()}: phrase {phrase!r}")
+        for sentence in _prose_sentences(text):
+            low = sentence.lower()
+            if _GAMMA_NAMES.search(low) and _PROVENANCE_CLAIMS.search(low):
+                if any(marker in low for marker in _DENIALS):
+                    continue  # a sentence saying the opposite, or the retraction
+                hits.append(f"{path.relative_to(ROOT).as_posix()}: {sentence[:160]!r}")
+    assert hits == [], (
+        "the Grell-Freitas gamma is this project's own work (ruling of "
+        "2026-09-12); shipped text describes it otherwise:\n" + "\n".join(hits))

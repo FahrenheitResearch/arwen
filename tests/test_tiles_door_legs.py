@@ -132,7 +132,7 @@ def test_leg_a_is_a_streamed_parent_over_a_resident_child() -> None:
 
 
 def test_leg_b_is_a_resident_parent_over_a_streamed_child() -> None:
-    """The roles-flipped twin, and the shape the round-2 rider was for.
+    """The roles-flipped twin, and the shape the rider was added for.
 
     The tree-wide table is OFF and carries only the budget: a per-domain
     table may not name the card, so that is the only place the budget can

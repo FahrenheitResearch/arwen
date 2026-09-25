@@ -62,7 +62,11 @@ def test_actual_874_by_574_geometry_keeps_science_and_moves_only_ingest_off_gpu(
     assert cpu.preprocess_backend == cpu.ingest.preprocess_backend == "cpu"
     assert cpu.ingest_envelope_bytes == cpu.ingest.peak_envelope_bytes == 0
     assert cpu.ingest.context_bytes == cpu.ingest.device_overhead_bytes == 0
-    assert cuda.ingest_envelope_bytes > 12 * GIB
+    # 12 GiB was read on Windows, where the ingest envelope carries the
+    # 1.39 GiB probe overhead platform_projection_constants adds on that
+    # platform alone; the itemized envelope beneath it is 11.55 GiB on
+    # both (proof/node-reds-276), and that is the figure this holds.
+    assert cuda.ingest_envelope_bytes - cuda.ingest.device_overhead_bytes > 11.5 * GIB
     assert cuda.ingest_envelope_bytes > machine.vram_bytes - pf.EXTERNAL_MARGIN_BYTES
     assert cpu.forecast_envelope_bytes == cuda.forecast_envelope_bytes
     assert cpu.forecast_envelope_bytes <= machine.vram_bytes - pf.EXTERNAL_MARGIN_BYTES

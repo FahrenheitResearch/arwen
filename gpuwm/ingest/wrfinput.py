@@ -1367,19 +1367,29 @@ def _check_initial_boundary_pair(restored, tables, width, *, layouts=None):
     layouts = _WRFBDY_FIELDS if layouts is None else layouts
     raw = restored.raw
     wrf, _ = _wrf_and_gpuwm_mass_weights(restored, np.asarray(raw["MU"], dtype=np.float32))
+    moist_theta = int(restored.global_attributes["USE_THETA_M"]) == 1
     for key, (name, *_dimensions) in layouts.items():
         field = np.asarray(raw[name], dtype=np.float32)
-        if key == "theta" and int(restored.global_attributes["USE_THETA_M"]) == 1:
-            # real.exe writes initial T dry, but couples its runtime moist
-            # theta into T_B*. Reconstruct the actual writer's representation.
-            factor = np.float32(1.0) + _WRF_RVOVRD * np.asarray(raw["QVAPOR"], np.float32)
-            field = np.asarray(factor * (field + np.float32(300.0))
-                               - np.float32(300.0), dtype=np.float32)
+        other = None
+        if key == "theta":
+            # WRF 4.0 through 4.7.1 real.exe writes wrfinput T dry under
+            # both settings (Registry.EM_COMMON:209 maps th_phy_m_t0 to
+            # "T", saved at module_initialize_real.F:4913 before the
+            # conversion) and couples its runtime theta into T_B*
+            # (real_em.F:872): moist theta when use_theta_m=1
+            # (module_initialize_real.F:4923-4932, this file's own
+            # QVAPOR).  Reconstruct the writer's representation from T
+            # and QVAPOR, and keep the other one to say what the boundary
+            # holds instead when the two files disagree.
+            dry, moist = field, _moist_theta_from_dry(field, raw["QVAPOR"])
+            field, other = (moist, dry) if moist_theta else (dry, moist)
         if key == "mu":
             field = field[None]
         else:
-            field = np.asarray(
-                field * _boundary_mass_weight(wrf, key), dtype=np.float32)
+            weight = _boundary_mass_weight(wrf, key)
+            field = np.asarray(field * weight, dtype=np.float32)
+            if other is not None:
+                other = np.asarray(other * weight, dtype=np.float32)
             if key in ("u", "v"):
                 field = np.asarray(field / np.asarray(raw["MAPFAC_" + name], dtype=np.float32)[None], dtype=np.float32)
         for side, (actual, _tendency) in tables[key].items():
@@ -1389,7 +1399,70 @@ def _check_initial_boundary_pair(restored, tables, width, *, layouts=None):
             # treating a changed boundary field as a new initial state.
             tolerance = 4.0 * np.abs(np.spacing(expected)) + 1e-6
             if actual.shape != expected.shape or np.any(np.abs(actual - expected) > tolerance):
-                raise ValueError(f"wrfbdy {name} {side} does not match initial {restored.path.name}; use the pair produced by the same real.exe run")
+                raise ValueError(_initial_boundary_refusal(
+                    restored, name, side, actual, expected, tolerance,
+                    None if other is None else _boundary_strip(other, side, width),
+                    moist_theta))
+
+
+def _moist_theta_from_dry(theta, qv):
+    """WRF's theta_m - T0 from theta - T0, in real.exe's FP32 operation order.
+
+    module_initialize_real.F:4930 (WRF 4.7.1; v4.6.1 :4909):
+    ``t_2 = (t_2 + T0) * (1. + (R_v/R_d) * qv) - T0``.
+    """
+    factor = np.float32(1.0) + _WRF_RVOVRD * np.asarray(qv, np.float32)
+    return np.asarray(factor * (np.asarray(theta, np.float32) + np.float32(300.0))
+                      - np.float32(300.0), dtype=np.float32)
+
+
+def _initial_boundary_refusal(restored, name, side, actual, expected, tolerance,
+                              other, moist_theta):
+    """Name what was compared, how far apart the files are, and what the
+    boundary holds instead, so a mixed pair and a representation mismatch
+    read differently at the terminal."""
+    head = f"wrfbdy {name} {side} does not match initial {restored.path.name}"
+    tail = "use the pair produced by the same real.exe run"
+    if actual.shape != expected.shape:
+        return (f"{head}: boundary table shape {actual.shape} != initial "
+                f"strip {expected.shape}; {tail}")
+    difference = np.abs(actual.astype(np.float64) - expected.astype(np.float64))
+    # Scaled by the strip's largest |value|, not point by point: theta-300
+    # crosses zero inside a column, so a per-point ratio would be dominated
+    # by whichever point sits nearest zero.
+    scale = max(float(np.abs(expected.astype(np.float64)).max()), 1e-30)
+    size = (f"{int(np.count_nonzero(difference > tolerance))} of {difference.size} "
+            f"points differ, max |difference| {difference.max():.6g} "
+            f"({difference.max() / scale:.3g} of the largest value)")
+    if other is None:
+        return f"{head}: {size}; {tail}"
+    if moist_theta:
+        compared = ("USE_THETA_M=1 on both files: wrfinput T (dry theta-300, as "
+                    "WRF 4.x real.exe writes it) was converted to moist theta with "
+                    "wrfinput QVAPOR, (T+300)*(1+Rv/Rd*QVAPOR)-300 as real.exe does "
+                    "before coupling T_B*, coupled with dry column mass and compared "
+                    "with wrfbdy T_B*")
+        other_name = "DRY"
+        writers = ("WRF 4.0 to 4.7.1 real.exe never writes that under use_theta_m=1 "
+                   "(its wrfinput carries THM and its T_B* holds moist theta); WRF "
+                   "3.7 to 3.9.1.1 real.exe always does (use_theta_m entered the "
+                   "namelist in 3.7; no THM variable; the solver converted to moist "
+                   "theta at run time)")
+    else:
+        compared = ("USE_THETA_M=0 on both files: wrfinput T (dry theta-300) was "
+                    "coupled with dry column mass and compared with wrfbdy T_B* "
+                    "as dry theta")
+        other_name = "MOIST"
+        writers = "no stock real.exe writes that under use_theta_m=0"
+    other_difference = np.abs(actual.astype(np.float64) - other.astype(np.float64))
+    if not np.any(other_difference > 4.0 * np.abs(np.spacing(other)) + 1e-6):
+        return (f"{head}: {compared}; {size}. The boundary equals the {other_name} "
+                f"coupling of this wrfinput T at every point instead: {writers}. "
+                f"Re-run real.exe so both files come from one run whose boundary "
+                f"representation matches its USE_THETA_M")
+    return (f"{head}: {compared}; {size}; the boundary is not the {other_name} "
+            f"coupling of this T either (max |difference| {other_difference.max():.6g}), "
+            f"so T or QVAPOR differ between the two files; {tail}")
 
 
 def _check_boundary_identity(dataset, restored):

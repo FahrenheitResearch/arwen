@@ -27,6 +27,8 @@ from pathlib import Path
 
 import pytest
 
+from conftest import requires_cupy
+
 from gpuwm import go_cli, provenance, run_stamp
 from gpuwm.cli import main as cli_main
 
@@ -351,6 +353,16 @@ def test_the_default_emission_is_what_the_default_runner_accepts(
     assert cli_main(["go", str(out), "--dry-run"]) == 0
 
 
+# NEEDS CUPY INSTALLED, and opens no device: `gpuwm go --dry-run`
+# still returns 0 without it, but the door writes a stage 5 warning to
+# stderr naming the absent module, and the sentence this test holds is
+# that stderr carries NOTHING beyond the two documented startup
+# notices. Measured: `_without_startup_notices(captured.err, "go")`
+# reads "go: WARNING -- this install cannot run stage 5 (forecast):
+# cupy (cupy-cuda12x / cupy-cuda13x) is not installed.", so the
+# assertion fails on that warning rather than on anything about a
+# shipped physics profile, which is this test's actual subject.
+@requires_cupy
 def test_a_config_with_no_shipped_profile_runs_with_status_stated(
         tmp_path, capsys, monkeypatch):
     """Converted (owner ruling 2026-07-31): the chain's last stage runs
@@ -790,6 +802,14 @@ class _FakeCompleted:
         self.stderr = stderr
 
 
+# NEEDS CUPY INSTALLED, and opens no device.  The chain tests marked below
+# run the real `gpuwm go` door; without the array library it refuses
+# before the fetch stage (`this command needs cupy (cupy-cuda12x /
+# cupy-cuda13x), which this install does not have`) and returns 2, so the
+# stage outputs and refusal sentences these tests hold are never reached.
+# Measured on the Linux release node: red without cupy, green with it
+# (proof/node-reds-276).
+@requires_cupy
 @pytest.mark.parametrize("failing_index, failing_label", [
     (0, "authority"),
     (1, "fetch"),
@@ -836,6 +856,7 @@ def test_a_failing_stage_replays_its_output_and_stops(
     assert "chatty success" not in printed
 
 
+@requires_cupy
 def test_a_failed_chain_says_what_it_left_on_disk(
         tmp_path, capsys, monkeypatch, gfs_config, staged_geog):
     """D-05.  A failed prepare leaves a scratch tree of a few hundred MB
@@ -878,6 +899,7 @@ def test_a_failed_chain_says_what_it_left_on_disk(
     assert (run_root / "scratch.bin").exists()
 
 
+@requires_cupy
 def test_outdir_and_data_dir_naming_one_directory_is_refused(
         tmp_path, capsys, gfs_config):
     """E-07.  The default puts the download inside the run root, so only
@@ -901,6 +923,7 @@ def test_outdir_and_data_dir_naming_one_directory_is_refused(
     assert plan["root"] != plan["data"]
 
 
+@requires_cupy
 def test_a_succeeding_chain_reports_one_line_per_stage(tmp_path, capsys,
                                                        monkeypatch,
                                                        staged_geog,
@@ -959,6 +982,10 @@ def test_a_succeeding_chain_reports_one_line_per_stage(tmp_path, capsys,
     assert "go: rendered " in printed
 
 
+# NEEDS CUPY INSTALLED, and opens no device: this test runs `gpuwm go` to
+# completion; without cupy the door refuses ahead of the fetch stage and
+# returns 2.
+@requires_cupy
 def test_a_passing_stages_note_survives_the_output_capture(
         tmp_path, capsys, monkeypatch, staged_geog, gfs_config):
     """A skipped product must not become a silent success one level up.
@@ -1011,6 +1038,10 @@ def test_a_passing_stages_note_survives_the_output_capture(
         "a passing stage's ordinary output still stays behind --explain"
 
 
+# NEEDS CUPY INSTALLED, and opens no device: this test replays every stage
+# of `gpuwm go`; without cupy the door refuses before the first one and
+# returns 2.
+@requires_cupy
 def test_explain_replays_every_stage(tmp_path, capsys, monkeypatch,
                                      staged_geog,
                                      gfs_config):
@@ -1331,6 +1362,7 @@ def test_table_route_cache_reuses_its_own_real_manifest_schema(tmp_path):
     assert go_cli.managed_download_dir(tmp_path, request) != cache
 
 
+@requires_cupy
 def test_a_second_go_into_the_same_tree_is_refused_in_its_own_words(
         tmp_path, capsys, gfs_config, monkeypatch):
     """Re-running the command is the second thing anyone does.

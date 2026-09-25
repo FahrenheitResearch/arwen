@@ -48,10 +48,10 @@ log10f reductions (FDLIBM, Sun Microsystems) appear in mynn_dmp_sibling.cu,
 mynn_pbl.cu, noahmp_bareflux.cu, noahmp_energy.cu, noahmp_fluxprep.cu,
 noahmp_glacier.cu, noahmp_leaves.cu, noahmp_vegeflux.cu and ruc.cu.
 glibc_flt32.cuh is NOT on that second list: it carried FDLIBM's expm1f and
-lgammaf through 2.6.5 and both were deleted at 2.6.6 with the gamma block
-that was their only caller.  lgammaf is not on the first list either --
-that deletion removed the only transcription of e_lgammaf_r.c anywhere in
-this repository.  Their Python counterparts are in
+lgammaf through 2.6.5 as helpers of ArWen's earlier gamma, and both were
+removed at 2.6.6 when that gamma was replaced and nothing called them any
+more.  lgammaf is not on the first list either: that removal took out the
+only transcription of e_lgammaf_r.c anywhere in this repository.  Their Python counterparts are in
 gpuwm/core/noahmp_libm.py, gpuwm/core/mynn_pbl.py and gpuwm/core/ruc.py, each
 of which carries this notice in its own header.
 tests/test_cuda_libm_table_copies.py enumerates the table copies and keeps

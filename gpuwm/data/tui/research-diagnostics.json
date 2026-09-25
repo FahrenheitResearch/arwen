@@ -2,8 +2,8 @@
   "schema": "arwen.research.diagnostics.v1",
   "scope": "A reviewed subset of products supported by the ArWen WRF-history import path. Product membership is source-capability metadata, not forecast-skill or GPU qualification. The renderer still checks actual saved fields and complete time windows.",
   "authority": {
-    "tools/rustwx/crates/rw-wrfbatch/src/wrf_process.rs": "326874558ca350b2dc74356673f75f533ae7808fe5d8c4cd9823255927b5dfee",
-    "tools/rustwx/crates/rw-wrfbatch/src/local_import.rs": "58a334934bb1872a19f57c9644d71b984465c8434c0d4f20eb455a56e08e31fb",
+    "tools/rustwx/crates/rw-wrfbatch/src/wrf_process.rs": "a81294e9d7adc6849999cf1d2ce849aac55d0722a5df1433a9c1eb76e4212fc5",
+    "tools/rustwx/crates/rw-wrfbatch/src/local_import.rs": "e50760e9de54703272358baf586ca583789e3a1089e61b10211f663fd6ec2efe",
     "tools/rustwx/crates/rustwx-products/src/windowed.rs": "21b66ff8a1040deec9dfa1b0eb4664e9842f5813454e8ccef710bdf40eebe42b"
   },
   "products": {

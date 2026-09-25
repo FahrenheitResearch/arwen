@@ -132,13 +132,30 @@ pub struct RenderImageTiming {
     /// crop, the horizontal recentre, and the optional vertical trim.
     /// Each of them reports the offset it applied and the save path folds
     /// that offset back into `map_x`/`map_y`, so the rectangle FOLLOWS the
-    /// map and this stays true on every normal path.  It goes false only
-    /// when the adjusted rectangle would fall outside the written image --
-    /// a pass cut into the map itself -- because publishing that rectangle
-    /// would put an annotation tens of pixels out; the flag lets a
-    /// consumer refuse instead of guessing.
+    /// map.  Where the moved rectangle overhangs the written image (a
+    /// regional grid drawn in a frame wider than its data is recentred by
+    /// more than its margin; a crop or trim cuts into the padded
+    /// viewport), the rectangle is CLIPPED to the pixels that survive and
+    /// the four `map_clip_*` fractions below say how much of each side
+    /// went, so the projected extent can be cut by the same fraction and
+    /// the published transform still describes the file.  This goes false
+    /// only when no pixel of the rectangle survives inside the written
+    /// image, because a rectangle with no area places nothing; the flag
+    /// lets a consumer refuse instead of guessing.
     #[serde(default)]
     pub plot_rect_describes_the_png: bool,
+    /// The fraction of the UNCLIPPED map rectangle's pixel span (its
+    /// width or height less one, the span `PanelGeoReference` maps the
+    /// extent onto) that a post-render pass cut off each side.  All zero
+    /// when the whole rectangle is inside the written image.
+    #[serde(default)]
+    pub map_clip_left: f64,
+    #[serde(default)]
+    pub map_clip_right: f64,
+    #[serde(default)]
+    pub map_clip_top: f64,
+    #[serde(default)]
+    pub map_clip_bottom: f64,
     /// The written image's own size.
     ///
     /// gpuwm addition (VENDOR.md): the map-viewport crop and the vertical
@@ -5113,9 +5130,13 @@ fn render_to_image_profile_inner(
         // Set true here because nothing in this function moves the map
         // after the layout; `save_png_profile_with_options_and_style`
         // folds each post-render pass's reported offset into the
-        // rectangle and clears this only when the adjusted rectangle
-        // would fall outside the written image.
+        // rectangle, clips the rectangle to the pixels that survive in
+        // the written image, and clears this only when none survive.
         plot_rect_describes_the_png: true,
+        map_clip_left: 0.0,
+        map_clip_right: 0.0,
+        map_clip_top: 0.0,
+        map_clip_bottom: 0.0,
         image_w: img.width(),
         image_h: img.height(),
         postprocess_offset_x: 0,

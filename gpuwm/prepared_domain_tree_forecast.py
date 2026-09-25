@@ -38,8 +38,42 @@ import numpy as np
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
-if str(REPOSITORY_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPOSITORY_ROOT))
+
+
+def _names_this_runners_tree(entry: str) -> bool:
+    """Whether one ``sys.path`` entry is the tree this module came from."""
+    if not entry:
+        return False
+    try:
+        return Path(entry).resolve() == REPOSITORY_ROOT
+    except OSError:
+        return False
+
+
+# THE TREE THIS RUNNER WAS LOADED FROM GOES FIRST, under every spelling of
+# it.  ``python -m gpuwm.prepared_domain_tree_forecast`` -- the line
+# ``gpuwm sim --print-command`` prints for a caller to drive itself -- puts
+# the CALLER'S DIRECTORY at ``sys.path[0]``.  Run from a directory holding
+# an older checkout's ``tilestream/``, that directory supplied this
+# runner's streaming restart types instead of the ones shipped beside this
+# file, and a resume died on
+#   ImportError: cannot import name 'ValidatedStreamedRestart'
+#   from 'tilestream.restart_stream'
+# out of gpuwm/io/restart.py, with a forecast's checkpoint on disk and no
+# way to continue it.  gpuwm and tilestream are one distribution: a run
+# that takes them from two trees is a mismatched pair, not a choice.
+#
+# The membership test here used to be a STRING compare against sys.path,
+# so the insert was skipped exactly when the install path happened to be
+# spelled the way ``site`` spelled it -- and a symlink anywhere above the
+# environment was the difference between a resume that worked and that
+# ImportError.  Resolving both sides removes that coincidence, and taking
+# every spelling out before re-inserting puts the pair ahead of the
+# caller's directory rather than merely on the path.  An empty entry (the
+# caller's own directory) is left where it is, one place further down.
+sys.path[:] = [entry for entry in sys.path
+               if not _names_this_runners_tree(entry)]
+sys.path.insert(0, str(REPOSITORY_ROOT))
 
 from gpuwm.forecast_initialization import TreeInitialization  # noqa: E402
 from gpuwm import __version__  # noqa: E402
@@ -61,6 +95,8 @@ from gpuwm.aerosol_source_receipt import (  # noqa: E402
     aerosol_source_report_entries,
 )
 from gpuwm.experiment import load_experiment  # noqa: E402
+from gpuwm.vertical_adaptation import (  # noqa: E402
+    adopt_prepared_vertical, prepared_domain_coordinate_refusal)
 from gpuwm.kernel_compile_notice import (  # noqa: E402
     COMPILING_STATUS, current_compute_capability, kernel_cache_state,
     scan_kernel_cache,
@@ -926,6 +962,20 @@ def _validate_domain_receipt(
         raise RuntimeError("domain artifact path escaped its bundle")
 
 
+def _announce_adopted_coordinate(sentence: str) -> None:
+    """Say, once, which coordinate this forecast is actually integrating."""
+
+    from gpuwm.explain import warn
+
+    warn(sentence,
+         "The prepared inputs carry the hybrid coefficient arrays "
+         "themselves, the way WRF's wrfinput carries C3H/C4H, so the model "
+         "integrates them rather than rebuilding from the configuration.  "
+         "The preparation derived this etac from the terrain the run can "
+         "touch because the configured one could not order every column; "
+         "its receipt names the governing column.  p_top is unchanged.")
+
+
 def _validate_vertical(reader: PreparedCacheReader, exp, grid_id: int) -> None:
     metadata = reader.header.get("metadata")
     if not isinstance(metadata, dict):
@@ -943,6 +993,18 @@ def _validate_vertical(reader: PreparedCacheReader, exp, grid_id: int) -> None:
         exp.vertical.p_top
     ):
         raise ValueError(f"d{grid_id:02d} prepared p_top differs from the experiment")
+    # The cache restores its OWN c1f..c4h, so the etac beside them is what
+    # the model will integrate.  Hold it to the one this run adopted, and
+    # hold that one to this domain's own prepared columns: a coordinate
+    # that orders the parent and not the nest is exactly the disagreement
+    # the adoption exists to make impossible.
+    refusal = prepared_domain_coordinate_refusal(
+        label=f"d{grid_id:02d}", vertical=exp.vertical,
+        coord_scalars=metadata.get("coord_scalars") or {},
+        base_arrays={"mub": reader.read_array("base/mub")}
+        if "base/mub" in reader.arrays else {})
+    if refusal is not None:
+        raise ValueError(refusal)
 
 
 def _validate_delayed_prepared_geometry(exp) -> None:
@@ -1032,6 +1094,12 @@ def preflight_prepared_tree(
         mapped_paths = {"mapped_manifest": manifest_path, **paths}
 
     exp = load_experiment(experiment_config)
+    # THE COORDINATE THE PREPARED INPUTS CARRY, before anything derived
+    # from the configuration's own etac exists: the per-domain identity
+    # comparison below, a streamed tile buffer's rebuilt coordinate, a
+    # nest spawned mid-run, a relocated child's re-initialization.
+    exp, _prepared_vertical = adopt_prepared_vertical(
+        exp, preparation, announce=_announce_adopted_coordinate)
     if len(exp.domains) < 2:
         raise ValueError("prepared domain-tree runner requires at least two domains")
     profile_assertion = validate_physics_profile(

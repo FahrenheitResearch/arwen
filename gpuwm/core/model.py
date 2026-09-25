@@ -718,6 +718,58 @@ def publish_declared_experiment(model, exp) -> None:
     model._declared_experiment = exp
 
 
+def _adapt_experiment_vertical_for_case(exp, case_data, catalog):
+    """The coordinate this case's own ground can order, applied.
+
+    Returns the experiment the whole run then uses.  The survey reads the
+    root's statics through :func:`gpuwm.runtime.case_static_fields` -- the
+    same cached call the root preparation makes a few lines below -- and
+    each other declared domain's terrain at its own resolution, so a nest
+    carrying higher peaks than its parent is priced before the parent's
+    coordinate is built rather than after.
+    """
+
+    from gpuwm import runtime
+    from gpuwm.explain import warn
+    from gpuwm.static.build import GeogSelection
+    from gpuwm.static.lambert import grids_from_projection_config
+    from gpuwm.vertical_adaptation import (adapt_experiment_for_statics,
+                                           static_catalog_for_survey)
+
+    if not exp.vertical.eta_levels:
+        return exp
+    grids = tuple(grids_from_projection_config(exp))
+    # A declared field of CaseDataConfig, default None (the identity
+    # path), read as one: this module is a clock module under an AST
+    # audit that bans getattr
+    # (tests/test_clock.py::test_no_float_elapsed_accumulation_audit),
+    # and every route that reaches this line hands the validated case
+    # data, whose geog_root and wps_namelist are read the same way.
+    highres = case_data.static_highres
+    root = exp.root
+    terrain = runtime.case_static_fields(
+        grids[0], case_data.geog_root,
+        selection=GeogSelection.from_case_data(
+            case_data, domain_id=root.grid_id),
+        static_highres=highres, domain_id=root.grid_id,
+        case_date=exp.start_time.date())["HGT_M"]
+
+    def announce(sentence: str) -> None:
+        warn(sentence,
+             "WRF v4.6.1 dyn_em/nest_init_utils.F:1158-1182 calls this "
+             "column fatal and names reducing etac as the remedy; the "
+             "remedy is derived here from the terrain this run can "
+             "actually touch and applied, so every domain of this run "
+             "integrates the same coordinate.  p_top is untouched.")
+
+    adapted, _adaptation = adapt_experiment_for_statics(
+        exp, grids, root_terrain=terrain,
+        static_catalog=(static_catalog_for_survey(catalog)
+                        if len(exp.domains) > 1 else None),
+        static_highres=highres, announce=announce)
+    return adapted
+
+
 def build_experiment(exp, case_data) -> ExperimentState:
     """Build the all-resident domain tree parent before child.
 
@@ -738,6 +790,22 @@ def build_experiment(exp, case_data) -> ExperimentState:
     from gpuwm.core.nest import NestCoupler as ConcreteNestCoupler
 
     catalog = build_input_catalog(case_data)
+    # THE COORDINATE, BEFORE ANY OTHER READ OF THE EXPERIMENT.  This route
+    # holds the experiment for the whole run -- the root below, every
+    # child, and every spawn and relocation that reads exp.vertical later
+    # -- so the derivation belongs at the top of the builder and not
+    # beside the root preparation, which would leave the children on the
+    # configured value.  The line's POSITION is the contract: the
+    # startup tree (`active`, below) is taken from `exp` by value, and
+    # each child's DomainConfig is stored on its node, where
+    # core/streaming.domain_vertical_coord rebuilds a streamed tile
+    # buffer's coordinate from cfg.etac.  Derived after that copy, a
+    # streamed nest would rebuild its buffer on a coordinate its own
+    # domain is not on, which is the disagreement this lane exists to
+    # make impossible.  The root's statics are built through the same
+    # cached function the preparation makes a few lines below, so asking
+    # for them here costs nothing there.
+    exp = _adapt_experiment_vertical_for_case(exp, case_data, catalog)
     snapshots = runtime.forcing_snapshots(case_data, catalog)
     forcing_times = runtime.forcing_schedule(exp, case_data, snapshots)
     lbc_interval_s = _forcing_cadence_seconds(catalog)
@@ -749,7 +817,15 @@ def build_experiment(exp, case_data) -> ExperimentState:
     # active tree.  Mid-run activation is the spawn runner's leg
     # boundary (gpuwm.experiment.active_experiment), not this builder's.
     from gpuwm.experiment import pre_spawn_experiment
+    from gpuwm.vertical_adaptation import (
+        refuse_tree_off_the_experiment_coordinate)
     active = pre_spawn_experiment(exp)
+    # The startup tree is a fresh copy of the experiment's DomainConfigs
+    # and every child node below stores one, so it must already carry the
+    # coordinate the derivation above chose.  The refusal names what a
+    # split tree breaks.
+    refuse_tree_off_the_experiment_coordinate(
+        exp, active.domains, route="experiment-tree")
     tick_clock = resolve_clock(active, lbc_interval_s=lbc_interval_s)
     schedule = build_schedule(active, tick_clock)
     clocks = tick_clock.clocks()

@@ -428,6 +428,7 @@ ADAPTER_LAUNCHER_NAMES = (
     "launch_graupel_sedimentation",
     "launch_hydrometeor_column_mask",
     "launch_ice_sedimentation",
+    "launch_microphysics_columns",
     "launch_rain_evaporation",
     "launch_rain_sedimentation",
     "launch_snow_sedimentation",

@@ -100,7 +100,11 @@ FROZEN_RECORDS: dict[str, tuple[str, str]] = {
         "the crash and the tornadic vortex that motivated the re-placement",
     ),
     "configs/les_tornado_100m_mayfield_20211210_attempt2b.toml": (
-        "443efed35f837ac8c21a34abf005e5db1b2c1d31d0dbd024dc82a8835f43ec0e",
+        # RE-PINNED 2026-09-20: c065da2d4 (2026-09-09) changed one word of
+        # one comment in this record (an owner's name became "the
+        # project") and no value; the digest below is that commit's
+        # bytes (proof/node-reds-276).
+        "b0ae8e8560331b9c7cbd95888a2c09e1e1ee082d38312afc105b01bcb16f2443",
         "attempt #2 revision b: the run that tripped at step 5467 with "
         "w = 239.48 m/s and produced the criterion; frozen by name in "
         "configs/les_tornado_100m_mayfield_20211210_attempt3.toml:248-255",

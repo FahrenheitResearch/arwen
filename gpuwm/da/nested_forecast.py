@@ -1,10 +1,13 @@
-"""A fine one-way nest over the radar-DA free forecast.
+"""A fine one-way nest over the whole radar-DA nowcast.
 
 WHY THIS EXISTS.  The nowcast assimilates and forecasts on a single
 coarse domain.  Interpolating its final output to a finer mesh produces
 an unbalanced field that spends its first 15--30 minutes adjusting --
 exactly the window a nowcast exists to serve.  This module runs a real
-one-way nest over the free-forecast legs instead, so the fine field is
+one-way nest over EVERY leg instead, observed and free (:func:`nest_legs`):
+the child crosses each leg boundary inside its trajectory's restart set
+(the tree checkpoint ``gpuwm run --restart`` reads) and is corrected by
+the parent's analysis carried down as an increment, so the fine field is
 produced by the model rather than by a resampler, and takes lateral
 forcing from the parent at every parent step throughout.
 
@@ -29,15 +32,19 @@ run a child domain and none of them is "introduce a nest mid-run":
 
 None of those is used.  The route taken is the one the DA driver's own
 shape makes available: ``tools/da_cycle_prepared.py`` rebuilds the entire
-model from scratch at every leg and joins legs through host snapshots,
-so a leg is already a fresh model whose clock is placed at the leg
-boundary.  A nested leg is therefore not a mid-run introduction at all --
-it is an ordinary whole-run two-domain model whose run happens to be one
-leg long, and whose parent state at t=0 of that leg is the ANALYSED
-state.  The child is built from that parent by full SINT
+model from scratch at every leg and joins legs through the restart owner
+(``gpuwm.io.restart``: every trajectory writes its tree checkpoint set at
+a leg's end and the next leg restores it before the analysis is applied),
+so a leg is a restarted model whose clocks the checkpoint places.  A
+nested leg is therefore not a mid-run introduction at all -- it is an
+ordinary two-domain model resumed at a leg boundary, whose parent state
+at the start of that leg is the ANALYSED state.  On the leg a child is
+born it is built from that parent by full SINT
 (:func:`gpuwm.ingest.nest_init.parent_only_init`), so it inherits every
 increment the cycling produced, and is then forced laterally by the
-parent every parent step for the rest of the leg.
+parent every parent step for the rest of the leg; on every later leg it
+is restored from the trajectory's own set, and its birth is the
+activation epoch the checkpoint header carries (:func:`child_born_at`).
 
 WHAT THAT COSTS, ALSO PLAINLY.  ``parent_only_init`` is the idealized
 ``input_from_file=F`` branch: it returns ``static_fields=None`` and
@@ -182,6 +189,144 @@ _OFFLINE_LADDER_DOOR = (
 
 class NestedForecastRefusal(ValueError):
     """A nested free-forecast leg that this module will not assemble."""
+
+
+# ---------------------------------------------------------------------------
+# the child through the cycle
+#
+# The child was originally attached to the FREE legs alone: the parent
+# assimilated, and the nest was the detailed picture of the forecast that
+# ran past the observations.  Measured on two storms (2026-09-18) that
+# leaves the child alive for one leg -- 90 to 165 seconds -- before
+# whatever consumes the analysis takes over, so the child is BORN at the
+# fork.  Every comparison made across that fork then measures the birth
+# of a 1 km domain as much as it measures the weather, because a child
+# three minutes old is still growing the fine structure its spacing
+# exists to resolve.
+#
+# It runs on every leg now.  Two pieces make that a continuation rather
+# than a repetition: the child crosses each leg boundary inside its
+# trajectory's restart set (the restart owner writes and restores the
+# child with the parent, soil, surface, accumulators and clock included,
+# and a child born on a later leg activates there through
+# child_born_at), and the parent's analysis reaches it as an INCREMENT
+# carried down by the same SINT the child was built with -- never by
+# rebuilding the child from the analysed parent, which would flatten its
+# fine structure back to an interpolation at every radar volume.
+# ---------------------------------------------------------------------------
+
+def nest_legs(*, observed_legs: int, free_legs: int) -> tuple[int, ...]:
+    """Every leg the child runs on: all of them, observed and free.
+
+    Written as a function rather than a slice in the driver so the rule
+    is one greppable place and the receipt's leg list cannot drift from
+    the legs the child was actually built on.
+    """
+    total = int(observed_legs) + int(free_legs)
+    if total < 0:
+        raise NestedForecastRefusal(
+            f"a run cannot have {total} legs")
+    return tuple(range(total))
+
+
+#: The registration stagger each analysed field's increment takes when it
+#: is carried down to the child.  ``u`` is x-staggered and ``v`` is
+#: y-staggered; every other field the filter or the insertion analyses --
+#: the moisture species, their number moments, the perturbation potential
+#: temperature, the column mass -- is mass-staggered, and w/php are
+#: z-staggered only, which the horizontal stencil does not see.  This is
+#: the same dispatch :func:`gpuwm.ingest.nest_init.parent_only_init` uses
+#: to build the child, and it is written here so the two cannot disagree
+#: about which grid a field lives on.
+INCREMENT_STAGGER = MappingProxyType({"u": "x", "v": "y"})
+
+
+def increment_registration(child_dc: DomainConfig, parent_run,
+                           stagger: str):
+    """The SINT registration one stagger's increment is carried down by.
+
+    Identical in every argument to the registration ``parent_only_init``
+    builds for the same stagger, which is what makes the increment the
+    child receives the same correction the parent received.
+    """
+    return register_nest(
+        nri=child_dc.parent_grid_ratio, nrj=child_dc.parent_grid_ratio,
+        i_parent_start=child_dc.i_parent_start,
+        j_parent_start=child_dc.j_parent_start,
+        child_nx=int(child_dc.run.nx), child_ny=int(child_dc.run.ny),
+        parent_nx=int(parent_run.nx), parent_ny=int(parent_run.ny),
+        stagger=stagger, wrapper="interp")
+
+
+def nest_down_analysis(background, analysed, child_dc: DomainConfig,
+                       parent_run, *, array_module=None) -> dict:
+    """What the parent's analysis adds to a child that keeps its own state.
+
+    NOT the interpolated increment.  SINT is WRF's monotonicity-limited
+    interpolation (``sint.F``'s two flux-corrected passes), so it is not
+    a linear operator: on a rough field SINT(background + increment)
+    differs from SINT(background) + SINT(increment) by more than
+    rounding, and a child corrected by the second one would be corrected
+    by something the limiter never produced.  The correction is therefore
+    the DIFFERENCE OF TWO INTERPOLATIONS -- the analysed parent's and the
+    background parent's, each carried down whole by the operator the
+    child was born through.  Where the analysis changed nothing the two
+    are the same array and the child is left exactly alone.
+
+    BOTH sides are interpolated here, raw, and the child a builder
+    produced is not an acceptable substitute for the analysed side even
+    though it looks like one.  :func:`build_nested_child` does not stop
+    at SINT: ``parent_only_init`` clamps the rounding-scale negatives out
+    of every number moment afterwards, and a difference taken against a
+    clamped field is the clamp plus the analysis rather than the
+    analysis.  Measured on the card on 2026-09-18, that mistake put the
+    child's effective cloud-droplet radius at -0.269 on a leg where the
+    filter had run on nothing at all.
+
+    A field whose horizontal extent is not the parent's is refused BY
+    NAME rather than interpolated on the wrong registration -- a wind
+    component handed the mass registration would produce a plausible
+    array that is a half-cell wrong everywhere.
+    """
+    from gpuwm.core.nest_interp import sint
+
+    xp = np if array_module is None else array_module
+    registrations: dict = {}
+    carried: dict = {}
+    for name in sorted(background):
+        if name not in analysed:
+            raise NestedForecastRefusal(
+                f"field {name!r} has a background but no analysed "
+                "counterpart; the correction is a difference and needs "
+                "both sides")
+        stagger = INCREMENT_STAGGER.get(name, "")
+        if stagger not in registrations:
+            registrations[stagger] = increment_registration(
+                child_dc, parent_run, stagger)
+        registration = registrations[stagger]
+        pair = []
+        for side, source in (("background", background[name]),
+                             ("analysed", analysed[name])):
+            values = source
+            if getattr(values, "ndim", 0) not in (2, 3):
+                raise NestedForecastRefusal(
+                    f"{side} {name!r} has shape "
+                    f"{getattr(values, 'shape', None)}; the nest-down "
+                    "operator takes (ny, nx) or (nz, ny, nx)")
+            expected = (registration.nyp, registration.nxp)
+            if tuple(values.shape[-2:]) != expected:
+                raise NestedForecastRefusal(
+                    f"{side} {name!r} has horizontal shape "
+                    f"{tuple(values.shape[-2:])}, and the "
+                    f"{stagger or 'mass'}-staggered registration this "
+                    f"field takes expects {expected}")
+            pair.append(values)
+        down_background = sint(xp.ascontiguousarray(
+            xp.asarray(pair[0], dtype=xp.float32)), registration)
+        down_analysed = sint(xp.ascontiguousarray(
+            xp.asarray(pair[1], dtype=xp.float32)), registration)
+        carried[name] = down_analysed - down_background
+    return carried
 
 
 # ---------------------------------------------------------------------------
@@ -598,6 +743,64 @@ def child_land_inventory(static, surface, child_dc, parent_run) -> dict:
 # child construction and attachment
 # ---------------------------------------------------------------------------
 
+def child_born_at(child_dc: DomainConfig, exp: ExperimentConfig,
+                  birth_seconds: float) -> DomainConfig:
+    """The child configuration for a nest born ``birth_seconds`` into the run.
+
+    A nest a cycling analysis attaches on a later leg is a domain that
+    ACTIVATES at that leg's boundary, and the tree already has one word
+    for that: ``DomainConfig.start_time``.  Declaring it there is what
+    makes every consumer read one calendar: the clock spec's
+    ``start_ticks``, the ``domain_start_offset`` the model time refresh
+    publishes, the ITIMESTEP the physics driver counts from it (so the
+    child's first step is its step 1, and radiation runs on it exactly as
+    it does for a nest WRF starts mid-run), and the restart header's
+    ``domain_start_time`` that a later leg is checked against.
+
+    The birth has to be a whole number of PARENT steps from the run
+    start, which every leg boundary is; anything else is refused by name
+    here rather than by the clock resolver a few calls later.
+    """
+    from datetime import timedelta
+
+    parent_dt = exp.dt_exact(child_dc.parent_id)
+    steps = Fraction(birth_seconds) / parent_dt
+    if birth_seconds < 0 or steps.denominator != 1:
+        raise NestedForecastRefusal(
+            f"a nest born {birth_seconds!r} s into the run is not on a "
+            f"parent step boundary (d{child_dc.parent_id:02d} dt = "
+            f"{parent_dt} s exactly); a child activates on the tick "
+            "lattice its parent steps on")
+    return replace(child_dc,
+                   start_time=exp.start_time
+                   + timedelta(seconds=float(birth_seconds)))
+
+
+def place_newborn_clock(clock) -> None:
+    """Put a fresh child clock at the instant its domain is born.
+
+    A domain that activates at ``start_ticks`` holds exactly that many
+    ticks, has taken no step of its own, and has never been forced, so
+    its boundary accumulator is the positive zero every clock is built
+    with.  That is the state ``gpuwm.core.clock.execute_schedule`` gives
+    a delayed-start domain at its boundary, written here so a caller
+    that constructs the node itself hands the child the same clock the
+    executor would have.  A clock that has already advanced past its
+    start is not a newborn and is refused by name: a child restored
+    from a checkpoint gets its clock from the checkpoint, after this.
+    """
+    if int(clock.ticks) > int(clock.spec.start_ticks):
+        raise NestedForecastRefusal(
+            f"the clock for grid_id={clock.spec.grid_id} is at "
+            f"{clock.ticks} ticks, past its declared start of "
+            f"{clock.spec.start_ticks}; a newborn child has taken no "
+            "step, and a restored one takes its clock from the "
+            "checkpoint")
+    clock.ticks = int(clock.spec.start_ticks)
+    clock.step_count = 0
+    clock.dtbc_fp32 = np.float32(0.0)
+
+
 def build_nested_child(parent_node, child_dc, *, static, surface,
                        landuse_identity, valid_time, clock,
                        parent_driver, center_lat=None,
@@ -605,26 +808,45 @@ def build_nested_child(parent_node, child_dc, *, static, surface,
     """Build the child domain from the parent's LIVE state.
 
     This is the step that makes the whole design worth doing.  The child's
-    prognostic atmosphere is a full SINT of the parent's -- which, on the
-    free-forecast legs of a radar-DA cycle, is the ANALYSED atmosphere,
-    carrying every increment the cycling produced.  The child does not
+    prognostic atmosphere is a full SINT of the parent's -- which, on any
+    leg of a radar-DA cycle, is the ANALYSED atmosphere at that leg's
+    start, carrying every increment the cycling produced.  The child does not
     re-read any analysis file and has no cold-start of its own.
 
     The parent is read and never written: ``parent_only_init`` fills the
     child through out-of-place ``sint`` into child-owned buffers, and the
     base-state capture copies to the host.  ``tests`` hold that as a
     bitwise property rather than an intention.
+
+    ``clock`` is the child's own, already standing at the child's start
+    (:func:`place_newborn_clock`).  The model time is refreshed from it
+    onto the new state BEFORE the physics is attached, so the physics
+    initializer reads the child's model time and activation epoch rather
+    than the zero a fresh state is allocated with: a child born 270 s
+    into a run whose driver believed it was at 0 s counted its ITIMESTEP
+    from the run start, and whether its first step ran radiation
+    depended on where the leg boundary fell against the radiation
+    cadence.  A clock that is not at the child's start is refused.
     """
     from gpuwm.core.model import DomainNode
     from gpuwm.core.nest import NestCoupler
+    from gpuwm.core.state import refresh_model_time
     from gpuwm.ingest.nest_init import parent_only_init
 
+    if int(clock.ticks) != int(clock.spec.start_ticks):
+        raise NestedForecastRefusal(
+            f"the child clock for grid_id={child_dc.grid_id} stands at "
+            f"{clock.ticks} ticks but the child is declared to start at "
+            f"{clock.spec.start_ticks}; a child is built at its own "
+            "birth (place_newborn_clock) and restored afterwards if it "
+            "has a checkpoint")
     inventory = child_land_inventory(
         static, surface, child_dc, parent_node.cfg.run)
     initialized = parent_only_init(child_dc, parent_node)
     node = DomainNode(child_dc, initialized.grid, initialized.state,
                       clock, parent_node, [], None)
     node.coupler = NestCoupler(node, feedback=0)
+    refresh_model_time(node.state, clock)
     driver = _initialize_child_physics(
         initialized, child_dc.run, inventory, landuse_identity,
         valid_time, parent_driver=parent_driver,

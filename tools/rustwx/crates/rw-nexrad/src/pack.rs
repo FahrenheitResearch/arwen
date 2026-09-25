@@ -431,7 +431,7 @@ pub fn validate_decoded(file: &Level2File) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-/// One `<f4` array inside the payload.
+/// One array inside the payload, `<f4` or `|u1`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ArrayEntry {
     pub dtype: String,
@@ -439,6 +439,30 @@ pub struct ArrayEntry {
     pub offset: usize,
     pub bytes: usize,
 }
+
+/// The element width, in bytes, of a dtype this container writes.
+///
+/// `None` for anything else, which a reader must treat as a refusal rather
+/// than as a guess: an unknown dtype cannot be measured against a declared
+/// shape at all.
+///
+/// One function because the width lives in two places otherwise -- the
+/// writer that lays the payload out and the verifier that re-proves it --
+/// and the verifier held a constant 4 while the writer had already grown
+/// the byte-wide censor plane.  Every censored pack the decoder produced
+/// then failed its own verify, which took the clear-air route off the
+/// board entirely.
+pub fn dtype_width(dtype: &str) -> Option<usize> {
+    match dtype {
+        MOMENT_DTYPE => Some(4),
+        censor_plane::DTYPE => Some(1),
+        _ => None,
+    }
+}
+
+/// The dtype of every float plane in the payload: moments, azimuths,
+/// elevations, per-radial Nyquist.
+pub const MOMENT_DTYPE: &str = "<f4";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MomentEntry {
@@ -552,6 +576,24 @@ pub struct SweepEntry {
     /// per-radial array already says `"radial"` there.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub nyquist_granularity: Option<String>,
+    /// The earliest collection instant among this cut's radials, from the
+    /// Message-31 header's own clock, as [`crate::s3::iso8601_ms`] spells it
+    /// (`2026-09-19T12:02:36.123Z`).
+    ///
+    /// A cut is scanned over ten to forty seconds and a volume over four to
+    /// ten minutes, and the volume header stamps only the volume's start.
+    /// Without these two instants every sweep is dated to the first
+    /// radial of the volume, which is how a volume's top cut came to be
+    /// assimilated six minutes before it was scanned.  `None` on a pack
+    /// written before the keys existed and on an ODIM pack, whose cut
+    /// times ride in a different place; `skip_serializing_if` keeps those
+    /// packs byte-identical.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start_time: Option<String>,
+    /// The latest collection instant among this cut's radials, same
+    /// spelling as [`Self::start_time`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end_time: Option<String>,
     pub moments: Vec<MomentEntry>,
 }
 
@@ -585,9 +627,44 @@ pub struct VolumeEntry {
     pub bytes: usize,
     pub sha256: String,
     pub station_id: String,
+    /// The volume's START, from the Archive-II volume header, to the
+    /// second.  Kept under this name because every consumer reads it; it is
+    /// not the instant the volume was complete, which is [`Self::end_time`].
     pub valid_time: String,
     pub volume_date: u16,
     pub volume_time_ms: u32,
+    /// The time written into the archive key (`KTLX20260919_120236_V06`
+    /// says 12:02:36Z), when the file name parses as one.  The archive
+    /// names a volume after its start, so this equals [`Self::valid_time`]
+    /// on every real volume; it is carried separately because it is the
+    /// archive's statement and the header's is the radar's, and a reader
+    /// admitting a volume into a time window must know which one it holds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key_time: Option<String>,
+    /// The earliest radial collection instant in the whole file, every cut
+    /// counted, filters or not, as [`crate::s3::iso8601_ms`] spells it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start_time: Option<String>,
+    /// The latest radial collection instant in the whole file: the moment
+    /// the volume was complete and the earliest moment it could have been
+    /// published.  A volume admitted into a window that ends before this
+    /// instant is a volume admitted before it existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end_time: Option<String>,
+    /// Whether the file is one whole volume by its own radial statuses: the
+    /// first radial says start-of-volume (3), the last says end-of-volume
+    /// (4), and every cut between both started and ended on a marker.
+    /// `false` names a volume the feed cut short, which the counts below
+    /// quantify.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub complete: Option<bool>,
+    /// Cuts the file carries, before any `--moments` or elevation filter.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sweeps_in_volume: Option<usize>,
+    /// Of those, the cuts that did not both start and end on a status
+    /// marker.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sweeps_incomplete: Option<usize>,
     /// Archive-II framing, for a volume that had any.
     ///
     /// `Option` rather than required because ODIM_H5 is an HDF5 container
@@ -820,7 +897,125 @@ pub fn decode_pack(bytes: &[u8]) -> Result<(PackMeta, Vec<u8>), Box<dyn Error>> 
         )));
     }
     check_nyquist_scalars_summarise_their_arrays(&meta, &payload)?;
+    check_collection_instants(&meta)?;
     Ok((meta, payload))
+}
+
+/// The collection instants a pack carries must tell one story.
+///
+/// Each is a reduction of the radials' own clocks, so the only relations a
+/// writer can get wrong are the ones checked here: a cut ends no earlier
+/// than it starts, the volume's span encloses every cut's, and a cut's
+/// `complete` flag is what its two radial statuses say.  A pack that
+/// carries none of the keys is a pack written before they existed and is
+/// read as it always was; a pack that carries some of them is refused,
+/// because a volume with an `end_time` and no `start_time` is a volume
+/// whose writer stopped half way through saying when it was scanned.
+fn check_collection_instants(meta: &PackMeta) -> Result<(), Box<dyn Error>> {
+    use crate::s3::parse_iso8601_ms;
+
+    let volume = &meta.volume;
+    let span = match (&volume.start_time, &volume.end_time) {
+        (None, None) => None,
+        (Some(start), Some(end)) => {
+            let start = parse_iso8601_ms(start).map_err(|err| {
+                boxed_error(format!("radar sweep pack volume.start_time: {err}"))
+            })?;
+            let end = parse_iso8601_ms(end).map_err(|err| {
+                boxed_error(format!("radar sweep pack volume.end_time: {err}"))
+            })?;
+            if end < start {
+                return Err(boxed_error(format!(
+                    "radar sweep pack volume ends at {} before it starts at {}; the two \
+                     are the earliest and latest radial collection instants and cannot \
+                     be in that order",
+                    volume.end_time.as_deref().unwrap_or(""),
+                    volume.start_time.as_deref().unwrap_or("")
+                )));
+            }
+            Some((start, end))
+        }
+        _ => {
+            return Err(boxed_error(
+                "radar sweep pack volume carries one of start_time/end_time without the \
+                 other; a writer that dates the volume dates both ends of it",
+            ));
+        }
+    };
+    for sweep in &meta.sweeps {
+        let expected = matches!(sweep.start_status, 0 | 3 | 5)
+            && matches!(sweep.end_status, 2 | 4);
+        // ODIM cuts carry statuses of zero on both ends and are complete by
+        // construction; the rule is a NEXRAD rule and applies where a
+        // NEXRAD status was recorded.
+        let nexrad_statuses = sweep.start_status != 0 || sweep.end_status != 0;
+        if nexrad_statuses && sweep.complete != expected {
+            return Err(boxed_error(format!(
+                "radar sweep pack sweep {} says complete={} but its radial statuses are \
+                 start {} / end {}, which say {}",
+                sweep.sweep_index, sweep.complete, sweep.start_status, sweep.end_status,
+                expected
+            )));
+        }
+        match (&sweep.start_time, &sweep.end_time) {
+            (None, None) => continue,
+            (Some(start), Some(end)) => {
+                let start = parse_iso8601_ms(start).map_err(|err| {
+                    boxed_error(format!(
+                        "radar sweep pack sweep {} start_time: {err}",
+                        sweep.sweep_index
+                    ))
+                })?;
+                let end = parse_iso8601_ms(end).map_err(|err| {
+                    boxed_error(format!(
+                        "radar sweep pack sweep {} end_time: {err}",
+                        sweep.sweep_index
+                    ))
+                })?;
+                if end < start {
+                    return Err(boxed_error(format!(
+                        "radar sweep pack sweep {} ends before it starts ({} < {})",
+                        sweep.sweep_index,
+                        sweep.end_time.as_deref().unwrap_or(""),
+                        sweep.start_time.as_deref().unwrap_or("")
+                    )));
+                }
+                match span {
+                    Some((volume_start, volume_end))
+                        if start < volume_start || end > volume_end =>
+                    {
+                        return Err(boxed_error(format!(
+                            "radar sweep pack sweep {} spans {} .. {}, outside the volume's \
+                             own {} .. {}; the volume span is the earliest and latest \
+                             radial instant over every cut and must enclose each",
+                            sweep.sweep_index,
+                            sweep.start_time.as_deref().unwrap_or(""),
+                            sweep.end_time.as_deref().unwrap_or(""),
+                            volume.start_time.as_deref().unwrap_or(""),
+                            volume.end_time.as_deref().unwrap_or("")
+                        )));
+                    }
+                    Some(_) => {}
+                    None => {
+                        return Err(boxed_error(format!(
+                            "radar sweep pack sweep {} carries collection instants but the \
+                             volume carries none; a writer that dates a cut dates the \
+                             volume it is in",
+                            sweep.sweep_index
+                        )));
+                    }
+                }
+            }
+            _ => {
+                return Err(boxed_error(format!(
+                    "radar sweep pack sweep {} carries one of start_time/end_time without \
+                     the other",
+                    sweep.sweep_index
+                )));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Tolerance the scalar must summarise its array to, in m/s.
@@ -1219,6 +1414,12 @@ mod tests {
                 valid_time: "2023-05-20T20:03:56Z".to_string(),
                 volume_date: 19497,
                 volume_time_ms: 72236000,
+                key_time: None,
+                start_time: None,
+                end_time: None,
+                complete: None,
+                sweeps_in_volume: None,
+                sweeps_incomplete: None,
                 framing: Some(Framing {
                     magic: "AR2V0006".to_string(),
                     layout: layout::LDM_BZIP2.to_string(),

@@ -14,13 +14,23 @@ What it does, per leg:
 1. wires the model exactly as
    :func:`gpuwm.prepared_single_domain_forecast.run_prepared_forecast`
    does -- same preflight, same prepared-cache restore, same physics
-   initialisation, same ``execute_experiment`` -- but per trajectory and
-   with the clock placed at the leg boundary;
-2. integrates one leg on the GPU, with the state-health validator on;
-3. snapshots the serialised prognostic state
+   initialisation, same boundary clock binding, same
+   ``execute_experiment`` -- but per trajectory;
+2. restores the trajectory's tree checkpoint set from the end of the
+   previous leg through the restart owner
+   (:func:`gpuwm.io.restart.restore_tree_restart`), which places every
+   domain's clock and carries the atmosphere, the physics driver's
+   surface and soil state, the precipitation accumulators and the held
+   radiation, boundary-layer and cumulus tendencies, exactly as
+   ``gpuwm run --restart`` continues a run;
+3. applies the pending analysis and integrates one leg on the GPU, with
+   the state-health validator on;
+4. writes the trajectory's tree checkpoint set at the leg's end
+   (:func:`gpuwm.io.restart.write_tree_restart`), which is what joins
+   this leg to the next, and mirrors the serialised prognostic state
    (:data:`gpuwm.state_serialization_contract.STATE_SERIALIZED_ATTRS`)
-   to the host, which is what joins one leg to the next;
-4. analyses the members against a ``gpuwm-obs.radar-grid.v1`` file
+   to the host for the filter;
+5. analyses the members against a ``gpuwm-obs.radar-grid.v1`` file
    through :mod:`gpuwm.da.radar_assimilation`, optionally adding
    :mod:`gpuwm.da.hotstart`'s reflectivity nudge, and applies the result
    through :func:`gpuwm.ensemble.increments.apply_increments` with
@@ -31,16 +41,22 @@ A control trajectory runs beside the members and is never analysed, so
 every number the report carries has a no-DA counterpart taken through
 the same code.
 
+**What a leg boundary is.**  A restart.  The join used to carry the
+serialised atmosphere alone, so soil, surface, accumulators, held
+tendencies and the radiation carriers restarted from the prepared
+background at every analysis, for every trajectory, and the driver's
+own record said so.  Measured on the card with the tree's own nested
+fixture (``tests/test_da_cycle_join_gpu.py``): that join left arrays of
+the parent and of the child different from a continuous run at the
+same instant, and the restart join leaves none.  A nest that a
+trajectory carries rides in the same set and is restored by the same
+call; a nest born on a later leg activates at that leg's boundary
+(:func:`gpuwm.da.nested_forecast.child_born_at`), so its physics counts
+its own first step as step one and its clock is placed on the tree's
+tick lattice at birth.
+
 **Deliberate simplifications, stated rather than buried.**
 
-* Physics driver state (surface fields, accumulators) is re-initialised
-  at every leg for EVERY trajectory including the control, because the
-  host snapshot carries the serialised atmosphere only.  Member-vs-
-  control comparisons are therefore like-for-like; continuity of surface
-  accumulators across a leg boundary is NOT claimed, and a leg boundary
-  is not a bit-exact restart.  ``gpuwm.io.restart`` is the bit-exact
-  path and it is not reachable from a prepared-cache run today (that is
-  the same engine gap).
 * Members share the deterministic run's lateral boundary conditions --
   the perturbation lane's documented setting, and the reason ensemble
   spread is suppressed near the rim.
@@ -50,15 +66,16 @@ the same code.
   is representativeness error rather than a binding error.
 
 **Cycling past the end of one process.**  ``--save-ensemble`` writes the
-leg boundary -- host snapshots plus the analysis increments the next leg
-has still to apply -- through :mod:`tools.da_ensemble_state`, and
-``--resume-ensemble`` starts from one.  That is what a continuous
-nowcast needs: the next radar volume does not exist when this one is
-assimilated, so the ensemble has to survive the wait without being
-re-initialised.  The generation is written at the end of the last
-OBSERVED leg, so trailing free legs stay a branch off the cycle rather
-than becoming it, and the boundary-data horizon of the prepared case is
-a refusal rather than a surprise inside the integrator.
+leg boundary -- each trajectory's tree checkpoint set plus the analysis
+increments the next leg has still to apply -- through
+:mod:`tools.da_ensemble_state`, and ``--resume-ensemble`` starts from
+one.  That is what a continuous nowcast needs: the next radar volume
+does not exist when this one is assimilated, so the ensemble has to
+survive the wait without being re-initialised.  The generation is
+written at the end of the last OBSERVED leg, so trailing free legs stay
+a branch off the cycle rather than becoming it, and the boundary-data
+horizon of the prepared case is a refusal rather than a surprise inside
+the integrator.
 
 Nothing here is on a default route.  EXPERIMENTAL.
 """
@@ -98,59 +115,231 @@ REPORT_SCHEMA = "gpuwm-da.prepared-cycle-report.v1"
 PHYSICS_VOCABULARY_FIELDS = ("maturity", "registry_sha256")
 
 
-def jump_clock(clock, start_seconds: float, dt: float) -> None:
-    """Place a freshly built clock at a leg boundary.
-
-    A leg after the first restores a host snapshot into a state the
-    prepared cache just rebuilt, so its clock starts at zero while the
-    trajectory it carries is already ``start_seconds`` old.  Three things
-    have to move together.
-
-    ``ticks`` and ``step_count`` are the integer calendar and are exact:
-    the tick lattice is what every alarm evaluates on, so setting seconds
-    would be setting a derived quantity.
-
-    ``dtbc_fp32`` is WRF's REAL boundary-tendency accumulator, and it is
-    NOT derivable in closed form.  It recurs as
-    ``fl32(dtbc + dt)`` once per step and resets at every external-LBC
-    seam (``gpuwm.core.clock.DomainClock.prepare_step`` /
-    :meth:`mark_force`), so its value carries the accumulated FP32
-    rounding of every step since the last seam.  ``steps_since_seam * dt``
-    is a different number in the last bits, and the boundary relaxation
-    consumes this one.  So it is REPLAYED with the same recurrence rather
-    than computed -- at most one boundary interval of iterations, and
-    bit-exact against a clock that stepped there.
-    """
-    steps = int(round(start_seconds / dt))
-    clock.ticks = steps * clock.spec.step_ticks
-    clock.step_count = steps
-    interval = clock.spec.lbc_interval_ticks
-    since = steps
-    if interval is not None:
-        per_seam = interval // clock.spec.step_ticks
-        since = steps % per_seam
-        # A leg boundary that lands exactly ON a seam has a FULL interval
-        # accumulated, not zero.  The reset is top-of-step work
-        # (``lbc_reset_due`` -> ``mark_force``), so the integrator applies
-        # it to this clock on its own first step; zeroing it here would
-        # hand the integrator a state it never produces, and the two only
-        # happen to agree because the reset lands next.  Reproducing what
-        # the integrator would have HAD is the rule -- a clock this driver
-        # places must be indistinguishable from one that stepped there,
-        # and ``tests/test_da_cycle_prepared.py`` compares them bit for
-        # bit at exactly this instant.
-        if since == 0 and steps > 0:
-            since = per_seam
-    value = np.float32(0.0)
-    for _ in range(since):
-        value = np.float32(value + clock.spec.dt_fp32)
-    clock.dtbc_fp32 = value
-
-
 def to_host(value) -> np.ndarray:
     if hasattr(value, "get"):
         value = value.get()
     return np.ascontiguousarray(np.asarray(value))
+
+
+#: Schema of the restart-identity components every trajectory's model
+#: publishes, so a checkpoint restored into the wrong trajectory is
+#: refused with the component named rather than as a bare hash.
+TRAJECTORY_IDENTITY_SCHEMA = "gpuwm-da.cycle-trajectory-identity.v1"
+
+
+def trajectory_identity(identity, name) -> dict:
+    """The restart-identity components of one trajectory's model.
+
+    The ensemble identity (:class:`tools.da_ensemble_state.
+    EnsembleIdentity`) says which case, grid, scheme and ensemble the
+    checkpoint belongs to; the trajectory name says WHICH member.  Both
+    are bound, because the restart owner compares fingerprints before it
+    reads an array, and member 3's checkpoint restored into member 5's
+    model is a plausible-looking ensemble with one member counted twice.
+    """
+    return {
+        "schema": TRAJECTORY_IDENTITY_SCHEMA,
+        "ensemble": identity.to_payload(),
+        "trajectory": str(name),
+    }
+
+
+def trajectory_fingerprint(identity, name) -> str:
+    """SHA-256 of :func:`trajectory_identity`, the model's fingerprint."""
+    import hashlib
+
+    payload = json.dumps(trajectory_identity(identity, name),
+                         sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def write_leg_restart(model, directory, *, valid_time) -> Path:
+    """Write a trajectory's tree checkpoint set at the end of its leg.
+
+    The restart owner's own writer, on the model the leg just integrated:
+    every domain the trajectory carries, the physics driver's surface and
+    soil state, the accumulators, the held tendencies, the radiation
+    carriers and each clock's exact ticks and boundary accumulator bits.
+    Legal only at a period boundary with nothing pending, which is what
+    a completed ``execute_experiment`` leaves behind; the owner checks
+    that rather than this driver asserting it.  Returns the root member,
+    which is what :func:`restore_leg_restart` takes.
+    """
+    from gpuwm.io.restart import write_tree_restart
+
+    return write_tree_restart(Path(directory), model, valid_time)
+
+
+def restore_leg_restart(model, path, *, expected_seconds: float):
+    """Restore a trajectory's checkpoint set into a freshly wired model.
+
+    ``restore_tree_restart`` validates the whole set -- configuration,
+    base state, physics setup, array inventory, fingerprint -- before it
+    writes a byte, then restores every domain's arrays, driver and clock.
+    On top of that, this driver requires the set to stand at the leg
+    boundary it is about to integrate from: a generation resumed at the
+    wrong elapsed time would otherwise integrate a leg whose boundary
+    data belongs to a different hour.
+    """
+    from gpuwm.io.restart import restore_tree_restart
+
+    info = restore_tree_restart(Path(path), model)
+    restored_seconds = info.elapsed_ticks / info.tick_den
+    if restored_seconds != float(expected_seconds):
+        raise RuntimeError(
+            f"the checkpoint set at {path} stands at {restored_seconds:g} "
+            f"s of model time and this leg starts at {expected_seconds:g} "
+            "s; a leg continues the checkpoint that ended the leg before "
+            "it, and this one did not")
+    return info
+
+
+class StagedRestarts:
+    """Where a run stages each trajectory's leg-end restart set, and its removal.
+
+    A staged set joins one leg to the next inside this process and is
+    consumed by exactly one later leg: :meth:`consume` removes it once
+    the owner has restored it.  The last leg's sets have no later leg,
+    and a run that stops early leaves every set it had staged, so
+    :meth:`clear` removes whatever the stage still holds when the run
+    ends, however it ends.  A generation under ``--save-ensemble`` is
+    copied out of the stage before that and is never touched here: the
+    generation is the durable record, the stage is scratch.  The member
+    checkpoints an analysis reads (:meth:`analysis_directory`) are
+    staged and cleared the same way.
+
+    The default stage is ``<out>/stage`` and is removed with its
+    contents.  A directory named by ``--stage-dir`` is the caller's and
+    is left in place, emptied of what this run staged.
+    """
+
+    #: A set's members, as the restart owner names them.
+    MEMBER_GLOB = "gpuwmrst_*.npz"
+
+    def __init__(self, stage_root, *, default: bool):
+        self.stage_root = Path(stage_root)
+        self.root = self.stage_root / "restart"
+        self.default = bool(default)
+        self._analysis_dirs: list[Path] = []
+        self._cleared: dict | None = None
+
+    def directory(self, leg_number: int, name) -> Path:
+        """Where trajectory ``name`` writes its set at the end of a leg."""
+        return (self.root / f"leg{int(leg_number):03d}"
+                / ens_state.trajectory_key(name))
+
+    def holds(self, root_member) -> bool:
+        """Whether a set's root member lies inside this stage."""
+        try:
+            return Path(root_member).resolve().is_relative_to(
+                self.root.resolve())
+        except OSError:
+            return False
+
+    def consume(self, root_member) -> bool:
+        """Remove a staged set the leg has restored; a set elsewhere stays.
+
+        Returns whether anything was removed, which the leg record
+        keeps: a generation's set, resumed from ``--resume-ensemble``,
+        lies outside the stage and is the record the resume came from.
+        """
+        if not self.holds(root_member):
+            return False
+        directory = Path(root_member).parent
+        shutil.rmtree(directory, ignore_errors=True)
+        try:
+            directory.parent.rmdir()      # the leg's directory, once empty
+        except OSError:
+            pass
+        return True
+
+    def analysis_directory(self, leg_number: int) -> Path:
+        """Where one analysis stages the member checkpoints it reads."""
+        path = self.stage_root / f"cycle_{int(leg_number):03d}"
+        self._analysis_dirs.append(path)
+        return path
+
+    def inventory(self) -> dict:
+        """How many sets the stage holds now, and their size in bytes."""
+        sets = 0
+        size = 0
+        if self.root.is_dir():
+            for trajectory in self.root.glob("leg*/*"):
+                members = [member for member in trajectory.glob(
+                    self.MEMBER_GLOB) if member.is_file()]
+                if members:
+                    sets += 1
+                    size += sum(member.stat().st_size for member in members)
+        return {"restart_sets": sets, "restart_bytes": size}
+
+    def clear(self) -> dict:
+        """Remove everything this run staged; the receipt says what went.
+
+        Idempotent: the receipt of the first clearing is returned again
+        by every later call, so a run that cleared its stage on the way
+        out and is cleared once more by the door reports one clearing.
+        """
+        if self._cleared is not None:
+            return self._cleared
+        held = self.inventory()
+        shutil.rmtree(self.root, ignore_errors=True)
+        analysis_removed = 0
+        for path in self._analysis_dirs:
+            if path.exists():
+                shutil.rmtree(path, ignore_errors=True)
+                analysis_removed += 1
+        root_removed = False
+        if self.default and self.stage_root.is_dir():
+            try:
+                self.stage_root.rmdir()
+                root_removed = True
+            except OSError:
+                pass
+        self._cleared = {
+            "restart_sets_removed": held["restart_sets"],
+            "restart_bytes_removed": held["restart_bytes"],
+            "analysis_directories_removed": analysis_removed,
+            "restart_directory_left": self.root.exists(),
+            "stage_root_removed": root_removed,
+        }
+        return self._cleared
+
+
+def restart_domain_ids(path) -> tuple[int, ...]:
+    """The domain ids a checkpoint set carries, off its own header."""
+    from gpuwm.io.restart import read_restart_header
+
+    ids = read_restart_header(Path(path)).get("domain_ids") or ()
+    return tuple(int(gid) for gid in ids)
+
+
+def restart_child_birth_seconds(path, *, grid_id: int, start_time) -> float:
+    """When the nest in a checkpoint set was born, in seconds from ``start_time``.
+
+    Read off the child member's own ``domain_start_time``, which is the
+    calendar the restart owner checks a resumed child against; the
+    resuming leg rebuilds the child's configuration on that instant so
+    the check passes and the child keeps the activation epoch it was
+    born with.
+    """
+    import datetime
+
+    from gpuwm.io.restart import read_restart_header, tree_restart_members
+
+    members = tree_restart_members(Path(path))
+    if int(grid_id) not in members:
+        raise RuntimeError(
+            f"the checkpoint set at {path} carries domains "
+            f"{sorted(members)} and no d{int(grid_id):02d}")
+    header = read_restart_header(members[int(grid_id)])
+    stamp = header.get("domain_start_time")
+    if not isinstance(stamp, str):
+        raise RuntimeError(
+            f"the d{int(grid_id):02d} member of {path} records no "
+            "domain_start_time; a nest's activation epoch is read from "
+            "its checkpoint and this one has none")
+    born = datetime.datetime.fromisoformat(stamp)
+    return float((born - start_time).total_seconds())
 
 
 
@@ -234,9 +423,454 @@ def planned_analysis_fields(args, mp_physics) -> tuple:
     return tuple(moments.analysis_fields(int(mp_physics)))
 
 
+#: The layer of the column a convective updraft actually occupies.
+#: Below the floor the layers are thin because the boundary layer needs
+#: them and the vertical velocities there are small; above the ceiling
+#: they can be thin again in the anvil and the stratosphere, where they
+#: are equally beside the point.  The reference model's own 60-level
+#: ladder makes that concrete: its thinnest layer above 2 km sits at
+#: 18.7 km.
+LIMITER_ONSET_FLOOR_M = 2000.0
+LIMITER_ONSET_CEILING_M = 12000.0
+
+
+def limiter_onset(cfg, floor_m: float = LIMITER_ONSET_FLOOR_M,
+                  ceiling_m: float = LIMITER_ONSET_CEILING_M):
+    """The updraft at which this ladder and this step start being limited.
+
+    WRF's vertical-velocity limiter (``w_damping = 1``,
+    ``gpuwm/core/dycore.py::apply_w_damping``) pushes the w tendency
+    against the motion where the vertical Courant number ``w*dt/dz``
+    passes 1, which is to say at ``w = dz/dt``.  That number depends on
+    nothing but the ladder and the step -- no storm, no assumption -- and
+    it is the one line that says whether a run is about to spend its
+    updraft on the limiter.  It is reported for the thinnest layer
+    BETWEEN ``floor_m`` and ``ceiling_m``, the part of the column a
+    convective updraft occupies; outside it the layers can be thin for
+    reasons that have nothing to do with updrafts.  It is a floor on
+    where limiting can begin, not a promise that it will.
+
+    ``dz`` is differenced from the FULL levels, which is where ``w``
+    lives and where a layer starts and stops.  The half-level spacing is
+    the same number only where the ladder is uniform; where it stretches
+    it is off by the stretch ratio, and at the ground it is half a
+    layer.
+
+    WHAT BREAKAGE THIS PREVENTS (the gate law): a ladder refined
+    to 200 m layers under the 15 s step that was chosen for 680 m ones.
+    Measured on the card, that combination limited above 13 m/s -- an
+    ordinary convective updraft -- fired on 606 cells of the parent
+    domain, halved the storm's peak w from 33.9 to 18.5 m/s and cost the
+    forecast its storm, while the ladder it replaced limited only above
+    41 m/s and never fired at all.  Four legs of card time found that
+    out; one printed line says it first.
+
+    Returns ``None`` when the limiter is off or the column cannot be
+    read, because a diagnostic line is never worth failing a run over.
+    """
+
+    try:
+        if int(getattr(cfg, "w_damping", 0)) != 1:
+            return None
+        import numpy as _np
+        from gpuwm.core import constants as _c
+        from gpuwm.core.grid import (analytic_base_terrain_height,
+                                     compute_hybrid_coeffs)
+        eta = _np.asarray(cfg.eta_levels, dtype=_np.float64)
+        p_top = float(cfg.p_top)
+        hy = compute_hybrid_coeffs(eta, int(cfg.hybrid_opt),
+                                   float(cfg.etac), _c.P0, p_top)
+        pd_half = hy["c3h"] * (_c.P0 - p_top) + hy["c4h"] + p_top
+        pd_full = hy["c3f"] * (_c.P0 - p_top) + hy["c4f"] + p_top
+        z_half = _np.array([analytic_base_terrain_height(float(v))
+                            for v in pd_half])
+        z_full = _np.array([analytic_base_terrain_height(float(v))
+                            for v in pd_full])
+        # Full level to full level: the LAYER the parcel crosses.  The
+        # spacing between half levels is a different number wherever the
+        # ladder stretches, and half of layer 0 at the ground.
+        dz = _np.diff(z_full)
+        aloft = ((z_half >= float(floor_m))
+                 & (z_half <= float(ceiling_m)))
+        if not aloft.any():
+            return None
+        index = _np.flatnonzero(aloft)
+        k = int(index[int(_np.argmin(dz[aloft]))])
+        thinnest = float(dz[k])
+        return {"thinnest_layer_m": thinnest,
+                "thinnest_layer_height_m": float(z_half[k]),
+                "w_onset_ms": thinnest / float(cfg.dt)}
+    except Exception:
+        return None
+
+
+def bound_child_correction(child_state, correction, *, policy,
+                           array_module):
+    """Bound a child's correction by the run's policy against the CHILD.
+
+    The parent's analysis is bounded so that the PARENT's background plus
+    its increment is non-negative.  The child's background is a different
+    field -- its own fine-scale state, evolved since the nest was born --
+    and the same correction added to that can put a positive-definite
+    species below zero with no arithmetic noise involved at all.  The
+    only thing between the correction and the child's pre-leg gate was
+    the rounding clamp, which is deliberately held to a millionth of the
+    field's own magnitude: right for rounding, and silent about this.
+
+    Measured on the card on an 80-level cycle: water vapour at
+    -1.014e-5 kg kg-1 on the child's boundary row at leg 1, four orders
+    of magnitude past the clamp's floor, refused by the child's own gate.
+
+    So the correction goes through the SAME policy the parent's analysis
+    already went through, against the child's own background, over the
+    fields that policy has an opinion about and the child actually
+    carries.  A run that stated no policy gets none here either, which is
+    the only way to reach this code without one.  Returns
+    ``(correction, receipt)``; the receipt is ``None`` when there was no
+    policy to apply, and otherwise counts what the bound cost, per field,
+    in the child's own receipt.
+    """
+
+    if policy is None:
+        return correction, None
+    from gpuwm.da.positivity import NON_NEGATIVE_FIELDS, apply_positivity
+    names = tuple(
+        name for name in sorted(correction)
+        if name in NON_NEGATIVE_FIELDS
+        and getattr(child_state, name, None) is not None)
+    if not names:
+        return correction, None
+    prior = {name: getattr(child_state, name) for name in names}
+    bounded, receipt = apply_positivity(
+        prior, {name: correction[name] for name in names}, policy=policy)
+    out = dict(correction)
+    for name in names:
+        out[name] = array_module.asarray(bounded[name])
+    return out, receipt
+
+
+#: The threshold used when ``mp_physics`` names no scheme this tree knows
+#: the moment structure of.  Morrison's row, which is the same fallback
+#: :func:`gpuwm.da.moments.repair_moments` applies when it cannot resolve
+#: a scheme, so an unknown scheme gets one answer rather than two.
+MOMENT_MASS_THRESHOLD_FALLBACK_KG_KG = 1e-14
+
+
+def moment_mass_threshold(mp_physics) -> float:
+    """The mass above which THIS scheme demands a number moment.
+
+    Read from the scheme rather than fixed, because it is not one number:
+    Thompson's activity gate is R1 = 1e-12 (module_mp_thompson.F:183) and
+    Morrison's is MQSMALL = 1e-14, two orders of magnitude lower.  A
+    single 1e-12 stood here and was described as "the same threshold
+    gpuwm.da.moments refuses on", which was Thompson's row read as
+    everyone's: under Morrison every cell between 1e-14 and 1e-12 with a
+    number at or below zero went unconditioned here and was then refused
+    by the moment policy at the next leg, which is precisely the refusal
+    this conditioning exists to prevent.
+    """
+
+    return resolved_moment_mass_threshold(mp_physics)[0]
+
+
+def resolved_moment_mass_threshold(mp_physics) -> tuple[float, bool]:
+    """``(threshold, whether the scheme answered for it)``.
+
+    The catch names the two ways a scheme fails to resolve and nothing
+    else: ``MomentPolicyError`` is the refusal ``scheme_moments`` raises
+    for a scheme with no registered moment structure, and ``TypeError``
+    or ``ValueError`` is ``int()`` on something that is not a scheme
+    number at all.  A catch wider than that would hand Thompson
+    Morrison's 1e-14 on any unrelated failure -- an import error, a
+    renamed attribute, a typo in a caller -- which is a quieter spelling
+    of the single-threshold defect this pair was written to close, with
+    nothing to show that it happened.
+
+    The second element is what makes the fallback visible at all: a
+    caller that must not condition against a stand-in can ask whether the
+    scheme answered instead of comparing the number it got against a
+    constant.  :func:`keep_moment_pairs` does not need to -- it refuses
+    an unresolvable scheme a few lines later, through the moment policy's
+    own named refusal -- so the fallback there is unreachable rather than
+    quiet, which a test pins.
+    """
+
+    from gpuwm.da import moments as _moments
+
+    try:
+        value = _moments.scheme_moments(int(mp_physics)).q_threshold
+    except (_moments.MomentPolicyError, TypeError, ValueError):
+        return float(MOMENT_MASS_THRESHOLD_FALLBACK_KG_KG), False
+    return float(value), True
+
+
+def keep_moment_pairs(state, increment, *, mp_physics):
+    """Condition an increment so it cannot hand on a broken moment pair.
+
+    An ensemble filter writes every field its OWN additive increment.
+    Nothing in that arithmetic knows that a species' mass and its number
+    moment are one object, so a cell can leave the solve carrying mass
+    above the threshold with a number moment at or below zero.  The
+    moment policy then refuses the leg that applies it -- correctly,
+    because the scheme's own number initialisation is what would have to
+    supply the missing moment and inventing an intercept here would be a
+    science decision.  Measured on a four-radar hydrometeor analysis that
+    is about two thousand cells of half a million; measured on a
+    clear-air analysis over one radar it is a hundred.  Either way the
+    cycle stops.
+
+    There is a conditioning that invents nothing and that is the
+    background's own:
+
+    * where the background already holds that species ACTIVE -- mass
+      above the scheme's own threshold, with a positive number -- the
+      number takes the SAME multiplicative factor the mass took.  That
+      is the background's drop size distribution carried forward, which
+      is exactly what the perturbation half of this driver already does
+      to the hydrometeor state, and it leaves Z proportional to mass
+      rather than manufacturing a distribution;
+    * where the background holds none of it, or holds it below the
+      threshold, there is no distribution to carry, so the analysis
+      declines the whole pair's increment in that cell rather than
+      creating condensate it cannot describe.  Declining is not repair:
+      the cell keeps exactly the background.
+
+    "Active" is the scheme's own word, and it is the word that matters.
+    Any positive background mass used to qualify, so a cloud the scheme
+    had already evaporated to 5e-15 kg/kg with a droplet number of 5e4
+    left standing was rescaled by an increment of 1e-3 kg/kg: a factor
+    of 2e11, a droplet number of 1e16 per kilogram, above the 1e15 the
+    pre-leg health gate admits for a number moment, and the next leg
+    refused the state.  Below the threshold the scheme reads no number
+    at all, so there is no distribution there to carry.
+
+    The rescaled number is then checked against the health gate's own
+    ceiling (:func:`gpuwm.core.health.rule_for_field`) and for
+    finiteness, and a cell whose result is not representable declines
+    the whole pair to the prior.  Never capped: a number held at the
+    ceiling is a distribution nobody measured, and the cap would be the
+    silent version of the refusal it avoids.
+
+    "Above the threshold" is the SCHEME's threshold
+    (:func:`moment_mass_threshold`), not a single number: Thompson
+    demands a moment above 1e-12 and Morrison above 1e-14, and using
+    Thompson's for both left a Morrison run's smallest broken cells to be
+    refused by the next leg instead of conditioned here.
+
+    Only cells that would otherwise break are touched, so a healthy
+    increment comes back unchanged and by identity.  Returns
+    ``(increment, report)``; the report counts the cells rescaled, the
+    cells declined for an inactive background and, separately, the cells
+    declined because the rescaled number would not be representable.
+    """
+    from gpuwm.core.health import rule_for_field
+    from gpuwm.da import moments as _moments
+
+    # The threshold goes in the record, so a leg says which mass it
+    # conditioned against rather than leaving a reader to re-derive it
+    # from the scheme number.  It is always the scheme's own: an
+    # unresolvable scheme cannot reach the fallback here, because
+    # analysis_fields below refuses it by name first.
+    threshold = moment_mass_threshold(mp_physics)
+
+    def _report():
+        return {"conditioned": False, "cells_rescaled": 0,
+                "cells_declined": 0, "cells_declined_for_ceiling": 0,
+                "species": {},
+                "mass_threshold_kg_kg": threshold}
+
+    names = tuple(increment)
+    available = tuple(
+        name for name in set(names)
+        | set(_moments.analysis_fields(int(mp_physics)))
+        if getattr(state, name, None) is not None)
+    pairs = [pair for pair
+             in _moments.pairs_present(available, mp_physics=int(mp_physics))
+             if set(pair.fields) & set(names)]
+    if not pairs:
+        return increment, _report()
+    out = dict(increment)
+    report = _report()
+    for pair in pairs:
+        q0 = to_host(getattr(state, pair.mass)).astype(np.float64)
+        n0 = to_host(getattr(state, pair.number)).astype(np.float64)
+        dq = np.asarray(out.get(pair.mass, np.zeros_like(q0)),
+                        dtype=np.float64).copy()
+        dn = np.asarray(out.get(pair.number, np.zeros_like(n0)),
+                        dtype=np.float64).copy()
+        q1 = q0 + dq
+        n1 = n0 + dn
+        bad = (q1 > threshold) & (n1 <= 0.0)
+        if not bad.any():
+            continue
+        # An ACTIVE background: the scheme reads this cell's number, so
+        # there is a distribution to carry.  Below the threshold there
+        # is none, whatever number was left standing there.
+        rescale = bad & (q0 > threshold) & (n0 > 0.0)
+        ceiling_rule = rule_for_field(pair.number)
+        ceiling = (np.inf if ceiling_rule.upper is None
+                   else float(ceiling_rule.upper))
+        if rescale.any():
+            factor = np.ones_like(q0)
+            np.divide(q1, q0, out=factor, where=rescale)
+            rescaled = n0 * factor
+            # The result has to be a number the next leg's gate admits.
+            # Where it is not, the pair declines to the prior; a cap
+            # would hand the scheme a distribution nobody measured.
+            unrepresentable = rescale & ~(np.isfinite(rescaled)
+                                          & (rescaled <= ceiling))
+            rescale = rescale & ~unrepresentable
+            dn = np.where(rescale, rescaled - n0, dn)
+        else:
+            unrepresentable = np.zeros_like(bad)
+        decline = bad & ~rescale
+        if decline.any():
+            dq = np.where(decline, 0.0, dq)
+            dn = np.where(decline, 0.0, dn)
+        extra = {}
+        if (pair.volume is not None
+                and getattr(state, pair.volume, None) is not None):
+            v0 = to_host(getattr(state, pair.volume)).astype(np.float64)
+            dv = np.asarray(out.get(pair.volume, np.zeros_like(v0)),
+                            dtype=np.float64).copy()
+            if rescale.any():
+                factor = np.ones_like(q0)
+                np.divide(q1, q0, out=factor, where=rescale)
+                dv = np.where(rescale, v0 * factor - v0, dv)
+            dv = np.where(decline, 0.0, dv)
+            extra[pair.volume] = dv
+        out[pair.mass] = dq.astype(
+            np.asarray(increment.get(pair.mass, dq)).dtype, copy=False)
+        out[pair.number] = dn.astype(
+            np.asarray(increment.get(pair.number, dn)).dtype, copy=False)
+        out.update(extra)
+        for_ceiling = int(unrepresentable.sum())
+        report["conditioned"] = True
+        report["cells_rescaled"] += int(rescale.sum())
+        report["cells_declined"] += int(decline.sum())
+        report["cells_declined_for_ceiling"] += for_ceiling
+        report["species"][pair.species] = {
+            "rescaled": int(rescale.sum()),
+            "declined": int(decline.sum()),
+            "declined_for_ceiling": for_ceiling,
+            "number_ceiling": None if not np.isfinite(ceiling) else ceiling}
+    if not report["conditioned"]:
+        return increment, report
+    return out, report
+
+
+def merge_hotstart_increments(filter_increments, hot_increments, *, prior,
+                              positivity_policy, report_overlap: bool = True):
+    """The filter increment plus the insertion, bounded as one analysis.
+
+    Both halves are increments to the SAME background from the same
+    reflectivity volume, so where they name the same field they are summed
+    -- and the sum is what the next leg applies.  Each half is bounded on
+    its own: the filter's by the run's positivity policy against this
+    background, the insertion's by its own configured caps and by never
+    taking more vapour than the column holds.  Neither of those bounds the
+    SUM, and two admissible negatives add to an inadmissible one: a real
+    cycle put water vapour at -1.02e-4 kg/kg this way and the next leg
+    refused the state it was handed.
+
+    So the mapping goes back through the same policy against the same
+    background -- every field of it, on every leg, because this mapping
+    IS what the generation saves and what the next leg applies, and a
+    field left out here is a field that leaves the process unbounded.
+    Re-binding a field the filter already bound against this same
+    background changes nothing, which is what makes that safe.  A run
+    that stated no policy gets no policy here either; that is the only
+    way to reach this code without one, and inventing one would be a
+    different analysis than the one asked for.
+
+    Refuses before any of that when the mapping carries a field the
+    pre-leg health gate floors at zero and the policy has no opinion
+    about: those two lists live in different files, and when they
+    disagree the run finds out a leg later in another process.
+
+    Returns ``(merged, overlap, positivity_receipt)``.  ``overlap`` is the
+    per-field size of each half, for the fields both had an opinion about,
+    and is empty when ``report_overlap`` is false.  ``positivity_receipt``
+    is ``None`` only when the run stated no policy.
+    """
+
+    merged = dict(filter_increments)
+    overlap: dict[str, dict] = {}
+    for field, values in (hot_increments or {}).items():
+        if field not in merged:
+            merged[field] = values
+            continue
+        # BOTH halves have an opinion about this field.  Summing double
+        # counts the same reflectivity volume, so each component's size is
+        # reported rather than one silently overwriting the other.
+        base = np.asarray(merged[field], np.float64)
+        added = np.asarray(values, np.float64)
+        if report_overlap:
+            overlap[field] = {
+                "filter_rms": float(np.sqrt(np.mean(base ** 2))),
+                "hotstart_rms": float(np.sqrt(np.mean(added ** 2))),
+            }
+        merged[field] = (base + added).astype(np.float32)
+
+    receipt = None
+    if positivity_policy is not None:
+        from gpuwm.core.health import rule_for_field
+        from gpuwm.da import positivity as _positivity
+        from gpuwm.da.positivity import (PositivityError, apply_positivity,
+                                         verify_non_negative)
+        # The two contracts that decide whether this mapping survives the
+        # process boundary are written in different files, and when they
+        # disagree the run finds out four minutes later, in another
+        # process, as a health gate refusing a number with nothing
+        # pointing back here.  ``rule_for_field`` says which fields the
+        # pre-leg gate floors at zero; ``NON_NEGATIVE_FIELDS`` says which
+        # ones the policy will bound.  A field in the first and not the
+        # second is analysed unbounded and then refused -- which is what
+        # the aerosol-aware tracers did on a radar cycle whose saved
+        # generation reached -2.96e9 kg^-1 in 4,178 cells while the
+        # policy's own receipt called them "unconstrained".  Read from
+        # the INSTALLED module, so a tree whose list has grown past the
+        # package a run imports is caught here rather than on the card.
+        unbounded = tuple(
+            name for name in sorted(merged)
+            if name not in _positivity.NON_NEGATIVE_FIELDS
+            and rule_for_field(name).lower == 0.0)
+        if unbounded:
+            raise PositivityError(
+                f"the analysis carries {list(unbounded)}, which the health "
+                f"gate floors at zero and the positivity policy "
+                f"{positivity_policy!r} has no opinion about: the saved "
+                "generation would go out unbounded on those fields and the "
+                "next leg's pre-leg health gate would refuse the state it "
+                "built from them. The two lists that disagree are "
+                "gpuwm.core.health.rule_for_field and "
+                f"gpuwm.da.positivity.NON_NEGATIVE_FIELDS in "
+                f"{_positivity.__file__}")
+        # EVERY field of the mapping, and on every leg -- not only the
+        # insertion's fields on the legs that carry an insertion.  This
+        # mapping IS what the generation saves and what the next leg
+        # applies, so the field that is not re-bound here is the field
+        # that leaves this process unbounded.
+        merged, receipt = apply_positivity(
+            prior, merged, policy=positivity_policy)
+        if positivity_policy in ("clip", "reject"):
+            # The post-condition that catches a policy applied to the
+            # wrong mapping, asked of the bytes the next leg will apply.
+            verify_non_negative(prior, merged)
+    return merged, overlap, receipt
+
+
 def _write_composite_wrfout(npz_path, refl_colmax, grid, cfg,
-                            elapsed_seconds: float, exp, *, label: str):
+                            elapsed_seconds: float, exp, *, label: str,
+                            domain=None):
     """A real wrfout beside a composite ``.npz``; the path, or ``None``.
+
+    ``domain`` is the CHILD's ``DomainConfig`` when this frame belongs to
+    a nest.  It puts the WRF topology group (GRID_ID, PARENT_ID, the two
+    parent starts and the ratio) in the file, so the frame STATES which
+    domain it is instead of leaving that to the ``dNN`` token in its
+    name.  Omitted for the root domain, which is what a file with no
+    topology group already means.
 
     Why a writer and not a Rust ``.npz`` reader: ``.npz`` carries no
     geolocation contract, so a reader for it would be a per-format adapter
@@ -269,10 +903,22 @@ def _write_composite_wrfout(npz_path, refl_colmax, grid, cfg,
             start = datetime.datetime(1970, 1, 1)
         stamp = (start + datetime.timedelta(seconds=float(elapsed_seconds))
                  ).strftime("%Y-%m-%d_%H:%M:%S")
-        attrs = wrf_global_attrs(grid, start, dt=float(cfg.dt))
+        topology = {} if domain is None else {
+            "grid_id": int(domain.grid_id),
+            "parent_id": int(domain.parent_id),
+            "i_parent_start": int(domain.i_parent_start),
+            "j_parent_start": int(domain.j_parent_start),
+            "parent_grid_ratio": int(domain.parent_grid_ratio)}
+        # ``start`` stays the HEAD grid's start on every domain, which is
+        # what WRF itself writes: SIMULATION_START_DATE is the run origin
+        # rw_wrfbatch measures each product's lead from, and a child that
+        # stamped its own start there would label the same instant with a
+        # different lead than the parent frame beside it.
+        attrs = wrf_global_attrs(grid, start, dt=float(cfg.dt), **topology)
         report = write_surface_wrfout(
             snapshot_wrfout_path(npz_path), snapshot, time_str=stamp,
             dx=float(cfg.dx), dy=float(cfg.dy), global_attrs=attrs,
+            grid_id=None if domain is None else int(domain.grid_id),
             title=f"gpuwm DA composite ({label})")
         # Anything the snapshot carried that the file did not get, by
         # name.  Empty for the composite this lane builds, and stated
@@ -288,6 +934,25 @@ def _write_composite_wrfout(npz_path, refl_colmax, grid, cfg,
         return None
 
 def main() -> int:
+    """The door: run the cycle, and clear its stage however the run ends.
+
+    :func:`cycle` registers the stage it writes under in ``stages`` as
+    soon as it knows where that is, so a run that stops on a refusal, a
+    device error or a treatment verdict has its staged restart sets
+    removed here exactly as a run that reaches its last leg does.  A
+    completed run clears the stage itself and writes the receipt into
+    its report; the clearing here is the same call again and removes
+    nothing more.
+    """
+    stages: list = []
+    try:
+        return cycle(stages)
+    finally:
+        for stage in stages:
+            stage.clear()
+
+
+def cycle(stages: list) -> int:
     # Deferred like every other gpuwm import in this driver: the module
     # has to be importable by a bare `python tools/da_cycle_prepared.py
     # --help` from a checkout, and the package lands on sys.path only
@@ -387,14 +1052,16 @@ def main() -> int:
               "(ny, nx)).  A quicklook diagnostic, deliberately tiny; "
               "wrfout history for cycled arms remains its own package"))
     parser.add_argument("--members", type=int, default=10)
-    # -- the fine nest over the free forecast ---------------------------
+    # -- the fine nest, over every leg ----------------------------------
     #
-    # Off unless asked for.  When on, it applies to the FREE legs only:
-    # the parent carries the ensemble and the assimilation, and the nest
-    # is the detailed picture of the forecast that runs past the
-    # observations.  Everything about the child except these keys is
-    # DERIVED -- dx, dy and dt come off the parent through the ratio
-    # chain and are never typed here.
+    # Off unless asked for.  When on it runs on EVERY leg, observed and
+    # free: a child attached to the free legs alone is born at the fork
+    # between the cycle and whatever consumes its analysis, and a domain
+    # minutes old is still growing the fine structure its spacing exists
+    # to resolve, so a window comparison across that fork measures the
+    # birth as much as the weather.  Everything about the child except
+    # these keys is DERIVED -- dx, dy and dt come off the parent through
+    # the ratio chain and are never typed here.
     parser.add_argument(
         "--nest-ratio", type=int, default=3,
         help=("parent-to-child refinement ratio, applied to BOTH space "
@@ -439,22 +1106,31 @@ def main() -> int:
               "gridded onto, in leg order; one per --obs"))
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--stage-dir", type=Path, default=None,
-                        help="where per-leg member checkpoints are staged "
-                             "(a tmpfs is a good choice); default is a "
-                             "temporary directory under --out")
+                        help="where each trajectory's leg-end restart set "
+                             "and the member checkpoints of an analysis "
+                             "are staged (a tmpfs is a good choice; budget "
+                             "one restart set per trajectory plus one "
+                             "analysis's member checkpoints); a set is "
+                             "removed once the next leg has restored it, "
+                             "and whatever the stage still holds when the "
+                             "run ends is removed with it, however the run "
+                             "ends; the generation under --save-ensemble "
+                             "is the copy that stays; default is a "
+                             "directory under --out, removed at the end")
     # -- carrying the ensemble between processes ------------------------
-    # A leg boundary inside one process is snapshots + unapplied
-    # increments; these two flags are that same boundary on disk, so a
-    # continuous nowcast can assimilate an observation that did not
-    # exist when the previous cycle ran.  tools/da_ensemble_state.py
-    # documents the format and does the identity checking.
+    # A leg boundary inside one process is each trajectory's restart set
+    # plus its unapplied increments; these two flags are that same
+    # boundary on disk, so a continuous nowcast can assimilate an
+    # observation that did not exist when the previous cycle ran.
+    # tools/da_ensemble_state.py documents the format and does the
+    # identity checking.
     parser.add_argument(
         "--resume-ensemble", type=Path, default=None,
         help=("resume from an ensemble generation written by "
               "--save-ensemble instead of perturbing a fresh ensemble. "
-              "Leg 0 restores those snapshots, applies the increments "
-              "the generation carried, and starts at the generation's "
-              "own elapsed seconds"))
+              "Leg 0 restores each trajectory's restart set, applies the "
+              "increments the generation carried, and starts at the "
+              "generation's own elapsed seconds"))
     parser.add_argument(
         "--save-ensemble", type=Path, default=None,
         help=("write the ensemble generation at the end of the LAST "
@@ -579,17 +1255,18 @@ def main() -> int:
                              "analysed; gpuwm.da.positivity documents "
                              "what each choice costs")
     # -- surface observations (default OFF) -------------------------------
-    # METAR/ASOS through the rw_asos seam (gpuwm-obs.asos-surface.v1).
-    # A quantity is enabled by stating its error standard deviation; the
-    # record is hourly-matched by decoder design, so most sub-hourly
-    # cycles legitimately see zero fresh surface reports and each report
-    # enters exactly one analysis (the nearest).  gpuwm/da/obs_surface.py
-    # documents what the v1 seam can and cannot express.
+    # METAR/ASOS through the rw_asos seam (gpuwm-obs.asos-surface.v2, and
+    # the v1 records written before it).  A quantity is enabled by stating
+    # its error standard deviation; the record is hourly-matched by
+    # decoder design, so most sub-hourly cycles legitimately see zero
+    # fresh surface reports and each report enters exactly one analysis,
+    # the one nearest the instant it was taken.  gpuwm/da/obs_surface.py
+    # documents what the seam can and cannot express.
     parser.add_argument(
         "--surface-obs", type=Path, default=None,
-        help="one gpuwm-obs.asos-surface.v1 record covering the whole "
-             "run; reports are routed to the analysis nearest their "
-             "valid time.  OFF unless given")
+        help="one gpuwm-obs.asos-surface record (v2, or v1) covering the "
+             "whole run; each report is routed to the analysis nearest "
+             "the instant it was taken.  OFF unless given")
     parser.add_argument(
         "--sfc-t2-sigma-k", type=float, default=None,
         help="assimilate 2 m temperature with this error stddev (K); "
@@ -681,12 +1358,10 @@ def main() -> int:
     nest_requested = (args.nest_half_width_km is not None
                       or args.nest_nx is not None
                       or args.nest_ny is not None)
-    if nest_requested and args.free_legs <= 0:
+    if nest_requested and args.free_legs <= 0 and not args.obs:
         parser.error(
-            "--nest-* needs --free-legs > 0: the nest runs over the FREE "
-            "forecast legs, which is the whole point of it -- the parent "
-            "carries the assimilation and the nest carries the detail of "
-            "the forecast that runs past the observations")
+            "--nest-* needs legs to run on: this command has neither "
+            "--obs nor --free-legs")
     if args.nest_members is not None and not nest_requested:
         parser.error("--nest-members without a nest extent "
                      "(--nest-half-width-km or --nest-nx/--nest-ny)")
@@ -728,6 +1403,8 @@ def main() -> int:
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     stage_root = Path(args.stage_dir) if args.stage_dir else out / "stage"
+    stage = StagedRestarts(stage_root, default=args.stage_dir is None)
+    stages.append(stage)
     report: dict = {"schema": REPORT_SCHEMA, "stability": "experimental",
                     "args": {key: str(value) for key, value
                              in vars(args).items()}, "legs": []}
@@ -770,9 +1447,14 @@ def main() -> int:
     if args.goes_cwp:
         enabled_obs_kinds.append("cloud_water_path")
     enabled_obs_kinds = tuple(enabled_obs_kinds)
+    from datetime import timedelta
+
     from gpuwm.ensemble.increments import apply_increments
     from gpuwm.ensemble.member import refresh_diagnostics
     from gpuwm.ingest.hrrr_physics import initialize_prepared_physics
+    from gpuwm.io.restart import (DRIVER_TENDENCY_ATTRS,
+                                  RESTART_FORMAT_VERSION,
+                                  tree_restart_members)
     from gpuwm.runtime import declared_constant_glw
     from gpuwm.ingest.prepared_cache import restore_prepared_cache
     from gpuwm.obs.target_grid import TargetGrid
@@ -834,11 +1516,16 @@ def main() -> int:
         history_interval_seconds=args.history_interval_seconds)
     psdf._validate_front_door_physics_proof = _orig_check
     report["physics_proof_vocabulary_divergence"] = vocabulary_divergence
-    # The serialization contract this tree carries, recorded beside the
-    # per-trajectory snapshot_fields lists: the audit is the DIFF of the
-    # two (contract minus snapshot = fields this configuration does not
-    # allocate; snapshot minus contract = impossible by construction).
-    report["state_serialized_attrs"] = list(STATE_SERIALIZED_ATTRS)
+    # The contract a leg boundary rides on, recorded beside the
+    # per-trajectory restart entries: the state arrays the host mirror
+    # hands the filter, and the restart owner's own format and driver
+    # inventory that the checkpoint sets carry on top of them.
+    report["restart_contract"] = {
+        "owner": "gpuwm.io.restart",
+        "format_version": int(RESTART_FORMAT_VERSION),
+        "state_serialized_attrs": list(STATE_SERIALIZED_ATTRS),
+        "driver_tendency_attrs": list(DRIVER_TENDENCY_ATTRS),
+    }
     exp = inputs.experiment
     cfg = exp.root.run
     dt = float(cfg.dt)
@@ -863,6 +1550,13 @@ def main() -> int:
         return final_leg_seconds if index == legs - 1 else leg_seconds
     print(f"preflight OK: {cfg.nx}x{cfg.ny}x{cfg.nz} dt={dt} "
           f"mp={cfg.mp_physics} hyps={cfg.hypsometric_opt}", flush=True)
+    _onset = limiter_onset(cfg)
+    if _onset is not None:
+        print(f"vertical limiter: thinnest layer "
+              f"{_onset['thinnest_layer_m']:.0f} m at "
+              f"{_onset['thinnest_layer_height_m']:.0f} m, so w_damping "
+              f"starts limiting above {_onset['w_onset_ms']:.1f} m/s at "
+              f"dt={dt}", flush=True)
 
     # ---- plan review for the DA door ------------------------------------
     # The analysis configuration is BUILT here, before an ensemble member
@@ -970,7 +1664,15 @@ def main() -> int:
 
     trajectories = [CONTROL] + list(range(args.members))
     setup_arrays: dict | None = None
+    #: The leg-end HOST MIRROR of each trajectory's serialised state, for
+    #: the filter: the analysis reads members from it, prices their
+    #: spread from it and bounds increments against it.  It is not the
+    #: leg join -- ``restarts`` below is.
     snapshots: dict = {name: None for name in trajectories}
+    #: The root member of each trajectory's leg-end tree checkpoint set,
+    #: written by the restart owner and restored by it at the next leg's
+    #: start.  This is what joins one leg to the next.
+    restarts: dict = {name: None for name in trajectories}
     pending: dict = {name: None for name in trajectories}
     hot_pending: dict = {}
 
@@ -986,10 +1688,19 @@ def main() -> int:
         physics_profile=str(args.physics_profile),
         prepared_content_sha256=str(args.prepared_content_sha256))
     resumed_from: dict | None = None
+    #: The trajectories whose resumed checkpoint set carries a child,
+    #: keyed as this driver keys its trajectories.  Empty when the
+    #: generation has none, which leaves leg 0 building the child from
+    #: the analysed parent exactly as a fresh run does.
+    resumed_nested: list = []
+    resumed_nest_receipt = None
     base_seconds = 0.0
     if args.resume_ensemble is not None:
-        snapshots, pending, resumed_from = ens_state.read_generation(
+        restarts, pending, resumed_from = ens_state.read_generation(
             args.resume_ensemble, identity)
+        resumed_nested = ens_state.nested_trajectories(resumed_from)
+        resumed_nest_receipt = (resumed_from.get("nest")
+                                if resumed_nested else None)
         base_seconds = float(resumed_from["elapsed_seconds"])
         report["resumed_from"] = {
             "directory": str(args.resume_ensemble),
@@ -1001,6 +1712,8 @@ def main() -> int:
                 key for key, entry
                 in resumed_from["trajectories"].items()
                 if entry.get("pending")),
+            "trajectories_with_a_child": sorted(
+                str(key) for key in resumed_nested),
         }
         print(f"resumed ensemble from {args.resume_ensemble} at "
               f"{base_seconds:.0f} s elapsed "
@@ -1028,12 +1741,12 @@ def main() -> int:
     #: is written there and nowhere else.
     save_at_leg = len(args.obs) - 1 if args.save_ensemble else None
     #: Per-member leg-end dBZ, diagnosed on the device from the state
-    #: that was snapshotted.  This is H_Z(x) for the filter.
+    #: the restart set and the host mirror were taken from.  This is
+    #: H_Z(x) for the filter.
     member_dbz: dict = {}
     #: Per-member leg-end 2m/10m diagnostics off the live physics driver
-    #: -- the surface H(x), snapshotted at the SAME point as member_dbz
-    #: and never at leg start, where the prepared-cache cycle's
-    #: re-initialised driver state is spin-up.
+    #: -- the surface H(x), taken at the SAME point as member_dbz, so the
+    #: filter sees the diagnostics of the very state it analyses.
     member_sfc: dict = {}
     thb_host = None
 
@@ -1046,7 +1759,11 @@ def main() -> int:
     nest_geometry = None
     nest_child_dc = None
     nest_trajectories: tuple = ()
-    nest_first_leg = len(args.obs)
+    #: Every leg the child runs on, which is every leg there is.  It was
+    #: the free legs alone until 2026-09-18; see nested_forecast.nest_legs
+    #: for why that made the child a creature of the fork.
+    nest_leg_numbers = nested_forecast.nest_legs(
+        observed_legs=len(args.obs), free_legs=int(args.free_legs))
     if nest_requested:
         nest_members = (nested_forecast.DEFAULT_NEST_MEMBERS
                         if args.nest_members is None
@@ -1074,7 +1791,7 @@ def main() -> int:
             land_receipt={
                 "terrain_policy": nested_forecast.TERRAIN_POLICY,
                 "land_policy": nested_forecast.LAND_POLICY},
-            legs=list(range(nest_first_leg, legs)),
+            legs=list(nest_leg_numbers),
             nest_members=nest_members)
         report["nest"]["trajectories"] = [str(name)
                                           for name in nest_trajectories]
@@ -1082,20 +1799,75 @@ def main() -> int:
         print(f"nest: d{nest_child_dc.grid_id:02d} {child_run.nx}x"
               f"{child_run.ny}x{child_run.nz} dx={child_run.dx:g} "
               f"dt={child_run.dt:g} over legs "
-              f"{nest_first_leg}..{legs - 1} for "
+              f"{nest_leg_numbers[0]}..{nest_leg_numbers[-1]} for "
               f"{len(nest_trajectories)} trajector"
               f"{'y' if len(nest_trajectories) == 1 else 'ies'}", flush=True)
 
-    #: Host snapshots of the child's state, one per nesting trajectory.
-    #: The nest is built from the parent on its FIRST leg and restored
-    #: from here afterwards, so the fine-scale structure it develops
+    #: When each nesting trajectory's child was born, in seconds from the
+    #: run start.  The child is built from the parent on its FIRST leg
+    #: and activates at that leg's boundary; every later leg rebuilds its
+    #: configuration on the same instant so the restart owner finds the
+    #: calendar it wrote, and restores the child from the trajectory's
+    #: own checkpoint set, so the fine-scale structure it develops
     #: survives a leg boundary instead of being flattened back to a
-    #: parent interpolation every fifteen minutes.
-    nest_snapshots: dict = {name: None for name in nest_trajectories}
+    #: parent interpolation every fifteen minutes.  ``None`` until born.
+    nest_birth: dict = {name: None for name in nest_trajectories}
+    if resumed_nested:
+        if nest_child_dc is None:
+            raise SystemExit(
+                "the resumed generation carries a child and this run "
+                "passed no --nest-*: continuing without it would throw "
+                "away a child that has been running since "
+                f"{resumed_from['written']}, silently")
+        differences = [
+            f"{field}: generation "
+            f"{(resumed_nest_receipt or {}).get(field)} vs run {value}"
+            for field, value in (
+                ("nx", int(nest_child_dc.run.nx)),
+                ("ny", int(nest_child_dc.run.ny)),
+                ("nz", int(nest_child_dc.run.nz)),
+                ("i_parent_start", int(nest_child_dc.i_parent_start)),
+                ("j_parent_start", int(nest_child_dc.j_parent_start)),
+                ("parent_grid_ratio",
+                 int(nest_child_dc.parent_grid_ratio)))
+            if int((resumed_nest_receipt or {}).get(field, -1)) != value]
+        if differences:
+            raise SystemExit(
+                "the resumed generation's child is not this run's "
+                "child, and restoring its arrays onto a differently "
+                "placed domain would produce a plausible-looking "
+                "forecast of nowhere: " + "; ".join(differences))
+        for name in resumed_nested:
+            if name not in nest_birth:
+                raise SystemExit(
+                    f"the resumed generation carries a child on "
+                    f"trajectory {name!r} and this run's nest covers "
+                    f"{sorted(str(n) for n in nest_trajectories)}; "
+                    "--nest-members has to be at least what the "
+                    "generation was written with")
+            # The child's activation epoch is read off its own
+            # checkpoint member, the one place the calendar the restart
+            # owner will check it against is written.
+            nest_birth[name] = restart_child_birth_seconds(
+                restarts[name], grid_id=int(nest_child_dc.grid_id),
+                start_time=exp.start_time)
+        report["nest"]["resumed_trajectories"] = sorted(
+            str(name) for name in resumed_nested)
+        report["nest"]["resumed_birth_seconds"] = {
+            str(name): nest_birth[name] for name in resumed_nested}
 
     def nests_this_leg(leg: int, name) -> bool:
-        return (nest_child_dc is not None and leg >= nest_first_leg
+        return (nest_child_dc is not None and leg in nest_leg_numbers
                 and name in nest_trajectories)
+
+    def child_config_for(name, born_at: float):
+        """This trajectory's child, activating at ``born_at`` seconds.
+
+        One configuration per birth instant rather than one for the run:
+        the instant is the child's calendar, and it is what the restart
+        header carries and checks.
+        """
+        return nested_forecast.child_born_at(nest_child_dc, exp, born_at)
 
     # ---- model wiring, per member-leg ---------------------------------------
 
@@ -1104,17 +1876,30 @@ def main() -> int:
 
         With ``child_dc`` the clock and the schedule are the TWO-domain
         ones, but the child itself is NOT built here.  It is derived from
-        the parent's state by SINT, and on every leg after the first that
-        state does not exist yet: the host snapshot has still to be
-        restored and the analysis increment applied.  Building the child
-        before that would hand the nest a pre-analysis parent, which is
-        the very failure this whole design exists to avoid.
-        :func:`assemble` closes the model once the child is real.
+        the parent's state by SINT, and which parent state that is
+        depends on the leg: a child born this leg is built from the
+        ANALYSED parent after the restart set is restored and the
+        increment applied, and a child the trajectory already carries is
+        built before the restore so the restore can fill it.  Building a
+        newborn from a pre-analysis parent would hand the nest a
+        forecast nobody corrected, which is the very failure this whole
+        design exists to avoid.  :func:`assemble` closes the model once
+        the child is real.
+
+        The root's external boundary clock is BOUND here, as
+        ``run_prepared_forecast`` binds it, so a leg's Davies relaxation
+        consumes WRF's post-increment ``dtbc`` recurrence from the clock
+        the restart owner places rather than the retired elapsed-seconds
+        calculation, and the checkpoint header records that semantic.
         """
+        from gpuwm.ingest.lateral_bc import bind_lateral_boundary_clock
+
         exp_leg = dataclasses.replace(exp,
                                       run_seconds=float(run_seconds_total))
+        live_born = ()
         if child_dc is not None:
             exp_leg = nested_forecast.nested_experiment(exp_leg, child_dc)
+            live_born = (int(child_dc.grid_id),)
         restored = restore_prepared_cache(
             inputs.prepared_cache_path, expected_identity=inputs.cache_identity,
             cfg=cfg, static=inputs.static)
@@ -1124,23 +1909,35 @@ def main() -> int:
             exp.start_time,
             constant_glw_wm2=declared_constant_glw(exp))
         tick = resolve_clock(
-            exp_leg, lbc_interval_s=float(inputs.boundary_interval_seconds))
+            exp_leg, lbc_interval_s=float(inputs.boundary_interval_seconds),
+            live_born_children=live_born)
         schedule = build_schedule(exp_leg, tick)
         clocks = tick.clocks()
         node = DomainNode(exp.root, inputs.grid,
                           restored.initial_result.state, clocks[1],
                           None, [], None)
+        if getattr(cfg, "specified", False):
+            bind_lateral_boundary_clock(node.state, node.clock)
         return SimpleNamespace(node=node, restored=restored, driver=driver,
                                clocks=clocks, schedule=schedule,
                                child_dc=child_dc)
 
-    def assemble(wired, *, child_node=None):
-        """Turn the wired pieces into the ExperimentState the executor runs."""
+    def assemble(wired, *, name, child_node=None):
+        """Turn the wired pieces into the ExperimentState the executor runs.
+
+        The fingerprint is the TRAJECTORY's (:func:`trajectory_fingerprint`),
+        so the restart owner refuses a checkpoint set that belongs to
+        another member, another ensemble or another case before it reads
+        an array, and names the component that differs.
+        """
         nodes = {1: wired.node}
         if child_node is not None:
             nodes[child_node.cfg.grid_id] = child_node
         model = ExperimentState(wired.node, MappingProxyType(nodes),
-                                wired.schedule, None, "da-cycle-shakedown")
+                                wired.schedule, None,
+                                trajectory_fingerprint(identity, name))
+        model._experiment_fingerprint_components = trajectory_identity(
+            identity, name)
         model._runtime_status = ModelRuntimeStatus()
         model._resumed = False
         model._resume_committed_history_grid_ids = frozenset()
@@ -1281,8 +2078,37 @@ def main() -> int:
         for name in trajectories:
             t_leg = time.time()
             nested_leg = nests_this_leg(leg, name)
-            wired = wire(t_end,
-                         child_dc=nest_child_dc if nested_leg else None)
+            # -- what this leg starts from ---------------------------------
+            #
+            # Leg 0 of a fresh run starts from the prepared background
+            # (perturbed for a member).  Every other leg starts from the
+            # trajectory's own restart set: the one the previous leg
+            # wrote, or the one the resumed generation carried.
+            source = None
+            child_in_checkpoint = False
+            born_at = None
+            if not (leg == 0 and resumed_from is None):
+                source = restarts[name]
+                if source is None:
+                    raise RuntimeError(
+                        f"leg {leg} {name}: no restart set to continue "
+                        "from; the previous leg wrote none")
+                stored_ids = restart_domain_ids(source)
+                if nested_leg:
+                    child_in_checkpoint = (
+                        int(nest_child_dc.grid_id) in stored_ids)
+                elif len(stored_ids) > 1:
+                    raise RuntimeError(
+                        f"leg {leg} {name}: the restart set carries "
+                        f"domains {list(stored_ids)} and this leg runs "
+                        "the root alone; a child cannot be dropped at "
+                        "a leg boundary silently")
+            if nested_leg:
+                born_at = (nest_birth[name] if child_in_checkpoint
+                           else float(t_start))
+            child_dc_leg = (child_config_for(name, born_at)
+                            if nested_leg else None)
+            wired = wire(t_end, child_dc=child_dc_leg)
             node, restored, driver = wired.node, wired.restored, wired.driver
             state = node.state
             if setup_arrays is None:
@@ -1299,6 +2125,39 @@ def main() -> int:
                     "dnw": to_host(state.dnw).astype(np.float64),
                     "mub2d": to_host(state.mub2d).astype(np.float64),
                 }
+            child_node = child_driver = None
+            nest_entry = None
+            if nested_leg:
+                nest_entry = leg_record["trajectories"].setdefault(
+                    str(name), {}).setdefault("nest", {})
+                nest_entry["grid_id"] = nest_child_dc.grid_id
+                nest_entry["born_at_seconds"] = float(born_at)
+
+            def _build_child():
+                """The child object, from the parent's live state.
+
+                Its clock is placed at the child's own birth first, and
+                the builder refreshes the model time from it before the
+                physics is attached, so the child's driver counts its
+                ITIMESTEP from its activation.
+                """
+                clock = wired.clocks[nest_child_dc.grid_id]
+                nested_forecast.place_newborn_clock(clock)
+                return nested_forecast.build_nested_child(
+                    node, child_dc_leg,
+                    static=inputs.static, surface=restored.surface,
+                    landuse_identity=inputs.landuse_identity,
+                    valid_time=exp.start_time, clock=clock,
+                    parent_driver=driver,
+                    constant_glw_wm2=declared_constant_glw(exp))
+
+            # A child the trajectory already carries is built BEFORE the
+            # restore, because the restart owner restores the whole set
+            # into the whole tree: the SINT below only builds the object
+            # and its base state, and every array it holds is then
+            # overwritten from the checkpoint.
+            if child_in_checkpoint:
+                child_node, child_driver, _land_receipt = _build_child()
             # `resumed` drives model._resumed below, which stops the
             # resumed leg from rewriting history the previous process
             # already committed.  `resumed_from is None` is the separate
@@ -1308,23 +2167,49 @@ def main() -> int:
             # no error raised anywhere.  Both guards are required; they are
             # not the same question.
             resumed = False
-            if leg == 0 and resumed_from is None:
+            #: The parent's fields the pending increment names, as the
+            #: restart set restored them and BEFORE the increment: the
+            #: background side of the correction a carried child takes.
+            restored_background: dict = {}
+            if source is None:
                 if name != CONTROL:
                     prov = perturb.apply_perturbations(
                         state, args.seed + int(name), cfg_perturb)
                     refresh_diagnostics(
                         state, hypsometric_opt=cfg.hypsometric_opt)
             else:
-                jump_clock(node.clock, t_start, dt)
+                model = assemble(wired, name=name, child_node=child_node)
+                restart_info = restore_leg_restart(
+                    model, source, expected_seconds=t_start)
                 resumed = True
-                for field, host in snapshots[name].items():
-                    getattr(state, field)[...] = cp.asarray(
-                        host, dtype=getattr(state, field).dtype)
+                entry_restore = leg_record["trajectories"].setdefault(
+                    str(name), {})
+                entry_restore["restored_from"] = {
+                    "root_member": Path(source).name,
+                    "domain_ids": list(restart_domain_ids(source)),
+                    "elapsed_seconds": (restart_info.elapsed_ticks
+                                        / restart_info.tick_den),
+                }
+                # A staged set is consumed by exactly one leg; a
+                # generation's set is the durable record and stays.
+                entry_restore["staged_set_removed"] = stage.consume(source)
                 if pending[name]:
-                    receipt = apply_increments(
+                    if child_in_checkpoint:
+                        for field in sorted(pending[name]):
+                            live = getattr(state, field, None)
+                            if live is None or getattr(
+                                    child_node.state, field, None) is None:
+                                continue
+                            restored_background[field] = to_host(live)
+                    to_apply, pair_report = keep_moment_pairs(
                         state, pending[name], mp_physics=cfg.mp_physics)
+                    receipt = apply_increments(
+                        state, to_apply, mp_physics=cfg.mp_physics)
                     leg_record["trajectories"].setdefault(str(name), {})[
                         "apply_fields"] = receipt["field_count"]
+                    if pair_report["conditioned"]:
+                        leg_record["trajectories"].setdefault(str(name), {})[
+                            "moment_pairs_kept"] = pair_report
                     refresh_diagnostics(
                         state, hypsometric_opt=cfg.hypsometric_opt)
             health = StateHealthValidator(state).validate(
@@ -1334,65 +2219,93 @@ def main() -> int:
                     f"leg {leg} {name}: pre-leg health failed: "
                     f"{vars(health)}")
 
-            # -- the fine nest, built from the state above -------------------
+            # -- the fine nest ------------------------------------------------
             #
-            # Deliberately AFTER the snapshot restore, the increment
-            # application and the health gate: the parent state the child
-            # is derived from has to be the ANALYSED one, or the nest
+            # A child born this leg is built AFTER the restore, the
+            # increment application and the health gate: the parent state
+            # it is derived from has to be the ANALYSED one, or the nest
             # would inherit a forecast nobody corrected and the whole
             # exercise would be worth less than interpolating the output.
-            child_node = child_driver = None
             if nested_leg:
-                child_node, child_driver, land_receipt = \
-                    nested_forecast.build_nested_child(
-                        node, nest_child_dc,
-                        static=inputs.static, surface=restored.surface,
-                        landuse_identity=inputs.landuse_identity,
-                        valid_time=exp.start_time,
-                        clock=wired.clocks[nest_child_dc.grid_id],
-                        parent_driver=driver,
-                        constant_glw_wm2=declared_constant_glw(exp))
-                child_state = child_node.state
-                nest_entry = leg_record["trajectories"].setdefault(
-                    str(name), {}).setdefault("nest", {})
-                nest_entry["grid_id"] = nest_child_dc.grid_id
-                if nest_snapshots.get(name) is None:
+                if child_node is None:
+                    child_node, child_driver, _land_receipt = _build_child()
+                    nest_birth[name] = float(born_at)
                     nest_entry["initialization"] = "parent-live-state-sint"
                 else:
                     # A later nested leg: the child already has fine
-                    # structure of its own, and flattening it back to a
-                    # parent interpolation every leg boundary would throw
-                    # away exactly what the nest is for.  The SINT above
-                    # still runs -- it is what builds the state object and
-                    # its base state -- and is then overwritten field by
-                    # field, in the same shape the parent's own leg
-                    # handoff uses.
-                    nest_entry["initialization"] = "child-host-snapshot"
-                    for field, host in nest_snapshots[name].items():
-                        getattr(child_state, field)[...] = cp.asarray(
-                            host, dtype=getattr(child_state, field).dtype)
-                    refresh_diagnostics(
-                        child_state,
-                        hypsometric_opt=nest_child_dc.run.hypsometric_opt)
-                # The child clock is placed on the same tick lattice as the
-                # parent.  Its dtbc accumulator is deliberately left at
-                # zero: a child's boundary clock resets at EVERY nested
-                # force, the executor refuses a child STEP before the
-                # leg's first parent STEP -> FORCE, so no child step can
-                # read a value the force has not just written.
-                child_node.clock.ticks = int(
-                    round(t_start / float(nest_child_dc.run.dt))
-                ) * child_node.clock.spec.step_ticks
-                child_node.clock.step_count = int(
-                    round(t_start / float(nest_child_dc.run.dt)))
+                    # structure of its own, restored above from the
+                    # trajectory's own checkpoint set; flattening it back
+                    # to a parent interpolation every leg boundary would
+                    # throw away exactly what the nest is for.
+                    nest_entry["initialization"] = "restart-set"
+                    # The child is not analysed itself -- the filter runs
+                    # on the parent ensemble, and a 1 km member set is a
+                    # different (and much larger) experiment.  What the
+                    # child gets is the correction the analysis made to
+                    # its parent, carried down by the operator it was
+                    # born through: SINT(analysed) - SINT(background),
+                    # differenced rather than interpolated as one
+                    # increment because SINT is monotonicity-limited and
+                    # therefore not linear.  Both sides are raw
+                    # interpolations of the PARENT -- the restored parent
+                    # before the increment, and the live parent after it.
+                    # Over exactly the fields the increment names: a
+                    # moment the applier repaired on a field the analysis
+                    # did not name stays on the parent, and a leg with no
+                    # analysis leaves the child bitwise alone.
+                    child_state = child_node.state
+                    analysed_parent = {
+                        field: getattr(state, field)
+                        for field in sorted(restored_background)}
+                    carried = {}
+                    if restored_background:
+                        correction = nested_forecast.nest_down_analysis(
+                            restored_background, analysed_parent,
+                            child_dc_leg, cfg, array_module=cp)
+                        # The parent's analysis was bounded against the
+                        # PARENT's background; the child's background is
+                        # its own evolved state, so the same correction
+                        # can drive a positive-definite species below
+                        # zero there.  Same policy, child's background.
+                        correction, child_positivity = (
+                            bound_child_correction(
+                                child_state, correction,
+                                policy=args.positivity_policy,
+                                array_module=cp))
+                        if child_positivity is not None:
+                            nest_entry["positivity_on_correction"] = (
+                                child_positivity)
+                        for field, delta in correction.items():
+                            largest = float(cp.abs(delta).max())
+                            if largest == 0.0:
+                                continue
+                            target = getattr(child_state, field)
+                            target[...] = target + delta.astype(
+                                target.dtype)
+                            carried[field] = largest
+                        del correction
+                        refresh_diagnostics(
+                            child_state,
+                            hypsometric_opt=child_dc_leg.run.hypsometric_opt)
+                    del analysed_parent
+                    nest_entry["analysis_carried_down"] = {
+                        "how": ("sint(analysed parent) - sint(restored "
+                                "parent), the child's own state kept"),
+                        "fields": sorted(carried),
+                        "max_abs_correction": {
+                            field: carried[field]
+                            for field in sorted(carried)},
+                    }
+                child_state = child_node.state
                 child_health = StateHealthValidator(child_state).validate(
                     phase=f"leg{leg}.{name}.nest")
                 if not child_health.ok:
                     raise FloatingPointError(
                         f"leg {leg} {name}: nest pre-leg health failed: "
                         f"{vars(child_health)}")
+            del restored_background
 
-            model = assemble(wired, child_node=child_node)
+            model = assemble(wired, name=name, child_node=child_node)
             if resumed:
                 model._resumed = True
                 model._resume_committed_history_grid_ids = frozenset(
@@ -1403,6 +2316,27 @@ def main() -> int:
                                skip_feedback_path=True,
                                pool_trim_per_period=True)
             cp.cuda.Stream.null.synchronize()
+
+            # -- the leg join: this trajectory's restart set --------------
+            #
+            # Written FIRST, before any diagnostic reads the state, so the
+            # set is the model exactly as the integration left it.  The
+            # writer refuses anything but a period boundary with nothing
+            # pending, which is what a completed integration is.
+            restart_root = stage.directory(leg_number(leg), name)
+            restarts[name] = write_leg_restart(
+                model, restart_root,
+                valid_time=exp.start_time + timedelta(seconds=float(
+                    node.clock.ticks / node.clock.tick_den)))
+            written_members = tree_restart_members(restarts[name])
+            entry = leg_record["trajectories"].setdefault(str(name), {})
+            entry["restart"] = {
+                "root_member": restarts[name].name,
+                "domain_ids": sorted(int(gid) for gid in written_members),
+                "bytes": int(sum(member.stat().st_size
+                                 for member in written_members.values())),
+                "elapsed_seconds": float(node.clock.elapsed_seconds),
+            }
 
             thb_live = getattr(state, "thb", None)
             thb_snapshot = to_host(thb_live) if thb_live is not None \
@@ -1416,10 +2350,8 @@ def main() -> int:
             if surface_cfg is not None and name != CONTROL:
                 # Leg-END surface diagnostics off the live driver: the
                 # 2m/10m fields the surface layer diagnosed for the very
-                # state that was snapshotted.  Leg START would hand the
-                # filter re-initialised spin-up (documented simplification
-                # of this driver), which is why the snapshot lives here
-                # beside member_dbz and nowhere else.
+                # state that was mirrored, taken here beside member_dbz
+                # and nowhere else.
                 absent = [key for key in ("t2", "u10", "v10")
                           if key not in driver.fields]
                 if absent:
@@ -1457,17 +2389,28 @@ def main() -> int:
             refl_nest = None
             if child_node is not None:
                 refl_nest = obsop.simulated_reflectivity(
-                    child_node.state, nest_child_dc.run)
+                    child_node.state, child_dc_leg.run)
                 refl_nest_host = to_host(refl_nest).astype(np.float32)
                 nest_entry["refl_max_dbz"] = float(refl_nest_host.max())
                 nest_entry["elapsed_seconds"] = float(
                     child_node.clock.elapsed_seconds)
                 nest_entry["step_count"] = int(child_node.clock.step_count)
+                nest_entry["domain_start_offset_seconds"] = float(
+                    child_node.state.domain_start_offset)
                 if args.save_composites:
+                    # ``leg_number(leg)``, the same author as every other
+                    # leg-named artifact this driver writes.  The child's
+                    # frame and the parent's frame of the SAME leg have to
+                    # carry the same number, or a run given a leg-number
+                    # offset writes a nest under a leg the parent frames
+                    # never use and nothing finds it.
+                    nest_npz = (comp_dir /
+                                f"leg{leg_number(leg):02d}_{name}_d"
+                                f"{nest_child_dc.grid_id:02d}.npz")
+                    nest_colmax = refl_nest_host.max(axis=0)
                     np.savez_compressed(
-                        comp_dir / f"leg{leg:02d}_{name}_d"
-                                   f"{nest_child_dc.grid_id:02d}.npz",
-                        refl_colmax=refl_nest_host.max(axis=0),
+                        nest_npz,
+                        refl_colmax=nest_colmax,
                         elapsed_seconds=np.float64(
                             child_node.clock.elapsed_seconds),
                         dx_m=np.float64(nest_child_dc.run.dx),
@@ -1477,14 +2420,20 @@ def main() -> int:
                             nest_child_dc.j_parent_start),
                         parent_grid_ratio=np.int32(
                             nest_child_dc.parent_grid_ratio))
-                nest_snapshot = {}
-                for field in STATE_SERIALIZED_ATTRS:
-                    value = getattr(child_node.state, field, None)
-                    if value is not None:
-                        nest_snapshot[field] = to_host(value)
-                nest_snapshots[name] = nest_snapshot
-                nest_entry["snapshot_fields"] = sorted(nest_snapshot)
-            entry = leg_record["trajectories"].setdefault(str(name), {})
+                    # ...and the child's own wrfout beside it, for the
+                    # same reason the parent gets one and by the same
+                    # call.  Without it the nest's product had no route
+                    # to the renderer the render law names: an ``.npz``
+                    # states no geolocation, so rw_wrfbatch cannot read
+                    # one, and a door that can ask for a nest whose
+                    # picture nobody can draw is not a shipped door.
+                    _write_composite_wrfout(
+                        nest_npz, nest_colmax, child_node.grid,
+                        nest_child_dc.run,
+                        child_node.clock.elapsed_seconds, exp,
+                        label=(f"leg {leg_number(leg):02d} member {name} "
+                               f"d{nest_child_dc.grid_id:02d}"),
+                        domain=nest_child_dc)
             entry["wall_seconds"] = round(time.time() - t_leg, 1)
             entry["elapsed_seconds"] = float(node.clock.elapsed_seconds)
             if document is not None:
@@ -1519,20 +2468,16 @@ def main() -> int:
                     key: hot_prov[key] for key in hot_prov
                     if isinstance(hot_prov[key], (int, float, str))}
 
+            # The host mirror the FILTER reads.  Not the leg join: that
+            # is the restart set above, which carries this and everything
+            # the mirror does not.
             snapshot = {}
             for field in STATE_SERIALIZED_ATTRS:
                 value = getattr(state, field, None)
                 if value is not None:
                     snapshot[field] = to_host(value)
             snapshots[name] = snapshot
-            # The contract tuple grows over time (tke, nwfa/nifa pairs,
-            # e_sgs since this driver was written), and the None-skip
-            # above silently carries whatever the configuration
-            # allocates.  Print what was ACTUALLY snapshotted into the
-            # report, per trajectory, so a grown inventory is an audit
-            # line rather than a surprise -- and so a member whose list
-            # ever differs from the control's is visible in the receipt.
-            entry["snapshot_fields"] = sorted(snapshot)
+            entry["analysis_state_fields"] = sorted(snapshot)
             if thb_host is None and thb_snapshot is not None:
                 thb_host = thb_snapshot
             pending[name] = None
@@ -1544,7 +2489,7 @@ def main() -> int:
 
         # -- analysis at t_end ------------------------------------------------
         if analysis_due or verification_only:
-            shm_leg = stage_root / f"cycle_{leg_number(leg):03d}"
+            shm_leg = stage.analysis_directory(leg_number(leg))
             if shm_leg.exists():
                 shutil.rmtree(shm_leg)
             checkpoints = {}
@@ -1842,40 +2787,47 @@ def main() -> int:
 
             if analysis_due:
                 overlap: dict[str, dict] = {}
+                bound_points = 0
+                bound_mass = 0.0
+                bound_fields: set[str] = set()
+                bounded_members = 0
                 for index in range(args.members):
-                    merged = dict(increments[index])
-                    if not args.no_hotstart and index in hot_pending:
-                        for field, values in hot_pending[index].items():
-                            if field not in merged:
-                                merged[field] = values
-                                continue
-                            # BOTH the filter and the insertion have an
-                            # opinion about this field.  Summing double
-                            # counts the same reflectivity volume, so
-                            # each component's size is reported rather
-                            # than one silently overwriting the other.
-                            if index == 0:
-                                overlap[field] = {
-                                    "filter_rms": float(np.sqrt(np.mean(
-                                        np.asarray(merged[field],
-                                                   np.float64) ** 2))),
-                                    "hotstart_rms": float(np.sqrt(np.mean(
-                                        np.asarray(values,
-                                                   np.float64) ** 2))),
-                                }
-                            merged[field] = (
-                                np.asarray(merged[field], np.float64)
-                                + np.asarray(values, np.float64)
-                            ).astype(np.float32)
+                    hot = (hot_pending.get(index) or {}
+                           if not args.no_hotstart else {})
+                    merged, member_overlap, positivity = (
+                        merge_hotstart_increments(
+                            increments[index], hot,
+                            prior=snapshots[index],
+                            positivity_policy=args.positivity_policy,
+                            report_overlap=(index == 0)))
+                    if index == 0:
+                        overlap = member_overlap
+                    if positivity is not None:
+                        bounded_members += 1
+                        bound_points += int(positivity["negative_points"])
+                        bound_mass += float(
+                            positivity.get("mass_added_by_clip", 0.0))
+                        bound_fields.update(
+                            positivity["constrained_fields"])
                     pending[index] = merged
-                if overlap:
+                if overlap or bounded_members:
                     leg_record["analysis"]["hotstart_overlap"] = {
                         "fields": sorted(overlap),
                         "member_000_rms": overlap,
-                        "rule": "summed; both are increments to the same "
-                                "background from the same reflectivity "
-                                "volume, so this double counts that "
-                                "volume in the overlapping fields",
+                        "rule": "summed, then the SUM is put back through "
+                                "the run's positivity policy against the "
+                                "same background; both are increments to "
+                                "the same background from the same "
+                                "reflectivity volume, so this double "
+                                "counts that volume in the overlapping "
+                                "fields",
+                        "positivity_after_merge": {
+                            "policy": args.positivity_policy,
+                            "members_bounded": bounded_members,
+                            "constrained_fields": sorted(bound_fields),
+                            "negative_points": bound_points,
+                            "mass_added_by_clip": bound_mass,
+                        },
                     }
                 hot_pending.clear()
             if pending.get(0):
@@ -1886,20 +2838,53 @@ def main() -> int:
             shutil.rmtree(shm_leg, ignore_errors=True)
 
         # -- carry the cycle across the process boundary ------------------
-        # At the end of the last OBSERVED leg the in-memory state is
-        # exactly what the next leg would have consumed: post-leg
-        # snapshots plus the analysis increments waiting to be applied.
+        # At the end of the last OBSERVED leg the staged state is exactly
+        # what the next leg would have consumed: each trajectory's
+        # restart set plus the analysis increments waiting to be applied.
         # Writing it here (before any free legs run) is what lets the
         # next observation -- which does not exist yet -- be assimilated
         # by a different process without re-initialising the ensemble.
         if save_at_leg is not None and leg == save_at_leg:
+            # The child travels in the generation, inside its
+            # trajectory's own set.  A cycling generation is where the
+            # next process picks the ensemble up, and a child dropped
+            # there is a child born again at the next process boundary
+            # -- the same defect as being born at the fork, one seam
+            # further along.
+            nest_receipt = None
+            if nest_child_dc is not None:
+                child_run = nest_child_dc.run
+                nest_receipt = {
+                    "grid_id": int(nest_child_dc.grid_id),
+                    "parent_id": int(nest_child_dc.parent_id),
+                    "nx": int(child_run.nx), "ny": int(child_run.ny),
+                    "nz": int(child_run.nz),
+                    "dx_m": float(child_run.dx),
+                    "dt_s": float(child_run.dt),
+                    "parent_grid_ratio": int(
+                        nest_child_dc.parent_grid_ratio),
+                    "i_parent_start": int(nest_child_dc.i_parent_start),
+                    "j_parent_start": int(nest_child_dc.j_parent_start),
+                    "terrain_policy": nested_forecast.TERRAIN_POLICY,
+                    "land_policy": nested_forecast.LAND_POLICY,
+                    "trajectories": [
+                        str(n) for n in nest_trajectories
+                        if nest_birth.get(n) is not None],
+                    "birth_seconds": {
+                        str(n): nest_birth[n] for n in nest_trajectories
+                        if nest_birth.get(n) is not None},
+                }
             generation = ens_state.write_generation(
                 args.save_ensemble, identity=identity,
                 elapsed_seconds=t_end, leg_number=leg_number(leg),
-                snapshots=snapshots, pending=pending,
+                restarts=restarts, pending=pending,
+                nest=nest_receipt,
                 note=("written at the end of the last observed leg; "
                       "any free legs after it are a branch and are not "
-                      "part of this ensemble's history"))
+                      "part of this ensemble's history.  Each nesting "
+                      "trajectory carries the child it has been running "
+                      "since the cycle started, so the next process "
+                      "continues it rather than building a new one"))
             leg_record["ensemble_generation"] = {
                 "directory": str(args.save_ensemble),
                 "elapsed_seconds": t_end,
@@ -1940,6 +2925,12 @@ def main() -> int:
         (out / "cycle-report.json").write_text(
             json.dumps(report, indent=2, default=str), encoding="utf-8")
 
+    # -- the stage: nothing this run staged outlives it ------------------
+    # The last leg's sets have no next leg to consume them.  A generation
+    # written above already copied every set it needed, so what is
+    # removed here is scratch, and the receipt of the removal is in the
+    # report beside the sizes the legs recorded.
+    report["staging"] = stage.clear()
     report["total_wall_seconds"] = round(time.time() - t_total, 1)
     (out / "cycle-report.json").write_text(
         json.dumps(report, indent=2, default=str), encoding="utf-8")

@@ -851,6 +851,30 @@ def generate_base_capture(path=_DATA):
     return out
 
 
+def _card_capture():
+    """The base capture for THIS card, or a skip.
+
+    PER CARD since 2026-09-17 (tests/_card_pins.py).  The 4d2ce99 capture
+    (2026-07-27, card unrecorded) against the same requests on node-1's
+    RTX 4090 (compute capability 8.9, driver 610.57.04): every one of the
+    24 rows differs, by at most 7.45e-09 (m_1: 113 of 1008 words, max
+    relative 6.8e-06; u_2: 98 of 1080, max relative 2.4e-05; w_slope: 45 of
+    1176), ULP-scale in 3 to 11 percent of each row's words and the same
+    on the scalar rows as on u, v and w: the card, as for the phase-2 pin
+    in tests/test_coriolis_map.py, not the kernel.  The 4090 file
+    (tests/data/diff6_base_4d2ce99.rtx4090.npz) was written by
+    tools/recapture_card_pins.py --pin diff6_base_4d2ce99 through
+    generate_base_capture below (dual run, elementwise-verified) with its
+    per-row reading beside it in tests/data/receipts/pin-gates/.  A card
+    with no file skips.
+    """
+    import _card_pins
+    reason = _card_pins.skip_reason("diff6_base_4d2ce99")
+    if reason is not None:
+        pytest.skip(reason)
+    return np.load(_card_pins.path("diff6_base_4d2ce99"))
+
+
 @requires_gpu
 @pytest.mark.gpu
 @pytest.mark.parametrize("row", _capture_cases(), ids=lambda r: r[0])
@@ -859,7 +883,7 @@ def test_periodic_path_bitwise_identical_to_base(row):
     for the identical periodic request must be bit-identical to the
     4d2ce99 capture (the fix may not perturb non-forced domains)."""
     key, stagger, opt, slope_kw = row
-    data = np.load(_DATA)
+    data = _card_capture()
     f, mut, c1, c2 = _periodic_case(stagger)
     got = _periodic_tend(f, mut, c1, c2, opt, stagger, **slope_kw)
     np.testing.assert_array_equal(got, data["per_" + key], err_msg=key)
@@ -877,7 +901,7 @@ def test_forced_path_changes_only_the_seam_faces(row):
     (TypeError on the bnd kwargs, recorded as fix-introduced-symbol RED
     evidence per house convention)."""
     key, stagger, opt, slope_kw = row
-    data = np.load(_DATA)
+    data = _card_capture()
     cfg = _forced_cfg(specified=True)
     f, mut, c1, c2 = _forced_case(stagger)
     if slope_kw:

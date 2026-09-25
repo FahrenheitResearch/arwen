@@ -53,7 +53,7 @@ with a reason, rather than silence.
 WHAT IT COSTS
 -------------
 Nothing measurable.  It reads reports the run already produced, runs no test,
-collects nothing extra and imports nothing but ``pathlib``.
+collects nothing extra and imports nothing the run has not already loaded.
 
 LIMITS, STATED
 --------------
@@ -63,6 +63,14 @@ LIMITS, STATED
   entirely-skipped and ceiling arms apply wherever a listed file is collected.
 * Under an explicit ``-k`` or ``--deselect``, and under ``--collect-only``,
   the operator is deliberately not running the gates, so nothing is checked.
+* Under a marker expression (``-m``) a listed file whose every test the
+  expression excludes is the operator's selection, not a silence, and it is
+  left out of the collected-nothing arm.  Measured on the release node's
+  card leg, ``-m "gpu and not slow and not network"``: six CPU-only gates
+  the expression emptied turned a leg with zero failures into exit 1
+  (proof/node-reds-276).  Under pytest-xdist the deselection happens on the
+  workers and the controller holds no items, so each worker hands the files
+  it deselected to the controller through ``workeroutput``.
 * A leg that already has a failing test is already red; this guard exists to
   stop a GREEN leg hiding a skip, so it says nothing when ``testsfailed``.
 """
@@ -72,6 +80,8 @@ from __future__ import annotations
 import os
 import pathlib
 from collections import Counter
+
+import pytest
 
 MANIFEST_RELATIVE = "tools/battery/must_run_gates.txt"
 
@@ -181,6 +191,7 @@ class _Guard:
         self.passed: Counter[str] = Counter()
         self.skipped: Counter[str] = Counter()
         self.seen: set[str] = set()
+        self.deselected: set[str] = set()
         self.root = pathlib.Path(os.getcwd()).resolve()
         self.inactive = False
 
@@ -215,13 +226,34 @@ class _Guard:
         elif report.passed and report.when == "call":
             self.passed[rel] += 1
 
+    def pytest_deselected(self, items) -> None:
+        """The files a marker expression emptied are not silent.
+
+        ``-m`` removes items after collection, so a listed file whose every
+        test the expression excludes produces no report and would read as
+        "collected nothing" on the very leg that asked for that.  A file
+        that yields no items at all (a module-level skip, an emptied module)
+        is deselected from nothing and still fails that arm.
+        """
+        for item in items:
+            self.deselected.add(item.nodeid.split("::")[0])
+
+    @pytest.hookimpl(optionalhook=True)
+    def pytest_testnodedown(self, node, error) -> None:
+        """A pytest-xdist worker's deselected files, on the controller."""
+        output = getattr(node, "workeroutput", None) or {}
+        self.deselected.update(output.get("must_run_deselected", ()))
+
     def pytest_sessionfinish(self, session, exitstatus) -> None:
+        output = getattr(session.config, "workeroutput", None)
+        if output is not None:
+            output["must_run_deselected"] = sorted(self.deselected)
         if self.inactive or not self.gates or session.testsfailed:
             return
         lines: list[str] = []
 
         mute = sorted(rel for rel in self.requested & set(self.gates)
-                      if rel not in self.seen)
+                      if rel not in self.seen and rel not in self.deselected)
         if mute:
             lines += ["", "MUST-RUN GATE COLLECTED NOTHING -- these files are "
                           "on tools/battery/must_run_gates.txt and the leg "

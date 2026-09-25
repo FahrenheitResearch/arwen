@@ -58,6 +58,26 @@ The repair is therefore not a new closure; it is the state the scheme
 was going to bound the analysis to anyway, applied before the
 reflectivity operator is asked about it.
 
+Thompson (8 and 28) has the same kind of authority and it is a better
+one, because the scheme states it for exactly this case: the entry block
+of ``mp_thompson`` (``module_mp_thompson.F:1827-1899``) walks every
+column before any process rate is computed and, where a species has mass
+and no number, SETS the number from the mass under the scheme's own
+assumed distribution -- a 100 um droplet, a 5 um crystal capped at
+999e3 m^-3, a 1 mm median volume drop.  That block runs on the analysis
+at the first step of the next leg whatever this module does, so applying
+it here changes only WHEN the state becomes one the scheme can evaluate,
+not what it becomes.  It reaches this module through its host mirror
+:mod:`gpuwm.core.thompson_entry`.
+
+The same block is the authority for the reverse case, which Morrison's
+limiter has nothing to say about: a cell the increment left with a
+number moment and no mass is zeroed in both moments (:1844-1848,
+:1871-1875, :1900-1904).  That state is not a NaN risk and it is NOT
+counted against ``consistent`` -- it never was, and a new refusal needs
+a breakage to name -- but where the repair runs it is repaired, and the
+receipt counts it separately from the depleted pairs.
+
 **Where a scheme's repair authority is not ported, there is no repair.**
 NSSL (18) sets number from mass through its own fixed intercepts in
 ``module_mp_nssl_2mom.F``; that routine is not in this tree, and
@@ -75,6 +95,8 @@ from dataclasses import dataclass
 from typing import Mapping, Sequence
 
 import numpy as np
+
+from gpuwm.core.thompson_entry import THOMPSON_ENTRY_AUTHORITY
 
 #: Provenance schema for every receipt this module produces.
 MOMENT_SCHEMA = "gpuwm-da.moment-policy.v1"
@@ -102,12 +124,15 @@ MORRISON_REPAIR_AUTHORITY = (
     "WRF v4.6.1 module_mp_morr_two_moment.F:1525-1638 PSD limiter, via "
     "its float64 mirror gpuwm.verify.npref._np_morrison_slopes")
 
+THOMPSON_REPAIR_AUTHORITY = THOMPSON_ENTRY_AUTHORITY
+
 
 #: The registry's ``consumers.moments.repair_authority`` is a TOKEN (the
 #: registry carries decisions and pointers, not prose with WRF citations);
 #: this resolves each token to the sentence the receipts carry.
 _REPAIR_AUTHORITIES = {
     "morrison-psd-limiter": MORRISON_REPAIR_AUTHORITY,
+    "thompson-entry-block": THOMPSON_REPAIR_AUTHORITY,
 }
 
 
@@ -162,6 +187,11 @@ class SchemeMoments:
     #: The scheme's own mass activity threshold (kg/kg).  Below it the
     #: scheme treats the species as absent and demands no number.
     q_threshold: float = 1.0e-14
+    #: Whether the scheme itself zeroes a number moment that is left
+    #: standing at or below that threshold.  Thompson does, in the same
+    #: block that supplies its repair; Morrison's limiter does not, and
+    #: claiming it did would be this module inventing a rule.
+    zero_number_below_threshold: bool = False
 
     @property
     def two_moment(self) -> bool:
@@ -224,8 +254,32 @@ _THOMPSON = SchemeMoments(
         MomentPair("rain", "qr", "nr"),
         MomentPair("ice", "qi", "ni"),
     ),
-    repair_authority=None,
-    q_threshold=1.0e-14,
+    repair_authority=THOMPSON_REPAIR_AUTHORITY,
+    #: R1, module_mp_thompson.F:183 (gpuwm/core/thompson_aerosol_state.py
+    #: R1, gpuwm/core/thompson_entry.py R1): the scheme's OWN activity
+    #: gate, the value its entry block compares every mass against, and
+    #: two orders of magnitude above the module default that stood here
+    #: before the scheme's own threshold was available to read.
+    q_threshold=1.0e-12,
+    zero_number_below_threshold=True,
+)
+
+#: Thompson aerosol-aware (28) adds a prognostic droplet number to the
+#: same two pairs, and carries the two aerosol number tracers, which are
+#: prognostic but have no mass partner to be consistent with.  The state
+#: spellings are gpuwm.core.moist.THOMPSON_AERO_NUMBER_SPECIES.
+_THOMPSON_AEROSOL = SchemeMoments(
+    mp_physics=28, name="Thompson aerosol-aware",
+    mass_only=("qv", "qs", "qg"),
+    pairs=(
+        MomentPair("cloud", "qc", "nc"),
+        MomentPair("rain", "qr", "nr"),
+        MomentPair("ice", "qi", "ni"),
+    ),
+    unpaired=("nwfa", "nifa"),
+    repair_authority=THOMPSON_REPAIR_AUTHORITY,
+    q_threshold=1.0e-12,
+    zero_number_below_threshold=True,
 )
 
 _WSM6 = SchemeMoments(
@@ -311,6 +365,8 @@ def _scheme_from_registry_row(mp_physics: int, row: Mapping) -> SchemeMoments:
         unpaired=tuple(row.get("unpaired", ())),
         repair_authority=_repair_authority(mp_physics, row.get("repair_authority")),
         q_threshold=float(row.get("q_threshold", 1.0e-14)),
+        zero_number_below_threshold=bool(
+            row.get("zero_number_below_threshold", False)),
     )
 
 
@@ -331,7 +387,7 @@ def _static_schemes_from_the_registry() -> dict[int, SchemeMoments]:
 
     Rows marked ``resolved_by`` (NSSL, whose set depends on its namelist
     switches) and null rows (microphysics off) are not static schemes and
-    are left to :func:`scheme_moments`' own arms.  The four module-level
+    are left to :func:`scheme_moments`' own arms.  The module-level
     objects above are kept as the named spellings tests and readers use,
     and asserted equal to their registry rows so they cannot drift from
     the copy this table is actually built from.
@@ -344,7 +400,8 @@ def _static_schemes_from_the_registry() -> dict[int, SchemeMoments]:
         if not isinstance(row, Mapping) or "resolved_by" in row:
             continue
         schemes[int(mp)] = _scheme_from_registry_row(mp, row)
-    for spelled in (_KESSLER, _WSM6, _THOMPSON, _MORRISON):
+    for spelled in (_KESSLER, _WSM6, _THOMPSON, _THOMPSON_AEROSOL,
+                    _MORRISON):
         derived = schemes.get(spelled.mp_physics)
         if derived != spelled:
             raise RuntimeError(
@@ -558,6 +615,21 @@ def _depleted_offenders(mass: np.ndarray, number: np.ndarray,
     return np.isfinite(mass) & (mass > threshold) & (number <= 0.0)
 
 
+def _stranded_numbers(mass: np.ndarray, number: np.ndarray,
+                      threshold: float) -> np.ndarray:
+    """Cells the scheme calls absent that still carry a number moment.
+
+    The mirror image of :func:`_depleted_offenders`, and only meaningful
+    for a scheme that says what to do about it: Thompson's entry block
+    zeroes the mass AND the number at every cell whose mass is at or
+    below ``R1`` (:1844-1848, :1871-1875, :1900-1904), which is what an
+    increment that removes all of a species' mass leaves behind.  Like
+    the depleted predicate this is False for a NaN mass, so non-finite
+    cells stay the business of :func:`_nonfinite_offenders`.
+    """
+    return np.isfinite(mass) & (mass <= threshold) & (number > 0.0)
+
+
 def _nonfinite_offenders(mass: np.ndarray, number: np.ndarray,
                          volume: np.ndarray | None,
                          threshold: float) -> tuple:
@@ -627,13 +699,22 @@ def moment_consistency_report(state: Mapping[str, object], *,
     if pairs is None:
         pairs = pairs_present(tuple(state), mp_physics=mp_physics,
                               **selectors)
+    scheme = (scheme_moments(mp_physics, **selectors)
+              if mp_physics is not None else None)
     if q_threshold is None:
-        q_threshold = (scheme_moments(mp_physics, **selectors).q_threshold
-                       if mp_physics is not None else _MORRISON.q_threshold)
+        q_threshold = (scheme.q_threshold if scheme is not None
+                       else _MORRISON.q_threshold)
     threshold = float(q_threshold)
+    # Only a scheme that states the rule has stranded cells: with the
+    # structure merely detected, this module does not know whether the
+    # scheme zeroes them or carries them, and counting them anyway would
+    # be reporting a rule nobody wrote.
+    count_stranded = bool(scheme is not None
+                          and scheme.zero_number_below_threshold)
     species: list[dict] = []
     total = 0
     nonfinite_total = 0
+    stranded_total = 0
     for pair in pairs:
         mass = _host(state[pair.mass])
         number = _host(state[pair.number])
@@ -643,6 +724,10 @@ def moment_consistency_report(state: Mapping[str, object], *,
         offenders = _depleted_offenders(mass, number, threshold)
         count = int(np.count_nonzero(offenders))
         total += count
+        stranded = (int(np.count_nonzero(
+            _stranded_numbers(mass, number, threshold)))
+            if count_stranded else 0)
+        stranded_total += stranded
         bad_mass, bad_number, bad_volume = _nonfinite_offenders(
             mass, number, volume, threshold)
         bad_any = bad_mass | bad_number
@@ -656,6 +741,7 @@ def moment_consistency_report(state: Mapping[str, object], *,
             "number_field": pair.number,
             "volume_field": pair.volume,
             "offending_cells": count,
+            "stranded_number_cells": stranded,
             "max_offending_mass_kg_kg": (
                 float(mass[offenders].max()) if count else 0.0),
             "nonfinite_cells": bad_count,
@@ -673,6 +759,12 @@ def moment_consistency_report(state: Mapping[str, object], *,
         "pairs_checked": [pair.mass for pair in pairs],
         "offending_cells_total": total,
         "nonfinite_cells_total": nonfinite_total,
+        # A number moment standing over mass the scheme calls absent is
+        # not a state the slope closure evaluates to NaN, so it is
+        # reported and repaired but does not make the state
+        # inconsistent: a refusal has to name a breakage, and this one
+        # has none to name.
+        "stranded_number_cells_total": stranded_total,
         "consistent": total == 0 and nonfinite_total == 0,
         "species": species,
     }
@@ -776,6 +868,76 @@ def _morrison_bounded_numbers(state: Mapping[str, object],
     return {name: values.reshape(shape) for name, values in out.items()}
 
 
+#: The state field the density comes from, and the one the scheme is
+#: handed by gpuwm.core.microphysics (its module docstring line 25).
+THOMPSON_DENSITY_FIELD = "alt"
+
+
+def _thompson_bounded_numbers(state: Mapping[str, object],
+                              pairs: Sequence[MomentPair], *,
+                              q_threshold: float):
+    """Thompson's own entry-block numbers for the state's three species.
+
+    Calls the host mirror :mod:`gpuwm.core.thompson_entry` rather than
+    restating the scheme's distributions, for the reason the Morrison
+    arm gives: a second copy of a scheme constant is a copy that drifts
+    from the scheme by one edit.
+
+    The entry block works per volume, so this needs the density the
+    scheme is handed.  It is taken from the state's own ``alt`` -- the
+    inverse dry density every microphysics adapter in this tree passes
+    as ``rho`` -- and its ABSENCE is a refusal naming the field, because
+    the alternative is a density this module made up, and made-up
+    densities are how a repair becomes a tuning decision.
+    """
+    from gpuwm.core import thompson_entry
+
+    alt = state.get(THOMPSON_DENSITY_FIELD)
+    if alt is None:
+        raise MomentPolicyError(
+            "Thompson's entry block sets a number moment from a mass per "
+            "unit VOLUME, so the repair needs the density the scheme is "
+            f"handed, and this state carries no {THOMPSON_DENSITY_FIELD!r} "
+            "to take it from (rho = 1/alt, the value "
+            "gpuwm.core.microphysics passes every scheme). Hand the "
+            "repair a state that carries the inverse density rather than "
+            "letting it choose one: at a cell being repaired the density "
+            "cancels everywhere except the scheme's 999e3 m^-3 ice "
+            "ceiling, and that is precisely the cell a radar analysis "
+            "creates.")
+    inverse_density = _host(alt)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        density = 1.0 / inverse_density
+    if not np.all(np.isfinite(density)):
+        raise MomentPolicyError(
+            "the state's inverse density is zero or not finite in "
+            f"{int(np.count_nonzero(~np.isfinite(density)))} cell(s), so "
+            "the density Thompson's entry block works in cannot be formed "
+            "there. That is a broken background, not a repairable "
+            "analysis.")
+    bounded: dict[str, np.ndarray] = {}
+    for pair in pairs:
+        bounded[pair.number] = thompson_entry.np_thompson_entry_numbers(
+            pair.species, _host(state[pair.mass]),
+            _host(state[pair.number]), density)
+    return bounded
+
+
+#: Which bounder each authority names.  The authority string is what the
+#: receipt carries, so the table is keyed on it: a receipt that claims an
+#: authority and a repair that ran a different scheme's limiter cannot
+#: both come out of this dictionary.
+_BOUNDED_NUMBERS = {
+    MORRISON_REPAIR_AUTHORITY: (
+        lambda state, pairs, *, morr_rimed_ice, q_threshold:
+        _morrison_bounded_numbers(state, pairs,
+                                  morr_rimed_ice=morr_rimed_ice)),
+    THOMPSON_REPAIR_AUTHORITY: (
+        lambda state, pairs, *, morr_rimed_ice, q_threshold:
+        _thompson_bounded_numbers(state, pairs, q_threshold=q_threshold)),
+}
+
+
 def repair_moments(state: Mapping[str, object], *,
                    mp_physics: int | None = None,
                    pairs: Sequence[MomentPair] | None = None,
@@ -812,8 +974,11 @@ def repair_moments(state: Mapping[str, object], *,
     if report["nonfinite_cells_total"]:
         raise MomentPolicyError(
             nonfinite_moment_refusal(report, where="this state"))
-    if report["consistent"] or not pairs:
+    nothing_to_do = (report["consistent"]
+                     and not report.get("stranded_number_cells_total"))
+    if nothing_to_do or not pairs:
         return {}, {**report, "repaired": False, "repaired_cells_total": 0,
+                    "stranded_cells_repaired": 0,
                     "authority": None if scheme is None
                     else scheme.repair_authority}
 
@@ -841,8 +1006,41 @@ def repair_moments(state: Mapping[str, object], *,
         candidates = exact if len(exact) == 1 else sorted(
             mp for mp, candidate in _STATIC_SCHEMES.items()
             if detected <= set(candidate.number_fields))
-        if len(candidates) == 1 and candidates[0] == _MORRISON.mp_physics:
-            authority = MORRISON_REPAIR_AUTHORITY
+        if len(candidates) == 1:
+            identified = _STATIC_SCHEMES[candidates[0]]
+            # An exact match names a scheme, but it does not settle WHOSE
+            # limiter to run when another registered scheme admits the
+            # same structure and repairs it through a different block with
+            # a different answer.  {nc, nr, ni} is exactly aerosol-aware
+            # Thompson's set and a subset of Morrison's, and the two
+            # answer a depleted pair differently -- Morrison's PSD limiter
+            # at its lam_min, Thompson's entry block at a 100 um droplet,
+            # a 5 um crystal and a 1 mm drop -- so that structure is named
+            # as open rather than resolved by whichever test ran first.
+            # A scheme with NO ported authority is not a rival: it offers
+            # no competing answer, only a competing identity, which is the
+            # Milbrandt-Yau case the exact match was written for.
+            rivals = sorted(
+                mp for mp, candidate in _STATIC_SCHEMES.items()
+                if mp != candidates[0]
+                and detected <= set(candidate.number_fields)
+                and candidate.repair_authority is not None
+                and candidate.repair_authority != identified.repair_authority)
+            if rivals:
+                raise MomentPolicyError(
+                    "this state's moment spellings "
+                    f"({', '.join(sorted(detected))}) are exactly "
+                    f"mp_physics={candidates[0]}'s and are also carried by "
+                    "mp_physics "
+                    + ", ".join(str(mp) for mp in rivals)
+                    + ", which repairs a depleted pair through a different "
+                    "scheme's block with a different answer. A number "
+                    "repair is the SCHEME's own limiter, so repairing on "
+                    "the structure alone would run one scheme's bounds "
+                    "over another scheme's state and record the wrong "
+                    "authority in the receipt. Pass mp_physics so the "
+                    "scheme is declared rather than guessed at.")
+            authority = identified.repair_authority
         elif len(candidates) > 1:
             raise MomentPolicyError(
                 "this analysis left "
@@ -873,32 +1071,47 @@ def repair_moments(state: Mapping[str, object], *,
             "would be a science decision, not a repair. Analyse the number "
             "moments with the mass instead.")
 
-    bounded = _morrison_bounded_numbers(state, pairs,
-                                        morr_rimed_ice=morr_rimed_ice)
     threshold = report["q_threshold_kg_kg"]
+    bounded = _BOUNDED_NUMBERS[authority](
+        state, pairs, morr_rimed_ice=morr_rimed_ice, q_threshold=threshold)
     repaired: dict[str, np.ndarray] = {}
     total = 0
+    stranded_total = 0
     for pair, entry in zip(pairs, report["species"]):
-        if not entry["offending_cells"]:
+        stranded_count = int(entry.get("stranded_number_cells", 0))
+        if not entry["offending_cells"] and not stranded_count:
             continue
         mass = _host(state[pair.mass])
         number = _host(state[pair.number])
         offenders = _depleted_offenders(mass, number, threshold)
         fixed = np.array(number, copy=True)
-        fixed[offenders] = bounded[pair.number][offenders]
+        if entry["offending_cells"]:
+            fixed[offenders] = bounded[pair.number][offenders]
+            entry["repaired_cells"] = int(entry["offending_cells"])
+            entry["repaired_number_min"] = float(fixed[offenders].min())
+            entry["repaired_number_max"] = float(fixed[offenders].max())
+            total += int(entry["offending_cells"])
+        if stranded_count:
+            # The bounder already carries the scheme's own answer here:
+            # the entry block writes the number back as zero wherever the
+            # mass is at or below its activity gate, so this reads the
+            # same array rather than writing a zero of its own.
+            stranded = _stranded_numbers(mass, number, threshold)
+            fixed[stranded] = bounded[pair.number][stranded]
+            entry["stranded_cells_repaired"] = stranded_count
+            stranded_total += stranded_count
         repaired[pair.number] = fixed
-        entry["repaired_cells"] = int(entry["offending_cells"])
-        entry["repaired_number_min"] = float(fixed[offenders].min())
-        entry["repaired_number_max"] = float(fixed[offenders].max())
-        total += int(entry["offending_cells"])
     return repaired, {
         **report,
         "repaired": True,
         "repaired_cells_total": total,
+        "stranded_cells_repaired": stranded_total,
         "authority": authority,
-        "note": ("only cells with mass above the scheme's activity "
-                 "threshold and a non-positive number moment were "
-                 "written; healthy moments are untouched"),
+        "note": ("cells with mass above the scheme's activity threshold "
+                 "and a non-positive number moment were written, and -- "
+                 "where the scheme itself zeroes them -- cells carrying a "
+                 "number moment over mass it calls absent; healthy "
+                 "moments are untouched"),
     }
 
 
@@ -908,6 +1121,7 @@ __all__ = [
     "MOMENT_POLICIES",
     "MOMENT_SCHEMA",
     "MORRISON_REPAIR_AUTHORITY",
+    "THOMPSON_REPAIR_AUTHORITY",
     "MomentPair",
     "MomentPolicyError",
     "SchemeMoments",

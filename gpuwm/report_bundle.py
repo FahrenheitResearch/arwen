@@ -353,6 +353,21 @@ _POSIX_HOME = re.compile(
     r"(?<![\w.])/(?:home|Users)/([^/\s\"'<>|:*?,;\]\)]+)")
 _ROOT_HOME = re.compile(r"(?<![\w.])/root(?![A-Za-z0-9_])")
 
+#: The same Windows profile as it is reached from a Linux box that has
+#: the drive mounted.  Neither rule above sees it: the drive-anchored
+#: one wants a drive letter and a colon, and the POSIX one refuses a
+#: ``/Users`` segment that has a word character in front of it -- which
+#: ``/mnt/c`` is.  A record written from such a box therefore kept the
+#: account name under a rule set that says it removes home-directory
+#: prefixes of any absolute path.
+#:
+#: Replacement only, never harvested from: this is the forward-slash
+#: spelling, and learning an account name from a forward-slash ``Users``
+#: segment is the REST-path mistake :data:`_ANY_USERS_SEGMENT` exists to
+#: avoid.  The prefix carries the name away with it in any case.
+_WSL_HOME = re.compile(
+    r"(?i)/mnt/[a-z]/users/([^/\s\"'<>|:*?,;\]\)]+)")
+
 #: HARVEST ONLY, and deliberately broader than the collapse rules above.
 #: A run directory nested under a second ``Users`` segment -- which is
 #: what a temporary directory and plenty of real trees look like --
@@ -507,6 +522,41 @@ LIMITS = (
 )
 
 
+#: The four shapes a home-directory prefix takes, in the order
+#: :func:`redact_home_directories` applies them.  Named once so that the
+#: next shape is added in one place and every caller gets it.
+HOME_DIRECTORY_RULES = (_WSL_HOME, _WINDOWS_HOME, _POSIX_HOME, _ROOT_HOME)
+
+
+def redact_home_directories(text, *, on_hit=None):
+    """``text`` with every home-directory prefix replaced by ``<home>``.
+
+    The one home-path rule in the tree.  :meth:`Redactor.apply` runs it
+    as part of a whole identity sweep, and the release gates
+    (``tools/release/precut_gate.py``) run it alone over the records
+    they write, so that a receipt cannot carry the scratch directory,
+    the interpreter path or the traceback of the box the reading was
+    taken on.  A second copy of these patterns would be a second rule
+    to keep in step, which is how a shape gets fixed in one place and
+    ships from the other.
+
+    ``on_hit`` is called once per replacement, for a caller that counts
+    what it removed.
+    """
+
+    if not text:
+        return text
+
+    def _sub(_match):
+        if on_hit is not None:
+            on_hit()
+        return PLACEHOLDERS["home_directory"]
+
+    for pattern in HOME_DIRECTORY_RULES:
+        text = pattern.sub(_sub, text)
+    return text
+
+
 def _identity_seeds(environ) -> list[tuple[str, str]]:
     """Literal identity strings this machine can name about itself."""
 
@@ -657,9 +707,10 @@ class Redactor:
         # Home paths before bare literals: one ``<home>`` is more
         # informative than a drive-anchored profile prefix with only the
         # account name taken out, and it leaves nothing behind to match.
-        text = _WINDOWS_HOME.sub(_counted("home_directory"), text)
-        text = _POSIX_HOME.sub(_counted("home_directory"), text)
-        text = _ROOT_HOME.sub(_counted("home_directory"), text)
+        def _home_hit():
+            self.counts["home_directory"] += 1
+
+        text = redact_home_directories(text, on_hit=_home_hit)
         for pattern, klass in self._rules():
             text = pattern.sub(_counted(klass), text)
         return _HIGH_ENTROPY.sub(_counted("credential"), text)

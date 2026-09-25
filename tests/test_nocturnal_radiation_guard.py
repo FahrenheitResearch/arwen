@@ -146,8 +146,9 @@ def test_the_route_default_is_the_strongest_admissible_full_radiation_suite():
     assert ROUTE_DEFAULT_PHYSICS_PROFILE in admissible, (
         f"the route default is not admissible; admissible 4/4 suites are "
         f"{admissible}")
-    # The operational HRRR composition, as far as this engine carries it:
-    # Thompson microphysics, RRTMG on both streams, no cumulus at 3 km.
+    # The route default's composition: Thompson microphysics, both
+    # radiation streams on, no cumulus at its 3 km grid.  Which 4/4
+    # implementation runs is a setting this assertion does not read.
     switches = single_domain_runtime_switches(ROUTE_DEFAULT_PHYSICS_PROFILE)
     assert int(switches["mp_physics"]) == 8
     assert int(switches["cu_physics"]) == 0

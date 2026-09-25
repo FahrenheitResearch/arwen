@@ -791,6 +791,44 @@ pub fn iso8601(when: DateTime<Utc>) -> String {
     )
 }
 
+/// RFC3339 with a literal `Z` and exactly three fractional digits
+/// (`2026-09-19T12:02:36.123Z`): the spelling of a radial collection
+/// instant, which Message 31 records to the millisecond.
+///
+/// A second spelling rather than a change to [`iso8601`], because that one
+/// is shared with every receipt and every `valid_time` attribute already on
+/// disk; widening it would move the bytes of files that are pinned by
+/// digest.  The two are distinguishable by length alone (20 and 24).
+pub fn iso8601_ms(when: DateTime<Utc>) -> String {
+    format!(
+        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}Z",
+        when.year(),
+        when.month(),
+        when.day(),
+        when.hour(),
+        when.minute(),
+        when.second(),
+        when.timestamp_subsec_millis()
+    )
+}
+
+/// Read back exactly what [`iso8601_ms`] wrote, or what [`iso8601`] wrote.
+///
+/// Only those two spellings, because the verifier that calls this is
+/// checking a writer that has exactly those two, and a looser parser would
+/// let a pack say `12:02:36+02:00` and be read as UTC.
+pub fn parse_iso8601_ms(value: &str) -> Result<DateTime<Utc>, Box<dyn Error>> {
+    let trimmed = value.trim();
+    for format in ["%Y-%m-%dT%H:%M:%S%.3fZ", "%Y-%m-%dT%H:%M:%SZ"] {
+        if let Ok(naive) = NaiveDateTime::parse_from_str(trimmed, format) {
+            return Ok(Utc.from_utc_datetime(&naive));
+        }
+    }
+    Err(boxed_error(format!(
+        "unparseable collection instant {value:?}: expected 2026-09-19T12:02:36.123Z"
+    )))
+}
+
 /// Parse the two time spellings the CLI accepts: full ISO8601 with a `Z`
 /// (`2023-05-20T20:00:00Z`) and the compact stamp (`20230520T200000`).
 pub fn parse_time(value: &str) -> Result<DateTime<Utc>, Box<dyn Error>> {

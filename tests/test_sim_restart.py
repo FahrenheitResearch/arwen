@@ -4,6 +4,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from conftest import requires_cupy
+
 from gpuwm import stage_cli
 from gpuwm.cli import main as cli_main
 from test_stage_seams import _authority, _single_domain_bundle, _tree_bundle
@@ -45,6 +47,14 @@ def test_public_printed_restart_command_uses_actual_parser_and_spends_nothing(tm
     assert not output.exists()
 
 
+# NEEDS CUPY INSTALLED, and opens no device: `gpuwm sim` refuses
+# ahead of the work without it -- "this command needs cupy
+# (cupy-cuda12x / cupy-cuda13x), which this install does not have",
+# printed before the prepared tree is opened and before --restart is
+# read -- so the door answers 2, the monkeypatched runner is never
+# reached, and the return code this test exists to preserve (17) is
+# never produced. The refusal is the door working as designed.
+@requires_cupy
 def test_public_sim_dispatches_checkpoint_to_same_runner_and_preserves_return_code(tmp_path, monkeypatch):
     from gpuwm import prepared_domain_tree_forecast as runner
     root = _tree_bundle(tmp_path / "prepared")
@@ -82,6 +92,12 @@ def test_public_sim_keeps_the_runners_checkpoint_identity_refusal(tmp_path, monk
     assert "--restart refused: checkpoint experiment identity differs" in capsys.readouterr().err
 
 
+# NEEDS CUPY INSTALLED, and opens no device: `gpuwm sim` refuses ahead of
+# the work without the array library, before the single prepared bundle is
+# opened, so the hierarchy-receipt sentence this test holds is never
+# printed.  Measured on the Linux release node: red without cupy, green
+# with it (proof/node-reds-276).
+@requires_cupy
 def test_single_bundle_still_requires_hierarchy_receipts_for_extension(tmp_path, capsys):
     flags = ["--sealed-forcing-extension"]
     root = _single_domain_bundle(tmp_path / "prepared")

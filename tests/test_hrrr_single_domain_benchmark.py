@@ -32,6 +32,7 @@ from gpuwm.physics_compat import (
     route_physics_profiles,
     THOMPSON_LEGACY_RRTMG_PROFILE_ID,
     THOMPSON_PROFILE_ID,
+    THOMPSON_RTE_RRTMGP_PROFILE_ID,
     THOMPSON_SHINHONG_LEGACY_RRTMG_PROFILE_ID,
     WRF_RRTMG_LEGACY,
     WRF_RRTMG_TO_RTE_RRTMGP,
@@ -77,6 +78,7 @@ def test_hrrr_runner_capability_query_is_side_effect_free_without_run_args(
     assert payload["physics_profile_ids"] == [
         WSM6_PROFILE_ID, KESSLER_PROFILE_ID,
         THOMPSON_PROFILE_ID, THOMPSON_LEGACY_RRTMG_PROFILE_ID,
+        THOMPSON_RTE_RRTMGP_PROFILE_ID,
         THOMPSON_SHINHONG_LEGACY_RRTMG_PROFILE_ID,
         MORRISON_PROFILE_ID,
         NSSL2_PROFILE_ID, NSSL2_LEGACY_RRTMG_PROFILE_ID,
@@ -567,14 +569,17 @@ def test_f00_and_boundary_mapping_forward_explicit_target_radius(monkeypatch):
 
 @pytest.mark.parametrize("nz", [4, 17, 49, 80])
 def test_native_hrrr_experiment_threads_admitted_explicit_vertical_grid(nz):
-    # The 1.8 route default runs the legacy-RRTMG shortwave port, whose
-    # transcribed wrapper caps TOTAL layers at 64 -- comfortably above
-    # HRRR's own 51-level native vertical, below this case's 80.  The
-    # question here is whether an explicit vertical grid THREADS, so the
-    # deep case picks a suite that admits its depth; the ceiling itself
-    # is asserted in both directions by the test below.
-    profile = (WSM6_PROFILE_ID if nz > 60
-               else ROUTE_DEFAULT_PHYSICS_PROFILE)
+    # Every depth here runs the ROUTE DEFAULT, because no depth here
+    # meets a radiation bound.  At p_top = 12_345 Pa each 4/4 arm builds
+    # 31 cap layers above the model top, so the deepest case is
+    # 80 + 31 = 111 radiation layers against a bound of 128 on either
+    # engine (MAX_LEGACY_LONGWAVE_LAYERS and MAX_RRTMGP_LAYERS,
+    # gpuwm/physics_vertical_contract.py).  The deep case used to swap
+    # to a shallower-bounded suite to dodge a 64-layer shortwave cap
+    # that no engine holds: 64 is the layer count a 51-level ladder
+    # reaches at p_top = 5000 Pa, not a cap.  The bound that does exist
+    # is asserted in both directions, on both arms, by the test below.
+    profile = ROUTE_DEFAULT_PHYSICS_PROFILE
     target = dataclasses.replace(HrrrTargetDomain.legacy_500x500(), nz=nz)
     vertical = VerticalConfig(
         eta_levels=tuple(float(value)
@@ -589,34 +594,60 @@ def test_native_hrrr_experiment_threads_admitted_explicit_vertical_grid(nz):
     assert exp.vertical == vertical
 
 
-def test_the_route_default_legacy_shortwave_specializes_for_tall_columns():
-    """The one real limit the 1.8 default carries, both directions.
+def _deep_column_experiment(nz, profile):
+    """This route's experiment at an explicit depth, on a named suite."""
 
-    The legacy-RRTMG shortwave port is a transcription of WRF's, and its
-    wrapper caps total layers at 64.  HRRR's native vertical is 51
-    levels, so the ceiling does not bite on this source's own grid --
-    but a hand-authored deep vertical passes it, and the refusal has to
-    name the number rather than fail somewhere inside radiation setup
-    after a preparation has been paid for.
+    return _experiment(
+        VerticalConfig(
+            eta_levels=tuple(
+                float(value)
+                for value in np.linspace(1.0, 0.0, nz + 1)),
+            p_top=12_345.0, hybrid_opt=2, etac=0.37),
+        run_seconds=300.0,
+        target=dataclasses.replace(
+            HrrrTargetDomain.legacy_500x500(), nz=nz),
+        physics_profile=profile)
+
+
+@pytest.mark.parametrize(
+    ("profile", "engine"),
+    ((THOMPSON_LEGACY_RRTMG_PROFILE_ID, "legacy RRTMG"),
+     (THOMPSON_RTE_RRTMGP_PROFILE_ID, "RTE+RRTMGP")))
+def test_either_radiation_arm_bounds_a_longwave_column_at_the_same_number(
+        profile, engine):
+    """The one real limit these two suites carry, both directions.
+
+    They differ in the radiation engine and nothing else, and the engine
+    is NOT what the limit depends on: each 4/4 longwave engine bounds a
+    column at 128 radiation layers -- the legacy one at WRF's
+    RLW_MAXLAY, the modern one at the Planck-source kernel's fixed
+    pfrac[128] -- and the resolved vertical preflight refuses either by
+    number, before a preparation has been paid for.  A column is deeper
+    than the ladder because a cap is built above the model top, 31
+    layers at this p_top on both arms, so the depth that refuses is the
+    same depth on both.  Binding this to the route default would make
+    the test follow whichever arm the route currently names and stop
+    covering the other; both are named instead.
     """
     from gpuwm.physics_compat import PhysicsVerticalPreflightError
 
-    def experiment_at(nz):
-        return _experiment(
-            VerticalConfig(
-                eta_levels=tuple(
-                    float(value)
-                    for value in np.linspace(1.0, 0.0, nz + 1)),
-                p_top=12_345.0, hybrid_opt=2, etac=0.37),
-            run_seconds=300.0,
-            target=dataclasses.replace(
-                HrrrTargetDomain.legacy_500x500(), nz=nz),
-            physics_profile=ROUTE_DEFAULT_PHYSICS_PROFILE)
+    # HRRR's own native depth builds, and so does a hand-authored deeper
+    # one: the shortwave workspaces are sized to the run on both arms.
+    assert _deep_column_experiment(49, profile).root.run.nz == 49
+    assert _deep_column_experiment(80, profile).root.run.nz == 80
+    # 97 + 31 = 128 reaches the bound exactly and still builds.
+    assert _deep_column_experiment(97, profile).root.run.nz == 97
+    # 98 + 31 = 129 is over it, and the refusal says so in numbers.
+    with pytest.raises(PhysicsVerticalPreflightError) as caught:
+        _deep_column_experiment(98, profile)
+    assert (f"{engine} longwave requires model plus cap layers <= 128, "
+            "got 98+31=129") in str(caught.value)
 
-    # HRRR's own native depth builds.
-    assert experiment_at(49).root.run.nz == 49
-    # The legacy SW implementation now specializes its workspace to the run.
-    assert experiment_at(80).root.run.nz == 80
+
+def test_the_route_default_is_the_modern_arm_of_that_pair():
+    """The pair above covers the default because this equality holds."""
+
+    assert ROUTE_DEFAULT_PHYSICS_PROFILE == THOMPSON_RTE_RRTMGP_PROFILE_ID
 
 
 @pytest.mark.parametrize(

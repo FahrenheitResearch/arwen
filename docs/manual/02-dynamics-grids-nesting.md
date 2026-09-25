@@ -7,7 +7,7 @@ Runge-Kutta outer integration wrapping split-explicit acoustic steps
 (forward-backward horizontal, implicit vertical, recoupled to the large step), on a
 hybrid terrain-following dry-mass vertical coordinate, FP32 on CUDA
 [docs/gpuwm-project-history.md:65; README.md:33-34]. The RK stage table is a
-config-visible knob (`rk_ord`, default 3) [docs/public/CONFIGURATION.md:406].
+config-visible knob (`rk_ord`, default 3) [docs/public/CONFIGURATION.md:635].
 
 Advection is WRF's stencils, hardcoded where WRF hardcodes behavior: horizontal
 momentum is the WRF flux5 (5th-order) stencil, vertical momentum and scalars the
@@ -15,13 +15,13 @@ flux3 (3rd-order) stencil (`gpuwm/core/kernels/advection.cu`)
 [docs/public/CONFIGURATION.md:407-408]. Transported-scalar stencils are fixed
 5th/3rd order, so the importer accepts only the Registry default
 `h_sca_adv_order = 5`; the configurable `h_sca_adv_order` (legacy default 2) feeds
-the geopotential equation only [docs/public/CONFIGURATION.md:234]. Moist transport
+the geopotential equation only [docs/public/CONFIGURATION.md:339]. Moist transport
 runs WRF option 1 (positive-definite limiter) with `scalar_adv_opt` required to
-match [docs/public/CONFIGURATION.md:235, 414].
+match [docs/public/CONFIGURATION.md:340, 635].
 
 Lateral boundaries use specified/relaxation zones with Davies-style weighting;
 `spec_bdy_width` defaults to 5 and must be at least `spec_zone + relax_zone`
-[docs/public/CONFIGURATION.md:90]. The damping stack is described in section 1.2.
+[docs/public/CONFIGURATION.md:103]. The damping stack is described in section 1.2.
 
 No symbolic statement of the governing equation set exists in the documentation
 tree; the prose description above and the WRF-ARW technical-note lineage are the
@@ -31,12 +31,32 @@ reference. This is recorded as a documentation gap, not a claim.
 
 `hybrid_opt` supports 0/1 (sigma, `B(eta)=eta`) and 2 (WRF cubic-B hybrid); anything
 else is refused by name. The importer and the domain wizard default to 2 with
-`etac = 0.2` [docs/public/CONFIGURATION.md:127-128; gpuwm/config.py:83;
-gpuwm/domain_wizard.py:627]. Eta levels are explicit, not generated: `eta_levels`
-is required for real runs, automatic level generation (`auto_levels_opt`, `max_dz`,
-`dzbot`, `dzstretch_s/u`) is not implemented, and with explicit `eta_levels` those
-keys are inert in WRF too, so they import as dropped. `p_top` defaults on import to
-the Registry's 5000 Pa [docs/public/CONFIGURATION.md:125-126].
+`etac = 0.2` [docs/public/CONFIGURATION.md:140-141; gpuwm/namelist_import.py:3011-3012;
+gpuwm/domain_wizard.py:867]. That `etac` is the value asked for, not always the
+value run: at `hybrid_opt = 2` the cubic orders a column only while its surface
+pressure stays above a floor set by `etac` and `p_top` (46408 Pa, about 6082 m of
+terrain, at the shipped pair), and WRF calls a column below it fatal. Preparation
+surveys every terrain field the run can touch -- each declared domain at its own
+resolution, and a following nest's whole statics corridor -- and lowers `etac` to
+the largest value that orders the lowest surface pressure it finds
+[gpuwm/vertical_adaptation.py]. `p_top` is untouched. The chosen value is printed
+in one line, recorded in `proof.json` under `vertical_coordinate`, and carried by
+the prepared inputs the forecast integrates; every domain of the run takes that
+one coordinate, including a streamed nest rebuilding its tile buffer and a nest
+spawned mid-run, and a tree holding two is refused by name; terrain no positive
+`etac` orders is still refused with the constraint and the column.
+
+A preparation with nothing to derive still writes the block, at status
+`NOT_APPLICABLE`, and its `why` names which of the three reasons applied: no eta
+ladder is configured, `hybrid_opt` is an identity option (0 or 1), or the
+configured cubic has no segment where `dB/deta` rises above 1 and so leaves
+its surface-pressure floor at zero [gpuwm/vertical_adaptation.py].
+
+Eta levels are explicit, not generated: `eta_levels` is required for real runs,
+automatic level generation (`auto_levels_opt`, `max_dz`, `dzbot`,
+`dzstretch_s/u`) is not implemented, and with explicit `eta_levels` those keys
+are inert in WRF too, so they import as dropped. `p_top` defaults on import to
+the Registry's 5000 Pa [docs/public/CONFIGURATION.md:139].
 
 Two hard properties a WRF user must plan around:
 

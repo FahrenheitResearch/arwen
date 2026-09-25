@@ -5,8 +5,8 @@ module.  The receipt's per-route claims are only as complete as this
 inventory, so the inventory is derived -- never typed -- from an AST walk over
 ``git ls-files`` minus ``RELEASE-EXCLUDE.txt``, and it records the option tuple each caller supplies rather
 than a single global flags string.  There is no global flags string: the
-sites below pass different tuples, and one of them (``cp.ReductionKernel``)
-supplies no options at all.
+sites below pass different tuples, and some of them (the shipped
+``cp.ReductionKernel`` sites among them) supply no options at all.
 
 Usage::
 
@@ -40,14 +40,19 @@ CONSTRUCTOR_KINDS = {
 }
 
 #: Where the caller-supplied option tuple lives per kind: (positional index or
-#: None, keyword name or None).  ``ReductionKernel``/``ElementwiseKernel``
-#: take no compile options from the caller at all.
+#: None, keyword name or None).  Every kind takes an ``options`` keyword:
+#: ``ReductionKernel`` declares it and ``ElementwiseKernel`` accepts it among
+#: its keyword arguments, and the fused dycore column kernels pass
+#: ``-fmad=false`` through exactly that keyword.  Recording those two kinds as
+#: option-less, as this table once did, filed a site that supplies a tuple
+#: under "no caller options"; a site's tuple is read from its call, never
+#: assumed from its kind.
 OPTION_ARG = {
     "cupy.RawModule": (None, "options"),
     "cupy.RawKernel": (None, "options"),
     "cupy.cuda.compiler.compile_using_nvrtc": (1, "options"),
-    "cupy.ElementwiseKernel": (None, None),
-    "cupy.ReductionKernel": (None, None),
+    "cupy.ElementwiseKernel": (None, "options"),
+    "cupy.ReductionKernel": (None, "options"),
 }
 
 

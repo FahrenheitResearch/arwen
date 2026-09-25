@@ -166,28 +166,35 @@ def test_original_provider_identity_is_checked_before_full_fallback(pair):
 
 
 def test_native_request_refuses_present_nonconsumed_vertical_field(source, engine, tmp_path, monkeypatch):
-    """A valid canonical 3-D diagnostic still lies outside this consumer ABI."""
+    """A valid canonical 3-D diagnostic still lies outside this consumer ABI.
+
+    Vertical velocity is the example: canonical, three-dimensional, and
+    the one field the regular join drops by name
+    (gpuwm.mapped_source.REGULAR_JOIN_DROPPED_FIELDS), so the window's
+    inventory never carries it.  The five hydrometeor masses used to be
+    the example and are now part of that inventory.
+    """
     import gpuwm.ingest.atmospheric_window as module
     mapping = json.loads(source[0].read_text())
-    mapping["fields"]["cloud_water_mixing_ratio"] = source_fixture._field(
-        "cloud_water_mixing_ratio", "kg kg-1", ["vertical", "y", "x"], "mass")
+    mapping["fields"]["vertical_velocity"] = source_fixture._field(
+        "vertical_velocity", "m s-1", ["vertical", "y", "x"], "mass")
     source_fixture._write_mapping(source[0], mapping)
     with netCDF4.Dataset(source[1], "r+") as dataset:
-        field = dataset.createVariable("cloud_water_mixing_ratio", "f8", ("time", "level", "y", "x"))
-        field.units = "kg kg-1"
+        field = dataset.createVariable("vertical_velocity", "f8", ("time", "level", "y", "x"))
+        field.units = "m s-1"
         field[:] = 0.001
     # Establish that it is an actual validated source field with the right axes.
-    decode(source, engine, tmp_path / "full-with-cloud")
-    full = bridge.open_frameset(tmp_path / "full-with-cloud")
-    assert full.field(0, "cloud_water_mixing_ratio").values.shape == (3, 5, 6)
+    decode(source, engine, tmp_path / "full-with-w")
+    full = bridge.open_frameset(tmp_path / "full-with-w")
+    assert full.field(0, "vertical_velocity").values.shape == (3, 5, 6)
     original = module.window_request_response
     def invalid(event, grids):
         response = original(event, grids)
-        response["fields"].append("cloud_water_mixing_ratio")
+        response["fields"].append("vertical_velocity")
         return response
     monkeypatch.setattr(module, "window_request_response", invalid)
     with pytest.raises(ValueError, match="atmospheric.*inventory"):
-        decode(source, engine, tmp_path / "bad-cloud-window", (target(),))
+        decode(source, engine, tmp_path / "bad-w-window", (target(),))
 
 
 @pytest.mark.parametrize("change", ["geometry", "bounds", "surface", "duplicate", "shape"])

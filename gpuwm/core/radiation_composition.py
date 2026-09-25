@@ -236,8 +236,14 @@ def trace_gas_override_status(cfg, overrides):
 
 def make_radiation(cfg, start_time, latitude_deg, longitude_deg, *,
                    p_top=None, column_chunk=None, trace_gas_overrides=None,
-                   ozone_parent=None):
-    """Construct the requested spectra without substituting another selector."""
+                   ozone_parent=None, ozone_routing=None):
+    """Construct the requested spectra without substituting another selector.
+
+    ``ozone_routing`` is the constructing route's own name for how a legacy
+    RRTMG adapter obtains ozone (``gpuwm.core.cam_ozone.OZONE_ROUTINGS``);
+    ``None`` derives it from the construction.  Selectors other than legacy
+    RRTMG carry no such routing and ignore it.
+    """
     from gpuwm.config import radiation_scheme_ids
     from gpuwm.physics_compat import RRTMG_VARIANT_LEGACY, rrtmg_variant
     lw, sw = radiation_scheme_ids(cfg)
@@ -267,7 +273,8 @@ def make_radiation(cfg, start_time, latitude_deg, longitude_deg, *,
         if rrtmg_variant(cfg) == RRTMG_VARIANT_LEGACY:
             from gpuwm.core.rrtmg_legacy import RRTMGLegacyRadiation
             return RRTMGLegacyRadiation(*args, p_top=p_top, o3input=cfg.o3input,
-                ozone_parent=ozone_parent, longwave=longwave, shortwave=shortwave,
+                ozone_parent=ozone_parent, ozone_routing=ozone_routing,
+                longwave=longwave, shortwave=shortwave,
                 trace_gas_overrides=trace_gas_subset(trace_gas_overrides,
                     (LEGACY_LW_GASES if longwave else frozenset())
                     | (LEGACY_SW_GASES if shortwave else frozenset())) or None)

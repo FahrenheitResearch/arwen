@@ -63,6 +63,7 @@ python -m pip install --upgrade pip
 python -m pip install -e '.[gpu-cu12,render]'   # or gpu-cu13
 gpuwm fetch-tables
 (cd tools/grib1_bridge && cargo build --release --locked --offline)
+(cd tools/rustwx && cargo build --release --locked --offline)
 gpuwm doctor
 ```
 
@@ -76,8 +77,67 @@ python -m pip install --upgrade pip
 python -m pip install -e '.[gpu-cu12,render]'   # or gpu-cu13
 gpuwm fetch-tables
 cd tools\grib1_bridge; cargo build --release --locked --offline; cd ..\..
+cd tools\rustwx; cargo build --release --locked --offline; cd ..\..
 gpuwm doctor
 ```
+
+### After a pull, rebuild
+
+`git pull` moves the Rust half of the tree and leaves the binaries you
+built before it exactly where they were, so every `target/release` in
+the checkout can be a release behind the Python beside it. Rebuild
+after every pull.
+
+The one step that covers all of them is the installer. Both scripts are
+idempotent and the cargo builds are incremental, so a pull that touched
+no Rust costs seconds:
+
+```bash
+./install.sh          # Windows (PowerShell): .\install.ps1
+```
+
+They build four cargo workspaces, and the gate below judges each one it
+finds built:
+
+| Workspace | What it builds |
+|---|---|
+| `tools/grib1_bridge` | the GRIB decoders and the CPU preprocessing library |
+| `tools/rustwx` | the render engine, `rw_netcdf`, and the rest of the Rust data path |
+| `tools/arwen-tui` | the terminal workspace |
+| `tools/zarr_bridge` | `rw_zarr` |
+
+`tools/rw_wps` builds `gpuwm_mapped_engine` and is not one of the
+installer's steps; if you build it in this checkout, rebuild it after a
+pull as well.
+
+By hand, POSIX:
+
+```bash
+for workspace in tools/grib1_bridge tools/rustwx tools/arwen-tui tools/zarr_bridge; do
+  (cd "$workspace" && cargo build --release --locked --offline)
+done
+```
+
+Windows (PowerShell):
+
+```powershell
+foreach ($workspace in 'tools\grib1_bridge', 'tools\rustwx', 'tools\arwen-tui', 'tools\zarr_bridge') {
+  Push-Location $workspace; cargo build --release --locked --offline; Pop-Location
+}
+```
+
+From 2.7.6 nothing depends on remembering. A checkout's own build that
+is older than the sources that build it is refused before the run
+starts, naming the binary, when it was built, the source revision it
+was built from, the file that moved past it and the exact command for
+the workspace that builds it. `gpuwm doctor` reports the same line.
+
+The judgement is about the file, not about how it was named. A wheel or
+bundle install has no sources here to be compared with and is untouched,
+and so is a binary you built outside this checkout and pointed an
+environment variable at. A variable pointing into this checkout's own
+`target/release` or `target/debug` names this checkout's build, and that
+is measured like any other.
 
 **Which GPU extra.** CuPy ships one wheel per CUDA major, and a pip
 extra cannot detect the major of the box it is installing on -- there is
@@ -273,7 +333,7 @@ observation battery and the demo gallery's basemaps.
 | `gpuwm[gpu-cu13]` | `cupy-cuda13x[ctk]` | running the model on a CUDA-13-only box |
 | `gpuwm[gpu]` | alias of `gpu-cu12` | kept so existing install lines keep working |
 | `gpuwm[render]` | `wrf-rust>=0.2.39` | `gpuwm render`'s matplotlib engine, `gpuwm enprod`, and derived quantities. The default rust engine needs none of it. The floor is 0.2.39 because that is the oldest release with wheels for every supported interpreter (cp310-cp314); no environment marker, nothing skipped |
-| `gpuwm[dev]` | `pytest`, `psutil` | running the test battery |
+| `gpuwm[dev]` | `pytest`, `psutil`, `pyyaml` | running the test battery |
 | `gpuwm[publish]` | `huggingface_hub` | maintainers only: publishing the WPS_GEOG mirror snapshot. Needs write credentials nobody else has, so it is deliberately outside `[all]` |
 | `gpuwm[all-cu12]` | `gpu-cu12` + `render` | one line for a CUDA 12.x forecasting box |
 | `gpuwm[all-cu13]` | `gpu-cu13` + `render` | one line for a CUDA-13-only forecasting box |
@@ -305,7 +365,8 @@ python tools/build_rw_wps_release.py \
 ```
 
 The underlying release builder accepts and independently probes one
-source-matched wheel, five Rust bridge executables, and the Rust CPU library.
+source-matched wheel, every Rust bridge executable the bundle declares, and
+the Rust CPU library.
 It refuses a dirty Git tree, wheel/source drift, missing bridge ABI markers,
 CRLF shell payloads, and developer-specific absolute paths in installed text
 files. It emits a deterministic gzip archive, `manifest.json`, and
@@ -358,8 +419,10 @@ checks rather than trusting an old receipt.
 
 ## Sealed Windows x86-64 CPU archive
 
-From a clean Windows x86-64 checkout, build the dedicated wheel, all five PE
-Rust bridges, and the Rust CPU DLL without network access to Cargo:
+From a clean Windows x86-64 checkout, build the dedicated wheel, every PE Rust
+bridge the bundle declares in `BUNDLED_BRIDGES`
+(`gpuwm/native_wrf_distribution.py`, one row per bridge naming the cargo
+workspace it builds in), and the Rust CPU DLL without network access to Cargo:
 
 ```powershell
 python tools/build_rw_wps_windows_release.py `

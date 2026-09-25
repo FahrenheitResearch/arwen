@@ -221,3 +221,24 @@ tests/test_kernel_frame_recordings.py
 # Cargo lock/config/vendor edits have no Python import edge; require complete
 # offline sources, source-file hashes and safe release build instructions.
 tests/test_vendored_cargo_registry.py
+
+# The machine-absolute-path scan on the tree itself, and the entry earned by
+# a measured incident: a 2.7.6 lane committed 216 developer-absolute paths,
+# broke the public snapshot build and still reported a green battery, because
+# this file has no import edge for fastfix to follow -- it imports nothing
+# first-party, loads the builder by path and reads `git ls-files` -- so no
+# selection ever picked it, while the list that is added to every selection
+# did not name it.  It is the repo-scanning gate the list header describes
+# and it is on the stage-1 leg as well, the way test_verify_release_artifacts.py
+# is: stage 1 runs at a cut, this runs in every lane, and it is the lane that
+# grows the path.
+tests/test_release_snapshot_machine_paths.py
+
+# The documentation line-citation checker's gate.  A change to a .md page or
+# to a cited module has no import edge for fastfix to follow, which is why
+# five drifted anchors in docs/manual/ survived every lane: two pointed a
+# reader at a bare list of other key names and at an unrelated sentence for
+# the scalar_adv_opt rule, one at a section heading for spec_bdy_width, and
+# one at a function that had moved 177 lines.  It reads two documentation
+# trees and imports no product module.
+tests/test_doc_anchors.py

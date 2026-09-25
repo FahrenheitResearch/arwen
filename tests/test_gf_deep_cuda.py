@@ -4,13 +4,13 @@ Same bar as the CPU side: bitwise identity with the WRF v4.6.1 per-stage
 capture over all 216 committed columns, with fzu PINNED from the oracle
 exactly as tests/test_gf_deep_parity.py pins it.
 
-WHY IT IS PINNED, AND WHAT CHANGED AT 2.7.0.  Through 2.6.5 gf.cu carried a
-transcription of glibc 2.39's own tgammaf (e_gammaf_r.c with its lgammaf,
-exp2f, expm1f and __gamma_productf dependencies), so the kernel's fzu WAS
-glibc's word and this gate could run the chain with no override anywhere --
-the one claim the CPU reference could not make.  Those two glibc files are
-FSF-copyright and LGPL-2.1-or-later with no permissive upstream, an
-Apache-2.0 distribution cannot carry them, and they are gone.  gfk_tgamma is
+WHY IT IS PINNED, AND WHAT CHANGED AT 2.7.0.  Through 2.6.5 gf.cu carried
+ArWen's earlier gamma, with its lgammaf, exp2f and expm1f helpers, which
+returned glibc 2.39's tgammaf words, so the kernel's fzu WAS glibc's word
+and this gate could run the chain with no override anywhere, the one claim
+the CPU reference could not make.  That earlier gamma was this project's
+own work, as its replacement is; it is replaced and its helpers are gone
+with it, because nothing else called them.  gfk_tgamma is
 now ArWen's own CORRECTLY ROUNDED gamma: measured against a 113-bit oracle
 over all 59,768,833 float32 of [0.25, 36] it is right on every one and
 glibc 2.39 is wrong on 39.44 per cent of them, worst 6 ULP.  So the kernel
@@ -45,7 +45,7 @@ What this file proves, in order:
    tgammaq), and gfk_pow reproduces every powf row of the committed answer
    sheet including ppowhard's rounding-boundary case.  gfk_lgamma_pos,
    gfk_expm1 and gfk_exp2 and their gf-libm sweeps are gone: their only
-   caller was the LGPL gamma block, so they graded dead code.
+   caller was the earlier gamma, so they graded dead code.
 3. CUDA's builtin tgammaf and powf are DIFFERENT functions again -- neither
    glibc's nor correctly rounded -- negative controls that fire, so
    gfk_tgamma and gfk_pow are provably essential, not decoration.
@@ -280,8 +280,8 @@ def test_constant_table_survived_ptxas(module):
 # ==========================================================================
 #: gf_libm_unary_probe is 4 slots since 2.7.0 -- gfk_tgamma, CUDA's builtin
 #: tgammaf (negative control), gfk_exp, gfk_log.  Slots 2/3/4 held
-#: gfk_lgamma_pos / gfk_expm1 / gfk_exp2, whose only caller was the LGPL
-#: gamma block; all four are deleted.
+#: gfk_lgamma_pos / gfk_expm1 / gfk_exp2, whose only caller was the earlier
+#: gamma; all four are deleted.
 _UNARY_SLOTS = 4
 
 
@@ -470,8 +470,8 @@ def test_the_fzu_pin_was_honoured(stage, want, fixture):
 
     This replaces ``test_fzu_needed_no_pin``, which asserted the opposite
     claim -- that with fzu COMPUTED on the device, up_fzu and dn_fzu were
-    bitwise WRF's on every column.  That claim was true only because
-    gfk_tgamma was a transcription of glibc's LGPL e_gammaf_r.c.  It is
+    bitwise WRF's on every column.  That claim was true only because the
+    earlier gfk_tgamma returned glibc's tgammaf words.  It is
     false now, on purpose, and docs/gf_gamma_known_delta.md is the record.
 
     What is asserted instead is that the kernel reports back exactly the

@@ -1,0 +1,47 @@
+................................................................s....... [  9%]
+............................................... [ 15%]
+........................................................................ [ 24%]
+........................................................................ [ 33%]
+........................................................................ [ 42%]
+........................................................................ [ 51%]
+.......................................................sssss.sssss...... [ 60%]
+........................................................................ [ 69%]
+.........................................Fs............................. [ 78%]
+..............s......................................................... [ 87%]
+...................s..sss..s.sss........................................ [ 96%]
+.........................                                                [100%]
+=================================== FAILURES ===================================
+___________ test_the_declared_version_is_never_behind_the_changelog ____________
+
+    def test_the_declared_version_is_never_behind_the_changelog() -> None:
+        """The floor, and it holds at every point in the cycle.
+
+        On the day of a cut the two are equal -- ``## 2.5.0 (date)`` sits at the
+        head of the changelog and ``pyproject.toml`` says ``2.5.0`` -- which is
+        the state the workflow's tag comparison wants.  What can never be true
+        is the version trailing the changelog, because then the tag the cut
+        demands names a release that has already gone out.
+        """
+
+        _require_source_tree()
+        version = declared_version()
+        newest = max(_release_sections(), key=_as_tuple)
+>       assert _as_tuple(version) >= _as_tuple(newest), (
+            f"pyproject.toml declares {version} while CHANGELOG.md already "
+            f"records {newest} as released. The publish workflow's `cut` job "
+            f"requires the tag to equal v<pyproject version>, so this tree can "
+            f"only cut v{version} -- a number that has already shipped.")
+E       AssertionError: pyproject.toml declares 2.7.5 while CHANGELOG.md already records 2.7.6 as released. The publish workflow's `cut` job requires the tag to equal v<pyproject version>, so this tree can only cut v2.7.5 -- a number that has already shipped.
+E       assert (2, 7, 5) >= (2, 7, 6)
+E        +  where (2, 7, 5) = _as_tuple('2.7.5')
+E        +  and   (2, 7, 6) = _as_tuple('2.7.6')
+
+tests/test_release_version_declaration.py:126: AssertionError
+=============================== warnings summary ===============================
+<frozen importlib._bootstrap>:491
+  <frozen importlib._bootstrap>:491: RuntimeWarning: numpy.ndarray size changed, may indicate binary incompatibility. Expected 16 from C header, got 96 from PyObject
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+FAILED tests/test_release_version_declaration.py::test_the_declared_version_is_never_behind_the_changelog
+1 failed, 770 passed, 21 skipped, 1 warning, 97 subtests passed in 105.98s (0:01:45)

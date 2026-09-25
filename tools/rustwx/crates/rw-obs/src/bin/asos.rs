@@ -44,7 +44,7 @@ use serde::{Deserialize, Serialize};
 
 use rw_nexrad::s3::parse_time;
 use rw_obs::net::{agent, get_text, query_encode};
-use rw_obs::seam::{seam_time, wrap_longitude, Provenance};
+use rw_obs::seam::{seam_time, wrap_longitude, Provenance, TIME_FORMAT};
 use rw_obs::{err, hex_sha256};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -97,11 +97,16 @@ const DEFAULT_REQUEST_PAUSE_MS: u64 = 2000;
 
 const STATIONS_SCHEMA: &str = "gpuwm-obs.asos-stations.v1";
 const FETCH_SCHEMA: &str = "gpuwm-obs.asos-fetch.v1";
-const SURFACE_SCHEMA: &str = "gpuwm-obs.asos-surface.v1";
+/// The record `decode` writes.  `v2` carries each report's own
+/// `observation_time` beside the `valid_time` it was matched to, and a
+/// report serves exactly one valid time; `v1` collapsed the two and could
+/// emit one report under two hours.  `verify` reads both.
+const SURFACE_SCHEMA: &str = "gpuwm-obs.asos-surface.v2";
+const SURFACE_SCHEMA_V1: &str = "gpuwm-obs.asos-surface.v1";
 const VERIFY_SCHEMA: &str = "gpuwm-obs.asos-verify.v1";
 
-const ABI_MARKER: &str = "gpuwm-obs.asos-surface.v1\tstations\treports\tprovenance\t\
-temperature_2m\tdewpoint_2m\twind_speed_10m\tmslp\tK\tm s-1\tPa";
+const ABI_MARKER: &str = "gpuwm-obs.asos-surface.v2\tstations\treports\tprovenance\t\
+observation_time\ttemperature_2m\tdewpoint_2m\twind_speed_10m\tmslp\tK\tm s-1\tPa";
 
 const USAGE: &str = "\
 usage: rw_asos <stations|fetch|decode|verify> [OPTIONS]
@@ -109,9 +114,12 @@ usage: rw_asos <stations|fetch|decode|verify> [OPTIONS]
 
   stations  freeze a station table from the archive's own network metadata
   fetch     download one bounded CSV window and print its sha256
-  decode    screen, convert to seam units, match to valid times, write a
-            `gpuwm-obs.asos-surface.v1` record
+  decode    screen, convert to seam units, match each report to the one
+            valid time nearest it, write a `gpuwm-obs.asos-surface.v2`
+            record (every report carries its observation_time beside the
+            valid_time it serves)
   verify    re-hash a decoded record's source against the digest it carries
+            and prove no report serves two valid times
 
 archive options
   --archive URL          default: https://mesonet.agron.iastate.edu
@@ -137,7 +145,8 @@ fetch options
 decode options
   --obs FILE             the CSV from `fetch`
   --step-hours N         valid-time stride. Default 1
-  --match-seconds N      nearest report within this of a valid time. Default 600
+  --match-seconds N      a report serves the valid time nearest it, and only
+                         when within this many seconds of it. Default 600
   --min-report-rate F    drop a station reporting fewer than this share of
                          scored hours. Default 0.80
   --max-screen-rate F    drop a station whose gross-error screen fires on more
@@ -791,9 +800,66 @@ fn knots_to_ms(value: f64) -> f64 {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct SeamReport {
     station_id: String,
+    /// The valid time this report serves: the hourly slot it was matched
+    /// to, and the leg a consumer binds it to.
     valid_time: String,
+    /// When the report was actually taken, the archive's own `valid`
+    /// column.  Kept beside the slot because the two differ by up to
+    /// `--match-seconds`, and an innovation dated to the slot is dated up
+    /// to that far from the instant the instrument read.  Empty on a `v1`
+    /// record, which never carried it.
+    #[serde(default)]
+    observation_time: String,
     values: BTreeMap<String, f64>,
     flags: Vec<String>,
+}
+
+/// Which valid time each report serves.
+///
+/// Every report goes to the ONE valid time nearest it (ties to the earlier
+/// one) and only when that is within `match_seconds`; each valid time then
+/// takes the nearest of the reports that chose it (ties to the earlier
+/// report).  Returns `(target index, report)` pairs in target order.
+///
+/// The rule used to run the other way round, each valid time taking the
+/// nearest report, and nothing marked a report as taken: with a window
+/// wider than half the stride one 12:52 report was written under 12:00 and
+/// under 13:00, the first of them before it was taken.  Assigning reports
+/// to targets makes "used once" a property of the construction rather than
+/// a bookkeeping promise.
+fn match_reports<'a>(
+    candidates: &'a [RawReport],
+    targets: &[DateTime<Utc>],
+    match_seconds: i64,
+) -> Vec<(usize, &'a RawReport)> {
+    let mut chosen: Vec<Option<&'a RawReport>> = vec![None; targets.len()];
+    for report in candidates {
+        let nearest = targets
+            .iter()
+            .enumerate()
+            .map(|(index, target)| ((report.valid - *target).num_seconds().abs(), index))
+            .min();
+        let Some((distance, index)) = nearest else { continue };
+        if distance > match_seconds {
+            continue;
+        }
+        let incumbent = chosen[index];
+        let closer = match incumbent {
+            None => true,
+            Some(current) => {
+                let current_distance = (current.valid - targets[index]).num_seconds().abs();
+                (distance, report.valid) < (current_distance, current.valid)
+            }
+        };
+        if closer {
+            chosen[index] = Some(report);
+        }
+    }
+    chosen
+        .into_iter()
+        .enumerate()
+        .filter_map(|(index, report)| report.map(|r| (index, r)))
+        .collect()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -912,19 +978,14 @@ fn cmd_decode(options: &Options) -> Result<String, Box<dyn Error>> {
         }
     }
 
-    // Match each station to each valid time.
+    // Match each station's reports to the valid times: each report serves
+    // the one valid time nearest it, so no report is written twice.
     let mut reports = Vec::new();
     let mut matched_hours: BTreeMap<String, usize> = BTreeMap::new();
     for (station, mut candidates) in by_station {
         candidates.sort_by_key(|r| r.valid);
-        for target in &valid_times {
-            let best = candidates
-                .iter()
-                .min_by_key(|r| (r.valid - *target).num_seconds().abs());
-            let Some(best) = best else { continue };
-            if (best.valid - *target).num_seconds().abs() > match_seconds {
-                continue;
-            }
+        for (index, best) in match_reports(&candidates, &valid_times, match_seconds) {
+            let target = &valid_times[index];
             let mut values = BTreeMap::new();
             if let Some(tmpf) = best.tmpf {
                 values.insert("temperature_2m".to_string(), fahrenheit_to_kelvin(tmpf));
@@ -948,6 +1009,7 @@ fn cmd_decode(options: &Options) -> Result<String, Box<dyn Error>> {
             reports.push(SeamReport {
                 station_id: station.clone(),
                 valid_time: seam_time(*target),
+                observation_time: seam_time(best.valid),
                 values,
                 flags: Vec::new(),
             });
@@ -1068,12 +1130,57 @@ fn cmd_verify(options: &Options) -> Result<String, Box<dyn Error>> {
         .map_err(|e| err(format!("cannot read {}: {e}", path.display())))?;
     let record: SurfaceRecord = serde_json::from_str(&text)
         .map_err(|e| err(format!("{} is not a surface record: {e}", path.display())))?;
-    if record.schema != SURFACE_SCHEMA {
+    if record.schema != SURFACE_SCHEMA && record.schema != SURFACE_SCHEMA_V1 {
         return Err(err(format!(
-            "{} declares schema {:?}, expected {SURFACE_SCHEMA:?}",
+            "{} declares schema {:?}, expected {SURFACE_SCHEMA:?} or {SURFACE_SCHEMA_V1:?}",
             path.display(),
             record.schema
         )));
+    }
+    let carries_observation_times = record.schema == SURFACE_SCHEMA;
+    if carries_observation_times {
+        // The two promises a v2 record makes about time: every report says
+        // when it was taken, within the match window of the slot it
+        // serves, and no observation serves two slots.
+        let mut served: std::collections::BTreeSet<(&str, &str)> = Default::default();
+        for report in &record.reports {
+            let observed = NaiveDateTime::parse_from_str(&report.observation_time, TIME_FORMAT)
+                .map(|naive| Utc.from_utc_datetime(&naive))
+                .map_err(|_| {
+                    err(format!(
+                        "the record's report for {} at {} carries observation_time {:?}, \
+                         which is not a seam time",
+                        report.station_id, report.valid_time, report.observation_time
+                    ))
+                })?;
+            let slot = NaiveDateTime::parse_from_str(&report.valid_time, TIME_FORMAT)
+                .map(|naive| Utc.from_utc_datetime(&naive))
+                .map_err(|_| {
+                    err(format!(
+                        "the record's report for {} carries valid_time {:?}, which is not a \
+                         seam time",
+                        report.station_id, report.valid_time
+                    ))
+                })?;
+            let apart = (observed - slot).num_seconds().abs();
+            if apart > record.match_seconds {
+                return Err(err(format!(
+                    "the record's report for {} was taken at {} and serves {}, {apart} s \
+                     apart, beyond the {} s match window the record itself declares",
+                    report.station_id,
+                    report.observation_time,
+                    report.valid_time,
+                    record.match_seconds
+                )));
+            }
+            if !served.insert((report.station_id.as_str(), report.observation_time.as_str())) {
+                return Err(err(format!(
+                    "the record uses {}'s observation of {} twice; a report serves one \
+                     valid time",
+                    report.station_id, report.observation_time
+                )));
+            }
+        }
     }
     let source = Path::new(&record.provenance.uri);
     let bytes = std::fs::read(source).map_err(|e| {
@@ -1108,10 +1215,15 @@ fn cmd_verify(options: &Options) -> Result<String, Box<dyn Error>> {
     }
 
     #[derive(Serialize)]
-    struct Record {
+    struct Record<'a> {
         schema: &'static str,
         status: &'static str,
         path: String,
+        record_schema: &'a str,
+        /// Whether every report carries its own observation_time and was
+        /// proved to serve one valid time.  False on a v1 record, whose
+        /// reports are dated to their slot and could serve two.
+        observation_times_proved: bool,
         source: String,
         source_sha256: String,
         stations: usize,
@@ -1124,6 +1236,8 @@ fn cmd_verify(options: &Options) -> Result<String, Box<dyn Error>> {
             schema: VERIFY_SCHEMA,
             status: "PASS",
             path: path.to_string_lossy().to_string(),
+            record_schema: &record.schema,
+            observation_times_proved: carries_observation_times,
             source: source.to_string_lossy().to_string(),
             source_sha256: digest,
             stations: record.stations.len(),
@@ -1136,6 +1250,72 @@ fn cmd_verify(options: &Options) -> Result<String, Box<dyn Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn report(hour: u32, minute: u32) -> RawReport {
+        RawReport {
+            station_id: "AAAA".to_string(),
+            valid: Utc.with_ymd_and_hms(2026, 9, 19, hour, minute, 0).unwrap(),
+            tmpf: Some(70.0),
+            dwpf: None,
+            sknt: None,
+            mslp_hpa: None,
+        }
+    }
+
+    fn targets(hours: &[u32]) -> Vec<DateTime<Utc>> {
+        hours
+            .iter()
+            .map(|h| Utc.with_ymd_and_hms(2026, 9, 19, *h, 0, 0).unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn one_report_serves_one_valid_time_and_only_the_nearest() {
+        // A single 12:52 report against 12:00 and 13:00 with an hour's
+        // window: the rule that took the nearest report for every valid
+        // time wrote it under both, the first of them before it was taken.
+        let reports = vec![report(12, 52)];
+        let matched = match_reports(&reports, &targets(&[12, 13]), 3600);
+        assert_eq!(matched.len(), 1);
+        assert_eq!(matched[0].0, 1, "13:00 is the nearest slot to 12:52");
+
+        // Inside the default ten-minute window it serves nothing at all:
+        // 12:52 is eight minutes from 13:00 and fifty-two from 12:00.
+        let matched = match_reports(&reports, &targets(&[12, 13]), 600);
+        assert_eq!(matched.len(), 1);
+        assert_eq!(matched[0].0, 1);
+        let matched = match_reports(&reports, &targets(&[12]), 600);
+        assert!(matched.is_empty());
+    }
+
+    #[test]
+    fn a_valid_time_takes_the_nearest_of_the_reports_that_chose_it() {
+        // 12:52 and 12:58 both choose 13:00; 13:00 takes 12:58, and 12:00
+        // is not handed the leftover 12:52 it is fifty-two minutes from.
+        let reports = vec![report(12, 52), report(12, 58)];
+        let matched = match_reports(&reports, &targets(&[12, 13]), 3600);
+        assert_eq!(matched.len(), 1);
+        assert_eq!(matched[0].0, 1);
+        assert_eq!(matched[0].1.valid.minute(), 58);
+
+        // 11:57 chooses 12:00 and 12:52 chooses 13:00: two slots, two
+        // different observations, each used once.
+        let reports = vec![report(11, 57), report(12, 52)];
+        let matched = match_reports(&reports, &targets(&[12, 13]), 3600);
+        assert_eq!(matched.len(), 2);
+        assert_eq!((matched[0].0, matched[0].1.valid.minute()), (0, 57));
+        assert_eq!((matched[1].0, matched[1].1.valid.minute()), (1, 52));
+
+        // Equidistant between two slots goes to the earlier slot; two
+        // reports equidistant from one slot leaves the earlier report.
+        let reports = vec![report(12, 30)];
+        let matched = match_reports(&reports, &targets(&[12, 13]), 3600);
+        assert_eq!(matched[0].0, 0);
+        let reports = vec![report(12, 55), report(13, 5)];
+        let matched = match_reports(&reports, &targets(&[13]), 3600);
+        assert_eq!(matched.len(), 1);
+        assert_eq!(matched[0].1.valid.minute(), 55);
+    }
 
     #[test]
     fn help_version_and_abi_are_stable_surfaces() {

@@ -315,10 +315,70 @@ REPOSITORY_URL = "https://github.com/FahrenheitResearch/arwen"
 CLONE_DIR = "gpuwm"
 
 
-def cargo_is_installed() -> bool:
-    """Is a Rust toolchain on PATH?  Read-only, runs nothing."""
+def cargo_executable() -> str | None:
+    """The cargo to run here, or None when this machine has none.
 
-    return shutil.which("cargo") is not None
+    THE CONCRETE BREAKAGE, measured on a rented Linux node 2026-09-17.
+    rustup was installed and working; ``cargo --version`` answered 1.93.1
+    in a login shell.  In a NON-LOGIN shell -- ``ssh host 'pytest ...'``,
+    a cron entry, a systemd unit, a desktop-launched process -- rustup's
+    profile edit has not run, ``cargo`` is not on PATH, and every bridge
+    build refused with "no Rust toolchain is on PATH ... install Rust
+    first", telling the owner to install what was already installed two
+    directories away.  Ten tests errored in their fixture on exactly
+    that, and nothing about the machine was wrong.
+
+    ``cargo_activation_command`` above records the same fact from the
+    other side ("rustup edits the login profile, which does nothing for
+    the shell already running"), so this is that knowledge applied at the
+    place that runs the command instead of only in the remedy text.
+
+    The ladder, in order, and it runs nothing:
+
+    1. ``CARGO``, the toolchain's own environment variable, so an
+       explicit choice always wins -- the same override
+       ``tools/battery/run_cargo_gates.py --cargo`` offers its lane;
+    2. PATH, which is what a developer shell has;
+    3. rustup's own home, ``$CARGO_HOME/bin`` or ``~/.cargo/bin``, which
+       is where every rustup install puts the shim.
+
+    Resolving to the SHIM rather than to a pinned toolchain is
+    deliberate: the shim is what reads a ``rust-toolchain.toml``, so a
+    crate in this tree can declare the toolchain it needs and be obeyed
+    by every route without a version being hard-coded here.  No such
+    file exists today and none is added by this function: measured, the
+    bridge crates build on 1.93.1, and pinning a newer toolchain would
+    refuse a toolchain that works.
+    """
+
+    explicit = os.environ.get("CARGO")
+    if explicit:
+        found = shutil.which(explicit) or (
+            explicit if os.path.isfile(explicit) else None)
+        if found:
+            return found
+    found = shutil.which("cargo")
+    if found:
+        return found
+    name = "cargo.exe" if os.name == "nt" else "cargo"
+    home = os.environ.get("CARGO_HOME")
+    roots = [Path(home)] if home else []
+    roots.append(Path.home() / ".cargo")
+    for root in roots:
+        candidate = root / "bin" / name
+        if candidate.is_file():
+            return str(candidate)
+    return None
+
+
+def cargo_is_installed() -> bool:
+    """Is a Rust toolchain reachable here?  Read-only, runs nothing.
+
+    Reachable, not "on PATH": see :func:`cargo_executable` for the
+    measured reason those are not the same question.
+    """
+
+    return cargo_executable() is not None
 
 
 def rust_toolchain_install_command() -> str:
@@ -980,11 +1040,385 @@ def accept_resolved(path: Path, *, executable: bool = True) -> Path:
     what the other fourteen refuse.  ``executable=False`` is for the
     libraries, which are loaded rather than launched and whose modes pip
     does not break.
+
+    Two judgements, one for each rung that can hand over bytes this
+    release did not make: the staged bundle must be this release's pin,
+    and a checkout's own build must be current with the checkout.
     """
 
     if executable:
         path = ensure_executable(path)
-    return require_release_pin(path)
+    return require_current_checkout_build(require_release_pin(path))
+
+
+# ---------------------------------------------------------------------------
+# Rung 2: a checkout's own build, against the tree it serves
+# ---------------------------------------------------------------------------
+
+#: Suffixes of the files a cargo build compiles or resolves against.  A
+#: workspace holds far more than this (vendored crates, map assets, the
+#: target directory); a vendored crate only changes when ``Cargo.lock``
+#: does, and the lock IS scanned, so the walk stays at a few hundred
+#: files instead of tens of thousands.
+_BUILD_INPUT_SUFFIXES = (".rs", ".toml", ".lock", ".c", ".h", ".cc",
+                         ".cpp", ".cu", ".cuh")
+
+#: Directories a build never reads its sources from.
+_BUILD_INPUT_SKIP = frozenset({"target", ".git", "vendor", "assets",
+                               "patches", "tests", "benches", "examples",
+                               "fixtures"})
+
+#: Built name -> crate directory, per workspace.  Manifests are static
+#: configuration and parsing them all is the only part of this that is
+#: not a handful of `stat` calls, so it is read once per process.  The
+#: file times themselves are never cached: a resolution must answer
+#: about the tree as it is at that moment, not as it was at import.
+_CRATE_INDEX: dict[Path, dict[str, Path]] = {}
+
+
+class StaleCheckoutBuildError(RuntimeError):
+    """A checkout's own build is older than the sources that build it."""
+
+
+def checkout_workspace_of(path: Path) -> Path | None:
+    """The checkout cargo workspace whose own build ``path`` is, or None.
+
+    The question is about the FILE, not about the rung that named it.
+    ``<workspace>/target/{release,debug}/<file>`` inside this
+    installation is a binary somebody built here from sources that are
+    still here, and that stays true when an environment override is
+    what named it: an override pointing into this checkout's own target
+    IS this checkout's build, and a stale one there fails inside the
+    same run as the rung that would have found it anyway.  An override
+    naming a built copy anywhere else -- the remedies that say "point
+    GPUWM_*_BIN at a built copy" mean exactly that -- answers None on
+    the workspace test and is handed over untouched, as does everything
+    that arrived built: a ``libexec`` directory, the wheel's own copy, a
+    fetched bundle.  A wheel install has no workspace at all and answers
+    None on the first test, which is why this cannot narrow one.
+    """
+
+    try:
+        resolved = Path(path).resolve()
+        parents = resolved.parents
+        if (len(parents) < 3 or parents[0].name not in ("release", "debug")
+                or parents[1].name != "target"):
+            return None
+        workspace = parents[2]
+        if not (workspace / "Cargo.toml").is_file():
+            return None
+        if not workspace.is_relative_to(_package_parent().resolve()):
+            return None
+    except (OSError, ValueError):                    # pragma: no cover - rare
+        return None
+    return workspace
+
+
+def _manifest(path: Path) -> dict:
+    import tomllib
+
+    try:
+        with open(path, "rb") as stream:
+            return tomllib.load(stream)
+    except (OSError, ValueError):
+        return {}
+
+
+def _crate_index(workspace: Path) -> dict[str, Path]:
+    """Built name -> the crate directory that declares it.
+
+    Read from the manifests rather than guessed from the filename:
+    ``rw_netcdf`` is declared by ``crates/rw-netcdf``, ``rw_mpas_mesh``
+    by ``crates/rw-mpas``, and a library's file name resembles neither.
+    """
+
+    cached = _CRATE_INDEX.get(workspace)
+    if cached is not None:
+        return cached
+    index: dict[str, Path] = {}
+    roots = [workspace] + sorted(
+        item for item in (workspace / "crates").glob("*") if item.is_dir())
+    for crate in roots:
+        manifest = _manifest(crate / "Cargo.toml")
+        package = manifest.get("package", {}).get("name")
+        if isinstance(package, str):
+            index.setdefault(package.replace("-", "_"), crate)
+        for section in ("bin", "lib"):
+            entries = manifest.get(section, [])
+            if isinstance(entries, dict):
+                entries = [entries]
+            for entry in entries:
+                name = entry.get("name") if isinstance(entry, dict) else None
+                if isinstance(name, str):
+                    index[name] = crate
+    _CRATE_INDEX[workspace] = index
+    return index
+
+
+def _path_dependency_roots(crate: Path, workspace: Path) -> list[Path]:
+    """``crate`` and every crate it depends on by path, transitively.
+
+    A binary is not only its own crate: ``rw_netcdf`` compiles the
+    vendored ``netcrust`` reader in with it, and a change there is a
+    change to the binary.  Path dependencies are followed, including the
+    ``workspace = true`` spelling, which resolves in the workspace root's
+    own ``[workspace.dependencies]``.
+
+    Dev dependencies are NOT followed.  They build the test binaries and
+    never the shipped one: rw-netcdf's own suite writes its classic
+    fixtures with ``netcdf-writer``, and a change there would otherwise
+    condemn a reader that does not contain a byte of it.
+    """
+
+    shared = _manifest(workspace / "Cargo.toml").get(
+        "workspace", {}).get("dependencies", {})
+    roots: list[Path] = []
+    pending = [crate]
+    seen: set[Path] = set()
+    while pending:
+        current = pending.pop()
+        try:
+            key = current.resolve()
+        except OSError:                              # pragma: no cover - rare
+            continue
+        if key in seen or not (current / "Cargo.toml").is_file():
+            continue
+        seen.add(key)
+        roots.append(current)
+        manifest = _manifest(current / "Cargo.toml")
+        sections = [manifest.get(name, {}) for name in (
+            "dependencies", "build-dependencies")]
+        for platform in manifest.get("target", {}).values():
+            sections += [platform.get(name, {}) for name in (
+                "dependencies", "build-dependencies")]
+        for section in sections:
+            if not isinstance(section, dict):
+                continue
+            for name, spec in section.items():
+                if not isinstance(spec, dict):
+                    continue
+                if spec.get("workspace") is True:
+                    spec = shared.get(name, {})
+                relative = spec.get("path") if isinstance(spec, dict) else None
+                if isinstance(relative, str):
+                    # Resolved, so a nested path dependency is named by
+                    # where it is rather than by the walk that found it.
+                    pending.append(Path(os.path.normpath(current / relative)))
+    return roots
+
+
+def _newest_build_input(roots: tuple[Path, ...]) -> tuple[Path | None, float]:
+    """The most recently written build input under ``roots``, and when."""
+
+    newest: Path | None = None
+    newest_at = 0.0
+    pending = [Path(root) for root in roots]
+    while pending:
+        directory = pending.pop()
+        if directory.is_file():
+            # A named file rather than a tree: the workspace manifest and
+            # its lock, which price every crate under them.
+            try:
+                written = directory.stat().st_mtime
+            except OSError:                          # pragma: no cover - rare
+                continue
+            if written > newest_at:
+                newest, newest_at = directory, written
+            continue
+        try:
+            entries = list(os.scandir(directory))
+        except OSError:
+            continue
+        for entry in entries:
+            try:
+                if entry.is_dir(follow_symlinks=False):
+                    if entry.name not in _BUILD_INPUT_SKIP:
+                        pending.append(Path(entry.path))
+                    continue
+                if not entry.name.endswith(_BUILD_INPUT_SUFFIXES):
+                    continue
+                written = entry.stat().st_mtime
+            except OSError:                          # pragma: no cover - rare
+                continue
+            if written > newest_at:
+                newest, newest_at = Path(entry.path), written
+    return newest, newest_at
+
+
+class CheckoutBuildStatus:
+    """One checkout-built artifact, measured against its own sources."""
+
+    __slots__ = ("artifact", "binary", "workspace", "built_at",
+                 "newest_source", "newest_at")
+
+    def __init__(self, artifact: str, binary: Path, workspace: Path,
+                 built_at: float, newest_source: Path | None,
+                 newest_at: float):
+        self.artifact = artifact
+        self.binary = binary
+        self.workspace = workspace
+        self.built_at = built_at
+        self.newest_source = newest_source
+        self.newest_at = newest_at
+
+    @property
+    def current(self) -> bool:
+        """Cargo's own question: is every input older than the output?"""
+
+        return self.newest_source is None or self.newest_at <= self.built_at
+
+    def built_from(self) -> str:
+        """The revision stamped into the bytes, in words.
+
+        Every gpuwm-authored bridge embeds ``GPUWM_BRIDGE_SOURCE_REV``
+        (``tools/rustwx/crates/*/build.rs``), and a build from a tree
+        with modifications in it deliberately stamps ``unknown`` rather
+        than a commit it is not.  Read for the refusal only: the
+        staleness itself is decided by the files, so a binary with no
+        stamp at all is still measured.
+        """
+
+        try:
+            from gpuwm import bridge_assets
+
+            revisions = bridge_assets.embedded_source_revisions(
+                self.binary.read_bytes())
+        except Exception:                            # noqa: BLE001
+            revisions = ()
+        if len(revisions) == 1:
+            return f"from source revision {revisions[0]}"
+        if revisions:
+            return "from more than one source revision " + ", ".join(revisions)
+        return "from a tree with local modifications, which stamps no revision"
+
+    def describe(self) -> str:
+        """One line for a report: what is old, and by how much."""
+
+        relative = self.newest_source
+        try:
+            relative = self.newest_source.resolve().relative_to(
+                _package_parent().resolve())
+        except (AttributeError, OSError, ValueError):  # pragma: no cover
+            pass
+        return (f"{self.binary} was built {_when(self.built_at)} "
+                f"({self.built_from()}) and {relative} was written "
+                f"{_when(self.newest_at)}, so this build is "
+                f"{_elapsed(self.newest_at - self.built_at)} behind the "
+                "sources it is built from")
+
+    def remedy(self) -> str:
+        """The command that ends it, in this platform's shell."""
+
+        try:
+            crate = self.workspace.relative_to(_package_parent()).as_posix()
+        except ValueError:                           # pragma: no cover - rare
+            crate = str(self.workspace)
+        return cargo_build_one_liner(crate)
+
+    def refusal(self) -> str:
+        return (
+            f"the Rust bridge `{self.artifact}` in this checkout is older "
+            "than the sources it is built from.\n"
+            f"  what: {self.describe()}.\n"
+            "  why: a pull moves this repository's Rust half and leaves the "
+            "binary where it was, so the Python half of the new release "
+            "drives the previous one's reader and fails inside a run "
+            "instead of before it.\n"
+            f"  remedy: {self.remedy()}")
+
+
+def _when(stamp: float) -> str:
+    from datetime import datetime, timezone
+
+    return datetime.fromtimestamp(stamp, timezone.utc).strftime(
+        "%Y-%m-%d %H:%M:%SZ")
+
+
+def _elapsed(seconds: float) -> str:
+    seconds = max(0.0, seconds)
+    if seconds < 90:
+        return f"{seconds:.0f} seconds"
+    if seconds < 5400:
+        return f"{seconds / 60:.0f} minutes"
+    if seconds < 172800:
+        return f"{seconds / 3600:.1f} hours"
+    return f"{seconds / 86400:.1f} days"
+
+
+def checkout_build_status(path: Path) -> CheckoutBuildStatus | None:
+    """How ``path`` stands against the checkout that builds it, or None.
+
+    None for everything that is not rung 2, which is every wheel install
+    and every staged or fetched artifact: those have no sources here to
+    be compared with, and this function is the whole of what a report
+    and the resolver both read, so the two cannot disagree.
+    """
+
+    workspace = checkout_workspace_of(path)
+    if workspace is None:
+        return None
+    binary = Path(path).resolve()
+    try:
+        built_at = binary.stat().st_mtime
+    except OSError:                                  # pragma: no cover - rare
+        return None
+    index = _crate_index(workspace)
+    # A shared library arrives as `libgpuwm_preprocess_cpu.so`, and the
+    # crate declaring that name is `tools/grib1_bridge`: it is the
+    # `[lib] name`, beside the `grib1_bridge` package name.  So the
+    # platform prefix is stripped and the index asked a second time.
+    #
+    # The name that ANSWERED is kept, because the refusal below prints it
+    # and every other surface spells the artifact without the platform's
+    # `lib`: the CPU library's staleness refusal read "the Rust bridge
+    # `libgpuwm_preprocess_cpu`", which is not a name a reader can look
+    # up or a remedy can be matched against.  Stripping only when the
+    # stripped spelling is the one the workspace DECLARES keeps a binary
+    # whose name genuinely starts with `lib` intact.
+    artifact = binary.stem
+    crate = index.get(artifact)
+    if crate is None:
+        stripped = artifact.removeprefix("lib")
+        crate = index.get(stripped)
+        if crate is not None:
+            artifact = stripped
+    # The workspace manifest and its lock price every crate under them,
+    # and a dependency bump moves the lock and nothing else.
+    roots = tuple(workspace / name for name in ("Cargo.toml", "Cargo.lock"))
+    roots += tuple(_path_dependency_roots(crate, workspace)) if crate else ()
+    if len(roots) == 2:
+        # No manifest claims this name, so nothing narrows the question:
+        # measure the whole workspace rather than answering "current"
+        # about a binary whose sources were not located.
+        roots = (workspace,)
+    newest_source, newest_at = _newest_build_input(roots)
+    return CheckoutBuildStatus(artifact, binary, workspace, built_at,
+                               newest_source, newest_at)
+
+
+def require_current_checkout_build(path: Path) -> Path:
+    """``path`` is this checkout's current build of it, or it is not used.
+
+    The gate the reported defect wanted: a user who pulled 2.7.4 onto
+    2.7.5 kept a ``tools/rustwx/target/release/rw_netcdf`` built from the
+    older tree, and the first thing that told them was a decode failure
+    in the middle of a run.  Nothing on the ladder had asked whether the
+    build was current, because the contract marker only answers when
+    somebody remembers to change it and a pull that changes a decoder
+    usually does not change its marker.
+
+    Asked of ONE rung, :func:`checkout_workspace_of`, and read-only:
+    file times, exactly the question cargo answers before it rebuilds.
+    Nothing here runs cargo, so a report may call it.
+    """
+
+    if _INSPECTION_ONLY:
+        return path
+    status = checkout_build_status(path)
+    if status is None or status.current:
+        return path
+    raise StaleCheckoutBuildError(status.refusal())
+
 
 
 def packaged_bridge_dir() -> Path:
@@ -1577,6 +2011,8 @@ __all__ = [
     "SOURCE_DECODERS", "resolve_source_decoder", "DecoderContractError",
     "launchable", "native_executable_format", "quiet_loader_errors",
     "BRIDGE_ABI_MARKERS", "bridge_abi_matches",
+    "CheckoutBuildStatus", "StaleCheckoutBuildError", "checkout_build_status",
+    "checkout_workspace_of", "require_current_checkout_build",
     "BRIDGE_ENV", "CARGO_BUILD_HINT", "CLONE_DIR", "CRATE_RELATIVE",
     "CPU_BRIDGE_ARTIFACT", "CPU_BRIDGE_ENV", "cpu_bridge_remedy",
     "REPOSITORY_URL", "RUSTWX_CRATE_RELATIVE", "WINDOWS_SHELL",
@@ -1585,7 +2021,8 @@ __all__ = [
     "BridgeBuildError", "CARGO_FAILURE_CLASSES", "cargo_build_refusal",
     "cargo_missing_refusal", "classify_cargo_failure",
     "build_from_clone_hint", "cargo_activation_command",
-    "cargo_is_installed", "crate_dir", "default_bridge_dir",
+    "cargo_executable", "cargo_is_installed", "crate_dir",
+    "default_bridge_dir",
     "executable_name", "find_artifact", "find_bridge",
     "StaleBridgeError", "accept_resolved", "inspection_only",
     "require_release_pin",

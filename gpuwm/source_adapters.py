@@ -474,7 +474,12 @@ _ADAPTERS = (
         runnable=True,
         runner="hrrr_f00_f12_v1",
         root_target_interior_axis=NATIVE_TARGET_INTERIOR_AXIS,
-        default_physics_profile="thompson-mp8-ysu-mm5-noah-rrtmg-legacy-v1",
+        # Held equal to gpuwm.hrrr_route_inputs.
+        # ROUTE_DEFAULT_PHYSICS_PROFILE by test, and spelled out here
+        # rather than imported because this table is read while the
+        # route module is not: the menu asks the adapter what it
+        # recommends (gpuwm.physics_menu._recommended_profile).
+        default_physics_profile="thompson-mp8-ysu-mm5-noah-rte-rrtmgp-v1",
         forcing_interval_seconds=3600.0,
         # Hourly, and the walk-back is short on purpose: the
         # operational directories turn over quickly, and a cycle half
@@ -532,8 +537,10 @@ _ADAPTERS = (
         notes=(
             "HRRR's public wrfprs product through the GENERIC mapped route: "
             "one wrfprs file per valid time carries the 39-level pressure "
-            "state, the surface/2m/10m fields, in-band terrain and the "
-            "nine-node RUC soil column.  The Lambert CONUS grid, the "
+            "state with its five hydrometeor masses (cloud water, cloud "
+            "ice, rain, snow, graupel), the surface/2m/10m fields, in-band "
+            "terrain and the nine-node RUC soil column.  The Lambert CONUS "
+            "grid, the "
             "grid-relative wind rotation and the node soil geometry are "
             "declared in the packaged mapping/composition documents -- "
             "there is no HRRR decode code on this route.  Distinct from "

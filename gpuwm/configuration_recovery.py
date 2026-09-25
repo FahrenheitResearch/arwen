@@ -104,6 +104,25 @@ def _retain(directory: Path, *, text: str, requested_path: Path, stage: Path,
         raw["fetch"]["out"] = str(Path(raw["fetch"]["out"]).expanduser().resolve())
     draft = ("# Memory admission refused. Review Fit domain or Tile streaming before running.\n"
              + emit_experiment_toml(raw)).encode("utf-8")
+    # The draft is a configuration, and Fit/Tile open it to save a copy
+    # that runs, so it carries the files ITS route reads beside it --
+    # rendered from the draft here rather than taken from the stage,
+    # because the stage's copies were rendered before the path
+    # resolution above and name the requested output rather than this
+    # directory.  Asked only where the route asks for them: on every
+    # other route this function's payload set is unchanged.
+    from gpuwm.hrrr_route_inputs import candidate_companions
+    from gpuwm.source_drivability import candidate_route_chain
+    draft_path = directory / "draft.toml"
+    if candidate_route_chain((raw.get("fetch") or {}).get("source")) == "prepared:hrrr":
+        from gpuwm import domain_wizard as wizard
+        experiment = wizard.experiment_from_text(draft.decode("utf-8"),
+                                                 source=str(draft_path))
+        for target, content in candidate_companions(
+                draft_path, experiment,
+                wps_text=payloads["draft.namelist.wps"].decode("utf-8"),
+                source=(raw.get("fetch") or {}).get("source")):
+            payloads[target.name] = content.encode("utf-8")
     files = [{"path": str(directory / name), "bytes": len(payload),
               "sha256": hashlib.sha256(payload).hexdigest()}
              for name, payload in sorted(payloads.items())]

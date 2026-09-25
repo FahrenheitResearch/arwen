@@ -71,7 +71,13 @@ def assigned_document(document, when, schedule, max_age):
                 raise ValueError('The CWP pack has a reversed scan interval')
             times.append(end)
     for radar in provenance.get('per_radar', ()):
-        if radar.get('volume_valid_time'):
+        # A volume's last radial is the instant its last gate was measured;
+        # a product whose radar was still scanning at the analysis time
+        # holds the future.  The header start stands in only for a product
+        # built before the pack carried the end.
+        if radar.get('volume_end_time'):
+            times.append(utc(radar['volume_end_time']))
+        elif radar.get('volume_valid_time'):
             times.append(utc(radar['volume_valid_time']))
     eligible = [t for t in schedule if all(0 <= (t - observed).total_seconds() <= max_age for observed in times)]
     return bool(eligible and eligible[0] == when)
@@ -108,15 +114,16 @@ def _surface_fetch(route, directory, when, cadence):
         stations, observations, record = out / 'stations.json', out / 'observations.csv', out / 'surface.json'
         frozen = ASOS.run('stations', ['--networks', ','.join(route['networks']),
             '--bbox', ','.join(str(v) for v in box), '--out', str(stations)], schema='gpuwm-obs.asos-stations.v1')
-        # Do not fetch after the analysis time. This legacy decoder files
-        # reports on nominal instants; the receipt states that limitation.
+        # Do not fetch after the analysis time. The decoder records each
+        # report's own observation_time beside the slot it serves; when the
+        # archive received the report is still not known here.
         fetched = ASOS.run('fetch', ['--stations', str(stations), '--start', _stamp(when - timedelta(seconds=cadence)),
             '--end', _stamp(when), '--out', str(observations)], schema='gpuwm-obs.asos-fetch.v1')
         decoded = ASOS.run('decode', ['--stations', str(stations), '--obs', str(observations),
             '--start', _stamp(when), '--end', _stamp(when), '--step-hours', '1',
-            '--min-report-rate', '0', '--out', str(record)], schema='gpuwm-obs.asos-surface.v1')
+            '--min-report-rate', '0', '--out', str(record)], schema='gpuwm-obs.asos-surface.v2')
         write_json_atomically(out / 'fetch-receipt.json', dict(stations=frozen, fetched=fetched,
-            decoded=decoded, time_policy='past-only fetch; legacy nominal report time; arrival and original observation minute unverified'))
+            decoded=decoded, time_policy='past-only fetch; each report carries its observation_time beside the slot it serves; arrival at the archive unverified'))
         if not record.is_file():
             raise RuntimeError('The registered surface decoder produced no record; repair its output before retrying the window.')
         records.append(record)

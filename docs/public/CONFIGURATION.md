@@ -138,8 +138,52 @@ copied.
 | `eta_levels` | `eta_levels` | () | 1.0 -> 0.0 strictly decreasing | explicit coordinates are required by config-driven native preparation; the `run --met-em` door generates omitted levels with WRF `auto_levels_opt` 1/2 and records the resolved controls; explicit `eta_levels` bypass generation |
 | `p_top` | `p_top_requested` | 0.0 | >= 0, Pa | Registry default 5000 Pa applies on import when omitted |
 | `hybrid_opt` | `hybrid_opt` | 0 (legacy) | 0/1 (sigma), 2 (WRF cubic-B) | importer default 2 (Registry) |
-| `etac` | `etac` | 0.2 | [0, 1] | |
+| `etac` | `etac` | 0.2 | [0, 1] | the value asked for; preparation lowers it when this run's terrain needs it (below) |
 | `ztop` | -- | required | > 0 | ArWen-only scaffold height; real runs derive heights from p_top/eta_levels |
+
+#### The coordinate a run's terrain can order
+
+At `hybrid_opt = 2` the WRF cubic `B(eta)` can only order a column while
+its surface pressure stays above a floor set by `etac` and `p_top`; WRF
+itself calls a column below that floor fatal
+(`dyn_em/nest_init_utils.F:1158-1182`, "tends to be caused by very high
+topography", remedy "reduce etac"). At the shipped `etac = 0.2` with
+`p_top = 10000` Pa that floor is 46408 Pa, about 6082 m of terrain.
+
+Preparation does not stop there. It surveys every terrain field the run
+can touch -- each declared domain's static terrain at its own resolution
+(a nest carries higher peaks than its parent), and for a following nest
+the whole statics corridor it may traverse -- and sets `etac` to the
+largest value that orders the lowest surface pressure it found. `p_top`
+is never changed: `etac` is WRF's own named remedy, and it keeps the
+model top where you put it.
+
+When the derived value differs from the configured one, preparation says
+so in one line naming the column, its height and the value chosen, and
+`proof.json` carries a `vertical_coordinate` block with the same numbers
+plus every terrain field surveyed. The forecast then runs on the
+coordinate the prepared inputs carry, not on the configured one: the
+prepared caches hold the coefficient arrays themselves, as WRF's
+`wrfinput` holds `C3H`/`C4H`, and the runner adopts the value beside them
+after checking that it is at or below the one you configured and that it
+orders every prepared column.
+
+Every domain of the run takes that one coordinate, not the root alone: a
+nest on the streamed road rebuilds its tile buffer from it, a nest
+spawned mid-run is priced on it, and an offline child reads it off the
+history's `ETAC` attribute. A domain tree that somehow held two is
+refused by name rather than integrated.
+
+Terrain that no positive `etac` orders is still refused, with the
+constraint, the column and the remaining remedy (a lower model top).
+
+A preparation with nothing to derive writes the block anyway, at status
+`NOT_APPLICABLE`, and its `why` names which of the three reasons applied:
+the configuration carries no eta ladder, so no terrain was surveyed;
+`hybrid_opt` is 0 or 1, where `B(eta) = eta` leaves no terrain ceiling to
+derive; or `hybrid_opt` is 2 over an eta ladder with no segment where
+`dB/deta` rises above 1, which the ladder and `etac` set between them,
+leaving the surface-pressure floor at zero so no ground can reach it.
 
 ### Clock (`[[domain]]`, root)
 
@@ -187,7 +231,8 @@ and no others (`gpuwm/experiment.py`'s `_DOMAIN_RUN_OVERRIDES`):
 
     cu_physics  cudt_minutes  clos_choice  ishallow
     radt  radt_minutes  bldt
-    ra_physics  ra_rrtmg_variant  wrf_rrtmg_compatibility  o3input  use_mp_re  swrad_scat
+    ra_physics  ra_lw_physics  ra_sw_physics  ra_rrtmg_variant
+    wrf_rrtmg_compatibility  o3input  use_mp_re  swrad_scat
     diff_6th_factor  diff_6th_opt  epssm  spec_exp  mp_physics  moist
     moist_cq  nest_microphysics_transition
     km_opt  bl_pbl_physics  sf_sfclay_physics  isfflx  c_s  c_k
@@ -220,11 +265,12 @@ moving its parent, which a refinement tree needs: the relaxation sponge
 is 40 km wide on a 10 km root and 2.7 km on a 667 m nest at the same
 cell count. Geometry (`dx`, `dy`, `ztop`, `grid_id`, `nested`,
 `specified`) stays tree-wide because the domain tree authors it, and so
-do the scheme selectors WRF also scopes `max_domains`
-(`ra_lw_physics`, `ra_sw_physics`, `sf_surface_physics`, the
-`bl_mynn_*` block): a tree whose domains ran different schemes cannot
-be compared across its own boundary, and two-way feedback already
-requires one microphysics tree-wide.
+do two of the scheme selectors WRF also scopes `max_domains` --
+`sf_surface_physics` and the `bl_mynn_*` block: a tree whose domains ran
+different land-surface or MYNN closures cannot be compared across its
+own boundary, and two-way feedback already requires one microphysics
+tree-wide. The radiation selectors are not among them; the radiation
+row below says why.
 
 The nine adaptive-time-step keys from `target_cfl` to
 `min_time_step_den` are per domain because each domain runs its own
@@ -300,6 +346,8 @@ per-domain VALUE is also refused by name: `bl_pbl_physics = 900`
 
 | TOML key | WRF equivalent | default | allowed | note |
 |---|---|---|---|---|
+| `ra_lw_physics` | `ra_lw_physics` | -1 | 0 (off), 1 (WRF RRTM), 4 (RTE+RRTMGP), 90 (analytic proxy) | per-domain. The split spelling of the radiation selection, and the only spelling that can ask for a MIXED pair: `ra_physics = N` means N on both streams, so longwave off under Dudhia shortwave (0/1) and WRF RRTM under Dudhia (1/1) can be written no other way. `-1` means this table does not state it, and the stream takes `ra_physics` instead. Stating one half and leaving the other at `-1` is refused -- `ra_lw_physics and ra_sw_physics must both be explicit or both be -1` -- because a half-stated pair reads as a selection and resolves as the aggregate |
+| `ra_sw_physics` | `ra_sw_physics` | -1 | 0 (off), 1 (WRF Dudhia), 4 (RTE+RRTMGP), 90 (analytic proxy) | per-domain, resolved by the same rule. Restating one engine on all three keys (`ra_physics = 4` beside `4`/`4`) is one selection written twice and resolves to that pair. A nonzero `ra_physics` beside a split pair naming a DIFFERENT engine is refused as a contradiction rather than resolved: the run and its receipts would name different radiation and nothing in the configuration says which was meant. Keep the pair and set `ra_physics = 0`, or drop both to `-1` and keep `ra_physics` |
 | `radt` / `radt_minutes` | `radt` | 0.0 / 12.0 | minutes; 0 = every step | per-domain; WRF `radt = 0` imports as `radt_minutes = 0.0` |
 | `bldt` | `bldt` | 0.0 | minutes; 0 = every step | surface layer + LSM + PBL interval |
 | `cudt_minutes` | `cudt` | 5.0 | minutes | consumed where `cu_physics = 1` |
@@ -319,8 +367,32 @@ per-domain VALUE is also refused by name: `bl_pbl_physics = 900`
 | `num_soil_layers` | `num_soil_layers` | 4 | scheme-defined | ArWen *refuses* a count the scheme does not define where WRF silently overwrites it |
 | `nest_microphysics_transition` | -- | `same-scheme-only` | + `mp8-to-mp18-mass-diagnosed-v1`, `mp-edge-mass-diagnosed-v1` | ArWen-only, one-way nest MP edges. Left at the default, a mixed edge between two ported schemes resolves to the closure that pair takes (`mp8-to-mp18-mass-diagnosed-v1` for Thompson over NSSL-2, the matrix id for every other pair) and the coupler receipt records the requested and the effective policy; naming the pair's own id pins it, and naming the other mixed id is refused. An `mp_physics = 28` child entering from another scheme is seeded with WRF's own non-aerosol-aware droplet number and aerosol floors, named in the receipt |
 
-Scheme selectors (`mp_physics`, `bl_pbl_physics`, `ra_lw/sw_physics`,
-`sf_sfclay_physics`, `sf_surface_physics`, `cu_physics`) and their
+The spelling is not part of the selection anywhere, including where a
+configuration is checked against a named physics profile. A profile
+pins the split pair; a configuration that reached the same two engines
+through `ra_physics` matches it, which is what makes `gpuwm
+import-namelist` output runnable under the profile its namelist named
+(the importer emits the aggregate for a coupled pair, and for radiation
+off).
+
+Both radiation selectors are per domain, and so are the six keys that
+travel with them (`ra_physics`, `ra_rrtmg_variant`,
+`wrf_rrtmg_compatibility`, `o3input`, `use_mp_re`, `swrad_scat`). Every
+domain builds its own radiation driver, and spectrum composition, CAM
+ozone parent transport and shared workspace sizing all resolve per
+domain, so a parent running RTE+RRTMGP on both streams can carry a child
+running the legacy RRTMG longwave against Dudhia shortwave -- that exact
+tree is loaded, resolved and round-tripped through the rendered
+experiment document in `tests/test_cam_ozone.py`. Requiring the streams
+to match tree-wide would refuse a configuration the engine runs. A
+domain that states neither key still takes the `[shared]` value, so no
+experiment written before the split moves. Which VALUES each stream
+implements, and how far each is verified, is the radiation section of
+[PHYSICS.md](PHYSICS.md).
+
+Scheme selectors (`mp_physics`, `bl_pbl_physics`, `ra_lw_physics`,
+`ra_sw_physics`, `sf_sfclay_physics`, `sf_surface_physics`,
+`cu_physics`) and their
 allowed values are the subject of [PHYSICS.md](PHYSICS.md). Selectable
 in the TOML schema is deliberately wider than runnable: readiness is
 owned by `gpuwm/physics_compat.py`, which fails closed with a complete

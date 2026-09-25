@@ -570,6 +570,14 @@ def main(argv=None) -> int:
             "volume": selected.filename,
             "volume_sha256": volume_sha,
             "volume_valid_time": selected.valid_time,
+            # When the volume was scanned, from its pack's radial clocks,
+            # and when the feed published it; None where not stated.  The
+            # end is the instant the volume's last gate was measured and
+            # the earliest a cycle may causally hold it.
+            "volume_start_time": getattr(volume, "start_time", None),
+            "volume_end_time": getattr(volume, "end_time", None),
+            "volume_availability_time": getattr(selected,
+                                                "availability_time", None),
             "volume_offset_seconds": selected.offset_seconds,
             "source": selected.receipt,
             "feed": selected.feed,
@@ -653,7 +661,8 @@ def main(argv=None) -> int:
         "per_radar": [
             {key: entry[key] for key in (
                 "site", "volume", "volume_key", "volume_object_keys",
-                "volume_sha256", "volume_valid_time",
+                "volume_sha256", "volume_valid_time", "volume_start_time",
+                "volume_end_time", "volume_availability_time",
                 "volume_offset_seconds", "feed", "partial_volume", "chunks",
                 "feed_lag_seconds", "feed_observed_at", "antenna",
                 "pack_schema")}
@@ -721,6 +730,9 @@ def main(argv=None) -> int:
             {"site": entry["site"], "volume": entry["volume"],
              "volume_sha256": entry["volume_sha256"],
              "volume_valid_time": entry["volume_valid_time"],
+             "volume_start_time": entry["volume_start_time"],
+             "volume_end_time": entry["volume_end_time"],
+             "volume_availability_time": entry["volume_availability_time"],
              "volume_offset_seconds": entry["volume_offset_seconds"],
              "antenna": entry["antenna"], "source": entry["source"],
              "counts": entry["counts"],

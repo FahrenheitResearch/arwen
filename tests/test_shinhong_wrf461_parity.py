@@ -715,60 +715,119 @@ GPU_SURFACE_FIELD_MAP = {"hpbl": "hpbl", "wstar": "wstar", "delta": "delta"}
 #: does; only the CUDA 13 line produces the certification row.  A build this
 #: table has never been measured under is a hard failure with its own message,
 #: NOT a silent pass and not an approximate match to the nearest row.
+#:
+#: **The table is keyed by the card as well.**  Measured 2026-09-18 on
+#: node-1's RTX 4090 (compute capability 8.9, driver 610.57.04, cupy 14.2.0)
+#: at the lane/2.7.6-pin-gates tip 221f66f14, with the same kernel, fixture
+#: and oracle: the 4090 reads ``el`` 13 where the 5090 reads 14, and every
+#: other field the same as the certification row.  That is the CARD and not
+#: the compiler, because the 4090 reads the identical table under NVRTC
+#: 13.0.48 (build CL-36260728, library sha256 fd8dab02...8559, the
+#: certification row's own compiler) and under 13.3.33 (CL-37862127,
+#: e51d197b...6750a), two processes each; and the two compilers, which are
+#: one site apart on the 5090, produce the same table on the 4090.  So a
+#: row belongs to one (build, card) pair: an unmeasured compiler still fails
+#: naming itself, and a measured compiler on a card with no row SKIPS naming
+#: both, because a gate that fails for the card and not the code prevents
+#: no breakage; the release card stage names that skip in its receipt.
+#: Receipts: tests/data/receipts/pin-gates/shinhong-ulp-nvrtc13048-*.json,
+#: shinhong-ulp-nvrtc13333-*.json and extra-pin-readings-221f66f14-run*.json.
+RTX_5090 = "NVIDIA GeForce RTX 5090"
+RTX_4090 = "NVIDIA GeForce RTX 4090"
+
+#: The RTX 4090's row, identical under NVRTC 13.0.48 and 13.3.33.
+_GPU_ROW_RTX_4090 = {
+    "du": 93207,
+    "dv": 46603,
+    "dtheta": 0,
+    "dqv": 349526,
+    "dqc": 155602,
+    "dqi": 3055548,
+    "exch_h": 8,
+    "tke": 2022,
+    "el": 13,
+    "hpbl": 1,
+    "wstar": 1,
+    "delta": 1,
+}
+
 GPU_BASELINE_MAX_ULP_BY_NVRTC_BUILD = {
     "13.0.48": {
-        "du": 93207,
-        "dv": 46603,
-        "dtheta": 0,
-        "dqv": 349526,
-        "dqc": 155602,
-        "dqi": 3055548,
-        "exch_h": 8,
-        "tke": 2022,
-        "el": 14,
-        "hpbl": 1,
-        "wstar": 1,
-        "delta": 1,
+        RTX_5090: {
+            "du": 93207,
+            "dv": 46603,
+            "dtheta": 0,
+            "dqv": 349526,
+            "dqc": 155602,
+            "dqi": 3055548,
+            "exch_h": 8,
+            "tke": 2022,
+            "el": 14,
+            "hpbl": 1,
+            "wstar": 1,
+            "delta": 1,
+        },
+        RTX_4090: _GPU_ROW_RTX_4090,
     },
     "12.9.86": {
-        "du": 93207,
-        "dv": 1491308,
-        "dtheta": 0,
-        "dqv": 349526,
-        "dqc": 155602,
-        "dqi": 3055548,
-        "exch_h": 8,
-        "tke": 2005,
-        "el": 14,
-        "hpbl": 1,
-        "wstar": 1,
-        "delta": 1,
+        RTX_5090: {
+            "du": 93207,
+            "dv": 1491308,
+            "dtheta": 0,
+            "dqv": 349526,
+            "dqc": 155602,
+            "dqi": 3055548,
+            "exch_h": 8,
+            "tke": 2005,
+            "el": 14,
+            "hpbl": 1,
+            "wstar": 1,
+            "delta": 1,
+        },
+    },
+    "13.3.33": {
+        RTX_4090: _GPU_ROW_RTX_4090,
     },
 }
 
 #: The certification row, kept under its original name so the fields that are
 #: compiler-independent stay quotable from one place.  Rows must agree on
-#: every field the ``wscalek`` site does not reach -- asserted below, so a
-#: future row cannot quietly re-baseline a field this one has no business
-#: touching.
-GPU_BASELINE_MAX_ULP = GPU_BASELINE_MAX_ULP_BY_NVRTC_BUILD["13.0.48"]
+#: every field the ``wscalek`` site does not reach and the card does not move
+#: -- asserted below, so a future row cannot quietly re-baseline a field it
+#: has no business touching.
+GPU_BASELINE_MAX_ULP = GPU_BASELINE_MAX_ULP_BY_NVRTC_BUILD["13.0.48"][RTX_5090]
 
-#: Fields the ``wscalek`` cube root is allowed to move between compiler rows.
-#: Everything else is required to be identical across rows.
+#: Fields the ``wscalek`` cube root is allowed to move between compiler rows
+#: on one card.  Everything else is required to be identical across compilers.
 GPU_COMPILER_SENSITIVE_FIELDS = ("dv", "tke")
+
+#: Fields allowed to differ between cards under one compiler: ``el`` alone,
+#: the 2026-09-18 reading (14 on the RTX 5090, 13 on the RTX 4090 under
+#: NVRTC 13.0.48).  Everything else is required to be identical across cards.
+GPU_CARD_SENSITIVE_FIELDS = ("el",)
+
+
+def _device_name() -> str:
+    import cupy
+
+    name = cupy.cuda.runtime.getDeviceProperties(0)["name"]
+    return name.decode() if isinstance(name, bytes) else str(name)
 
 
 def _recorded_gpu_baseline() -> dict:
-    """The row for the NVRTC build compiling this process's kernels.
+    """The row for the NVRTC build compiling this process's kernels, on
+    this card.
 
     An unmeasured compiler fails HERE, naming itself, instead of falling
     through to a bare number mismatch against some other build's row.  That
     is the whole point of the split: the 2026-08-04 drift cost a day of
-    forensics because the failure said only that two dicts differed.
+    forensics because the failure said only that two dicts differed.  A
+    measured compiler on a card with no row skips, naming both: the
+    2026-09-18 reading moved ``el`` with the card alone.
     """
     build = nvrtc_build()
-    recorded = GPU_BASELINE_MAX_ULP_BY_NVRTC_BUILD.get(build)
-    assert recorded is not None, (
+    rows = GPU_BASELINE_MAX_ULP_BY_NVRTC_BUILD.get(build)
+    assert rows is not None, (
         "no recorded ULP row for the NVRTC build compiling these kernels.\n"
         f"  kernel compiler: NVRTC {build}\n"
         f"  rows recorded:   {sorted(GPU_BASELINE_MAX_ULP_BY_NVRTC_BUILD)}\n"
@@ -777,7 +836,14 @@ def _recorded_gpu_baseline() -> dict:
         " has never been measured under has no baseline to be compared"
         " against.  Measure this build and add its row with the attribution,"
         " or compile with a recorded one.  Do NOT relax the comparison.")
-    return recorded
+    card = _device_name()
+    if card not in rows:
+        pytest.skip(
+            "the Shin-Hong ULP table is per NVRTC build and card, and no row is"
+            f" recorded for {card!r} under NVRTC {build}; cards recorded for"
+            f" this build: {sorted(rows)}.  Measure this card under this build"
+            " (two processes) and add its row with the attribution.")
+    return rows[card]
 
 #: Branch divergences between the kernel and WRF, held out of the table
 #: above.  EMPTY, and kept present so the day one appears it has a named
@@ -789,10 +855,10 @@ def _recorded_gpu_baseline() -> dict:
 GPU_BRANCH_DIVERGENCE_CASES: tuple = ()
 
 #: Every lane where the pinned WRF module wrote a subnormal tendency.  CuPy
-#: appends ``-ftz=true`` unconditionally (and sm_120 flushes regardless), so
-#: the kernel writes exactly zero in all of them.  Pinned as counts so that
-#: neither the flush nor the fixture's ability to reach it can quietly
-#: disappear.
+#: appends ``-ftz=true`` unconditionally (the FTZ receipt records this route
+#: flushing on every measured mechanism), so the kernel writes exactly zero in
+#: all of them.  Pinned as counts so that neither the flush nor the fixture's
+#: ability to reach it can quietly disappear.
 GPU_SUBNORMAL_LANES = {"dqv": 30, "dqc": 24, "dqi": 18}
 
 #: NaN lanes per kernel field -- the same case-13 prfac2 0/0 geometry the
@@ -874,30 +940,48 @@ def _shinhong_gpu_outputs(cp, fixture, cache: bool = True):
     return merged
 
 
-def test_the_compiler_rows_only_differ_where_the_one_site_reaches():
-    """CPU-only: the two NVRTC rows are one site apart, and must stay so.
+def test_the_rows_only_differ_where_the_compiler_or_the_card_reaches():
+    """CPU-only: across compilers on one card the rows are one site apart,
+    across cards under one compiler they differ in ``el`` alone, and both
+    must stay so.
 
-    A row is allowed to re-baseline ``dv`` and ``tke`` -- the two fields the
-    ``wscalek`` cube root reaches -- and nothing else.  Without this, a future
-    "the compiler moved" commit could quietly relax a field the compiler
-    never touched, which is exactly the failure mode the per-compiler split
-    would otherwise create.
+    A compiler row is allowed to re-baseline ``dv`` and ``tke`` -- the two
+    fields the ``wscalek`` cube root reaches -- and nothing else; a card row
+    is allowed to re-baseline ``el`` -- the 2026-09-18 reading -- and nothing
+    else.  Without this, a future "the compiler moved" or "the card moved"
+    commit could quietly relax a field neither ever touched, which is
+    exactly the failure mode the split would otherwise create.
     """
     rows = GPU_BASELINE_MAX_ULP_BY_NVRTC_BUILD
     assert len(rows) >= 2, "the split is pointless with one row"
-    fields = {name for row in rows.values() for name in row}
-    assert all(set(row) == fields for row in rows.values()), (
-        "every compiler row must carry every field")
+    every = [row for by_card in rows.values() for row in by_card.values()]
+    fields = {name for row in every for name in row}
+    assert all(set(row) == fields for row in every), (
+        "every row must carry every field")
     assert fields == set(GPU_LEVEL_FIELD_MAP) | set(GPU_SURFACE_FIELD_MAP)
-    moved = {name for name in fields
-             if len({row[name] for row in rows.values()}) > 1}
-    assert moved == set(GPU_COMPILER_SENSITIVE_FIELDS), (
+    cards = {card for by_card in rows.values() for card in by_card}
+    compiler_moved = set()
+    for card in cards:
+        on_card = [by_card[card] for by_card in rows.values() if card in by_card]
+        compiler_moved |= {name for name in fields
+                           if len({row[name] for row in on_card}) > 1}
+    assert compiler_moved == set(GPU_COMPILER_SENSITIVE_FIELDS), (
         "the compiler rows differ on fields the wscalek site does not reach:"
-        f" {sorted(moved - set(GPU_COMPILER_SENSITIVE_FIELDS))}.  If a new"
-        " compiler really moves another field, say which site carries it in"
-        " the same commit that widens GPU_COMPILER_SENSITIVE_FIELDS.")
+        f" {sorted(compiler_moved ^ set(GPU_COMPILER_SENSITIVE_FIELDS))}.  If"
+        " a new compiler really moves another field, say which site carries"
+        " it in the same commit that widens GPU_COMPILER_SENSITIVE_FIELDS.")
+    card_moved = set()
+    for by_card in rows.values():
+        card_moved |= {name for name in fields
+                       if len({row[name] for row in by_card.values()}) > 1}
+    assert card_moved == set(GPU_CARD_SENSITIVE_FIELDS), (
+        "the card rows differ on fields the 2026-09-18 reading did not move:"
+        f" {sorted(card_moved ^ set(GPU_CARD_SENSITIVE_FIELDS))}.  If a new"
+        " card really moves another field, record the reading in the same"
+        " commit that widens GPU_CARD_SENSITIVE_FIELDS.")
     # And the sensitive fields must actually differ, or the split is vacuous.
-    assert moved, "no field differs between rows: the split proves nothing"
+    assert compiler_moved and card_moved, (
+        "no field differs between rows: the split proves nothing")
 
 
 def test_the_kernel_compiler_identifies_itself_to_four_parts():
@@ -939,12 +1023,13 @@ def test_shinhong_cuda_column_holds_its_measured_distance_from_wrf():
     assert measured == recorded, (
         "the CUDA kernel's distance from the unmodified WRF module changed.\n"
         f"  measured {measured}\n  recorded {recorded}\n"
-        f"  kernel compiler: NVRTC {nvrtc_build()}\n"
-        "The compiler row above matched, so this is NOT the 2026-08-04 NVRTC"
-        " swap: the source, the fixture or the card moved.  If a field got"
-        " worse, something regressed.  If it got better, say so: update the"
-        " row in the same commit as the improvement, with the attribution,"
-        " so the residual stays documented.")
+        f"  kernel compiler: NVRTC {nvrtc_build()}, card {_device_name()}\n"
+        "The compiler and card row above matched, so this is NOT the"
+        " 2026-08-04 NVRTC swap and not the card: the source or the fixture"
+        " moved.  If a field got worse, something regressed.  If it got"
+        " better, say so: update the row in the same commit as the"
+        " improvement, with the attribution, so the residual stays"
+        " documented.")
     # The table above must not be vacuously zero: device libm and FMA
     # contraction are real, and the fields that carry them must show it.
     # (dtheta IS zero -- bitwise -- and that is the exception, not the rule.)
@@ -1003,13 +1088,14 @@ def test_shinhong_cuda_nan_geometry_is_wrfs_own_0_over_0():
 @pytest.mark.gpu
 @requires_gpu
 def test_shinhong_cuda_br_countermeasure_holds_wrfs_branch():
-    """The one branch sm_120's DAZ flips, proven closed and non-vacuous.
+    """The one branch the route's flush flips, proven closed and non-vacuous.
 
     Case 7 puts the smallest positive subnormal on ``br``; WRF's
     ``br .gt. 0`` is true and the column is STABLE (wstar = delta = 0).
-    Every FP32 operation on this card DAZes that subnormal to zero --
-    including compares, and including the emitted cvt.f64.f32, which is why
-    ``(double)brv > 0.0`` measured identical to the plain float32 compare --
+    Every FP32 mechanism the receipt measures on this compile route flushes
+    that subnormal to zero, the float compare among them; and this test's
+    own measurement, not a receipt cell, is that ``(double)brv > 0.0`` read
+    identical to the plain float32 compare --
     so shinhong.cu decodes the bits (sh_f2d, rrtmg_sw.cu's rsw_f2d) before
     comparing.  Before the countermeasure the kernel measured wstar
     0.2362 / delta 18.49 on case 7 (the convective arm); these assertions
@@ -1046,7 +1132,7 @@ def test_shinhong_cuda_br_countermeasure_holds_wrfs_branch():
 @requires_gpu
 def test_shinhong_cuda_ftz_flushes_every_subnormal_tendency_wrf_wrote():
     """``-ftz=true`` is appended by CuPy and cannot be turned off from here
-    (and sm_120 flushes FP32 subnormals regardless).
+    (the FTZ receipt records this route flushing on every measured mechanism).
 
     Asserted as an equality in both directions: the fixture must still reach
     subnormal tendencies at all, and the kernel must still be writing exactly

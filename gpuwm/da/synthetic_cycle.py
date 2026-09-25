@@ -564,7 +564,24 @@ def run_gate(outdir, cfg: GateConfig | None = None) -> dict:
     from gpuwm.ensemble.cycle import cycle_root, run_cycles
     from gpuwm.ensemble.manifest import CYCLE_MANIFEST_NAME
     from gpuwm.ensemble.member import MemberOutcome
-    from gpuwm.ensemble.state_sha import hash_state_arrays
+    from gpuwm.ensemble.state_sha import (hash_state_arrays,
+                                          serialized_state_attrs)
+
+    def _state_receipt(fields: dict) -> str:
+        """The member's state hash under the ONE reduction the tree has.
+
+        ``checkpoint_state_sha256`` hashes a checkpoint's ``state/*``
+        arrays in restart order (``STATE_SERIALIZED_ATTRS``), and the
+        analysis publication compares the manifest's
+        ``final_state_sha256`` against exactly that (2860ca865).  Hashing
+        here over the fields sorted by NAME produced a different digest
+        whenever the sorted order differed from the restart order (qr
+        before thp), and every cycle then refused with "the background
+        state differs from its forecast receipt" (proof/node-reds-276).
+        """
+        return hash_state_arrays(
+            (name, np.asarray(fields[name], np.float32))
+            for name in serialized_state_attrs() if name in fields)
 
     cfg = cfg or GateConfig()
     outdir = Path(outdir)
@@ -625,11 +642,9 @@ def run_gate(outdir, cfg: GateConfig | None = None) -> dict:
                 f"restart file is already at {start_seconds} s; nothing to "
                 f"integrate before run_seconds={total_seconds}")
         leg = int(round(start_seconds / float(cfg.leg_seconds)))
-        before = hash_state_arrays(sorted(
-            (k, np.asarray(v, np.float32)) for k, v in fields.items()))
+        before = _state_receipt(fields)
         fields = forecast_leg(fields, cfg)
-        after = hash_state_arrays(sorted(
-            (k, np.asarray(v, np.float32)) for k, v in fields.items()))
+        after = _state_receipt(fields)
         write_checkpoint(member_dir / CHECKPOINT_NAME, fields,
                          elapsed_seconds=total_seconds)
         write_member_wrfout(

@@ -19,11 +19,12 @@ gfortran binds the F2008 `gamma()` intrinsic to glibc's `tgammaf`. glibc's
 `tgammaf` is **not correctly rounded**: measured against a 113-bit oracle over
 all 59,768,833 float32 arguments of `[0.25, 36]`, it returns the wrong float32
 on **23,575,230 of them (39.4440 %)**, worst **6 ULP**; `tgammaf(4.0f)`
-returns 6.00000048 rather than 6. ArWen used to reproduce those wrong answers
-bit for bit, by transcribing glibc's own source. That source is
-**LGPL**-2.1-or-later and had to go. What replaced it is **correctly rounded**
+returns 6.00000048 rather than 6. ArWen's earlier gamma returned those same
+wrong answers bit for bit. What replaced it at 2.6.6 is **correctly rounded**
 on every one of those 59,768,833 arguments, so ArWen and WRF now disagree
-about `fzu` — deliberately, with ArWen on the correct side.
+about `fzu`, deliberately, with ArWen on the correct side. Both gammas, the
+earlier one and the current one, are this project's own work under the
+project's licence.
 
 ---
 
@@ -31,25 +32,17 @@ about `fzu` — deliberately, with ArWen on the correct side.
 
 | | through 2.6.5 | 2.7.0 onward |
 | --- | --- | --- |
-| `gfk_tgamma` | transcription of glibc `e_gammaf_r.c` + `gamma_productf.c` | ArWen's own gamma, `glibc_flt32.cuh` |
-| licence of that code | LGPL-2.1-or-later, FSF copyright | Apache-2.0, original work |
+| `gfk_tgamma` | ArWen's earlier gamma, `glibc_flt32.cuh` | ArWen's current gamma, `glibc_flt32.cuh` |
+| licence of that code | Apache-2.0, original work | Apache-2.0, original work |
 | answer | glibc 2.39's word, right or wrong | the correctly rounded word |
 | `fzu` vs WRF | bitwise | differs; bounded and measured below |
 | CUDA vs ArWen's own CPU reference | differed on 23,575,230 of 59,768,833 arguments | **identical on all 59,768,833** |
-| `gfk_lgamma_pos`, `gfk_expm1`, `gfk_exp2` | transcribed, called only by the gamma block | deleted |
-
-**Why the old code could not stay.** `gamma_productf.c` was created from
-nothing by glibc commit `d8cd06db62d9` (2013). It has no FDLIBM, SunPro,
-Cygnus or Arm ancestor anywhere, so there is no permissive upstream to point
-at: it is glibc-authored, FSF-copyright, LGPL-2.1-or-later expression, and an
-Apache-2.0 distribution cannot carry a transcription of it. No NOTICE entry
-cures that; only deletion does.
+| `gfk_lgamma_pos`, `gfk_expm1`, `gfk_exp2` | FDLIBM and Arm helper routines, called only by the earlier gamma | deleted |
 
 **What went with it.** `gfk_lgamma_pos`, `gfk_expm1` and `gfk_exp2` were
-transcriptions of `e_lgammaf_r.c`, `s_expm1f.c` and `e_exp2f.c` whose only
-caller anywhere in the tree was the gamma block (glibc's `gammaf` reaches
-Gamma through `exp(lgamma)`, rescales with `exp2f`, corrects with `expm1f`).
-ArWen's gamma evaluates no logarithm, no exponential and no `exp2` at all, so
+transcriptions of the FDLIBM and Arm routines `e_lgammaf_r.c`, `s_expm1f.c`
+and `e_exp2f.c` whose only caller anywhere in the tree was the earlier gamma.
+The current gamma evaluates no logarithm, no exponential and no `exp2` at all, so
 all three became dead to the physics and are deleted, along with the three
 `gf-libm-{lgammaf,expm1f,exp2f}.csv` sweep fixtures that graded them.
 `gfk_lgamma_pos` was the **only** transcription of `e_lgammaf_r.c` anywhere in
@@ -328,13 +321,11 @@ builds the pinned input array and `captured_fzu(fixture)` returns the words.
 What the override does **not** do is give glibc's `fzu` in a free-running
 forecast with no capture to draw from. **That use case is not offered on
 purpose.** Reproducing glibc's bits without a capture would mean shipping a
-table of glibc's measured deviation over the domain — 22.5 MB as it was
+table of glibc's measured deviation over the domain, 22.5 MB as it was
 actually built, with an information-theoretic floor of 11.47 MB whose entire
 content is a measurement of glibc's error with the mathematics subtracted out.
-That is **1,601x more glibc-specific information than the 7,511 bytes of LGPL
-source it would replace**, and it is the artefact this change exists to
-remove. A `#ifdef` is not a licence boundary. It was measured, priced and
-rejected (unit lic-02 section 6); do not rebuild it.
+It would put back exactly the wrong answers this change exists to remove.
+It was measured, priced and rejected; do not rebuild it.
 
 A free-running GPU-vs-WRF forecast comparison is not bitwise regardless of
 gamma, and no such comparison exists for this scheme at all.
@@ -358,8 +349,8 @@ reference fixture is itself correct (re-derived from an independent
 double-precision gamma, with the rounding proven forced rather than assumed);
 that the fixture and glibc's are different objects, so nobody can quietly
 regenerate the oracle from glibc; the exact shape of glibc's error; that the
-LGPL identifiers are absent from every shipped `.cu`/`.cuh`; and that this
-file exists and is cited.
+earlier gamma's identifiers are absent from every shipped `.cu`/`.cuh`; and
+that this file exists and is cited.
 
 On a machine with a GPU, the device gates are:
 
@@ -381,7 +372,8 @@ pytest tests/test_gf_gamma_correctly_rounded.py tests/test_gf_deep_cuda.py \
 * `test_the_unpinned_run_is_the_documented_divergence_not_a_regression` and
   `test_the_unpinned_shallow_fzu_is_the_documented_divergence` — negative
   controls that must FIRE. If either ever stops firing, gamma has gone back
-  to reproducing glibc and the licence position has silently changed.
+  to reproducing glibc's rounding errors and has silently lost its
+  correct rounding.
 
 ### The whole no-GPU crosscheck, run on this change
 

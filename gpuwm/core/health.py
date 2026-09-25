@@ -364,10 +364,28 @@ def rule_for_field(name: str, *, p_top: float | None = None) -> FieldRule:
                 # [5.0E3, 9999.E6] (module_mp_thompson.F:3977-3982), and
                 # the deliberately unclamped surface emission at :1310-1327
                 # can push the lowest level above the ceiling between the
-                # clamp and the next call's entry pack.  The existing
-                # 1.0e15 "moment" ceiling is four decades of headroom over
-                # that, so this rule catches a blow-up without pretending
-                # to enforce the scheme's own bounds.
+                # clamp and the next call's entry pack.  The 1.0e15
+                # "moment" ceiling is five decades of headroom over that
+                # (1.0e15 / 9.999e9 = 1.0001e5), so this rule catches a
+                # blow-up without pretending to enforce the scheme's own
+                # bounds.
+                #
+                # THE BREAKAGE IT CAUGHT, and the reading that keeps it at
+                # this number.  A 2.7 km specified domain forced from the
+                # monthly WIF climatology stopped at 3 h 36 min on
+                # nwfa(k=0, j=ny-1, i=0), its lowest level at the
+                # north-west boundary corner, reading 1.0114111e15.  The
+                # cause was upstream: the spec_bdy_final finalizer forced
+                # only u/v/theta/phi/qv back onto their boundary tables, so
+                # the supplied aerosol spec row and the relax zone beside
+                # it fed each other and the corner grew 74x in the
+                # first hour from 6.94e8, while qv in that same cell moved
+                # 1.2 percent over that hour (0.0044067 to 0.0044585) and
+                # 4.2 percent by the last frame before the stop.  With that
+                # fixed the same hour holds the corner at 6.96e8, five and
+                # a half decades under this ceiling, so the ceiling never
+                # stood between a legitimate value and a run: raising it
+                # would only have moved where the runaway was noticed.
                 "nwfa", "nifa"):
         return FieldRule("moment", 0.0, 1.0e15)
     if leaf in ("qvolg", "qvolh"):

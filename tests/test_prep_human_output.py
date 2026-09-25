@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import json
 from pathlib import Path
+import runpy
 import sys
 from types import SimpleNamespace
 
@@ -149,6 +150,53 @@ def test_successful_prep_prints_handoff_without_receipt_wall(tmp_path, capsys):
     assert "prep: complete" in output.out and "gpuwm sim" in output.out
     assert "proof_sha256" not in output.out
     assert not output.err
+
+
+def _second_copy_of_the_door():
+    """The front door executed a second time, as ``-m`` executes it.
+
+    ``python -m gpuwm.source_cli`` -- the preparation stage of the
+    shipped nowcast front door -- runs this file under the name
+    ``__main__``, and the first library that imports it by its package
+    name runs it AGAIN, as a separate module object.  Executing the
+    file here under a name of its own is that same second copy, so a
+    test can ask what the two copies share.
+    """
+
+    return runpy.run_path(source_cli.__file__, run_name="a_second_copy")
+
+
+def test_a_door_that_is_also_a_program_keeps_one_output_registry():
+    """Two copies of the door, one place children are delivered to.
+
+    The breakage this pins: the registry naming the streams a launched
+    child must be delivered to used to be defined in the door itself.
+    The copy running as the program read its own, always-empty one,
+    launched the preparation on inherited handles, and the diagnostic
+    file the run had already advertised on screen ("Details: <path>")
+    stayed zero bytes for the whole run.  The child's refusal went to
+    the terminal, where a caller keeping the last lines of a failed
+    stage kept the frames and lost the sentence.
+    """
+
+    program = _second_copy_of_the_door()
+    assert program["_ADAPTER_OUTPUT"] is source_cli._ADAPTER_OUTPUT
+    assert program["redirect_adapter_output"] is source_cli.redirect_adapter_output
+
+
+def test_the_advertised_log_holds_the_child_of_the_program_copy(tmp_path):
+    """The file the message names holds what the child said."""
+
+    program = _second_copy_of_the_door()
+    root = tmp_path / "prepared"
+    refusal = "the converter refuses: no packaged contract for this selector"
+    child = [sys.executable, "-c",
+             f"import sys; print({refusal!r}, file=sys.stderr); sys.exit(1)"]
+    args = SimpleNamespace(output_root=root, explain=False)
+    assert prep_output.run_preparation(
+        args, lambda: program["_run_native_adapter"](child)) == 1
+    log = next(tmp_path.glob("prepared-prep-*.log")).read_text(encoding="utf-8")
+    assert refusal in log
 
 
 def test_nested_host_keeps_ownership_of_adapter_output(tmp_path, monkeypatch):

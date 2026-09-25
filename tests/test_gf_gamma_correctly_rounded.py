@@ -1,13 +1,13 @@
-"""The gamma gate, after the LGPL transcription was removed.
+"""The gamma gate, after the earlier gamma was replaced.
 
 WHAT CHANGED, AND WHY THIS FILE EXISTS.  Through ArWen 2.6.5 ``gfk_tgamma``
-was a line-for-line transcription of glibc's ``e_gammaf_r.c`` and
-``gamma_productf.c``, and it was graded against
-``gpuwm/data/gf/oracle/gf-libm-tgammaf.csv`` -- a recording of what glibc
-2.39 returns.  Both glibc files are FSF-copyright and LGPL-2.1-or-later with
-no permissive upstream (``gamma_productf.c`` was created from nothing by
-glibc commit ``d8cd06db62d9``), so an Apache-2.0 distribution cannot carry
-them.  They are gone.
+was ArWen's earlier gamma, which returned the same words as glibc 2.39's
+``tgammaf``, and it was graded against
+``gpuwm/data/gf/oracle/gf-libm-tgammaf.csv``, a recording of what glibc
+2.39 returns.  That gamma, like its replacement, was this project's own
+work under the project's licence.  It carried glibc's rounding errors, and
+at 2.6.6 it was replaced by a correctly rounded gamma; the earlier one is
+gone.
 
 The kernel now computes the CORRECTLY ROUNDED float32 gamma, so "matches one
 binary" no longer describes the contract and grading against it would be
@@ -273,15 +273,15 @@ def test_fzu_divergence_from_wrf_stays_inside_the_cpu_suites_budget():
 
 
 # ==========================================================================
-# 4. the LGPL code is actually gone
+# 4. the earlier gamma is actually gone
 # ==========================================================================
 @pytest.mark.parametrize("symbol", ["gfk_gamma_product", "gfk_gammaf_positive",
                                     "GAM_SQRT12", "GAM_TWOPI", "__gamma_productf"])
-def test_the_lgpl_gamma_symbols_are_absent_from_the_shipped_kernels(symbol):
-    """The licence half of this change, gated.  These are the identifiers of
-    glibc's ``e_gammaf_r.c`` / ``gamma_productf.c``; the wheel ships
-    ``*.cu``/``*.cuh`` as source (pyproject package-data), so their absence
-    from the tree is their absence from the distribution."""
+def test_the_earlier_gamma_symbols_are_absent_from_the_shipped_kernels(symbol):
+    """The identifiers of the earlier gamma, whose return would bring back
+    glibc's rounding errors.  The wheel ships ``*.cu``/``*.cuh`` as source
+    (pyproject package-data), so their absence from the tree is their
+    absence from the distribution."""
     kdir = os.path.join(_ROOT, "gpuwm", "core", "kernels")
     hits = []
     for fn in sorted(os.listdir(kdir)):
@@ -298,7 +298,7 @@ def test_the_known_delta_note_exists_and_the_kernel_cites_it():
     note = os.path.join(_ROOT, "docs", "gf_gamma_known_delta.md")
     assert os.path.exists(note), "docs/gf_gamma_known_delta.md is missing"
     body = open(note, encoding="utf-8").read()
-    for token in ("7.3", "correctly rounded", "fzu_override", "LGPL"):
+    for token in ("7.3", "correctly rounded", "fzu_override", "own work"):
         assert token in body, f"the known-delta note must discuss {token!r}"
     for src in ("gf.cu", "glibc_flt32.cuh"):
         text = open(os.path.join(_ROOT, "gpuwm", "core", "kernels", src),

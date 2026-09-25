@@ -1,0 +1,335 @@
+{
+  "command": "validate",
+  "elapsed_seconds": 0.9,
+  "environment": {
+    "cuda_runtime": 13020,
+    "cupy": "14.2.0",
+    "driver": 13030,
+    "git_commit": "6880df717622b7bfe113a7081dc13f8d8eccc5d2",
+    "gpu": "NVIDIA GeForce RTX 5070 Ti",
+    "numpy": "2.5.3",
+    "platform": "Linux-7.0.0-29-generic-x86_64-with-glibc2.43",
+    "python": "3.14.4"
+  },
+  "result": {
+    "after_steps": {
+      "mup": {
+        "differing_words": 4096,
+        "max_abs": 0.07820510864257812,
+        "max_abs_in_ulps_of_field_max": 10250.5,
+        "max_abs_of_field": 110.8581771850586,
+        "max_relative_to_field_max": 0.0007054518721882662,
+        "max_ulp": 2032091328,
+        "ulp_histogram": {
+          "0": 0,
+          "1": 0,
+          "2": 0,
+          "3_or_more": 4096
+        },
+        "words": 4096
+      },
+      "nc": {
+        "differing_words": 119485,
+        "max_abs": 1120.0,
+        "max_abs_in_ulps_of_field_max": 35.0,
+        "max_abs_of_field": 450524128.0,
+        "max_relative_to_field_max": 2.48599338058094e-06,
+        "max_ulp": 46,
+        "ulp_histogram": {
+          "0": 11587,
+          "1": 12884,
+          "2": 14719,
+          "3_or_more": 91882
+        },
+        "words": 131072
+      },
+      "ng": {
+        "differing_words": 0,
+        "max_abs": 0.0,
+        "max_abs_in_ulps_of_field_max": 0.0,
+        "max_abs_of_field": 0.0,
+        "max_relative_to_field_max": 0.0,
+        "max_ulp": 0,
+        "ulp_histogram": {
+          "0": 131072,
+          "1": 0,
+          "2": 0,
+          "3_or_more": 0
+        },
+        "words": 131072
+      },
+      "ni": {
+        "differing_words": 0,
+        "max_abs": 0.0,
+        "max_abs_in_ulps_of_field_max": 0.0,
+        "max_abs_of_field": 0.0,
+        "max_relative_to_field_max": 0.0,
+        "max_ulp": 0,
+        "ulp_histogram": {
+          "0": 131072,
+          "1": 0,
+          "2": 0,
+          "3_or_more": 0
+        },
+        "words": 131072
+      },
+      "nr": {
+        "differing_words": 0,
+        "max_abs": 0.0,
+        "max_abs_in_ulps_of_field_max": 0.0,
+        "max_abs_of_field": 0.0,
+        "max_relative_to_field_max": 0.0,
+        "max_ulp": 0,
+        "ulp_histogram": {
+          "0": 131072,
+          "1": 0,
+          "2": 0,
+          "3_or_more": 0
+        },
+        "words": 131072
+      },
+      "ns": {
+        "differing_words": 0,
+        "max_abs": 0.0,
+        "max_abs_in_ulps_of_field_max": 0.0,
+        "max_abs_of_field": 0.0,
+        "max_relative_to_field_max": 0.0,
+        "max_ulp": 0,
+        "ulp_histogram": {
+          "0": 131072,
+          "1": 0,
+          "2": 0,
+          "3_or_more": 0
+        },
+        "words": 131072
+      },
+      "php": {
+        "differing_words": 126955,
+        "max_abs": 0.01813960075378418,
+        "max_abs_in_ulps_of_field_max": 2377.59375,
+        "max_abs_of_field": 75.39875030517578,
+        "max_relative_to_field_max": 0.00024058224679274264,
+        "max_ulp": 1973472512,
+        "ulp_histogram": {
+          "0": 8213,
+          "1": 54,
+          "2": 63,
+          "3_or_more": 126838
+        },
+        "words": 135168
+      },
+      "qc": {
+        "differing_words": 0,
+        "max_abs": 0.0,
+        "max_abs_in_ulps_of_field_max": 0.0,
+        "max_abs_of_field": 0.0,
+        "max_relative_to_field_max": 0.0,
+        "max_ulp": 0,
+        "ulp_histogram": {
+          "0": 131072,
+          "1": 0,
+          "2": 0,
+          "3_or_more": 0
+        },
+        "words": 131072
+      },
+      "qg": {
+        "differing_words": 0,
+        "max_abs": 0.0,
+        "max_abs_in_ulps_of_field_max": 0.0,
+        "max_abs_of_field": 0.0,
+        "max_relative_to_field_max": 0.0,
+        "max_ulp": 0,
+        "ulp_histogram": {
+          "0": 131072,
+          "1": 0,
+          "2": 0,
+          "3_or_more": 0
+        },
+        "words": 131072
+      },
+      "qi": {
+        "differing_words": 0,
+        "max_abs": 0.0,
+        "max_abs_in_ulps_of_field_max": 0.0,
+        "max_abs_of_field": 0.0,
+        "max_relative_to_field_max": 0.0,
+        "max_ulp": 0,
+        "ulp_histogram": {
+          "0": 131072,
+          "1": 0,
+          "2": 0,
+          "3_or_more": 0
+        },
+        "words": 131072
+      },
+      "qr": {
+        "differing_words": 0,
+        "max_abs": 0.0,
+        "max_abs_in_ulps_of_field_max": 0.0,
+        "max_abs_of_field": 0.0,
+        "max_relative_to_field_max": 0.0,
+        "max_ulp": 0,
+        "ulp_histogram": {
+          "0": 131072,
+          "1": 0,
+          "2": 0,
+          "3_or_more": 0
+        },
+        "words": 131072
+      },
+      "qs": {
+        "differing_words": 0,
+        "max_abs": 0.0,
+        "max_abs_in_ulps_of_field_max": 0.0,
+        "max_abs_of_field": 0.0,
+        "max_relative_to_field_max": 0.0,
+        "max_ulp": 0,
+        "ulp_histogram": {
+          "0": 131072,
+          "1": 0,
+          "2": 0,
+          "3_or_more": 0
+        },
+        "words": 131072
+      },
+      "qv": {
+        "differing_words": 0,
+        "max_abs": 0.0,
+        "max_abs_in_ulps_of_field_max": 0.0,
+        "max_abs_of_field": 0.0,
+        "max_relative_to_field_max": 0.0,
+        "max_ulp": 0,
+        "ulp_histogram": {
+          "0": 131072,
+          "1": 0,
+          "2": 0,
+          "3_or_more": 0
+        },
+        "words": 131072
+      },
+      "thp": {
+        "differing_words": 120011,
+        "max_abs": 0.000946044921875,
+        "max_abs_in_ulps_of_field_max": 7936.0,
+        "max_abs_of_field": 1.668731689453125,
+        "max_relative_to_field_max": 0.0005669245258865054,
+        "max_ulp": 1925185536,
+        "ulp_histogram": {
+          "0": 11061,
+          "1": 0,
+          "2": 0,
+          "3_or_more": 120011
+        },
+        "words": 131072
+      },
+      "u": {
+        "differing_words": 133087,
+        "max_abs": 0.0009806156158447266,
+        "max_abs_in_ulps_of_field_max": 2056.5,
+        "max_abs_of_field": 5.338805675506592,
+        "max_relative_to_field_max": 0.00018367696362195788,
+        "max_ulp": 1913634968,
+        "ulp_histogram": {
+          "0": 33,
+          "1": 39,
+          "2": 46,
+          "3_or_more": 133002
+        },
+        "words": 133120
+      },
+      "v": {
+        "differing_words": 133091,
+        "max_abs": 0.0010409802198410034,
+        "max_abs_in_ulps_of_field_max": 2183.09375,
+        "max_abs_of_field": 5.1322431564331055,
+        "max_relative_to_field_max": 0.00020283143025602118,
+        "max_ulp": 1900904212,
+        "ulp_histogram": {
+          "0": 29,
+          "1": 49,
+          "2": 47,
+          "3_or_more": 132995
+        },
+        "words": 133120
+      },
+      "w": {
+        "differing_words": 126964,
+        "max_abs": 0.0016436278820037842,
+        "max_abs_in_ulps_of_field_max": 3446.9375,
+        "max_abs_of_field": 5.5926337242126465,
+        "max_relative_to_field_max": 0.0002938915657730081,
+        "max_ulp": 1941654046,
+        "ulp_histogram": {
+          "0": 8204,
+          "1": 19,
+          "2": 23,
+          "3_or_more": 126922
+        },
+        "words": 135168
+      }
+    },
+    "fields": [
+      "u",
+      "v",
+      "w",
+      "thp",
+      "php",
+      "mup",
+      "qv",
+      "qc",
+      "qr",
+      "qi",
+      "qs",
+      "qg",
+      "nc",
+      "nr",
+      "ni",
+      "ns",
+      "ng"
+    ],
+    "grid": {
+      "nx": 64,
+      "ny": 64,
+      "nz": 32
+    },
+    "microphysics": 10,
+    "one_call_omega": {
+      "flat": {
+        "differing_words": 99272,
+        "has_msf": false,
+        "max_abs": 3.0994415283203125e-06,
+        "max_abs_in_ulps_of_field_max": 6.5,
+        "max_abs_of_field": 5.1883063316345215,
+        "max_relative_to_field_max": 5.973898475157819e-07,
+        "max_ulp": 524288,
+        "ulp_histogram": {
+          "0": 35896,
+          "1": 23614,
+          "2": 18294,
+          "3_or_more": 57364
+        },
+        "words": 135168
+      },
+      "map_factor": {
+        "differing_words": 99792,
+        "has_msf": true,
+        "max_abs": 2.6226043701171875e-06,
+        "max_abs_in_ulps_of_field_max": 5.5,
+        "max_abs_of_field": 5.2445502281188965,
+        "max_relative_to_field_max": 5.000627806090928e-07,
+        "max_ulp": 229376,
+        "ulp_histogram": {
+          "0": 35376,
+          "1": 24568,
+          "2": 18386,
+          "3_or_more": 56838
+        },
+        "words": 135168
+      }
+    },
+    "seed": 20260731,
+    "steps": 60
+  },
+  "schema": "gpuwm-omega-column-scan-receipt-v1"
+}

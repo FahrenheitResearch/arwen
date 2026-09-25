@@ -513,28 +513,337 @@ class FirstProducts:
         _write_receipt(render_dir / FIRST_PRODUCTS_RECEIPT, receipt)
 
 
-def withdraw(render_dir: Path) -> int:
-    """Remove an early render's whole output; return the pictures dropped.
+#: The plain file a run that did not finish leaves at the top of its
+#: render directory, next to the pictures it drew before it stopped.
+DID_NOT_FINISH_BANNER = "DID-NOT-FINISH.txt"
 
-    For the one caller that must publish no picture at all: a child
-    forecast that did not pass.  Its analysis frame was drawn while the
-    run still looked healthy, and the run then refused itself -- so the
-    pictures are the only artifact of it that does not carry the
-    verdict, and nothing else has written into this directory (the
-    finalize render never runs on a run that failed).
+#: The one string the banner, the render summary and the report all
+#: carry, so a reader keys on one value rather than on three spellings
+#: of the same state.
+DID_NOT_FINISH_STATUS = "did-not-finish"
 
-    Best-effort by construction.  A picture that cannot be removed is
-    not worth failing an already-failed run over, and the count returned
-    is what was counted before the removal.
+#: How many frame names the banner lists before it starts counting the
+#: rest.  A stopped child can have hundreds, and a banner nobody reaches
+#: the bottom of says nothing.
+_BANNER_FRAMES = 40
+
+
+def _seconds_text(value: Any) -> str:
+    """A model second in a fixed format, with thousands separators.
+
+    NEVER exponential.  ``%g`` switches to a mantissa at a million, and
+    a model second passes a million inside a fortnight of forecast, so
+    the one sentence this file exists for printed ``1.08e+06`` to a
+    reader who had just lost a run.  Three decimals survive a
+    sub-second stop and trailing zeros go, so a whole second reads as a
+    whole number.
+    """
+
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    return f"{number:,.3f}".rstrip("0").rstrip(".") or "0"
+
+
+def _count_text(value: Any) -> str:
+    """A step count as an integer, with thousands separators.
+
+    A step is a whole number and has no mantissa to print.  ``%g`` gave
+    one to every count past a million, which a step of 0.1 s reaches
+    inside a day and a half of forecast.
+    """
+
+    try:
+        number = int(float(value))
+    except (TypeError, ValueError):
+        return str(value)
+    return f"{number:,d}"
+
+
+def _stop_sentence(stopped: Mapping[str, Any] | None) -> str:
+    """Where the forecast got to, or that nobody recorded it.
+
+    A run refused before its first step has no model second to quote,
+    and a banner that invented one would be a number nobody measured.
+    """
+
+    if not stopped:
+        return ("The forecast stopped before it finished.  How far it got "
+                "was not recorded.")
+    model = stopped.get("model_seconds")
+    total = stopped.get("run_seconds")
+    step = stopped.get("step")
+    steps = stopped.get("total_steps")
+    reached = (f"model second {_seconds_text(model)} of "
+               f"{_seconds_text(total)}"
+               if model is not None and total is not None
+               else f"model second {_seconds_text(model)}"
+               if model is not None
+               else "an unrecorded model second")
+    after = (f", after step {_count_text(step)} of {_count_text(steps)}"
+             if step is not None and steps is not None
+             else f", after step {_count_text(step)}"
+             if step is not None else "")
+    return f"The forecast stopped at {reached}{after}."
+
+
+def banner_text(*, why: str, stopped: Mapping[str, Any] | None,
+                frames: Sequence[Any], pictures: int | None,
+                pictures_error: str | None = None) -> str:
+    """The words the banner says.  One writer, so every route agrees.
+
+    Four facts, in the order a reader needs them: how far the forecast
+    got, why it stopped, which frames exist, and that every picture in
+    this folder is from before the stop.  The last one is the sentence
+    the whole file exists for: a picture drawn early is a picture of a
+    healthy forecast, and showing it beside no explanation is how a
+    reader concludes the run was fine.
+
+    THREE picture outcomes, not two, the same three the failed-render
+    capsule states: a count, an empty folder, and a folder that could
+    not be LISTED, which arrives as ``pictures=None`` with the error in
+    ``pictures_error``.  A tree nothing could read is not a tree with
+    nothing in it, and printing the second over the first is what tells
+    a reader who still has their pictures that they have none.
+    """
+
+    names = [str(frame) for frame in frames]
+    listed = names[:_BANNER_FRAMES]
+    dropped = len(names) - len(listed)
+    # The WHOLE clause agrees with the count, verb and pronoun included.
+    # A number made singular over a sentence that kept its plural reads
+    # exactly as carelessly as the parenthesised plural it replaced, on
+    # a file whose reader has just lost a forecast.
+    source = ("" if not names else ", from the frame below"
+              if len(names) == 1 else ", from the frames below")
+    if pictures is None:
+        # THE TREE COULD NOT BE READ.  Not a count, so no sentence here
+        # may claim one: what is in this folder is unknown, and the
+        # error that made it unknown is quoted so a reader can clear it
+        # and look for themselves.
+        detail = str(pictures_error or "").strip()
+        held = ("This folder could not be listed"
+                + (f" ({detail})" if detail else "")
+                + ", so whether the early render had published a picture "
+                "before the forecast stopped is not known from here.")
+    elif not pictures:
+        # STOPS here.  The frame block below is the one that says
+        # whether anything was named, and it handles both cases; a
+        # clause that promised a list stood over "No frames were
+        # written before the stop." whenever the run also committed
+        # nothing, and the two sentences contradicted each other in the
+        # one case they share.
+        held = ("No pictures are in this folder: the early render had not "
+                "published one before the forecast stopped.")
+    elif pictures == 1:
+        held = ("1 picture is in this folder.  It was drawn before the "
+                f"forecast stopped{source}.  Nothing here was drawn "
+                "afterwards, and it does not show the state the forecast "
+                "stopped in.")
+    else:
+        held = (f"{pictures} pictures are in this folder.  Every one of them "
+                f"was drawn before the forecast stopped{source}.  Nothing "
+                "here was drawn afterwards, and no picture shows the state "
+                "the forecast stopped in.")
+    lines = [
+        "THIS FORECAST DID NOT FINISH",
+        "",
+        _stop_sentence(stopped),
+        "",
+        f"Why it stopped: {str(why).strip() or 'not recorded'}",
+        "",
+        held,
+        "",
+    ]
+    if names:
+        lines.append("1 frame was written before the stop:" if len(names) == 1
+                     else f"{len(names)} frames were written before the stop:")
+        lines.extend(f"  {name}" for name in listed)
+        if dropped:
+            lines.append(f"  ... and {dropped} more")
+    else:
+        lines.append("No frames were written before the stop.")
+    if names and pictures:
+        # ONLY where there are frames.  Over a run that committed none,
+        # "The frames are kept too" denies the line directly above it,
+        # which is the same contradiction the zero-picture clause used
+        # to carry, one paragraph further down.
+        lines.extend([
+            "",
+            ("The frames are kept too, and they can be drawn again at any "
+             "time: this folder is what the run had already drawn for "
+             "itself, not all it could show."),
+        ])
+    elif names:
+        # FRAMES AND NO PICTURE.  "The frames are kept TOO" and "this
+        # folder is what the run had already drawn" are both about
+        # pictures that are not here: over a folder holding frames and
+        # no picture the paragraph read as though the pictures were in
+        # it, which is the whole failure this banner exists to prevent.
+        # A count that could not be taken takes this arm as well: it
+        # promises nothing about what the folder holds.
+        lines.extend([
+            "",
+            ("The frames are kept, and pictures can be drawn from them "
+             "at any time: the frames listed above are what this run "
+             "got far enough to write."),
+        ])
+    lines.append("")
+    return "\n".join(lines)
+
+
+def _spelling_of(root: Path, walk_root: Path, filename) -> str:
+    """The path an error names, back in the spelling the caller typed.
+
+    The walk goes through :func:`gpuwm.render_layout.fs_path`, which on
+    Windows is an extended-length spelling of the same directory; a
+    reader comparing the error against the path they passed must not be
+    handed a prefix they never typed.  Same file either way.
+    """
+
+    if not filename:
+        return str(root)
+    named = Path(filename)
+    if named == walk_root:
+        return str(root)
+    try:
+        return str(root / named.relative_to(walk_root))
+    except ValueError:
+        return str(named)
+
+
+def count_pictures(render_dir) -> tuple[int | None, str | None]:
+    """``(pictures on disk, why they could not be counted)``.
+
+    ONE counter behind every sentence this tree writes about a stopped
+    run's pictures -- the banner, the render summary, the report's
+    ``products`` block and the failed-render capsule, which reads it
+    through :meth:`gpuwm.offline_child_run._ChildProgress.pictures_drawn`
+    -- so those four documents cannot disagree about one tree.
+
+    WHAT BREAKAGE THIS PREVENTS (gate law).  Counting through
+    :func:`gpuwm.render_layout.iter_rendered` cannot tell an empty tree
+    from an unreadable one.  That reader answers ``[]`` for a root that
+    is not a directory and walks with :meth:`pathlib.Path.rglob`, which
+    swallows a refused ``scandir``, so a picture folder behind a
+    permission wall, on a mount that dropped, or at a path that is a
+    regular file came back as a count of zero and printed as "the early
+    render had not published one before the forecast stopped" -- the one
+    sentence that sends a reader off to re-draw a whole child whose
+    pictures are sitting behind the error.  Walking with ``onerror`` is
+    what makes a refusal visible instead of silent.
+
+    THREE outcomes, therefore: a count, an empty folder, and a folder
+    that could not be LISTED, which comes back as ``(None, the error)``.
+    A directory that is simply not there is still the empty case: a
+    render that never created its output directory drew nothing, and
+    that is a reading rather than a failure to read.
+
+    Nothing raises.  This is a number for a sentence in a refusal that
+    is already being raised.
     """
 
     root = Path(render_dir)
+    walk_root = Path(fs_path(root, descend=True))
+    refused: list[OSError] = []
+    drawn = 0
+    for _directory, subdirectories, names in os.walk(
+            walk_root, onerror=refused.append):
+        # The early render draws into a dotted scratch directory and
+        # moves each picture onto its final name when the subprocess
+        # exits, so a file still in there is not a published picture.
+        # It is the one difference between this walk and a naive one,
+        # and :func:`gpuwm.render_layout.iter_rendered` makes it too.
+        subdirectories[:] = [name for name in subdirectories
+                             if not name.startswith(".")]
+        drawn += sum(1 for name in names if name.endswith(".png"))
+    unreadable = [error for error in refused
+                  if not isinstance(error, FileNotFoundError)]
+    if unreadable:
+        error = unreadable[0]
+        return None, (f"{_spelling_of(root, walk_root, error.filename)}: "
+                      f"{error.strerror or error}")
+    return drawn, None
+
+
+def keep(render_dir: Path, *, why: str,
+         stopped: Mapping[str, Any] | None = None,
+         frames: Sequence[Any] = ()) -> dict[str, Any]:
+    """Keep what the early render drew, and say on disk that it stopped.
+
+    THE DECISION, recorded where it is enforced: a run that did not
+    finish KEEPS its pictures.  The early render draws the analysis
+    frame while the forecast is still integrating, and a child that then
+    stops -- non-finite, a refusal mid-run, an interrupt -- used to have
+    those pictures removed, so the only artifact a reader could look at
+    disappeared at the exact moment it became the thing they wanted.
+    The frames prove what happened; the pictures are what a reader can
+    actually see, and they are cheap to keep.
+
+    What replaces the removal is a SENTENCE, in the two places this
+    function writes: a banner at the top of this directory and the
+    status in the render summary beside it.  A picture with no verdict
+    beside it is the state this function exists to prevent.
+
+    IN THE REPORT TOO, where the run leaves one.  A child that stops
+    inside its forecast publishes ``report.json`` whatever stopped it,
+    carrying its failure capsule or the sentence the banner carries
+    where the stop composed none, and both stop arms record what this
+    function did in that document's ``products`` block: ``status``
+    ``KEPT``, the count on disk and the banner's path.  This function
+    does not write the report -- it returns what it did, and the caller
+    that holds the report puts it there -- so the folder, the summary
+    and the document cannot disagree about how many pictures there are.
+
+    Best effort, exactly as the removal was.  A banner that cannot be
+    written is not worth failing an already-failed run over: the count
+    still comes back, and ``banner`` is ``None``.  The summary is
+    stamped either way -- two independent writes, because the summary
+    is the document the readers key on and a banner's failure says
+    nothing about whether the status can be recorded.
+    """
+
+    from gpuwm import render_receipts
+
+    root = Path(render_dir)
+    # THREE outcomes, from the counter both stop routes and the
+    # failed-render capsule share (:func:`count_pictures`): a count, an
+    # empty folder, and a folder that could not be LISTED.  Counting a
+    # refused listing as zero made the banner and the summary tell a
+    # reader whose pictures were behind a permission wall or a dropped
+    # mount that the run had drawn none, which is the one sentence that
+    # sends them off to re-draw a whole child.
+    pictures, pictures_error = count_pictures(root)
+    # The banner is written through the SAME spelling of this directory
+    # the summary is stamped through, so a path the ordinary API refuses
+    # for its length loses neither document rather than one of them.
+    # ``fs_path`` is a spelling and never a different file, and the path
+    # this function REPORTS is the plain one a reader compares against.
+    banner: Path | None = root / DID_NOT_FINISH_BANNER
     try:
-        pictures = len(iter_rendered(root))
+        os.makedirs(fs_path(root, descend=True), exist_ok=True)
+        Path(fs_path(root / DID_NOT_FINISH_BANNER)).write_text(
+            banner_text(why=why, stopped=stopped, frames=frames,
+                        pictures=pictures, pictures_error=pictures_error),
+            encoding="utf-8", newline="\n")
     except OSError:
-        pictures = 0
-    shutil.rmtree(fs_path(root, descend=True), ignore_errors=True)
-    return pictures
+        banner = None
+    # UNCONDITIONAL, because these are two independent best-effort
+    # writes rather than one gated on the other.  The summary is what
+    # the desktop's native-plots door and every run browser key on, and
+    # a banner that could not be written says nothing about whether the
+    # status can be recorded; ``stamp_status`` has its own try/except
+    # and takes ``banner_path=None``.
+    summary = render_receipts.stamp_status(
+        root, status=DID_NOT_FINISH_STATUS, pictures_on_disk=pictures,
+        pictures_error=pictures_error, banner_path=banner)
+    return {"pictures": pictures,
+            "pictures_error": pictures_error,
+            "render": str(root),
+            "banner": None if banner is None else str(banner),
+            "status": DID_NOT_FINISH_STATUS,
+            "summary": summary}
 
 
 def _write_receipt(path: Path, payload: Mapping[str, Any]) -> None:
@@ -670,17 +979,21 @@ def published_frames(frames: Sequence[Path], plan: Mapping[str, Any]
 __all__ = [
     "DEFAULT_RENDER_PRODUCTS",
     "DEFAULT_WAIT_SECONDS",
+    "DID_NOT_FINISH_BANNER",
+    "DID_NOT_FINISH_STATUS",
     "FIRST_PLOT_DEFINITION",
     "FIRST_PRODUCTS_RECEIPT",
     "FIRST_PRODUCTS_SCHEMA",
     "FirstProducts",
     "FrameHook",
     "arm",
+    "banner_text",
+    "count_pictures",
     "early_render_requested",
     "effective_products",
+    "keep",
     "published_frames",
     "published_pictures_are_original",
     "read_receipt",
     "render_without_output_refusal",
-    "withdraw",
 ]

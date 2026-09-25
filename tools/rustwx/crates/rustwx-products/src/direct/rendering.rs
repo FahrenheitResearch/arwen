@@ -470,6 +470,20 @@ pub(crate) fn direct_fill_unit_conversion(
     } else if selector.field == CanonicalField::ColumnIntegratedSmoke {
         (UnitConvert::KgM2ToMgM2, Some("mg/m^2"))
     } else if matches!(
+        selector.field,
+        CanonicalField::CloudWaterMixingRatio
+            | CanonicalField::RainWaterMixingRatio
+            | CanonicalField::CloudIceMixingRatio
+            | CanonicalField::SnowMixingRatio
+            | CanonicalField::GraupelMixingRatio
+    ) {
+        // A mixing ratio is drawn in grams per kilogram on every route: the
+        // section route already speaks g kg-1 and a bar in kg kg-1 read
+        // its every tick as 0.
+        (UnitConvert::KgPerKgToGPerKg, Some("g kg-1"))
+    } else if selector.field == CanonicalField::SupercooledLiquidWaterPath {
+        (UnitConvert::None, Some("g m-2"))
+    } else if matches!(
         recipe.style,
         RenderStyle::WeatherTemperature | RenderStyle::WeatherDewpoint
     ) {
@@ -535,9 +549,15 @@ pub(super) fn should_render_overlay_only(
     // convention is heights as contours, colour reserved for the wind.
     // The SURFACE member of the same canonical field is a different
     // physical quantity -- orography -- and reads only as a fill; sending
-    // it down the contour-analysis path would draw a blank map.
+    // it down the contour-analysis path would draw a blank map.  The
+    // height of an ISOTHERM is a third quantity, where the air reaches a
+    // named temperature, and reads as a fill for the same reason: drawn
+    // overlay-only it came out as decametre contours on a blank map.
     matches!(selector.field, CanonicalField::GeopotentialHeight)
-        && !matches!(selector.vertical, VerticalSelector::Surface)
+        && !matches!(
+            selector.vertical,
+            VerticalSelector::Surface | VerticalSelector::IsothermCelsius(_)
+        )
 }
 
 pub(super) fn scale_for_filled_selector(

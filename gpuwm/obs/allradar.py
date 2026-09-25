@@ -266,6 +266,12 @@ class SiteOutcome:
     window: dict = field(default_factory=dict)
     #: Antenna height and where it came from; see `ingest_site`.
     antenna: dict = field(default_factory=dict)
+    #: The volume's first and last radial collection instants (from its
+    #: pack) and when the feed published it (from the acquisition).
+    #: ``valid_time`` above is the header start.  None where not known.
+    start_time: str | None = None
+    end_time: str | None = None
+    availability_time: str | None = None
 
     @property
     def contributed(self) -> bool:
@@ -278,6 +284,9 @@ class SiteOutcome:
             "reason": self.reason,
             "coverage_fraction": self.coverage_fraction,
             "valid_time": self.valid_time,
+            "start_time": self.start_time,
+            "end_time": self.end_time,
+            "availability_time": self.availability_time,
             "volume": self.volume,
             "volume_sha256": self.volume_sha256,
             "volume_bytes": self.volume_bytes,
@@ -335,6 +344,7 @@ def ingest_site(binary, coverage: SiteCoverage, *, grid, work_dir: Path,
     out.volume_sha256 = selected.sha256
     out.feed = selected.feed
     out.valid_time = str(selected.valid_time)
+    out.availability_time = getattr(selected, "availability_time", None)
     out.offset_seconds = selected.offset_seconds
     try:
         out.volume_bytes = int(Path(selected.path).stat().st_size)
@@ -411,6 +421,14 @@ def ingest_site(binary, coverage: SiteCoverage, *, grid, work_dir: Path,
     # window is a superset of the nonzero support -- superob_volume raises
     # rather than let that stop being true.
     out.window = contribution.window_payload()
+    # When the volume was scanned, from its pack, beside when the feed
+    # published it, from the acquisition: the contribution carries all
+    # three into the merge and the file, the outcome carries them into
+    # the cycle's receipt.
+    out.start_time = getattr(contribution, "start_time", None)
+    out.end_time = getattr(contribution, "end_time", None)
+    if hasattr(contribution, "availability_time"):
+        contribution.availability_time = out.availability_time
     # Where this antenna's HEIGHT came from.  The height is the ray
     # origin, so a wrong one puts every gate in the volume at the wrong
     # model level.  The decoder refuses rather than guess -- the vendored

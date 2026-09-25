@@ -533,7 +533,18 @@ _PHYSICS_ALLOCATION_INVENTORY = {
     # gpuwm/core/wdm6.py; that commit cannot be amended (forward commits
     # only), so it is entered here with its bound rather than left to a
     # later sweep -- which is exactly what this gate's message asks for.
-    'gpuwm/core/wdm6.py': {},
+    #
+    # ONE site since a3f158bef (2026-09-13): launch_wdm6 takes the
+    # substep-count status word as an argument and allocates
+    # ``cp.empty((1,), uint32)`` only when a direct caller passes none.
+    # Bound: one 4-byte word per call.  The adapter passes the priced
+    # ``wdm6_count_status`` slot from the static registry
+    # (preflight.scratch_slot_registry, the same commit), so on the run
+    # path the count is zero and the site is the direct callers' (the
+    # count-safety tests).  Entered here with its bound because a3f158bef
+    # did not, and the gate was red for it on every box since
+    # (proof/node-reds-276).
+    'gpuwm/core/wdm6.py': {'launch_wdm6': 1},
     'gpuwm/core/wsm6.py': {},
     'gpuwm/core/ysu.py': {
         # The precedent this rule follows and the reason it is a ratchet

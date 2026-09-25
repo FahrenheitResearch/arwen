@@ -10,10 +10,28 @@ from types import MappingProxyType
 import numpy as np
 
 from gpuwm.forecast_initialization import DomainInitialization
+from gpuwm.ingest.metem import read_met_em_terrain
+from gpuwm.vertical_adaptation import (
+    TerrainField, adapt_experiment_vertical,
+    vertical_coordinate_receipt as _vertical_coordinate_receipt)
 from gpuwm.progress_log import ProgressOptions, add_progress_arguments
 from gpuwm.wrfinput_forecast import (RENDER_ROOT_NAME, WrfTreeInputs, WrfLanduseIdentity,
     _sha, announce_render_readiness, arm_door_first_products, door_render_plan,
     draw_door_products)
+
+
+
+def _announce_adaptation(sentence: str) -> None:
+    """Say, once, that the run is not on the configured vertical coordinate."""
+
+    from gpuwm.explain import warn
+
+    warn(sentence,
+         "WRF v4.6.1 dyn_em/nest_init_utils.F:1158-1182 calls this column "
+         "fatal and names reducing etac as the remedy; the remedy is "
+         "derived here from the terrain the met_em files carry and "
+         "applied, so the prepared inputs, their receipt and the forecast "
+         "all carry the same coordinate.  p_top is untouched.")
 
 
 def _json(path, value):
@@ -487,6 +505,19 @@ def prepare_metem_run(run, directory, *, run_seconds=None, preprocess_backend=No
         write_document(directory/name, content, reused=reused)
     artifacts['source_manifest'] = source_manifest
     grids = tuple(grids_from_projection_config(exp))
+    # THE COORDINATE, BEFORE ANYTHING IS BUILT ON IT.  Every domain's
+    # model terrain is already written into its own met_em files, so this
+    # route's whole survey is one two-dimensional read per domain -- and
+    # it has to happen before the loop below, because a child needing a
+    # smaller etac than its parent would otherwise be discovered after
+    # the parent had been built on the larger one.
+    exp, vertical_adaptation = adapt_experiment_vertical(
+        exp,
+        [TerrainField(f"d{int(domain.grid_id):02d} met_em terrain",
+                      read_met_em_terrain(run.paths[domain.grid_id][0]),
+                      float(domain.run.base_temp))
+         for domain in exp.domains],
+        announce=_announce_adaptation)
     bundles, domain_receipts = [], {}
     root_boundaries = None
     fractional = run.controls.get('physics', {}).get('fractional_seaice', [0])[0] == 1
@@ -567,6 +598,10 @@ def prepare_metem_run(run, directory, *, run_seconds=None, preprocess_backend=No
         memory_receipt = json.loads(receipt_path.read_text(encoding='utf-8'))['memory_admission']
     write_document(receipt_path, json_bytes({'schema':'gpuwm-metgrid-import-v1','source_files':source_hashes,
         'vertical_coordinate':vertical_policy,'vertical_generation':vertical_generation,
+        # The EFFECTIVE hybrid coordinate and the derivation behind it.
+        # 'vertical_coordinate' above is the eta LADDER's provenance and
+        # keeps that meaning; this is the hybrid pair the run integrates.
+        'hybrid_coordinate':_vertical_coordinate_receipt(exp, vertical_adaptation),
         'domains':domain_receipts,'memory_admission':memory_receipt,
         'namelist_translation':asdict(run.substitution_report),
         'namelist_translation_text':run.substitution_report.format()}), reused=reused)

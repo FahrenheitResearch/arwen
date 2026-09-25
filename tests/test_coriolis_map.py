@@ -151,11 +151,43 @@ def test_msf_one_f_zero_bitwise_phase2(case):
     #   ALREADY RED there: the shipped file differed from a fresh run of
     #   the same builders in 25 of 27 entries (largest, dry_flat/mup,
     #   2.293e-02 on an rms of 1.081e+01).  That drift is NOT root-caused.
-    #   The recapture is recorded, not endorsed.
+    #   The recapture states what the builders produce there.  It is not
+    #   a claim that those numbers are right.
     #
     #   6b11e4c99 recaptured after the EOS geopotential fix, which moves
     #   every run's bits by construction (calc_p_alpha stopped forming the
     #   base layer thickness by cancelling two totals).
+    #
+    # RECAPTURED on 2026-09-16 (lane/2.7.6-omega-column-scan) by
+    # tools/recapture_phase2_pin.py, the generator now kept in the tree, in
+    # two readings because the move has two causes:
+    #
+    #   (a) [dry_flat] and [terrain] were ALREADY RED at the base
+    #   c36f4c1f1, the 2.7.5 release tip: with the shipped file restored, a
+    #   run there fails u on 2870 of 2880 words (max abs 1.569e-04) and
+    #   terrain/u on 2661 of 2720 (1.675e-04), and a fresh capture at that
+    #   base differs from the shipped file in 25 of 27 entries (largest
+    #   open/v 2.033e-02 on an rms of 1.762e-02, open/mup 1.882e+00 on
+    #   9.396e+00, dry_flat/mup 1.669e-02 on 1.081e+01, terrain/mup
+    #   3.055e-02 on 5.539e+00).  The dry dynamics moved after the
+    #   2026-09-03 recapture without this file following; the release
+    #   contract set does not run this GPU test, so 2.7.5 shipped it red.
+    #   That drift is NOT root-caused here either, and this capture
+    #   states what a run produces rather than that it is right.
+    #
+    #   (b) The Omega column kernel (calc_ww_cp one column per thread in
+    #   WRF's own operation order, replacing CuPy's sum/cumsum) moves every
+    #   stepped run's bits by construction.  Its own reading, base capture
+    #   against lane capture on the same card, same builders: 25 of 27
+    #   entries, largest moist/v 3.313e-04 on an rms of 3.286e-02 (1.0e-2),
+    #   open/v 1.420e-04 on 1.758e-02 (8.1e-3), dry_flat/mup 2.494e-02 on
+    #   1.081e+01 (2.3e-3), terrain/mup 5.758e-03 on 5.539e+00 (1.0e-3);
+    #   moist/qc and moist/qr, identically zero, held.  Sixty steps of the
+    #   seeded 64x64x32 benchmark state put u, v, w, thp, php, mup within
+    #   1.7e-4 to 7.2e-4 of each field's maximum (docs/manual/
+    #   04-gpu-numerics.md section 4.3).  Both readings are committed under
+    #   tests/data/receipts/omega-column-scan/ as
+    #   phase2-pin-shipped-vs-base.json and phase2-pin-base-vs-lane.json.
     #
     # THE CONSEQUENCE, stated plainly because the sentence below no longer
     # says it: this file describes THIS TIP, not Phase 2.  The dry
@@ -189,11 +221,55 @@ def test_msf_one_f_zero_bitwise_phase2(case):
     # reference, against the genuine float64 np_acoustic_substep mirror
     # (npref.py:2837 differences the geopotential in float64) -- and that
     # is the instrument the follow-up should use.
+    #
+    # 2026-09-17 (lane/2.7.6-pin-gates): THE CARD, AND THE ATTRIBUTION OF
+    # (a) ABOVE.  Node-1's card became an RTX 4090 (compute capability 8.9,
+    # driver 610.57.04); every 2026-09-16 reading above was taken on the
+    # RTX 5070 Ti (12.0) it replaced, and the two 2026-09-03 recaptures say
+    # RTX 3080 (8.6) in their messages.  Measured on the 4090 in one
+    # session, with tools/recapture_phase2_pin.py's readings and a scratch
+    # copy of its capture checked out at each commit (receipts under
+    # tests/data/receipts/pin-gates/):
+    #
+    #   The pin is CARD-DEPENDENT.  The committed file (5070 Ti bytes) run
+    #   at fc639c51f on the 4090: [dry_flat] and [terrain] red, 25 of 27
+    #   entries differ, dry_flat/mup 2.274e-02 on an rms of 1.081e+01,
+    #   terrain/mup 2.693e-02 on 5.539, dry_flat/u 1.502e-04 on 3.732,
+    #   open/v 2.031e-02 on 1.758e-02, open/mup 1.888 on 9.390; moist/qc
+    #   and moist/qr held (phase2-pin-4090-vs-committed-fc639c51f.json).
+    #   The same builders twice at fc639c51f on the 4090: 0 of 27 differ
+    #   (phase2-pin-4090-run1-vs-run2-at-fc639c51f.json).
+    #
+    #   The 3080 and the 4090 AGREE: the file committed at 6b11e4c99,
+    #   captured on the 3080, against a 4090 capture at 6b11e4c99: 0 of 27
+    #   entries differ (phase2-pin-3080-vs-4090-at-6b11e4c99.json).
+    #
+    #   NO COMMIT moved dry_flat or terrain between 6b11e4c99 and the 2.7.5
+    #   tip c36f4c1f1 on one card: 4090 captures at 6b11e4c99, a355a7673
+    #   (rk_addtend_dry's 1/msf) and fd44111c3 (tiles, derived base-state
+    #   arrays) are bit-identical in all 27 entries; 877dc8e97 (scalar
+    #   diff6 takes dt/3) moves exactly the seven moist entries (u, v, w,
+    #   thp, php, mup, qv; largest moist/mup 2.371e-02 on 1.628e+01) and
+    #   nothing dry, which is what its message declares ("the dry rows are
+    #   unchanged"), a closed matter; fc20bfc5a and c36f4c1f1 carry
+    #   877dc8e97's bytes exactly.  So the drift in (a), "already red at
+    #   c36f4c1f1", was the 2026-09-03 file, captured on a 3080, graded on
+    #   a 5070 Ti: card, not code.  The Omega kernel's own move on the
+    #   4090, c36f4c1f1 against fc639c51f, is 25 of 27 entries, in line
+    #   with (b) (phase2-pin-4090-c36f4c1f1-vs-fc639c51f.json).
+    #
+    #   CONSEQUENCE: this file describes one tip ON ONE CARD.  The 5070 Ti
+    #   file is kept as committed, a 4090 file is added beside it with the
+    #   first reading above as its reading, tests/_phase2_pin.py PIN_FILES
+    #   maps the device name to the file, and a card with no file SKIPS
+    #   here with the reason, because a gate that fails for the card and
+    #   not the code prevents no breakage.  tools/release/precut_gpu_gate.py
+    #   runs this test on the release node's card before a cut and records
+    #   the card in its receipt, which is what 2.7.4 and 2.7.5 lacked.
     import cupy as cp
     import _phase2_pin as pin
     from gpuwm.config import validate_run_config
     from gpuwm.core.dycore import run_steps
-    ref = np.load(_DATA / "phase2_step_regression.npz")
     s, cfg = pin.CASES[case]()
     if cfg.km_opt == 4 and cfg.bl_pbl_physics == 0:
         # These historical captures contain the retired horizontal-only
@@ -214,6 +290,10 @@ def test_msf_one_f_zero_bitwise_phase2(case):
             for f in pin.PIN_FIELDS
         )
         return
+    reason = pin.pin_skip_reason()
+    if reason is not None:
+        pytest.skip(reason)
+    ref = np.load(pin.pin_path())
     if case == "dry_flat":
         # exercising the setter with identity values must stay bitwise too
         s.set_map_coriolis(msft=np.ones((cfg.ny, cfg.nx)),
@@ -506,10 +586,24 @@ def test_coriolis_sina_zero_bitwise_old_path():
     # pre-sina/cosa kernel BITWISE (pin captured from the pre-fix tree on
     # this exact fixture).  WRF's identity setting for unrotated projections
     # (module_big_step_utilities_em.F:3703-3704 "generally sina=0, cosa=1").
+    #
+    # PER CARD since 2026-09-17 (tests/_card_pins.py).  The original
+    # capture (2026-07-19, card unrecorded) against the same launch on
+    # node-1's RTX 4090 (compute capability 8.9, driver 610.57.04): 105 of
+    # 560 words differ, max 3.05e-05, max relative 1.07e-05, one launch of
+    # launch_coriolis_curvature, ULP-scale: the card, as for the phase-2
+    # pin above.  The 4090 file (tests/data/coriolis_map_sina0_pin.rtx4090
+    # .npz) was written by tools/recapture_card_pins.py --pin
+    # coriolis_map_sina0_pin with its reading beside it in
+    # tests/data/receipts/pin-gates/.  A card with no file skips.
     import cupy as cp
+    import _card_pins
     from gpuwm.core.dycore import launch_coriolis_curvature
     from gpuwm.core.grid import make_vertical_coord
-    ref = np.load(_DATA / "coriolis_map_sina0_pin.npz")
+    reason = _card_pins.skip_reason("coriolis_map_sina0_pin")
+    if reason is not None:
+        pytest.skip(reason)
+    ref = np.load(_card_pins.path("coriolis_map_sina0_pin"))
     d = _random_rotational_inputs(seed=1974)
     nz, ny, nxp1 = d["u"].shape
     nx = nxp1 - 1

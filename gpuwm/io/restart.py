@@ -672,6 +672,10 @@ REBUILT_SCRATCH_SLOTS = frozenset({
     # WRF's private classic-graupel number exists only across one
     # output-due Thompson call and is finalized/consumed by REFL_10CM.
     "mp_thompson_graupel_number_shadow",
+    # WRF's per-column no_micro flag (module_mp_thompson.F:1646, :2020),
+    # mp=8 and mp=28 alike: taken from the entry state at the top of every
+    # call and read by that call's terminal apply.  Nothing survives a call.
+    "mp_thompson_micro_columns",
     # mp_physics=28 (Thompson aerosol-aware).  Listed as EXACT names, not a
     # new "mp_thompson_aero_" prefix, because the prefix rule above exists
     # precisely to stop a future accumulator from being silently dropped --
@@ -4918,6 +4922,26 @@ def _tree_restart_paths(path: Path, expected_ids: set[int]
     return found
 
 
+def tree_restart_members(path) -> dict[int, Path]:
+    """Every member of the checkpoint set ``path`` belongs to, by grid id.
+
+    ``path`` is any one member, usually the root the writer returned.
+    The set is what the member's own header declares (``domain_ids``),
+    found beside it by the instant in its name, and a set with a member
+    missing is a refusal rather than a shorter dictionary: a caller
+    copying a generation elsewhere must not carry half a tree.
+    Header-only, so no array is loaded.
+    """
+    path = Path(path)
+    header = read_restart_header(path)
+    ids = header.get("domain_ids")
+    if not isinstance(ids, list) or not ids:
+        raise RestartMismatchError(
+            f"tree restart {path} declares no domain_ids; it is not a "
+            "member of a tree checkpoint set")
+    return _tree_restart_paths(path, {int(gid) for gid in ids})
+
+
 def checkpoint_placements(path, expected_ids) -> dict:
     """Where each domain ACTUALLY WAS when this checkpoint was written.
 
@@ -6167,5 +6191,6 @@ __all__ = [
     "WRITTEN_MODE_HEADER_KEY", "RESIDENT_WRITTEN_MODE",
     "STREAMED_WRITTEN_MODE", "written_mode_note", "header_written_mode",
     "checkpoint_placements",
+    "tree_restart_members",
     "write_tree_restart",
 ]

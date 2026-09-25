@@ -1,0 +1,29 @@
+{
+  "arm_a_frames": [
+    "wrfout_d02_2026-04-03_18_00_00",
+    "wrfout_d02_2026-04-03_18_05_00",
+    "wrfout_d02_2026-04-03_18_10_00"
+  ],
+  "arm_b_frames": [
+    "wrfout_d02_2026-04-03_18_00_00",
+    "wrfout_d02_2026-04-03_18_05_00",
+    "wrfout_d02_2026-04-03_18_10_00"
+  ],
+  "last_frame_valid": "2026-04-03T18:10:00",
+  "arms_agree_on_time": true,
+  "forecast_hours": 0.16666666666666666,
+  "theta_difference_k": {
+    "max": 0.008636474609375,
+    "mean": 0.00014788987901475693,
+    "rms": 0.0002242206428429229
+  },
+  "theta_difference_k_per_hour": {
+    "max": 0.05181884765625,
+    "mean": 0.0008873392740885417
+  },
+  "worst_layer": {
+    "index": 25,
+    "mean_pressure_pa": 34951.7154937066,
+    "mean_absolute_difference_k": 0.0001875389946831597
+  }
+}

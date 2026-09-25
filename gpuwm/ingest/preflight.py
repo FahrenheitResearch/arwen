@@ -186,6 +186,11 @@ class InputCatalog:
     raw_valid_times: tuple[datetime, ...]
     valid_times: tuple[datetime, ...]
     excluded_valid_times: tuple[datetime, ...]
+    #: The admitted pressure ladder, ASCENDING, whichever order the
+    #: forcing published it in (:func:`admitted_pressure_ladder`).  Both
+    #: doors build this catalog, so both read one ordering.  A ladder that
+    #: is not finite and strictly monotonic is carried as decoded, for the
+    #: report that names it.
     levels_hpa: tuple[float, ...]
     inventory: tuple[str, ...]
     units: Mapping[str, str]
@@ -766,8 +771,19 @@ def _build_input_catalog(case_data) -> tuple[InputCatalog,
         if key[0] in selected_set
     }
 
-    levels = (tuple(float(value) for value in snapshots[0].levels_hpa)
-              if snapshots else ())
+    # The pressure ladder BOTH doors read, admitted once here
+    # (:func:`admitted_pressure_ladder`) and carried ascending whichever
+    # order the forcing published it in, because `gpuwm run` and
+    # `gpuwm check` build their catalog through this function and must
+    # not answer the ordering question differently.  A ladder that is not
+    # finite and strictly monotonic is carried exactly as decoded, so the
+    # report can print what the file held.
+    decoded_levels = (tuple(float(value) for value in snapshots[0].levels_hpa)
+                      if snapshots else ())
+    admitted_levels = (admitted_pressure_ladder(decoded_levels)
+                       if decoded_levels else None)
+    levels = (tuple(float(value) for value in admitted_levels)
+              if admitted_levels is not None else decoded_levels)
     inventory = (tuple(sorted(snapshots[0].fields)) if snapshots else ())
     from gpuwm.ingest.lake_temperature import LAKE_FIELD_UNITS
     units = {**units, **{name: unit for name, unit in LAKE_FIELD_UNITS.items()
@@ -1060,6 +1076,46 @@ def _scan_forcing(catalog: InputCatalog) -> tuple[list[PreflightIssue], list[str
     return issues, checks
 
 
+def admitted_pressure_ladder(levels):
+    """The ascending pressure ladder a forcing inventory admits, or ``None``.
+
+    ONE admission, and both doors read it.  The run door reaches
+    :meth:`gpuwm.ingest.cpu_backend.CpuPreprocessBackend.wrf_vertical_interpolate`,
+    which takes a source pressure column strictly monotonic in EITHER
+    direction and reverses an ascending one before interpolating: the
+    ORDER is normalized, not refused, and the one ladder it cannot use is
+    one that is not strictly monotonic at all, which it names with
+    ``source pressure must be strictly monotonic in every column``.  The
+    check door reads its ladder from the catalog this function fills, so
+    the two doors admit the same inventories.
+
+    This is not a hypothetical ordering.  ERA5 publishes
+    ``pressure_level`` descending, 1000 hPa first, and a keyless ARCO
+    window of it was refused by ``gpuwm check`` before its memory section
+    while ``gpuwm run`` initialized and ran the same file end to end.
+    Two further verdicts depended on the same normalization: read in file
+    order, a descending ladder makes ``levels[0]`` the DEEPEST level and
+    ``levels[-1]`` the highest, which turns the p_top coverage test and
+    the 1000 hPa terrain-column test into their own opposites.
+
+    Returns the ladder ascending as ``float64``, or ``None`` when it is
+    not finite and strictly monotonic, which is the case the caller has
+    to report.
+    """
+
+    ladder = np.asarray(levels, dtype=np.float64)
+    if ladder.ndim != 1 or ladder.size == 0 or not np.isfinite(ladder).all():
+        return None
+    if ladder.size == 1:
+        return ladder
+    steps = np.diff(ladder)
+    if np.all(steps > 0.0):
+        return ladder
+    if np.all(steps < 0.0):
+        return np.ascontiguousarray(ladder[::-1])
+    return None
+
+
 def _check_levels(exp, catalog: InputCatalog
                   ) -> tuple[list[PreflightIssue], list[str]]:
     issues: list[PreflightIssue] = []
@@ -1067,12 +1123,26 @@ def _check_levels(exp, catalog: InputCatalog
     levels = np.asarray(catalog.levels_hpa, dtype=np.float64)
     if levels.size == 0:
         return [PreflightIssue("levels", "forcing has no pressure levels")], checks
-    if np.any(~np.isfinite(levels)) or np.any(np.diff(levels) <= 0.0):
+    ladder = admitted_pressure_ladder(levels)
+    if ladder is None:
         issues.append(PreflightIssue(
-            "levels", f"pressure levels must be finite/strictly increasing: "
-            f"{levels.tolist()}", variable="pressure_level",
+            "levels",
+            "pressure levels must be finite and strictly monotonic, in "
+            f"either direction: {levels.tolist()}. A descending ladder is "
+            "admitted and normalized, the way the vertical interpolation "
+            "the run reaches admits it; a repeated, non-finite or "
+            "unordered level leaves that interpolation with no column "
+            "ordering, and it refuses with \"source pressure must be "
+            "strictly monotonic in every column\" once initialization has "
+            "started. Publish the forcing with one record per pressure "
+            "level.",
+            variable="pressure_level",
         ))
         return issues, checks
+    # Ascending from here, whichever order the file published, so the two
+    # tests below read the top level and the deepest one and not the first
+    # and last records of a container.
+    levels = ladder
     p_top = float(exp.vertical.p_top)
     if levels[0] * 100.0 > p_top:
         issues.append(PreflightIssue(
@@ -2008,6 +2078,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 __all__ = [
     "CatalogBuildError", "CatalogFile", "CatalogMask", "InputCatalog",
     "LBCRecord", "PreflightIssue", "PreflightReport", "SpatialCoverage",
+    "admitted_pressure_ladder",
     "build_input_catalog", "build_lbc_records", "colon_free_output_filename",
     "main", "output_records", "preflight_report", "register_cli",
 ]

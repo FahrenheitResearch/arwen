@@ -83,10 +83,12 @@ def test_single_domain_500x500_benchmark_geometry_and_physics_are_frozen():
         999.8071015811862, 999.8071015811862, 5.0)
     assert dc.parent_id == 0 and cfg.specified and not cfg.nested
     # 1.8 froze this route's default at the full-radiation suite:
-    # Thompson mp8 with RRTMG longwave AND shortwave, which is the
-    # operational HRRR composition and is nocturnally valid.  It replaced
-    # (6, 0, 1) -- WSM6 with longwave OFF -- whose frozen downward
-    # longwave cratered nocturnal skin temperature (the 1.7.1 headline).
+    # Thompson mp8 with longwave AND shortwave on, nocturnally valid.  It
+    # replaced (6, 0, 1) -- WSM6 with longwave OFF -- whose frozen
+    # downward longwave cratered nocturnal skin temperature (the 1.7.1
+    # headline).  The 4/4 pair below does not say WHICH implementation
+    # runs: the engine is a setting, and the default moved from the
+    # legacy RRTMG pair to RTE+RRTMGP without moving these numbers.
     assert (cfg.mp_physics, cfg.ra_lw_physics,
             cfg.ra_sw_physics) == (8, 4, 4)
     assert (cfg.sf_sfclay_physics, cfg.sf_surface_physics,

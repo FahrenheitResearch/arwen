@@ -2885,8 +2885,13 @@ def _build_grib2_tools() -> tuple[Path, Path]:
 
     crate = _grib2_tools_crate()
     if (crate / "Cargo.toml").is_file():
+        # The resolved toolchain, for the reason recorded on
+        # gpuwm.bridges.cargo_executable: a non-login shell has a working
+        # rustup and no cargo on PATH, and this route refused to build on
+        # a machine that could.
         command = [
-            "cargo", "build", "--locked", "--offline", "--release",
+            bridges.cargo_executable() or "cargo",
+            "build", "--locked", "--offline", "--release",
             "--bin", "grib2_inventory", "--bin", "grib2_dump",
         ]
         try:

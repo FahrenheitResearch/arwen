@@ -155,6 +155,36 @@ def launch_aerosol_entry_snapshot(temperature, pressure, qv, nwfa, nifa,
              nwfa_entry_m3, nifa_entry_m3, np.int32(size)))
 
 
+def launch_aerosol_micro_columns(qc, qi, qr, qs, qg, temperature, pressure,
+                                 qv, micro_columns) -> None:
+    """WRF's per-column ``no_micro`` decision, :1646, :1827-1990, :2020.
+
+    Writes 1.0 into ``micro_columns`` (``(ny, nx)`` float32) for a column
+    with microphysics and 0.0 for one ``mp_thompson`` leaves at :2020: every
+    entry cloud, ice, rain, snow and graupel mixing ratio at or below R1 and
+    no level supersaturated over ice.  Call it on the ENTRY state, after the
+    entry rewrite and before any process;
+    :func:`launch_aerosol_state_finalize` reads it for the column exit and
+    the :3974 vapour floor.
+    """
+    shape, _ = validate_fields({
+        "qc": qc, "qi": qi, "qr": qr, "qs": qs, "qg": qg,
+        "temperature": temperature, "pressure": pressure, "qv": qv,
+    })
+    if len(shape) != 3:
+        raise ValueError(f"fields must be (nz, ny, nx), got {shape}")
+    nz = shape[0]
+    _, ncol = validate_fields({"micro_columns": micro_columns})
+    if micro_columns.shape != shape[1:]:
+        raise ValueError(f"micro_columns must have shape {shape[1:]}, "
+                         f"got {micro_columns.shape}")
+    grid, block = launch_grid(ncol)
+    _kernel("thompson_aa_micro_columns")(
+        grid, block,
+        (qc, qi, qr, qs, qg, temperature, pressure, qv, micro_columns,
+         np.int32(nz), np.int32(ncol)))
+
+
 def launch_aerosol_entry_cloud_number(qc, nc, rho, rc_out, nc_entry_m3,
                                       nu_c_out, l_qc_out) -> None:
     """Entry droplet-distribution diagnosis, :1826-1848.
@@ -254,8 +284,17 @@ def launch_aerosol_working_cloud(qc, qcten, nc, ncten, rho, dt,
 
 def launch_aerosol_state_finalize(qc, nc, nwfa, nifa, ncten, nwfaten,
                                   nifaten, rho, dt,
-                                  nc_out, nwfa_out, nifa_out) -> None:
+                                  nc_out, nwfa_out, nifa_out, *,
+                                  qv=None, micro_columns=None) -> None:
     """Apply the three accumulators to state exactly once, :3972-4021.
+
+    ``qv`` and ``micro_columns`` (both or neither) carry WRF's column exit
+    and vapour floor: a column :func:`launch_aerosol_micro_columns` marked 0
+    is left exactly as it entered (WRF returned from it at :2020, before the
+    terminal apply), and every level of every other column has its vapour
+    floored at 1.E-10 (:3974).  The production adapter always passes them;
+    without them only the accumulators are applied, which is what the unit
+    gates of the terminal arithmetic drive.
 
     This is the ONLY place mp=28 writes ``nc``/``nwfa``/``nifa`` from the
     accumulators, and it carries WRF's only clamps.  Four other packages
@@ -313,14 +352,27 @@ def launch_aerosol_state_finalize(qc, nc, nwfa, nifa, ncten, nwfaten,
     kernel is BITWISE against a Fortran-faithful host transcription on all
     456 fixture states.
     """
-    _, size = validate_fields({
+    shape, size = validate_fields({
         "qc": qc, "nc": nc, "nwfa": nwfa, "nifa": nifa, "ncten": ncten,
         "nwfaten": nwfaten, "nifaten": nifaten, "rho": rho,
         "nc_out": nc_out, "nwfa_out": nwfa_out, "nifa_out": nifa_out,
     })
-    _launch("thompson_aa_state_finalize", size,
+    if (qv is None) != (micro_columns is None):
+        raise ValueError("qv and micro_columns must be supplied together")
+    if qv is None:
+        _launch("thompson_aa_state_finalize", size,
+                (qc, nc, nwfa, nifa, ncten, nwfaten, nifaten, rho,
+                 DTYPE(dt), nc_out, nwfa_out, nifa_out, np.int32(size)))
+        return
+    validate_fields({"qc": qc, "qv": qv})
+    if len(shape) != 3 or micro_columns.shape != shape[1:]:
+        raise ValueError(f"micro_columns must have shape {shape[1:]}, "
+                         f"got {micro_columns.shape}")
+    _, ncol = validate_fields({"micro_columns": micro_columns})
+    _launch("thompson_aa_state_finalize_with_columns", size,
             (qc, nc, nwfa, nifa, ncten, nwfaten, nifaten, rho, DTYPE(dt),
-             nc_out, nwfa_out, nifa_out, np.int32(size)))
+             nc_out, nwfa_out, nifa_out, qv, micro_columns,
+             np.int32(ncol), np.int32(size)))
 
 
 # ---------------------------------------------------------------------------
@@ -510,6 +562,7 @@ __all__ = [
     "launch_aerosol_entry_cloud_number",
     "launch_aerosol_entry_snapshot",
     "launch_aerosol_init_profile",
+    "launch_aerosol_micro_columns",
     "launch_aerosol_state_finalize",
     "launch_aerosol_surface_emission",
     "launch_aerosol_working_cloud",

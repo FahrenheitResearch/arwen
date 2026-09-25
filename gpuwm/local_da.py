@@ -658,6 +658,29 @@ def _build_plan(request: Request, *, availability: Callable | None = None,
     return result
 
 
+def _route_companions(plan: dict, root: Path):
+    """Every file beside the configuration that its route reads.
+
+    Asked of the route module, which answers from the published
+    configuration's own ``[fetch].source`` -- the key the dispatcher
+    reads -- so this publisher and the run cannot disagree about what a
+    published case directory must hold.  The WPS namelist is left out
+    because :data:`PUBLISHED_FILES` already publishes it, under the name
+    this answer would give it.
+    """
+    from gpuwm import domain_wizard as dw
+    from gpuwm.hrrr_route_inputs import candidate_companions, route_input_paths
+
+    text = plan['configuration']['experiment']
+    config_path = root / PUBLISHED_FILES[0][0]
+    wps_name = route_input_paths(config_path)['wps_namelist'].name
+    exp = dw.experiment_from_text(text, source=str(config_path))
+    return [(path, content) for path, content in candidate_companions(
+        config_path, exp, wps_text=plan['configuration']['wps'],
+        source=(tomllib.loads(text).get('fetch') or {}).get('source'))
+        if path.name != wps_name]
+
+
 def publish(plan: dict, directory: str | Path) -> dict:
     from gpuwm.starter_template import _publish_new_files
     root = Path(directory).expanduser().resolve()
@@ -666,9 +689,18 @@ def publish(plan: dict, directory: str | Path) -> dict:
     document = dict(plan)
     document['files'] = {name: hashlib.sha256(plan['configuration'][key].encode()).hexdigest()
                          for name, key in PUBLISHED_FILES}
+    # Whatever else the published configuration's route reads beside it,
+    # rendered from that configuration rather than assumed absent: the
+    # background source decides the route, and a case directory whose
+    # route reads namelists it has not got is refused at the prepare
+    # stage of its first cycle, before anything is fetched.
+    companions = _route_companions(plan, root)
+    document['files'].update({path.name: hashlib.sha256(content.encode()).hexdigest()
+                              for path, content in companions})
     root.mkdir(parents=True, exist_ok=False)
     try:
-        _publish_new_files(tuple((root / name, plan['configuration'][key])
+        _publish_new_files(tuple(companions) +
+            tuple((root / name, plan['configuration'][key])
             for name, key in PUBLISHED_FILES) +
             ((root / 'local-da.json', json.dumps(document, indent=2, allow_nan=False) + '\n'),))
     except BaseException:
@@ -891,7 +923,7 @@ def register_cli(subparsers):
     p.add_argument('--satellite-grid', action='append', default=[], help='existing cloud-water-path grid; repeatable')
     p.add_argument('--capabilities', action='store_true', help='print the companion command and field contract without pricing')
     p.add_argument('--request-json', type=Path, help=f'{REQUEST_SCHEMA} file, or - for stdin')
-    p.add_argument('--out', type=Path, help='new directory to publish experiment.toml, ensemble.toml, experiment.namelist.wps and local-da.json into; refused if it exists')
+    p.add_argument('--out', type=Path, help='new directory to publish experiment.toml, ensemble.toml, experiment.namelist.wps, every other file the published configuration is read with on its own input route, and local-da.json into; refused if it exists')
     p.add_argument('--dry-run', action='store_true', help='review only; no writes, downloads or device allocation')
     p.add_argument('--json', action='store_true', help='emit the review as one JSON document on stdout, which this door always does; accepted so a companion can state it')
     p.add_argument('--run', action='store_true', help='launch after publishing the reviewed configuration')

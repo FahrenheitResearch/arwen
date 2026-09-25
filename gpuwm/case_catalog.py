@@ -519,6 +519,37 @@ def preview_case(catalog, case_id: str, *, tier: str = "recommended",
             "forecast_started": False}
 
 
+def _with_radiation_token(settings: dict, written_token) -> dict:
+    """The overrides, with a typed ``ra_rrtmg_variant`` carrying its own token.
+
+    ``wrf_rrtmg_compatibility`` records which 4/4 radiation implementation
+    a run used, and :func:`gpuwm.config.validate_run_config` refuses a
+    token that contradicts ``ra_rrtmg_variant`` because the pair reaches
+    the receipts and the restart identities. The wizard writes the token
+    from the selected profile, so a catalog override that named only the
+    variant was refused for a contradiction it never typed: the modern
+    default profile's substitution token against a proposal's typed
+    ``rrtmg_legacy``, or the legacy profile's token against a typed
+    ``rte-rrtmgp``. The token follows the typed variant in exactly those
+    two cases; a token the override typed itself, and a ``none`` the
+    wizard wrote, are left as they are.
+    """
+    from gpuwm.physics_compat import (RRTMG_VARIANT_LEGACY,
+                                      RRTMG_VARIANT_RTE_RRTMGP,
+                                      WRF_RRTMG_LEGACY,
+                                      WRF_RRTMG_SUBSTITUTION_TOKENS,
+                                      WRF_RRTMG_TO_RTE_RRTMGP)
+    result = dict(settings)
+    variant = result.get("ra_rrtmg_variant")
+    if variant is None or "wrf_rrtmg_compatibility" in result:
+        return result
+    if variant == RRTMG_VARIANT_LEGACY and written_token in WRF_RRTMG_SUBSTITUTION_TOKENS:
+        result["wrf_rrtmg_compatibility"] = WRF_RRTMG_LEGACY
+    elif variant == RRTMG_VARIANT_RTE_RRTMGP and written_token == WRF_RRTMG_LEGACY:
+        result["wrf_rrtmg_compatibility"] = WRF_RRTMG_TO_RTE_RRTMGP
+    return result
+
+
 def _config_text(raw: dict) -> str:
     from gpuwm.domain_wizard import _render_table
     parts = ["# Created from an ArWen case catalog through the native domain builder.\n"
@@ -729,16 +760,23 @@ def create_case(catalog, case_id: str, *, out: str | Path, tier="recommended",
                     forcing_interval_seconds=cadence * 3600 if cadence is not None else None), encoding="utf-8")
         # Keep every generated native table. Only the explicitly selected,
         # already vocabulary-checked scientific fields are changed.
-        raw["shared"].update(selection["native_overrides"]["shared"])
+        shared_overrides = _with_radiation_token(
+            selection["native_overrides"]["shared"],
+            raw["shared"].get("wrf_rrtmg_compatibility"))
+        raw["shared"].update(shared_overrides)
         domains = {row["grid_id"]: row for row in raw["domain"]}
         # A global choice must not be shadowed by the wizard's explicit
         # per-domain defaults. Explicit catalog/caller domain choices win next.
         for domain in domains.values():
-            for key, value in selection["native_overrides"]["shared"].items():
+            for key, value in shared_overrides.items():
                 if key in domain:
                     domain[key] = value
         for row in selection["native_overrides"]["domains"]:
-            domains[row["grid_id"]].update(row["settings"])
+            domain = domains[row["grid_id"]]
+            domain.update(_with_radiation_token(
+                row["settings"],
+                domain.get("wrf_rrtmg_compatibility",
+                           raw["shared"].get("wrf_rrtmg_compatibility"))))
         text = _config_text(raw)
         recipe = {"id": case_id, "method": "case catalog selection", "geometry": {"minimum_root_span_km": 0}, "validation_status": "catalog recommendations are not science validation"}
         try:
@@ -803,7 +841,8 @@ def create_case(catalog, case_id: str, *, out: str | Path, tier="recommended",
         receipt["files"] = [str(destination.parent / p.name) for p in sorted(stage.iterdir())]
         receipt["files"].append(str(destination) + ".arwen-case.json")
         (stage / (destination.name + ".arwen-case.json")).write_text(json.dumps(receipt, indent=2, ensure_ascii=False, default=str) + "\n", encoding="utf-8")
-        published = _publish_bundle(stage, destination)
+        published = _publish_bundle(stage, destination, exp=experiment,
+                                    source=(raw.get("fetch") or {}).get("source"))
         receipt["files"] = [str(p) for p in published]
     return receipt
 

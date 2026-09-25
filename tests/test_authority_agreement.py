@@ -525,7 +525,7 @@ def test_exhaustive_component_cross_product_agrees_on_every_combination(
         + "\n  ".join(disagreements[:40]))
 
 
-@pytest.mark.parametrize("radiation", ["rte-rrtmgp", "rte-rrtmgp-legacy-aggregate"])
+@pytest.mark.parametrize("spelling", ["split", "aggregate"])
 @pytest.mark.parametrize("microphysics,variant,refuses", [
     # mp=9 against RTE+RRTMGP used to be the one True row here: the
     # registry's refused_when and validate_run_config both refused it for a
@@ -539,7 +539,7 @@ def test_exhaustive_component_cross_product_agrees_on_every_combination(
     ("wsm6-mp6", "rte-rrtmgp", False),
 ])
 def test_mp9_cloud_optics_gate_covers_both_selector_spellings(
-        radiation, microphysics, variant, refuses):
+        spelling, microphysics, variant, refuses):
     registry = _permissive_registry()
     registry["runner_routes"][_PERMISSIVE_RUNNER]["allowed_parameter_keys"] = ["ra_rrtmg_variant"]
     # Find WSM6 through its selector so this control uses the registry's name.
@@ -548,12 +548,24 @@ def test_mp9_cloud_optics_gate_covers_both_selector_spellings(
                             if row.get("selectors") == {"mp_physics": 6})
     report = validate_physics_plan(_single_domain_plan(
         registry, _PERMISSIVE_RUNNER, "any-source", _base_template_id(registry),
-        components={"microphysics": microphysics, "radiation": radiation},
+        components={"microphysics": microphysics, "radiation": "rte-rrtmgp"},
         parameters={"ra_rrtmg_variant": variant}), registry=registry)
     assert report["launchable"] is not refuses, report["errors"]
     conditional = [row for row in report["errors"] if row["code"] == "component-conditional-refusal"]
     assert bool(conditional) is refuses
-    runtime = _config_refusal(report["resolved_domains"][0]["settings"], nested=False)
+    settings = dict(report["resolved_domains"][0]["settings"])
+    if spelling == "aggregate":
+        # The spelling a coupled pair reaches the run door in when it
+        # came from a WRF namelist.  It used to be a SECOND registry
+        # option, keyed on the (-1, -1) sentinel, and the parametrize
+        # above named the two option ids; it is one spelling of the one
+        # 4/4 option now, so the rewrite happens here and the gate is
+        # still measured on both.
+        pair = (settings["ra_lw_physics"], settings["ra_sw_physics"])
+        assert pair[0] == pair[1], pair
+        settings.update(ra_physics=pair[0], ra_lw_physics=-1,
+                        ra_sw_physics=-1)
+    runtime = _config_refusal(settings, nested=False)
     assert (runtime is not None) is refuses
     if refuses:
         assert "cloud-optics" in runtime
@@ -1601,7 +1613,7 @@ def test_the_menu_citations_are_named_through_the_registry():
     # re-cites it as an omission, fails here.
     aggregate_kf = template_ids_with_components(
         microphysics="wsm6-mp6", cumulus="kain-fritsch",
-        radiation="rte-rrtmgp-legacy-aggregate")
+        radiation="rte-rrtmgp")
     assert len(aggregate_kf) == 1
     assert aggregate_kf[0] not in without_switch_row
     assert _SINGLE_DOMAIN_RUNTIME_SWITCHES[aggregate_kf[0]]["mp_physics"] == 6

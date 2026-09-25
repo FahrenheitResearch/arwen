@@ -578,7 +578,8 @@ def test_case_25_is_unusable_in_wrf_too():
         assert not np.isfinite(fixture.reference[field].reshape(-1)[i25]), field
         assert not np.isfinite(
             np.ascontiguousarray(port[field], np.float32).reshape(-1)[i25]), field
-    # WRF's soil state is NaN; the port's is finite.  Recorded, not endorsed.
+    # WRF's soil state is NaN at this case and the port's is finite.  The two
+    # asserts pin that difference as measured; neither column is claimed right.
     assert not np.isfinite(fixture.soil_reference["smois"][0].reshape(-1)[i25])
     assert np.isfinite(
         np.ascontiguousarray(port["smois"], np.float32)[0].reshape(-1)[i25])

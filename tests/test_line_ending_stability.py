@@ -225,7 +225,6 @@ _CRLF_DEBT = frozenset({
     "tests/data/wrfout_global_attribute_set_v1.json",
     "tests/goes_pack_fixtures.py",
     "tests/test_certification_capsule.py",
-    "tests/test_da_nowcast.py",
     "tests/test_goes_cwp.py",
     "tests/test_goes_pack_crosslane.py",
     "tests/test_grayzone_nest_config.py",
@@ -237,7 +236,6 @@ _CRLF_DEBT = frozenset({
     "tests/test_obs_model_source.py",
     "tests/test_obs_promotion.py",
     "tests/test_render_basemap_delivery.py",
-    "tests/test_shipped_configs_mixing_stability.py",
     "tests/test_spawn_runner.py",
     "tests/test_tke_km2.py",
     # tools/
@@ -261,7 +259,6 @@ _CRLF_DEBT = frozenset({
     "docs/les/attempt1/eta49-shipped-control.json",
     "docs/les/attempt1/eta72-ladder.json",
     "docs/les/attempt2/eta72-raisedlid.json",
-    "docs/obs-goes-cwp-assimilation.md",
     "docs/obs-goes-cwp-bridge-design.md",
     "docs/public/LES.md",
     # configs/

@@ -95,6 +95,40 @@
           "staggering": "none",
           "units": "K"
         },
+        "cloud_ice_mixing_ratio": {
+          "axes": [
+            "vertical",
+            "y",
+            "x"
+          ],
+          "location": "mass",
+          "missing_count": 0,
+          "sha256": "44f4c3b73850666d5d638da908cb9097d1c6e238699afea5b4f3f77f835034b9",
+          "shape": [
+            39,
+            1059,
+            1799
+          ],
+          "staggering": "none",
+          "units": "kg kg-1"
+        },
+        "cloud_water_mixing_ratio": {
+          "axes": [
+            "vertical",
+            "y",
+            "x"
+          ],
+          "location": "mass",
+          "missing_count": 0,
+          "sha256": "8d8fda61d7c6b105779a8e2181da593b115d5b14d7c1526ccdd1ded68e509f80",
+          "shape": [
+            39,
+            1059,
+            1799
+          ],
+          "staggering": "none",
+          "units": "kg kg-1"
+        },
         "eastward_wind": {
           "axes": [
             "vertical",
@@ -144,6 +178,23 @@
           "staggering": "none",
           "units": "m"
         },
+        "graupel_or_hail_mixing_ratio": {
+          "axes": [
+            "vertical",
+            "y",
+            "x"
+          ],
+          "location": "mass",
+          "missing_count": 0,
+          "sha256": "1c57da5ded1049f65261eb549fd19d706a0b41dddc1f39ddc05f2524dfd8b08e",
+          "shape": [
+            39,
+            1059,
+            1799
+          ],
+          "staggering": "none",
+          "units": "kg kg-1"
+        },
         "land_fraction": {
           "axes": [
             "y",
@@ -191,6 +242,23 @@
           "staggering": "none",
           "units": "m s-1"
         },
+        "rain_water_mixing_ratio": {
+          "axes": [
+            "vertical",
+            "y",
+            "x"
+          ],
+          "location": "mass",
+          "missing_count": 0,
+          "sha256": "c83aa069ab204d2bc8e0568aca5e0f594833db1110fcf2a578d4ccf5d38e06ef",
+          "shape": [
+            39,
+            1059,
+            1799
+          ],
+          "staggering": "none",
+          "units": "kg kg-1"
+        },
         "sea_ice_fraction": {
           "axes": [
             "y",
@@ -235,6 +303,23 @@
           ],
           "staggering": "none",
           "units": "m"
+        },
+        "snow_mixing_ratio": {
+          "axes": [
+            "vertical",
+            "y",
+            "x"
+          ],
+          "location": "mass",
+          "missing_count": 0,
+          "sha256": "427d818587be99b6b54753887363064cd3ef68fc6e59c1f0e2d4bd2f42e51c7d",
+          "shape": [
+            39,
+            1059,
+            1799
+          ],
+          "staggering": "none",
+          "units": "kg kg-1"
         },
         "snow_water_equivalent": {
           "axes": [
@@ -349,7 +434,7 @@
         }
       },
       "grid_fingerprint": "9691df23a99cee0d21d31655c29ebf20cb19366d6f3fa72b69ec7d955290d52b",
-      "header_sha256": "0a8ab051f2b33e693c79170b705980f61f7be7345454ea0dd4b54aeab90ba24c",
+      "header_sha256": "f28c5bf057e95c8a15276cb85a7804b37a264e88124c6bcf65ff39905fc12bec",
       "inputs": [
         {
           "name": "hrrr.t00z.wrfprsf00.grib2",
@@ -429,6 +514,40 @@
           "staggering": "none",
           "units": "K"
         },
+        "cloud_ice_mixing_ratio": {
+          "axes": [
+            "vertical",
+            "y",
+            "x"
+          ],
+          "location": "mass",
+          "missing_count": 0,
+          "sha256": "a8619f85559a3228946091c8742e3ae4d15840cf36317a69886be678b3dc2683",
+          "shape": [
+            39,
+            1059,
+            1799
+          ],
+          "staggering": "none",
+          "units": "kg kg-1"
+        },
+        "cloud_water_mixing_ratio": {
+          "axes": [
+            "vertical",
+            "y",
+            "x"
+          ],
+          "location": "mass",
+          "missing_count": 0,
+          "sha256": "69cbb9a1d86718f66b805602fe4649357ec3a648ba07a18b3c2524d1ad2c68a6",
+          "shape": [
+            39,
+            1059,
+            1799
+          ],
+          "staggering": "none",
+          "units": "kg kg-1"
+        },
         "eastward_wind": {
           "axes": [
             "vertical",
@@ -478,6 +597,23 @@
           "staggering": "none",
           "units": "m"
         },
+        "graupel_or_hail_mixing_ratio": {
+          "axes": [
+            "vertical",
+            "y",
+            "x"
+          ],
+          "location": "mass",
+          "missing_count": 0,
+          "sha256": "0e5044e9a84c63233f1fda81436ef49abb63a430c11beff736fac1dcfa998ae3",
+          "shape": [
+            39,
+            1059,
+            1799
+          ],
+          "staggering": "none",
+          "units": "kg kg-1"
+        },
         "land_fraction": {
           "axes": [
             "y",
@@ -525,6 +661,23 @@
           "staggering": "none",
           "units": "m s-1"
         },
+        "rain_water_mixing_ratio": {
+          "axes": [
+            "vertical",
+            "y",
+            "x"
+          ],
+          "location": "mass",
+          "missing_count": 0,
+          "sha256": "6a6e86ddea85dfd19ff1bda9c41e3d6554ac6b3f68600e40091d9eed7b040c85",
+          "shape": [
+            39,
+            1059,
+            1799
+          ],
+          "staggering": "none",
+          "units": "kg kg-1"
+        },
         "sea_ice_fraction": {
           "axes": [
             "y",
@@ -569,6 +722,23 @@
           ],
           "staggering": "none",
           "units": "m"
+        },
+        "snow_mixing_ratio": {
+          "axes": [
+            "vertical",
+            "y",
+            "x"
+          ],
+          "location": "mass",
+          "missing_count": 0,
+          "sha256": "797644f2b8d313ae69eb1aff66512a878cbfafa94b08b004a2ca80d6fd8db35e",
+          "shape": [
+            39,
+            1059,
+            1799
+          ],
+          "staggering": "none",
+          "units": "kg kg-1"
         },
         "snow_water_equivalent": {
           "axes": [
@@ -683,7 +853,7 @@
         }
       },
       "grid_fingerprint": "9691df23a99cee0d21d31655c29ebf20cb19366d6f3fa72b69ec7d955290d52b",
-      "header_sha256": "081bbf2f939e184013398acb10c40bd9504fa666d6c917aaae530a9788b0f48a",
+      "header_sha256": "4568ba3f16af523e2462bb413b89db05627c072b93fb55459cb733e7ca32f5bc",
       "inputs": [
         {
           "name": "hrrr.t00z.wrfprsf00.grib2",
@@ -715,7 +885,7 @@
   ],
   "mapping": {
     "name": "rw-wps-hrrr-prs-grib2.mapping.json",
-    "sha256": "6e17b6edcc2230262dbf072a72fd0b38a4a70e9812a76ea61d2b90fbd4301e54"
+    "sha256": "ac6453cd64eb9c9a63a9df7946b080d105aa63148b101ece45bf79110b82823a"
   },
   "measured_on": {
     "machine": "AMD64",

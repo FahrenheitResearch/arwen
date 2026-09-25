@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import json
 import types
+from pathlib import Path
 
 import pytest
 
@@ -112,7 +113,11 @@ def test_the_grib1_bridge_route_raises_the_named_refusal(monkeypatch):
     from gpuwm.ingest import grib
 
     def fake_run(command, **kwargs):
-        assert command[0] == "cargo"
+        # The RESOLVED toolchain, so this holds on a machine whose cargo
+        # is only in rustup's own home: the route runs an absolute
+        # ~/.cargo/bin/cargo there, and asserting the bare word would
+        # have refused the fix that made ten fixture errors go away.
+        assert Path(command[0]).stem == "cargo"
         return types.SimpleNamespace(
             returncode=101, stdout="", stderr=LOCKED_DLL_OUTPUT)
 
@@ -123,6 +128,61 @@ def test_the_grib1_bridge_route_raises_the_named_refusal(monkeypatch):
     message = str(excinfo.value)
     assert "another process" in message.lower()
     assert "raw_data" not in message
+
+
+def test_a_rustup_install_off_PATH_is_still_found(monkeypatch, tmp_path):
+    """THE MEASURED DEFECT: rustup works, PATH does not know it.
+
+    A non-login shell -- ``ssh host 'pytest ...'``, cron, systemd, a
+    desktop-launched process -- never runs rustup's profile edit, so
+    ``cargo`` is absent from PATH on a machine whose ``~/.cargo/bin/cargo``
+    answers ``1.93.1``.  Every bridge build then refused with "no Rust
+    toolchain is on PATH" and told its owner to install what was already
+    installed; ten tests in tests/test_domain_wizard_forcing.py errored in
+    their module fixture on exactly that, measured on node-1 2026-09-17.
+
+    The ladder is asserted in order, because the order is the contract: an
+    explicit choice, then the shell's, then rustup's own home.
+    """
+
+    from gpuwm import bridges
+
+    name = "cargo.exe" if bridges.os.name == "nt" else "cargo"
+    home = tmp_path / "home"
+    (home / ".cargo" / "bin").mkdir(parents=True)
+    shim = home / ".cargo" / "bin" / name
+    shim.write_text("#!/bin/sh\n", encoding="utf-8")
+
+    monkeypatch.delenv("CARGO", raising=False)
+    monkeypatch.delenv("CARGO_HOME", raising=False)
+    monkeypatch.setattr(bridges.shutil, "which", lambda *_a, **_k: None)
+    monkeypatch.setattr(bridges.Path, "home", classmethod(lambda _cls: home))
+    assert bridges.cargo_executable() == str(shim)
+    assert bridges.cargo_is_installed(), (
+        "a reachable rustup toolchain is reported as no toolchain, which is "
+        "the refusal that told a working machine to install Rust")
+
+    # CARGO_HOME moves rustup's home, and the resolver follows it.
+    moved = tmp_path / "elsewhere"
+    (moved / "bin").mkdir(parents=True)
+    (moved / "bin" / name).write_text("#!/bin/sh\n", encoding="utf-8")
+    monkeypatch.setenv("CARGO_HOME", str(moved))
+    assert bridges.cargo_executable() == str(moved / "bin" / name)
+
+    # An explicit CARGO outranks both, so a lane can still choose.
+    chosen = tmp_path / "chosen-cargo"
+    chosen.write_text("#!/bin/sh\n", encoding="utf-8")
+    monkeypatch.setenv("CARGO", str(chosen))
+    assert bridges.cargo_executable() == str(chosen)
+
+    # And a machine with none of the three still answers "none", so the
+    # refusal this file is about keeps firing where it should.
+    monkeypatch.delenv("CARGO", raising=False)
+    monkeypatch.delenv("CARGO_HOME", raising=False)
+    monkeypatch.setattr(bridges.Path, "home",
+                        classmethod(lambda _cls: tmp_path / "empty"))
+    assert bridges.cargo_executable() is None
+    assert not bridges.cargo_is_installed()
 
 
 def test_no_cargo_on_path_is_a_refusal_and_not_an_oserror(monkeypatch):
@@ -185,19 +245,66 @@ def test_a_decoder_that_could_not_be_built_is_not_reported_as_missing_data():
     assert "measured no data" in text or "never ran" in text
 
 
-#: A real experiment TOML with a [case_data] table, so the preflight
-#: reaches the decode step instead of refusing the config first.
-_REAL_CONFIG = "configs/may1999_d01_smoke.toml"
+#: The smallest experiment TOML that reaches the input preflight.
+#:
+#: WHY THIS IS BUILT HERE AND NOT READ OUT OF configs/.
+#: These two gates are about ONE thing: that ``gpuwm check --json`` always
+#: puts a parseable document on stdout when the preflight cannot produce a
+#: report.  They said so, and then pointed at a repository config that
+#: declares staged CDS ERA5 GRIB files and a reference bundle under
+#: ``${GPUWM_CASE_DATA_ROOT}``.  On a machine without that data the loader
+#: refuses BEFORE ``preflight_report`` is reached, so the monkeypatched
+#: cause never entered the document and both gates failed while asserting
+#: about a branch they had not run.  Measured on two machines at
+#: 674133103 and at this branch's tip: the Linux node answered "does not
+#: exist" for the declared inputs, and the Windows cut box answered
+#: "version identity is ambiguous" from the same loader.  A gate about a
+#: channel must not be gated on somebody's staged dataset.
+#:
+#: ``_check_command`` needs exactly two things from the file: that the
+#: config authority can read it, and that it declares ``[case_data]`` so
+#: neither of the two early returns (legacy RunConfig shape, prepared
+#: route) is taken.  Nothing below that line is read by these gates.
+_CHANNEL_CONFIG = """
+[experiment]
+name = "json_channel_gate"
+start_time = 2020-01-01T00:00:00
+run_seconds = 3600.0
+
+[case_data]
+forcing = ["forcing.grib"]
+forcing_interval_s = 21600.0
+"""
 
 
-def _config_path():
-    from pathlib import Path
+@pytest.fixture
+def channel_config(tmp_path, monkeypatch):
+    """A config that reaches the preflight on every machine.
 
-    return Path(__file__).resolve().parents[1] / _REAL_CONFIG
+    The loader is stubbed, and that is the point rather than a shortcut.
+    ``load_experiment_case`` answers "what experiment is this, and are its
+    declared inputs on this disk"; it has its own coverage, and its answer
+    is upstream of everything these two gates measure.  What they measure
+    is what ``_check_command`` writes to stdout once the preflight is
+    reached -- so the fixture's job is to reach it, deterministically,
+    with no dataset and no installed distribution involved.
+
+    ``preflight_report`` is what each gate then replaces with its own
+    failure, which is the cause whose journey into the document is the
+    thing under test.
+    """
+    path = tmp_path / "json_channel_gate.toml"
+    path.write_text(_CHANNEL_CONFIG, encoding="utf-8", newline="\n")
+
+    from gpuwm import case_data
+
+    monkeypatch.setattr(case_data, "load_experiment_case",
+                        lambda *_a, **_k: (object(), object()))
+    return path
 
 
 def test_check_json_emits_a_document_when_the_decoder_cannot_be_built(
-        capsys, monkeypatch):
+        capsys, monkeypatch, channel_config):
     """stdout must ALWAYS parse: a build error is not a corrupt reply.
 
     THE #241 defect.  ``gpuwm check --alloc --json`` printed the report
@@ -215,17 +322,22 @@ def test_check_json_emits_a_document_when_the_decoder_cannot_be_built(
             "target/release/gpuwm_preprocess_cpu.dll open")
 
     monkeypatch.setattr(preflight, "preflight_report", explode)
-    args = types.SimpleNamespace(config=_config_path(), json=True)
+    args = types.SimpleNamespace(config=channel_config, json=True)
     code = preflight._check_command(args)  # noqa: SLF001
     captured = capsys.readouterr()
     assert code != 0
     document = json.loads(captured.out)
     assert document["ok"] is False
     assert "gpuwm_preprocess_cpu.dll" in json.dumps(document)
+    # The cause reached the document as a refusal and not as invented
+    # data failures, which is finding 2 of the three in this module's
+    # docstring: an empty catalog used to produce five false ones.
+    assert document["refusal_type"] == "RuntimeError"
+    assert document["failures"] == []
 
 
 def test_check_json_emits_a_document_for_an_ordinary_preflight_failure(
-        capsys, monkeypatch):
+        capsys, monkeypatch, channel_config):
     """The guarantee is about the CHANNEL, so it cannot be class-bound."""
 
     from gpuwm.ingest.preflight import (PreflightIssue, PreflightReport,
@@ -238,10 +350,58 @@ def test_check_json_emits_a_document_for_an_ordinary_preflight_failure(
             _empty_catalog("ERA5"),
             (PreflightIssue("levels", "forcing has no pressure levels"),),
             ("resolved input SHA-256 catalog",)))
-    args = types.SimpleNamespace(config=_config_path(), json=True)
+    args = types.SimpleNamespace(config=channel_config, json=True)
     code = preflight._check_command(args)  # noqa: SLF001
     document = json.loads(capsys.readouterr().out)
     assert code != 0
     assert document["ok"] is False
     assert any(issue["code"] == "levels"
                for issue in document["failures"])
+
+
+def test_check_json_emits_a_document_when_the_config_itself_is_refused(
+        capsys, monkeypatch, channel_config):
+    """The branch the old fixture was reaching by accident, stated.
+
+    A config the loader will not accept -- inputs that are not on this
+    disk, a version identity it cannot resolve -- stops the preflight
+    just as surely as a build failure does, and the same caller is still
+    running ``json.loads(stdout)``.  Both machines this branch measured
+    took this branch instead of the one the two gates above name, and
+    nothing held it, so it is held here.
+    """
+
+    from gpuwm import case_data
+    from gpuwm.ingest import preflight
+
+    monkeypatch.setattr(case_data, "load_experiment_case", _refuse)
+    args = types.SimpleNamespace(config=channel_config, json=True)
+    code = preflight._check_command(args)  # noqa: SLF001
+    document = json.loads(capsys.readouterr().out)
+    assert code != 0
+    assert document["ok"] is False
+    assert document["refusal_type"] == "ValueError"
+    assert "declared inputs are not on this disk" in document["refusal"]
+
+
+def _refuse(*_a, **_k):
+    raise ValueError("experiment config: declared inputs are not on this "
+                     "disk")
+
+
+def test_text_mode_still_raises_rather_than_printing_a_document(
+        monkeypatch, channel_config):
+    """--json is what owes stdout a document; plain text owes a refusal.
+
+    Without this the fix above could drift into swallowing every loader
+    refusal on the text route too, where the front door's own refusal
+    boundary is what prints it.
+    """
+
+    from gpuwm import case_data
+    from gpuwm.ingest import preflight
+
+    monkeypatch.setattr(case_data, "load_experiment_case", _refuse)
+    args = types.SimpleNamespace(config=channel_config, json=False)
+    with pytest.raises(ValueError):
+        preflight._check_command(args)  # noqa: SLF001

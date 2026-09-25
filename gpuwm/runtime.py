@@ -981,6 +981,33 @@ def _initialize_real_case_physics(
                                         + met0["V10"][1:])
 
 
+def case_static_fields(grid, geog_root, *, selection: GeogSelection,
+                       static_highres=None, domain_id: int = 1,
+                       case_date=None) -> dict:
+    """One domain's static fields as this route will integrate them.
+
+    The memoized WPS_GEOG build plus the optional ``[static.highres]``
+    overlay, in that order.  ONE function because two callers need the
+    same answer and must not derive it twice: the preparation below, and
+    the vertical-coordinate survey that has to know the run's highest
+    ground before any coordinate is built
+    (:mod:`gpuwm.vertical_adaptation`).  The build is cached by geometry,
+    so asking twice costs nothing the second time.
+    """
+
+    static = _cached_static_build(grid, geog_root, selection=selection)
+    if static_highres is None or not getattr(static_highres, "enabled",
+                                             False):
+        return static
+    from gpuwm.static.highres_production import apply_highres_statics
+
+    static, _ = apply_highres_statics(
+        static, grid, config=static_highres, domain_id=domain_id,
+        case_date=case_date,
+        landuse_attrs=selection.landuse_global_attrs())
+    return static
+
+
 def prepare_real_case(cfg: RunConfig, *, grid, geog_root,
                       source_orography_path=None,
                       source_orography_variable=None,
@@ -1058,16 +1085,11 @@ def prepare_real_case(cfg: RunConfig, *, grid, geog_root,
         perturbation_applier = build_initial_state_perturbation(
             initial_perturbation, grid, grid_id=int(cfg.grid_id),
             require_containment=True)
-    static = _cached_static_build(
-        grid, geog_root, selection=geog_selection)
+    static = case_static_fields(
+        grid, geog_root, selection=geog_selection,
+        static_highres=static_highres, domain_id=static_domain_id,
+        case_date=start_time.date())
     landuse_attrs = geog_selection.landuse_global_attrs()
-    if static_highres is not None and getattr(static_highres, "enabled",
-                                              False):
-        from gpuwm.static.highres_production import apply_highres_statics
-        static, _ = apply_highres_statics(
-            static, grid, config=static_highres,
-            domain_id=static_domain_id, case_date=start_time.date(),
-            landuse_attrs=landuse_attrs)
     source_orography = None
     if source_orography_path is not None:
         source_orography = load_source_orography(
@@ -5424,6 +5446,7 @@ __all__ = [
     "integrate_prepared_case", "load_source_orography",
     "prepare_child_case", "prepare_experiment_case",
     "declared_constant_glw", "downward_longwave_source",
+    "case_static_fields",
     "prepare_root_experiment_case", "prepare_real_case", "refl_10cm_due",
     "resolved_config_report", "resolved_tree_config_report",
     "restart_outer_steps", "run_experiment",

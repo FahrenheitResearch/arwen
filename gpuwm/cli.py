@@ -78,8 +78,8 @@ from gpuwm.downscale import register_cli as downscale_register_cli
 from gpuwm import domain_interactive
 from gpuwm.experiment import (is_experiment_toml,  # noqa: F401 - API compat
                               is_experiment_toml_bytes)
-from gpuwm.explain import (add_explain_flag, explain_enabled, render,
-                           warn)
+from gpuwm.explain import (add_explain_flag, explain_enabled, layered,
+                           render, warn)
 from gpuwm.fetch import register_cli as fetch_register_cli
 from gpuwm.geog_assets import register_cli as geog_register_cli
 from gpuwm.go_cli import register_cli as go_register_cli
@@ -484,7 +484,13 @@ def build_parser() -> argparse.ArgumentParser:
     resume.add_argument("config", type=Path, metavar="CONFIG",
                         help="the SAME config the interrupted run used; "
                              "the restart identity check refuses any "
-                             "other")
+                             "other. An argument that is not a readable "
+                             "file is tried with the .toml extension a "
+                             "file manager hides, then against --outdir, "
+                             "and last against the configuration the run "
+                             "in --outdir recorded for itself "
+                             "(child.toml, experiment.toml or "
+                             "captured-config-<run id>.toml)")
     resume.add_argument("--from", dest="from_checkpoint", default="latest",
                         metavar="CKPT|latest",
                         help="explicit gpuwmrst_*.npz checkpoint, or "
@@ -969,10 +975,39 @@ def _dispatch(args) -> int:
         return 0
 
     if args.command == "resume":
+        # THE RUN DIRECTORY ANSWERS FIRST.  A resume is handed the run's
+        # own --outdir, so before anything is refused about the
+        # experiment argument the directory is asked what it holds: a
+        # downscaled child is a route `gpuwm run` cannot continue at all
+        # (gpuwm.resume.offline_child_resume_refusal says why, by name),
+        # and the run's own recorded configuration is what a resume
+        # should be loading whatever the argument spelled.
+        from gpuwm.resume import (offline_child_resume_refusal,
+                                  offline_child_run_at,
+                                  resolve_resume_checkpoint,
+                                  resolve_resume_experiment)
+        child = offline_child_run_at(args.outdir)
+        if child is not None:
+            raise ValueError(offline_child_resume_refusal(child))
+        experiment = resolve_resume_experiment(args.config, args.outdir)
+        if experiment.note is not None:
+            # A resolution, not a guess: the file was found by the ladder
+            # the refusal would otherwise have printed, so the line says
+            # which rung answered and `--explain` shows the rungs that
+            # did not.
+            print("resume: " + render(layered(
+                f"the experiment argument {args.config} is not a readable "
+                f"configuration file; loading {experiment.path}, "
+                f"{experiment.note}",
+                "Tried, in order:\n    "
+                + "\n    ".join(tuple(experiment.tried)
+                                + (f"{experiment.path}: taken",))),
+                explain=explain_enabled(args),
+                command=f"gpuwm {args.command}"))
+            args.config = experiment.path
         # Locate only; every safety property of the resume (manifest
         # validation, config/setup/physics identity, complete tree set)
         # is the run machinery's own and runs on the path set here.
-        from gpuwm.resume import resolve_resume_checkpoint
         resolution = resolve_resume_checkpoint(
             args.outdir, args.from_checkpoint, config=args.config)
         for note in resolution.skipped:

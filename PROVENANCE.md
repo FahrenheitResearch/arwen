@@ -188,13 +188,17 @@ bytes are outside the numerical oracle.
   `-ftz=true` to whatever the caller passed, at
   `cupy.cuda.compiler` line 585 (`options += ('-ftz=true',)`), after the
   caller's options, and NVRTC honours the last occurrence.
-  The inventory records 4 distinct caller-supplied option tuples across the 15
+  The inventory records 6 distinct caller-supplied option tuples across the 18
   compile sites in the shipped package, each listed here with a site that
   supplies it:
   - no caller options -- `gpuwm/core/attribute_tracking.py:99`
-    (xp.ElementwiseKernel), and 8 other site(s)
+    (xp.ElementwiseKernel), and 6 other site(s)
+  - `-fmad=false` -- `gpuwm/core/dycore.py:206` (cp.ElementwiseKernel), and
+    2 other site(s)
   - `-std=c++17` `--ftz=false` -- `gpuwm/core/rrtmg_lw.py:3756`
     (_cc.compile_using_nvrtc), and 2 other site(s)
+  - `-std=c++17` `--ftz=true` -- `gpuwm/core/mynn_pbl_gpu.py:361`
+    (cp.RawKernel), and 1 other site(s)
   - `-std=c++17` -- `gpuwm/core/kernels/__init__.py:114` (cp.RawModule), and
     1 other site(s)
   - `-std=c++17` `-fmad=false` -- `gpuwm/core/nest_interp.py:260`
@@ -1032,11 +1036,11 @@ oversight, and each says what would close it.
   column fixtures -- the 19 the port spec names plus three `wp08-*` columns
   from the same oracle build -- driven end to end through the shipped adapter
   and compared on 23 quantities each at a flat 2.0e-6 relative / 2.0e-4 dB
-  gate.  **17 of 22 clear every quantity with nothing held out** (16 of the 19
-  `aero-*`, plus `wp08-melt`).
+  gate.  **18 of 22 clear every quantity with nothing held out** (16 of the 19
+  `aero-*`, plus `wp08-freeze` and `wp08-melt`).
 
   ONE fixture, `aero-reduces-to-classic`, clears only under two named
-  allowances, taking the gated count to 18 of 22: `nr` 5.700e-06 at 0-based
+  allowances, taking the gated count to 19 of 22: `nr` 5.700e-06 at 0-based
   level 5 under a 1.0e-5 bound, and 0-based level 6 held to 32 ULP of the
   entry value instead of a relative bound (measured 14.9 ULP for `qr`, 4.05
   for `nr`).  NOTHING WAS EVER WIDENED and one allowance has been RETIRED.
@@ -1069,12 +1073,14 @@ oversight, and each says what would close it.
   the rain number without emptying it, and it is 27.5 ULP of the entry value
   where every other unexcluded level is 0-3 ULP.
 
-  FOUR MISS, published field by field:
+  THREE MISS, published field by field:
   `aero-cold-overlap` (`qc` 1.000e+00, `nc` 1.000e+00, `effc` 8.102e-01,
   `nr` 1.261e-04, `qr` 4.443e-05),
-  `aero-cloud-freeze-nc` (`qc` 4.926e-06),
-  `wp08-nusweep` (`qr` 4.642e-06) and
-  `wp08-freeze` (`nr` 2.724e-06).  NO SURFACE ACCUMULATION MISSES ON ANY
+  `aero-cloud-freeze-nc` (`qc` 4.926e-06) and
+  `wp08-nusweep` (`qr` 4.642e-06).  `wp08-freeze` (`nr` 2.724e-06) left
+  the list on 2026-09-23 when the rain fallout was handed WRF's `L_qr`
+  (level 0 now 4.006e-07, 5 ULP, on the RTX 4090 and RTX 5090 alike;
+  8.012e-08, 1 ULP, on the host build of the kernels).  NO SURFACE ACCUMULATION MISSES ON ANY
   FIXTURE any more: `RAINNC`, `RAINNCV` and `SR` are bitwise identical to WRF
   on all 22 columns and `SNOWNC`/`SNOWNCV` and `GRAUPELNC`/`GRAUPELNCV` peak
   at 6.285e-08 and 7.062e-08.  Earlier revisions of this register carried
@@ -1423,7 +1429,7 @@ the day it is created.
 
 | entry | state | battery consequence |
 |---|---|---|
-| **L1** Thompson rain-presence gate | The gate is WRF's conjunction and compares a mass concentration: `gpuwm/core/kernels/thompson.cu:450-452`, landed `cb765336` (2026-08-01) with `5e4af4e3` beside it.  The roadmap listed this as a patch candidate; it was overtaken by events, and the register says so rather than quietly dropping it.  The one residual class that commit enumerated and left standing (`qr <= R1 < qr*rho` with `L_qr` true) is documented at the `wp08-freeze` row of `docs/public/PHYSICS.md`, reconciled to this kernel on 2026-08-03. | No arm: there is one mp8 path. |
+| **L1** Thompson rain-presence gate | The gate is WRF's conjunction and compares a mass concentration: `gpuwm/core/kernels/thompson.cu:450-452`, landed `cb765336` (2026-08-01) with `5e4af4e3` beside it.  The roadmap listed this as a patch candidate; it was overtaken by events, and the register says so rather than quietly dropping it.  The one residual class that commit enumerated and left standing (`qr <= R1 < qr*rho` with `L_qr` true) was documented at the `wp08-freeze` row of `docs/public/PHYSICS.md`, reconciled to this kernel on 2026-08-03, and CLOSED for mp=28 on 2026-09-23: the mp=28 rain evaporation carries `L_qr` to the fallout as a zero reference density (and the `:3568` floor as a negative one) and the adapter launches the `_with_presence` entry points (`thompson.cu`); mp=8's entry points keep the stand-in. | No arm: there is one mp8 path. |
 | **L2** RUC `ilnb` uninitialised read | D10 above. | No arm, and never one — a forecast-mode toggle back onto an undefined read would be bit-exactness to a bug. |
 
 ### Class B — toggleable candidates, the battery's arms

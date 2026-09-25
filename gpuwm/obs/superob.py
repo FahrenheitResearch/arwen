@@ -994,6 +994,15 @@ class RadarContribution:
     #: a window at (0, 0) whose arrays span the grid IS the dense case.
     j0: int = 0
     i0: int = 0
+    #: When this radar's volume was scanned and when it became available.
+    #: ``start_time`` and ``end_time`` are the volume's first and last
+    #: radial collection instants (``valid_time`` above is its header start
+    #: to the second); ``availability_time`` is when the feed published it,
+    #: the archive object's LastModified, set by the acquisition stage that
+    #: alone knows it.  ``None`` where the pack or the feed did not say.
+    start_time: str | None = None
+    end_time: str | None = None
+    availability_time: str | None = None
 
     @property
     def window(self) -> tuple[int, int, int, int]:
@@ -1708,6 +1717,7 @@ def superob_volume(volume: RadarVolume, grid: TargetGrid, *,
         counts=counts, provenance=volume.provenance(),
         clear_air_source=clear_air_source,
         fold_suspicion=fold_suspicion, j0=j0, i0=i0,
+        start_time=volume.start_time, end_time=volume.end_time,
         cc_qc=({} if cc_plans is None else {
             "params": params.cc_qc.to_payload(),
             "sweeps": cc_sweep_records,
@@ -2062,6 +2072,13 @@ def merge_contributions(contributions, grid: TargetGrid, *,
         "lon_deg": float(contribution.lon_deg),
         "alt_m": float(contribution.alt_m),
         "valid_time": contribution.valid_time,
+        # ``getattr`` for the reason the dealias account below uses it: a
+        # contribution assembled by hand is not forced to invent instants
+        # it never read, and None is "not stated", never the header start.
+        "start_time": getattr(contribution, "start_time", None),
+        "end_time": getattr(contribution, "end_time", None),
+        "availability_time": getattr(contribution, "availability_time",
+                                     None),
     } for contribution in contributions]
 
     return GriddedObservations(

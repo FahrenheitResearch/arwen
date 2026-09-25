@@ -37,6 +37,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from conftest import requires_cupy
+
 from conftest import requires_gpu
 from gpuwm.core.model import (ADAPTIVE_TIMESTEP_RUN_FIELDS,
                               publish_declared_experiment)
@@ -4579,6 +4581,10 @@ def test_restart_interval_validation():
         assert load_config(good).restart_interval_s == 21600.0
 
 
+# NEEDS CUPY INSTALLED, and opens no device: this test runs `gpuwm run
+# --restart`; without cupy the door refuses and returns 2 before the restart
+# argument is read.
+@requires_cupy
 def test_cli_run_passes_restart_through(monkeypatch, tmp_path, capsys):
     from types import SimpleNamespace
 

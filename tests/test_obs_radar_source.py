@@ -504,3 +504,32 @@ def test_no_real_site_tokens_in_the_feed_selector():
             f"{relative} must not default a site id")
         for token in ("KDMX", "KBMX", "KTLX", "KEAX", "KLOT"):
             assert token not in text, f"{relative} names {token}"
+
+
+def test_the_availability_time_is_the_objects_own_publication_stamp(
+        tmp_path, monkeypatch):
+    """When the archive published the volume, kept apart from the lag.
+
+    The volume's start and end instants live in its decoded pack; this
+    is the external clock beside them, the S3 object's LastModified, and
+    it is what a survey or a receipt reads to say when the data could
+    first have been had.
+    """
+
+    _feeds(tmp_path, monkeypatch)
+    selected = acquire_volume(Path("rw_nexrad"), site=SITE, out_dir=tmp_path,
+                              source="archive", now=NOW)
+    assert selected.availability_time == "2026-08-05T07:48:25.000Z"
+    assert selected.receipt["availability_time"] == "2026-08-05T07:48:25.000Z"
+    assert "LastModified" in selected.receipt["availability_definition"]
+
+
+def test_a_listing_without_a_publication_stamp_reads_as_unknown(
+        tmp_path, monkeypatch):
+    listing = _archive_list()
+    listing["volumes"][0]["last_modified"] = ""
+    _feeds(tmp_path, monkeypatch, archive_list=listing)
+    selected = acquire_volume(Path("rw_nexrad"), site=SITE, out_dir=tmp_path,
+                              source="archive", now=NOW)
+    assert selected.availability_time is None
+    assert selected.receipt["availability_time"] is None

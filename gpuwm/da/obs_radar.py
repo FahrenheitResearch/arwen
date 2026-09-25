@@ -594,11 +594,25 @@ def radar_grid_to_gridded_obs(
         "dealias": document.get("provenance", {}).get("dealias") or None,
         "superob_params": document.get("superob_params"),
         "batches": used,
+        # Each radar's volume in time: the header start (valid_time), the
+        # first and last radial collection instants and when the feed
+        # published it.  Every gate of every sweep enters the filter at the
+        # file's valid_time (the analysis time); these are the receipt of
+        # how far each radar's data sit from that instant, and None where
+        # the file, the pack or the feed did not say.
         "radars": [{"id": str(r["id"]), "lat_deg": r["lat_deg"],
-                    "lon_deg": r["lon_deg"], "alt_m": r["alt_m"]}
+                    "lon_deg": r["lon_deg"], "alt_m": r["alt_m"],
+                    "valid_time": r.get("valid_time"),
+                    "start_time": r.get("start_time"),
+                    "end_time": r.get("end_time"),
+                    "availability_time": r.get("availability_time")}
                    for r in document["radars"]],
         "notes": [
             "per-radar velocity batches; projections are never averaged",
+            "every sweep is assimilated at the analysis time; each radar's "
+            "volume span (start_time..end_time) and availability_time are "
+            "recorded above so the age of its gates can be read, not "
+            "assumed from the header start",
             "H direction is the file's own beam unit vectors, not "
             "re-derived geometry",
             "errors are standard deviations, passed through unsquared",

@@ -102,6 +102,7 @@ _PROVIDERS: dict[str, tuple[str, ...]] = {
     "mcp": ("mcp",),
     "netCDF4": ("netCDF4",),
     "numpy": ("numpy",),
+    "yaml": ("pyyaml",),
     "packaging": ("packaging",),
     "psutil": ("psutil",),
     "pyproj": ("pyproj",),
@@ -434,6 +435,22 @@ def _top_level_imports(path: Path):
             yield node.module.split(".")[0], node.lineno
 
 
+#: Shipped tools that reach a module of the TEST TREE by bare name after
+#: putting ``tests/`` on ``sys.path`` themselves.  Both recapture GPU pins
+#: whose registries (``tests/_card_pins.py``, ``tests/_phase2_pin.py``)
+#: live beside the tests that read them, so they are checkout-only by
+#: construction: nothing under ``tests/`` ships.  Recorded here so the
+#: gate does not read the two names as distributions nobody declared
+#: (which is how they showed up on the Linux release node,
+#: proof/node-reds-276), and checked by
+#: :func:`test_every_test_tree_import_site_is_live` so a row cannot outlive
+#: the import it excuses.
+_TEST_TREE_IMPORT_SITES: dict[str, tuple[str, ...]] = {
+    "tools/recapture_card_pins.py": ("_card_pins",),
+    "tools/recapture_phase2_pin.py": ("_phase2_pin",),
+}
+
+
 def _third_party_imports(paths, siblings=frozenset()) -> dict[str, list[str]]:
     """Module -> the ``file:line`` sites that import it.
 
@@ -442,6 +459,8 @@ def _third_party_imports(paths, siblings=frozenset()) -> dict[str, list[str]]:
     question, and belongs to
     :func:`test_no_shipped_module_imports_a_sibling_by_bare_name`; a name that
     is both a sibling and a real distribution stays a dependency question.
+    A name recorded in :data:`_TEST_TREE_IMPORT_SITES` for the importing
+    file is a test-tree module, not a distribution.
     """
 
     stdlib = set(sys.stdlib_module_names)
@@ -453,8 +472,29 @@ def _third_party_imports(paths, siblings=frozenset()) -> dict[str, list[str]]:
                 continue
             if name in siblings and name not in _PROVIDERS:
                 continue
+            if name in _TEST_TREE_IMPORT_SITES.get(rel, ()):
+                continue
             sites.setdefault(name, []).append(f"{rel}:{lineno}")
     return sites
+
+
+def test_every_test_tree_import_site_is_live():
+    """A recorded test-tree import excuses exactly the import it names."""
+
+    for rel, names in sorted(_TEST_TREE_IMPORT_SITES.items()):
+        path = REPO_ROOT / rel
+        assert path.is_file(), f"{rel} is recorded and does not exist"
+        source = path.read_text(encoding="utf-8")
+        assert "sys.path.insert" in source and '"tests"' in source, (
+            f"{rel} is recorded as reaching the test tree through a "
+            "sys.path insert of tests/, and it does not insert that directory")
+        imported = {name for name, _ in _top_level_imports(path)}
+        for name in names:
+            assert name in imported, (
+                f"{rel} no longer imports {name!r}; delete it from the row")
+            assert (REPO_ROOT / "tests" / f"{name}.py").is_file(), (
+                f"{name!r} is recorded as a test-tree module and "
+                f"tests/{name}.py does not exist")
 
 
 def _sibling_module_names(config: dict) -> frozenset[str]:

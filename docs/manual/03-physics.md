@@ -199,6 +199,11 @@ a surface layer on, `moist = true`, `nz <= 128`. The ordinary `bldt`
 setting controls cadence; coupled tendencies persist between calls and across restart. It is run-wide, never
 per-nest.
 
+The selector travels through the WRF namelist pair the configuration door
+writes and the analyzed-input route reads: 900 has no WRF counterpart and the
+importer says so rather than claiming a transcription, which is what lets the
+one shipped suite that selects this closure be written and read back as itself.
+
 Its status, stated the way the physics page states it:
 
 - It is not a WRF scheme; no oracle comparison against WRF Fortran exists or can
@@ -237,7 +242,7 @@ transfer varies on cloud timescales, not grid scales, so nothing about halving d
 makes a shorter radiation interval more correct; WRF's own namelist guidance says to
 set `radt` once for the coarsest domain and use the same value for every nest. The
 wizard's `radt_ladder_minutes` returns the root's `radt` for every domain
-[gpuwm/domain_wizard.py:1754-1786]. The rule it replaced, `radt = max(1.0, dx_km)`
+[gpuwm/domain_wizard.py:1931-1963]. The rule it replaced, `radt = max(1.0, dx_km)`
 per nest (shipped in v2.4.1), was wrong in both directions: under the 12-minute
 suites a 12-3-1-0.5 ladder emitted 12/3/1/1, radiation once a simulated minute on
 both sub-km rungs, and the floor flattened the bottom of the ladder (1 km and 500 m

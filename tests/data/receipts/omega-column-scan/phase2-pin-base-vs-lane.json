@@ -1,0 +1,194 @@
+{
+  "comparison": "base c36f4c1f1 capture vs lane capture, same builders, same card",
+  "entries": {
+    "dry_flat/mup": {
+      "max_abs_difference": 0.02494335174560547,
+      "rms_of_base_entry": 10.810823637128031,
+      "max_abs_over_rms": 0.0023072572990592084,
+      "differing_words": 168,
+      "words": 168
+    },
+    "dry_flat/php": {
+      "max_abs_difference": 0.007300674915313721,
+      "rms_of_base_entry": 14.690566302984724,
+      "max_abs_over_rms": 0.0004969634774277164,
+      "differing_words": 2520,
+      "words": 2856
+    },
+    "dry_flat/thp": {
+      "max_abs_difference": 0.000152587890625,
+      "rms_of_base_entry": 0.17841431768882798,
+      "max_abs_over_rms": 0.0008552446496537807,
+      "differing_words": 1622,
+      "words": 2688
+    },
+    "dry_flat/u": {
+      "max_abs_difference": 0.00016450881958007812,
+      "rms_of_base_entry": 3.7323066232417785,
+      "max_abs_over_rms": 4.407698407082918e-05,
+      "differing_words": 2865,
+      "words": 2880
+    },
+    "dry_flat/v": {
+      "max_abs_difference": 0.00013985857367515564,
+      "rms_of_base_entry": 0.021730342196487812,
+      "max_abs_over_rms": 0.006436096238639096,
+      "differing_words": 2912,
+      "words": 2912
+    },
+    "dry_flat/w": {
+      "max_abs_difference": 0.00011189281940460205,
+      "rms_of_base_entry": 0.036680058000804636,
+      "max_abs_over_rms": 0.0030505082462559765,
+      "differing_words": 2522,
+      "words": 2856
+    },
+    "moist/mup": {
+      "max_abs_difference": 0.020887374877929688,
+      "rms_of_base_entry": 16.27713333391272,
+      "max_abs_over_rms": 0.001283234243367149,
+      "differing_words": 168,
+      "words": 168
+    },
+    "moist/php": {
+      "max_abs_difference": 0.007568359375,
+      "rms_of_base_entry": 306.37589571034545,
+      "max_abs_over_rms": 2.4702855155926806e-05,
+      "differing_words": 2501,
+      "words": 2856
+    },
+    "moist/qc": {
+      "max_abs_difference": 0.0,
+      "rms_of_base_entry": 0.0,
+      "max_abs_over_rms": null,
+      "differing_words": 0,
+      "words": 2688
+    },
+    "moist/qr": {
+      "max_abs_difference": 0.0,
+      "rms_of_base_entry": 0.0,
+      "max_abs_over_rms": null,
+      "differing_words": 0,
+      "words": 2688
+    },
+    "moist/qv": {
+      "max_abs_difference": 2.7939677238464355e-09,
+      "rms_of_base_entry": 0.00536237972059756,
+      "max_abs_over_rms": 5.210313087516839e-07,
+      "differing_words": 1769,
+      "words": 2688
+    },
+    "moist/thp": {
+      "max_abs_difference": 0.00054931640625,
+      "rms_of_base_entry": 0.26722160656482896,
+      "max_abs_over_rms": 0.0020556586471862774,
+      "differing_words": 1802,
+      "words": 2688
+    },
+    "moist/u": {
+      "max_abs_difference": 0.000179290771484375,
+      "rms_of_base_entry": 3.7324500884584824,
+      "max_abs_over_rms": 4.8035678236871705e-05,
+      "differing_words": 2865,
+      "words": 2880
+    },
+    "moist/v": {
+      "max_abs_difference": 0.0003313422203063965,
+      "rms_of_base_entry": 0.03285665119889929,
+      "max_abs_over_rms": 0.010084479343332975,
+      "differing_words": 2912,
+      "words": 2912
+    },
+    "moist/w": {
+      "max_abs_difference": 0.00019779428839683533,
+      "rms_of_base_entry": 0.05529944131228687,
+      "max_abs_over_rms": 0.003576786378000673,
+      "differing_words": 2523,
+      "words": 2856
+    },
+    "open/mup": {
+      "max_abs_difference": 0.014364242553710938,
+      "rms_of_base_entry": 9.389631968307016,
+      "max_abs_over_rms": 0.0015297982500480113,
+      "differing_words": 224,
+      "words": 224
+    },
+    "open/php": {
+      "max_abs_difference": 0.0062972307205200195,
+      "rms_of_base_entry": 12.701466805761472,
+      "max_abs_over_rms": 0.000495787676873946,
+      "differing_words": 3360,
+      "words": 3808
+    },
+    "open/thp": {
+      "max_abs_difference": 0.0001220703125,
+      "rms_of_base_entry": 0.1542916854839804,
+      "max_abs_over_rms": 0.0007911658500397558,
+      "differing_words": 2068,
+      "words": 3584
+    },
+    "open/u": {
+      "max_abs_difference": 0.0030017495155334473,
+      "rms_of_base_entry": 1.4949819318293547,
+      "max_abs_over_rms": 0.002007883474457993,
+      "differing_words": 3792,
+      "words": 3808
+    },
+    "open/v": {
+      "max_abs_difference": 0.0001420341432094574,
+      "rms_of_base_entry": 0.01757794261881397,
+      "max_abs_over_rms": 0.00808024842779017,
+      "differing_words": 3840,
+      "words": 3840
+    },
+    "open/w": {
+      "max_abs_difference": 0.00016490346752107143,
+      "rms_of_base_entry": 0.031260580702642905,
+      "max_abs_over_rms": 0.00527512489578064,
+      "differing_words": 3360,
+      "words": 3808
+    },
+    "terrain/mup": {
+      "max_abs_difference": 0.0057582855224609375,
+      "rms_of_base_entry": 5.539427430675121,
+      "max_abs_over_rms": 0.0010395091540641671,
+      "differing_words": 158,
+      "words": 160
+    },
+    "terrain/php": {
+      "max_abs_difference": 0.002381563186645508,
+      "rms_of_base_entry": 5.895577234720743,
+      "max_abs_over_rms": 0.0004039575925864901,
+      "differing_words": 2383,
+      "words": 2720
+    },
+    "terrain/thp": {
+      "max_abs_difference": 0.0001220703125,
+      "rms_of_base_entry": 0.08447022554062879,
+      "max_abs_over_rms": 0.0014451282889174505,
+      "differing_words": 177,
+      "words": 2560
+    },
+    "terrain/u": {
+      "max_abs_difference": 4.935264587402344e-05,
+      "rms_of_base_entry": 2.3658328024957918,
+      "max_abs_over_rms": 2.0860580604833854e-05,
+      "differing_words": 1379,
+      "words": 2720
+    },
+    "terrain/v": {
+      "max_abs_difference": 7.19441450200975e-05,
+      "rms_of_base_entry": 0.012197038911692427,
+      "max_abs_over_rms": 0.005898492703104341,
+      "differing_words": 2799,
+      "words": 2816
+    },
+    "terrain/w": {
+      "max_abs_difference": 7.287575863301754e-05,
+      "rms_of_base_entry": 0.018991960111505748,
+      "max_abs_over_rms": 0.0038371899585481857,
+      "differing_words": 2527,
+      "words": 2720
+    }
+  }
+}

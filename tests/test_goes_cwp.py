@@ -15,8 +15,9 @@ import pytest
 from gpuwm.obs.goes_cwp import (CLASS_CLEAR, CLASS_ICE, CLASS_LIQUID,
                                 CLASS_NONE, CwpErrorModel, GoesCwpError,
                                 SuperobPolicy, grid_cwp, join_cloud_top,
-                                phase_class, read_cloudtop_pack,
-                                read_cwp_pack, rederive_cwp)
+                                parallax_displacement, phase_class,
+                                read_cloudtop_pack, read_cwp_pack,
+                                rederive_cwp)
 from gpuwm.obs.goes_pack import GoesPackError, read_goes_pack
 from gpuwm.obs.target_grid import TargetGrid
 from gpuwm.static.lambert import LambertGrid
@@ -377,6 +378,18 @@ def test_min_valid_fraction_drops_a_mostly_condemned_cell(tmp_path):
     assert out.counts["cells_below_min_valid_fraction"] == 1
 
 
+def _beneath_the_cloud(grid, j, i, height_m):
+    """The cell under a cloud top seen at cell (j, i)'s nominal point."""
+
+    from goes_pack_fixtures import PROJECTION
+
+    lat, lon, moved_m, _ = parallax_displacement(
+        grid.lat[j, i], grid.lon[j, i], height_m, PROJECTION)
+    i_frac, j_frac = grid.mass_index(np.asarray([float(lat)]),
+                                     np.asarray([float(lon)]))
+    return int(np.rint(j_frac[0])), int(np.rint(i_frac[0])), float(moved_m)
+
+
 def test_cloudy_columns_are_centred_at_the_retrieved_top(tmp_path):
     grid = _grid()
     cells = [(5, 5), (9, 9)]
@@ -396,16 +409,142 @@ def test_cloudy_columns_are_centred_at_the_retrieved_top(tmp_path):
     joined, receipt = join_cloud_top(cwp, read_cloudtop_pack(ct_path))
     out = grid_cwp(cwp, grid, error_model=ERRORS, cloud_top_m=joined,
                    join_receipt=receipt)
-    # z_w is 0..10000 in ten 1000 m layers, so 9000 m is level 9 and the
-    # 3000 m fallback is level 3.
-    assert out.obs_level[5, 5] == 9
-    assert out.cloud_top_height_m[5, 5] == pytest.approx(9000.0)
-    # A clear-sky zero has no retrieved top; it takes the fallback.
+    # The ice pixel was SEEN at cell (5, 5)'s ground point; its 9 km top
+    # sits over the ground a cell or more toward the satellite, and that
+    # is the column the observation belongs to.  z_w is 0..10000 in ten
+    # 1000 m layers, so 9000 m is level 9 and the 3000 m fallback is
+    # level 3.
+    jc, ic, moved_m = _beneath_the_cloud(grid, 5, 5, 9000.0)
+    assert (jc, ic) != (5, 5), "a 9 km top over the mid-latitudes moves"
+    assert moved_m > 6000.0
+    assert out.cwp_mask[5, 5] == 0
+    assert out.obs_level[jc, ic] == 9
+    assert out.cloud_top_height_m[jc, ic] == pytest.approx(9000.0)
+    # A clear-sky zero is where the ground is and has no retrieved top;
+    # it takes the fallback height in its own cell.
     assert out.obs_level[9, 9] == 3
     assert np.isnan(out.cloud_top_height_m[9, 9])
     assert out.counts["observations_at_retrieved_top"] == 1
     assert out.counts["observations_at_fallback_height"] == 1
+    assert out.counts["pixels_displaced_to_cloud_top"] == 1
+    assert out.counts["pixels_cloudy_without_height_at_ground"] == 0
     assert out.provenance["join"]["method"] == "nearest"
+    horizontal = out.provenance["placement"]["horizontal"]
+    assert horizontal["pixels_displaced"] == 1
+    assert horizontal["displacement_m"]["median"] == pytest.approx(moved_m)
+    assert horizontal["geometry"]["sub_satellite_longitude_deg"] == -75.0
+
+
+def test_a_cloudy_pixel_without_a_retrieved_top_stays_at_the_ground(tmp_path):
+    """No fabricated support: a height nobody measured moves nothing."""
+
+    grid = _grid()
+    cells = [(5, 5), (7, 7)]
+    lat, lon = _pixels_at(grid, cells)
+    cwp_path = write_cwp_pack(
+        tmp_path / "cwp.goespack",
+        cod=np.array([[20.0, 20.0]], np.float32),
+        cps=np.array([[30.0, 30.0]], np.float32),
+        phase=np.array([[4.0, 4.0]], np.float32),
+        lat=lat, lon=lon, x_scan_rad=[0.0, 0.002], y_scan_rad=[0.08])
+    ct_path = write_cloudtop_pack(
+        tmp_path / "ct.goespack",
+        cloud_top_height_m=np.array([[9000.0, np.nan]], np.float32),
+        lat=lat, lon=lon, x_scan_rad=[0.0, 0.002], y_scan_rad=[0.08],
+        sibling=sibling_block(cwp_path))
+    cwp = read_cwp_pack(cwp_path)
+    joined, receipt = join_cloud_top(cwp, read_cloudtop_pack(ct_path))
+    out = grid_cwp(cwp, grid, error_model=ERRORS, cloud_top_m=joined,
+                   join_receipt=receipt)
+    # The pixel with no top is an observation in its nominal cell, at the
+    # fallback height, and the receipt counts it as left at the ground.
+    assert out.cwp_mask[7, 7] == 1
+    assert out.obs_level[7, 7] == 3
+    assert out.counts["pixels_cloudy_without_height_at_ground"] == 1
+    assert out.counts["pixels_displaced_to_cloud_top"] == 1
+    # And with no cloud-top pack at all nothing moves and the receipt
+    # says every cloudy pixel stayed put.
+    out = grid_cwp(cwp, grid, error_model=ERRORS)
+    assert out.cwp_mask[5, 5] == 1 and out.cwp_mask[7, 7] == 1
+    assert out.counts["pixels_displaced_to_cloud_top"] == 0
+    assert out.counts["pixels_cloudy_without_height_at_ground"] == 2
+    assert out.provenance["placement"]["horizontal"]["displacement_m"] is None
+
+
+# ---------------------------------------------------------------------------
+# the parallax geometry
+# ---------------------------------------------------------------------------
+
+
+def _satellite_and_ground(lat_deg, lon_deg, height_m, projection):
+    """ECEF of the satellite and of a point at height over (lat, lon)."""
+
+    from gpuwm.obs.goes_cwp import _ecef_from_geodetic
+
+    a = projection["semi_major_axis_m"]
+    b = projection["semi_minor_axis_m"]
+    radius = projection["perspective_point_height_m"] + a
+    sub_lon = np.radians(projection["longitude_of_projection_origin_deg"])
+    satellite = np.array([radius * np.cos(sub_lon), radius * np.sin(sub_lon),
+                          0.0])
+    point = np.array(_ecef_from_geodetic(lat_deg, lon_deg, height_m, a, b),
+                     dtype=np.float64)
+    return satellite, point
+
+
+def test_parallax_moves_a_cloud_top_toward_the_satellite_by_h_tan_zenith():
+    """The textbook number, checked from the geometry rather than assumed.
+
+    At 35.33 N, 97.28 W seen from a satellite over 75 W, a 10 km cloud
+    top is displaced by close to 10 km * tan(view zenith) toward the
+    sub-satellite point: south and east.
+    """
+
+    from goes_pack_fixtures import PROJECTION
+
+    lat, lon, height = 35.3331, -97.2778, 10000.0
+    lat_c, lon_c, moved_m, zenith_deg = parallax_displacement(
+        lat, lon, height, PROJECTION)
+    assert 40.0 < zenith_deg < 60.0
+    expected = height * np.tan(np.radians(zenith_deg))
+    assert moved_m == pytest.approx(expected, rel=0.02)
+    assert moved_m > 6000.0
+    assert lon_c > lon, "toward 75 W is east"
+    assert lat_c < lat, "toward the equator is south"
+
+
+def test_parallax_puts_the_cloud_top_back_on_the_line_of_sight():
+    """Exactness: the top over the displaced point lies on the ray from the
+    satellite through the nominal point, to well under a metre."""
+
+    from goes_pack_fixtures import PROJECTION
+
+    lat, lon, height = 44.0, -110.0, 12000.0
+    lat_c, lon_c, moved_m, _ = parallax_displacement(lat, lon, height,
+                                                     PROJECTION)
+    satellite, nominal = _satellite_and_ground(lat, lon, 0.0, PROJECTION)
+    _, top = _satellite_and_ground(float(lat_c), float(lon_c), height,
+                                   PROJECTION)
+    ray = nominal - satellite
+    ray /= np.linalg.norm(ray)
+    off_ray = (top - satellite) - np.dot(top - satellite, ray) * ray
+    assert np.linalg.norm(off_ray) < 1.0
+    assert moved_m > 10000.0
+
+
+def test_parallax_leaves_the_ground_and_the_unmeasured_where_they_are():
+    from goes_pack_fixtures import PROJECTION
+
+    lat = np.array([35.0, 35.0, 35.0, 35.0])
+    lon = np.array([-97.0, -97.0, -97.0, -97.0])
+    height = np.array([0.0, np.nan, -5.0, 8000.0])
+    lat_c, lon_c, moved_m, zenith = parallax_displacement(lat, lon, height,
+                                                          PROJECTION)
+    assert np.array_equal(lat_c[:3], lat[:3])
+    assert np.array_equal(lon_c[:3], lon[:3])
+    assert np.array_equal(moved_m[:3], [0.0, 0.0, 0.0])
+    assert np.all(np.isnan(zenith[:3]))
+    assert moved_m[3] > 0.0 and np.isfinite(zenith[3])
 
 
 def test_a_joined_field_without_its_receipt_is_refused(tmp_path):

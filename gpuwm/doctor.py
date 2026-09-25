@@ -256,10 +256,10 @@ class Check:
     one thing this report cannot afford to get wrong.
 
     ``group`` lets the terse report fold repeats: a pip install gaps
-    five bridges at once and prints ``gpuwm fetch-bridges`` five times,
-    which reads as five problems.  Grouping is a *presentation* of the
-    same five checks -- ``--explain`` and ``--json`` still carry each
-    one by name.
+    every bridge at once and prints ``gpuwm fetch-bridges`` once per
+    bridge, which reads as that many problems.  Grouping is a
+    *presentation* of the same checks -- ``--explain`` and ``--json``
+    still carry each one by name.
 
     ``status`` has five values and one of them is newer than the rest.
     ``untested`` exists because a 2026-08-14 audit caught this report
@@ -1438,6 +1438,9 @@ _IMPORT_NAME = {
     "pytest": "pytest",
     "pytest-xdist": "xdist",
     "psutil": "psutil",
+    # The YAML reader ([dev] extra): the release contract tests read
+    # the publication workflow through it.
+    "pyyaml": "yaml",
     # The CDS client ([era5] extra): distribution and module share the name.
     "cdsapi": "cdsapi",
     "huggingface-hub": "huggingface_hub",
@@ -2288,6 +2291,17 @@ def _bridge_checks() -> list[Check]:
                 # 1.0.1 bridge as `ok`, after which each preparation
                 # died blaming the series file gpuwm had just written.
                 ok, evidence = bridges.bridge_abi_matches(name, found)
+            build = bridges.checkout_build_status(found) if ok else None
+            if build is not None and not build.current:
+                checks.append(Check(
+                    f"bridge {name}", "missing", build.describe(),
+                    "# this checkout built it, and its sources have moved\n"
+                    f"# since; needed by: {consumer} --\n"
+                    f"  {build.remedy()}",
+                    action="rebuild this checkout's bridges",
+                    brief="checkout build is older than its own sources",
+                    group=_GROUP_BRIDGES))
+                continue
             if ok:
                 checks.append(Check(
                     f"bridge {name}", "verified", f"{found} -- {evidence}",
@@ -3433,6 +3447,16 @@ def _netcdf_decoder_check() -> Check:
             "  # decodes NetCDF in Rust and keeps no Python fallback",
             action=_build_action(bridges.RUSTWX_CRATE_RELATIVE),
             brief="not staged; no NetCDF source can be read",
+            group=_GROUP_ENGINES)
+    build = bridges.checkout_build_status(found)
+    if build is not None and not build.current:
+        return Check(
+            name, "missing", f"{build.describe()} -- {blocks}",
+            "# this checkout built it, and its sources have moved since;\n"
+            "# rebuild before the next run reaches it --\n"
+            f"  {build.remedy()}",
+            action=_build_action(bridges.RUSTWX_CRATE_RELATIVE),
+            brief="checkout build is older than its own sources",
             group=_GROUP_ENGINES)
     return Check(name, "verified", str(found),
                  brief="staged", group=_GROUP_ENGINES)

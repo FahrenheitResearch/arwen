@@ -844,15 +844,23 @@ def test_check_alloc_gate_still_admits_a_budget_that_fits_the_peak(
     assert rc == 0
 
 
-def test_run_plan_estimate_quotes_the_radiation_peak(tmp_path):
+def test_run_plan_estimate_quotes_the_radiation_peak(tmp_path, monkeypatch):
     """The figure a front end renders verbatim is the peak, not the hold.
 
     ``run-plan --estimate`` is subprocessed by a front end and drawn as
     "this run needs N GiB"; quoting the steady state there sizes a card
     the run then meets the transient on.
+
+    The document reads the card in the machine through its probe and
+    the expectation below prices the reference profile, so the two are
+    compared on one device: with the local card banned both price the
+    reference profile, and the subject (peak against hold) is what is
+    left.  On the release node's RTX 4090 the unpinned comparison read
+    11.99 GiB against 12.66 GiB for the card alone (proof/node-reds-276).
     """
     import gpuwm.runplan as runplan_module
 
+    monkeypatch.setenv("GPUWM_NO_LOCAL_GPU", "1")
     geog = tmp_path / "GEOG"
     geog.mkdir(exist_ok=True)
     config = _config(tmp_path)

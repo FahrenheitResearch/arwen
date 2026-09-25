@@ -24,6 +24,8 @@ from pathlib import Path
 
 import pytest
 
+from conftest import requires_cupy
+
 from gpuwm import stage_reuse
 from gpuwm.runplan import (EVENTS_FILENAME, EventStream, RunObserver,
                            _clear_forecast_output, _fetch_transfer_split,
@@ -591,6 +593,13 @@ def _record_fetch_request(arguments, out):
     (out / fetch.FETCH_MANIFEST_NAME).write_text(json.dumps(payload), encoding="utf-8")
 
 
+# NEEDS CUPY INSTALLED, and opens no device: the chain reruns below go
+# through the real `gpuwm go` door, which refuses before the fetch stage
+# without the array library (`this command needs cupy ...`), so no second
+# pass, no prepare event and no second generation are ever produced.
+# Measured on the Linux release node: red without cupy, green with it
+# (proof/node-reds-276).
+@requires_cupy
 def test_the_chain_reruns_into_the_same_run_directory_without_refusing(
         tmp_path, monkeypatch):
     """The end-to-end shape of a Studio retry.
@@ -718,6 +727,7 @@ def _chain_that_fails_at_the_forecast(tmp_path, monkeypatch):
     return fetches, prepares
 
 
+@requires_cupy
 def test_the_prepare_event_says_which_of_the_two_happened(tmp_path,
                                                           monkeypatch):
     """A receipt a person reads, not a timing they have to interpret."""
@@ -755,6 +765,7 @@ def test_the_prepare_event_says_which_of_the_two_happened(tmp_path,
     assert "source_manifest_sha256" in decisions[1]["compared"]
 
 
+@requires_cupy
 def test_the_second_attempts_forecast_gets_a_directory_of_its_own(
         tmp_path, monkeypatch):
     """The third create-only refusal on the retry path.

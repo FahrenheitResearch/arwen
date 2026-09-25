@@ -186,7 +186,7 @@ _PACKAGED_PROFILES = MappingProxyType({
     "hrrr-prs-grib2-v1": _profile(
         "rw-wps-hrrr-prs-grib2",
         source_format="grib2",
-        mapping="6e17b6edcc2230262dbf072a72fd0b38a4a70e9812a76ea61d2b90fbd4301e54",
+        mapping="ac6453cd64eb9c9a63a9df7946b080d105aa63148b101ece45bf79110b82823a",
         composition="2a2bb75714428cdb9b051303e53d91c88f3c1b48a798339bb9244a6b412e392e",
         provenance="f2aade12671166959e42cacd357bc54359af4d3034eedff81630b26646eb4b8c",
         data_role="hrrr_prs_in_band_surface",

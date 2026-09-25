@@ -84,7 +84,7 @@ def launch_aerosol_saturation_adjust(
         temperature, pressure, qv, qc, nc_entry, ncten, nwfaten,
         nwfa_work_m3, w, tnccn_act, tnc_wev, dt, *,
         reference_density=None, reference_temperature=None,
-        condensation_rate=None) -> None:
+        condensation_rate=None, cloud_presence=None) -> None:
     """Run WRF's mp=28 cloud condensation/evaporation block on device.
 
     Parameters
@@ -116,6 +116,12 @@ def launch_aerosol_saturation_adjust(
         :func:`launch_aerosol_rain_evaporation` to reproduce WRF's :3502
         gate, which suppresses rain evaporation in a cell that just
         condensed.
+    cloud_presence
+        Optional float32 output receiving WRF's ``L_qc(k)`` as the cloud
+        fallout reads it, 1 or 0 at every level: the post-source flag
+        (:3215-3223), cleared where :3485 finds the adjusted cloud at R1.
+        Hand it to ``launch_hydrometeor_column_mask`` for the fallout's
+        ``ANY(L_qc)`` column gate (:3645).
     """
     fields = {
         "temperature": temperature,
@@ -137,6 +143,8 @@ def launch_aerosol_saturation_adjust(
         fields["reference_temperature"] = reference_temperature
     if condensation_rate is not None:
         fields["condensation_rate"] = condensation_rate
+    if cloud_presence is not None:
+        fields["cloud_presence"] = cloud_presence
     _, size = validate_fields(fields)
     validate_fp64_fortran_table("tnccn_act", tnccn_act, CCN_ACTIVATION_SHAPE)
     validate_fp64_fortran_table("tnc_wev", tnc_wev, DROP_EVAP_SHAPE)
@@ -148,6 +156,7 @@ def launch_aerosol_saturation_adjust(
         (temperature, pressure, qv, qc, nc_entry, ncten, nwfaten,
          nwfa_work_m3, w, tnccn_act, tnc_wev,
          reference_density, reference_temperature, condensation_rate,
+         cloud_presence,
          np.float32(step), np.int32(size)))
 
 

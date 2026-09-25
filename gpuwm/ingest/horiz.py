@@ -83,10 +83,42 @@ class HorizontalSnapshot:
     #: None preserves the native analyzed-mass inventory contract; an empty
     #: tuple explicitly declares that the source supplies no analyzed mass.
     analyzed_species: tuple[str, ...] | None = None
+    #: The most negative value the overlapping-parabolic operator that
+    #: produced ``SPFH`` could have made from the source it was handed
+    #: (:func:`parabolic_undershoot_floor`).  It is carried because the
+    #: initializer's physical-range check on ``SPFH`` runs AFTER this
+    #: mapping and cannot otherwise tell the operator's own undershoot
+    #: from bad forcing.  ``None`` when this snapshot did not map
+    #: ``SPFH`` itself -- a met_em snapshot, whose values WPS mapped from
+    #: a source this process never saw -- and the initializer then falls
+    #: back to the envelope of WPS's own 0..0.1 SPECHUMD gate.
+    specific_humidity_undershoot_floor: float | None = None
+    #: The regular-grid operator each output field took, keyed by the
+    #: metgrid output name (``TT``, ``QR``, ``PSFC``, ...): ``parabolic``
+    #: (WPS ``sixteen_pt``), ``bilinear`` (``four_pt``), a masked chain
+    #: joined with ``+`` (``four_pt+average_4pt``), or ``nearest``.  It is a
+    #: receipt: the initializer publishes the owner of every analyzed
+    #: hydrometeor from it, so which operator a condensate field took is
+    #: read off the run rather than inferred from the source's route.
+    #: ``None`` for a snapshot this process did not map (a met_em file).
+    horizontal_operators: Mapping[str, str] | None = None
 
     def __post_init__(self) -> None:
+        if self.horizontal_operators is not None:
+            object.__setattr__(
+                self, "horizontal_operators",
+                MappingProxyType(dict(self.horizontal_operators)))
         if not isinstance(self.specific_humidity_authority, (bool, np.bool_)):
             raise TypeError("specific_humidity_authority must be boolean")
+        floor = self.specific_humidity_undershoot_floor
+        if floor is not None:
+            floor = float(floor)
+            if not np.isfinite(floor) or floor > 0.0:
+                raise ValueError(
+                    "specific_humidity_undershoot_floor must be a finite, "
+                    "non-positive value")
+            object.__setattr__(
+                self, "specific_humidity_undershoot_floor", floor)
         if self.specific_humidity_authority:
             missing = sorted({"PRES", "SPFH", "Q2"} - self.fields.keys())
             if missing:
@@ -514,6 +546,90 @@ def interpolate_lake_skin_temperature(
         result[j, i] = _nearest_finite_source_water(
             skin, water, float(y[j, i]), float(x[j, i]))
     return result
+
+
+#: The exact lower envelope of the two-dimensional overlapping-parabolic
+#: operator, as a fraction of the SOURCE field's maximum.  WPS's ``oned``
+#: (``interp_module.F``) averages two parabolas, so its outer weights are
+#: ``-x(1-x)^2/2`` on ``a`` and ``-(1-x)x^2/2`` on ``d``; their sum
+#: ``x(1-x)/2`` peaks at ``x = 1/2`` with magnitude ``1/8``, and the
+#: positive weights therefore sum to at most ``9/8``.  ``sixteen_pt``
+#: applies ``oned`` along one axis and then the other, so the tensor
+#: product's negative weight sums to ``2 * (9/8) * (1/8) = 9/32``.  A
+#: source field bounded in ``[0, M]`` can therefore be mapped no lower
+#: than ``-9/32 * M`` and no higher than ``41/32 * M``: an undershoot
+#: inside that envelope is the operator's, and one outside it is not.
+WPS_PARABOLIC_NEGATIVE_WEIGHT = 9.0 / 32.0
+
+#: Relative slack on that envelope for FP32 evaluation rounding.  The
+#: operator runs in FP32 (:func:`_wps_oned_gpu`) while the envelope is
+#: arithmetic on the exact weights, so a value may land a few ULP below
+#: it without the operator having done anything but round.
+_WPS_PARABOLIC_ENVELOPE_SLACK = 1.0e-5
+
+
+def parabolic_undershoot_floor(field):
+    """The most negative value ``sixteen_pt`` can make from ``field``.
+
+    ``field`` is the SOURCE array about to be mapped.  The weights of
+    the tensored operator sum to one and its negative weights sum to no
+    less than ``-9/32``, so from a source bounded in ``[m, M]`` it can
+    make nothing below ``(1 + 9/32) m - (9/32) M``: the negative weights
+    fall on the maximum and the positive ones, which sum to ``1 + 9/32``,
+    on the minimum.  That is the envelope returned here, widened by
+    :data:`_WPS_PARABOLIC_ENVELOPE_SLACK` for FP32 evaluation rounding.
+    The source minimum enters only where it is NEGATIVE; for a source
+    whose minimum is positive the envelope is ``-9/32 * M`` alone.  The
+    envelope RISES with the minimum, so a positive ``m`` would tighten
+    it, and what is recorded here is a property of the whole array
+    rather than of the operand: the plan crops the array to its proven
+    support before applying the operator (``RegularSourceSupport.crop``,
+    a row and column subset), and the operator substitutes ``1e-20`` for
+    an exact zero before ``oned`` runs (:class:`_RegularGpuPlan` on the
+    device, and the identical substitution in the CPU bridge's
+    transcription of the same operator).  Both of those can only RAISE a
+    minimum, never lower it, so clamping the recorded minimum at zero
+    leaves a bound that holds for every operand the plan can build from
+    this array, and it declines to buy tightness for a dry source from a
+    number measured somewhere other than where the weights are applied.
+    A NEGATIVE ``m`` is the forcing's own value: the envelope drops by
+    ``1 + 9/32`` of it, which is what this operator can amplify it to.
+
+    This function makes NO claim about the forcing and refuses nothing.
+    It reports what one operator can do to one array, and a claim about
+    physical range that no run has ever reproduced a violation of does
+    not belong in front of every route that maps a field.  The range
+    check on specific humidity stays where this lane proved it, on the
+    MAPPED field at ``gpuwm.ingest.real``'s conversion, which every
+    initialization passes through and which names its counts and the
+    envelope it judged them against.  A source that is not finite has no
+    envelope, so ``None`` is returned and that same check refuses the
+    non-finite values the mapping carries into it.
+
+    Returns a non-positive float, or ``None``.  Zero is returned when
+    the operator cannot reach below zero from this source at all, which
+    admits nothing negative and is the correct bound rather than a
+    disabled one.
+    """
+    # The operand may be a WINDOWED atmospheric field: a values array over
+    # the union of every support this plan can select, wrapped so that
+    # ``for_support`` can address it in original-source index space.  It is
+    # not an ndarray and has no ``min``, so reading one off it aborted every
+    # mapped route that hands this function a windowed operand -- the whole
+    # of preparation for a source small enough to window.  The array inside
+    # is the right operand for exactly the reason the paragraph above gives:
+    # every support the plan builds is a crop of it, and a crop can only
+    # lift this envelope.
+    values = getattr(field, "values", field)
+    minimum = float(values.min())
+    maximum = float(values.max())
+    if not (np.isfinite(minimum) and np.isfinite(maximum)):
+        return None
+    envelope = ((1.0 + WPS_PARABOLIC_NEGATIVE_WEIGHT) * min(minimum, 0.0)
+                - WPS_PARABOLIC_NEGATIVE_WEIGHT * max(maximum, 0.0))
+    if envelope >= 0.0:
+        return 0.0
+    return envelope * (1.0 + _WPS_PARABOLIC_ENVELOPE_SLACK)
 
 
 def _wps_oned_gpu(x, a, b, c, d):
@@ -1232,6 +1348,35 @@ _RENAMES = {
     "SEAICE": "XICE", "SOILGEO": "SOURCE_OROGRAPHY",
 }
 _PARABOLIC_SCALARS = {"Z", "T", "RH", "T2", "D2", "RH2", "PMSL"}
+#: The five hydrometeor mass fields, under the legacy names the regular
+#: join packs them as.  METGRID.TBL routes QC/QR/QI/QS/QG through
+#: ``four_pt+average_4pt`` rather than the sixteen-point overlapping
+#: parabola every other 3-D field takes, because the parabola overshoots
+#: beside a compact cloud: one positive source cell became a ring of
+#: negative mixing ratio on the target grid, which the initializer then
+#: refused as "non-finite or negative" forcing.  The native HRRR decoder
+#: (gpuwm/ingest/hrrr.py) has always applied the bilinear owner to the
+#: five; this table gives the regular-source pass, which every mapped
+#: profile, ERA5 and GFS reach, the same owner.  Bilinear preserves both
+#: non-negativity and compact support.
+_FOUR_PT_HYDROMETEORS = frozenset({"QC", "QR", "QI", "QS", "QG"})
+
+
+def regular_horizontal_method(name: str, ndim: int) -> str:
+    """Which regular-grid operator an unmasked scalar ``name`` takes.
+
+    ONE rule, read by the pass and by the receipt it publishes: hydrometeor
+    mass is bilinear (``four_pt``), the classified thermodynamic scalars
+    and every other 3-D field are overlapping-parabolic (``sixteen_pt``),
+    and an unclassified 2-D field is bilinear.
+    """
+    if name in _FOUR_PT_HYDROMETEORS:
+        return "bilinear"
+    if name in _PARABOLIC_SCALARS or int(ndim) == 3:
+        return "parabolic"
+    return "bilinear"
+
+
 _MATCH_SURFACE_FIELDS = {"SKINTEMP"}
 _WATER_FIELDS = {"SST", "SEAICE", "XICE"}
 _LAND_FIELDS = {
@@ -1341,7 +1486,11 @@ def interpolate_era5_to_lambert(snapshot: Era5Snapshot, grid: ProjectedGrid, *,
     """Interpolate every field in ``snapshot`` to mass/U/V Lambert points.
 
     Atmospheric fields use WPS's 16-point overlapping-parabolic default;
-    PSFC and unclassified continuous fields use bilinear interpolation.
+    the five hydrometeor masses (QC/QR/QI/QS/QG) take METGRID.TBL's
+    ``four_pt`` bilinear owner instead, which keeps them non-negative and
+    compactly supported; PSFC and unclassified continuous fields use
+    bilinear interpolation.  The operator each output field took is
+    published on the returned snapshot as ``horizontal_operators``.
     LANDSEA is nearest-neighbor. Masked surface/soil fields use the nearest
     finite source value on the matching surface, with zero fill where a field
     is not defined (SST on land, soil/snow on water). ``backend='cuda'``
@@ -1457,6 +1606,9 @@ def interpolate_era5_to_lambert(snapshot: Era5Snapshot, grid: ProjectedGrid, *,
             raise ValueError("target_landmask shape does not match mass grid")
 
     out: dict[str, object] = {}
+    # The operator each output field took, published on the snapshot.
+    operators: dict[str, str] = {}
+    specific_humidity_undershoot_floor: float | None = None
     # LOUD when it happened, silent when it did not: only a domain whose
     # land the source rounded away reaches the second-chance pass, and when
     # one does the reader is told which fields and how many cells.
@@ -1478,6 +1630,7 @@ def interpolate_era5_to_lambert(snapshot: Era5Snapshot, grid: ProjectedGrid, *,
             ue_u, ve_u, sina_u, cosa_u)[0]
         out[v_output] = engine.rotate_earth_to_grid(
             ue_v, ve_v, sina_v, cosa_v)[1]
+        operators[u_output] = operators[v_output] = "parabolic"
 
     handled: set[str] = set()
     for name, raw in source_fields.items():
@@ -1506,6 +1659,7 @@ def interpolate_era5_to_lambert(snapshot: Era5Snapshot, grid: ProjectedGrid, *,
             continue
         if name == "LANDSEA":
             out[name] = target_land.astype(xp.float32)
+            operators[name] = "target-landmask"
             handled.add(name)
             continue
         if name == "SOILGEO":
@@ -1525,6 +1679,7 @@ def interpolate_era5_to_lambert(snapshot: Era5Snapshot, grid: ProjectedGrid, *,
             out[name] = engine.float32(_canonical_psfc_bilinear(
                 raw, snapshot.latitude, snapshot.longitude,
                 mass_ty, mass_tx))
+            operators[name] = "bilinear"
             handled.add(name)
             continue
 
@@ -1645,6 +1800,7 @@ def interpolate_era5_to_lambert(snapshot: Era5Snapshot, grid: ProjectedGrid, *,
                 raise ValueError(
                     f"masked interpolation failed for {name}: {error}") from error
             out[output_name] = interpolated
+            operators[output_name] = "+".join(chain)
         else:
             if name == "RH":
                 if relative_humidity_convention == "era5_mixed":
@@ -1653,9 +1809,20 @@ def interpolate_era5_to_lambert(snapshot: Era5Snapshot, grid: ProjectedGrid, *,
                             "T is required for ERA5 RH convention conversion")
                     field = engine.era5_rh_to_water(
                         field, source_fields["T"])
-            method = "parabolic" if name in _PARABOLIC_SCALARS or field.ndim == 3 else "bilinear"
+            method = regular_horizontal_method(name, field.ndim)
+            operators[output_name] = method
+            mapped_from = operand(name, field)
+            if name == "SPFH" and method == "parabolic":
+                # Recorded from EXACTLY the array this call maps, before
+                # it is mapped: the envelope is a property of the source
+                # the operator saw.  A cropped support the plan may
+                # select lowers the maximum and raises the minimum, both
+                # of which only lift the envelope, so the one recorded
+                # from the whole array stays a valid bound for it.
+                specific_humidity_undershoot_floor = (
+                    parabolic_undershoot_floor(mapped_from))
             out[output_name] = mass_plan.apply(
-                operand(name, field), method=method, source_support=True)
+                mapped_from, method=method, source_support=True)
             if name == "Z":
                 out[output_name] = out[output_name] / xp.float32(9.81)
         handled.add(name)
@@ -1734,11 +1901,15 @@ def interpolate_era5_to_lambert(snapshot: Era5Snapshot, grid: ProjectedGrid, *,
         specific_humidity_authority=getattr(
             snapshot, "specific_humidity_authority", False),
         analyzed_species=getattr(snapshot, "analyzed_species", None),
+        specific_humidity_undershoot_floor=specific_humidity_undershoot_floor,
+        horizontal_operators=operators,
     )
 
 
 __all__ = [
     "HorizontalSnapshot",
+    "WPS_PARABOLIC_NEGATIVE_WEIGHT",
+    "parabolic_undershoot_floor",
     "global_longitude_period_columns",
     "interpolate_era5_to_lambert",
     "interpolate_lake_skin_temperature",

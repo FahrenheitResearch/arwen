@@ -97,8 +97,14 @@ def test_job_survives_controller_disconnect_and_reconnects(case, disconnect):
     script = hold_script(root)
     (root / "request.json").write_text(json.dumps(request), encoding="utf-8")
     controller = write_script(root / "controller.py", """
-        import json, sys, time
+        import json, signal, sys, time
         from pathlib import Path
+        # The hangup this test sends has to be able to end this process:
+        # a harness that ignores SIGHUP (nohup) hands the disposition down
+        # through pytest to here, and an ignored hangup is not a
+        # disconnect -- the 10 s wait below then expires with the
+        # controller alive (proof/node-reds-276).
+        signal.signal(signal.SIGHUP, signal.SIG_DFL)
         sys.path.insert(0, sys.argv[1])
         from gpuwm import remote_worker as rw
         root = Path(__file__).resolve().parent

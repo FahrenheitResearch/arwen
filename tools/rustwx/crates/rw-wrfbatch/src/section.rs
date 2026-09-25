@@ -25,7 +25,10 @@
 //!   `log10` with zeros transparent, for quantities that span decades.
 //! * `=l1,l2,...` fixes an overlay's contour levels, `@h` after them
 //!   highlights one of them; absent, the levels are chosen from the
-//!   field's own range (and by name for the common ones).
+//!   field's own range (and by name for the common ones).  On the fill
+//!   term the list names the colour bar's range, lowest level to highest
+//!   (`QCLOUD=0.01,0.1` draws every frame on 0.01 to 0.1 g kg-1), which
+//!   is how a series of cuts is put on one bar.
 //! * `<alias>` names the output slug (`xsec_<alias>`), so a long tracer
 //!   sum still files under a readable product folder.
 //!
@@ -236,6 +239,224 @@ pub fn fade_ramp_bottom(mut ramp: Vec<xs::Color>) -> Vec<xs::Color> {
     ramp
 }
 
+/// How much of its own colour bar a section fill's values must occupy
+/// before that bar is allowed to start at zero instead of at the lowest
+/// value on the cut.
+pub const ZERO_ANCHOR_MIN_BAR_FRACTION: f32 = 0.5;
+
+/// Which rule set the range a fill was drawn on.
+///
+/// A section's bar is fitted per frame -- to the air the cut holds, and
+/// to the rung its own signal reaches -- so a series of cuts of one line
+/// is a series of pictures on different bars.  That is the family's
+/// practice and it is what makes a shallow cut readable, but it means
+/// the picture alone cannot say which bar it was drawn on.  The rule and
+/// the two numbers beside it are what the receipt carries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FillRangeRule {
+    /// A diverging fill, symmetric about zero because zero is its middle.
+    Symmetric,
+    /// A log fill, whose own minimum IS its floor.
+    LogFloor,
+    /// A sequential fill carrying values below zero, so zero is not its
+    /// floor and the bar starts at the lowest value on the cut.
+    CrossesZero,
+    /// The zero anchor, kept because the fill's own values occupy at
+    /// least [`ZERO_ANCHOR_MIN_BAR_FRACTION`] of the bar it produces.
+    ZeroAnchor,
+    /// The zero anchor given up: the bar starts at the lowest value on
+    /// the cut, so this frame is drawn on this frame's own range.
+    OwnMinimum,
+    /// The range the product spelled (`QCLOUD=0.01,0.1`): the bar runs
+    /// from the lowest named level to the highest on every frame, so a
+    /// series of cuts is drawn on one bar, and a frame with no signal
+    /// keeps that bar instead of a placeholder.
+    Named,
+}
+
+impl FillRangeRule {
+    /// One token, for the event line and the receipt.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Symmetric => "symmetric",
+            Self::LogFloor => "log-floor",
+            Self::CrossesZero => "crosses-zero",
+            Self::ZeroAnchor => "zero-anchor",
+            Self::OwnMinimum => "own-minimum",
+            Self::Named => "named",
+        }
+    }
+}
+
+/// The range one section fill was drawn over, and how it was chosen.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DrawnFill {
+    /// The bottom of the colour bar.
+    pub lo: f32,
+    /// The top of it.
+    pub hi: f32,
+    /// Whether the bottom band is the field's ABSENCE rather than the
+    /// lowest thing on the cut.  Only absence is faded away.
+    pub absence: bool,
+    /// The rule that chose the two numbers above.
+    pub rule: FillRangeRule,
+}
+
+/// The range a section's fill is drawn over, and whether the BOTTOM of
+/// that range is the field's absence rather than the lowest thing on the
+/// cut.
+///
+/// Zero is a real floor for most of what a section fills with -- mixing
+/// ratio, reflectivity, wind speed -- and starting the bar there is what
+/// makes an empty column read as the bottom of the ramp instead of as
+/// the middle of it.  It is nothing at all for a field measured from
+/// absolute zero: a cut of air temperature in kelvin spans a few tens of
+/// degrees somewhere above 240, so a bar that starts at zero spends
+/// every band below that on temperatures the atmosphere never reaches
+/// and paints the whole cut in one colour.
+///
+/// THE RULE: keep the zero anchor while the fill's own values still
+/// occupy at least [`ZERO_ANCHOR_MIN_BAR_FRACTION`] of the bar that
+/// anchor produces, and take the fill's own minimum otherwise -- so a
+/// fill is never drawn on a bar it uses less than half of.
+///
+/// [`DrawnFill::absence`] says whether the ramp's first band is
+/// absence, and that is what decides the fade: [`fade_ramp_bottom`]
+/// exists to stop absence flooding the panel, so fading a band that
+/// holds the coldest or thinnest air on the cut erases real air instead.
+///
+/// [`DrawnFill::rule`] says which branch below answered, because the
+/// bar a cut is drawn on now moves with the frame at BOTH ends and a
+/// reader holding two pictures of one line needs the receipt to say so.
+pub fn fill_value_range(diverging: bool, log: bool, min: f32, max: f32) -> DrawnFill {
+    let drawn = |lo: f32, hi: f32, absence: bool, rule: FillRangeRule| DrawnFill {
+        lo,
+        hi,
+        absence,
+        rule,
+    };
+    if diverging {
+        // A diverging ramp's middle IS zero, so the range is symmetric
+        // about it or the ramp says the wrong thing about which way the
+        // air goes.  Nothing is absent at the bottom of it: that end is
+        // the strongest descent on the cut.
+        let reach = min.abs().max(max.abs()).max(1e-6);
+        return drawn(-reach, reach, false, FillRangeRule::Symmetric);
+    }
+    if log {
+        // The low end is the fill's OWN minimum, which for a log fill is
+        // its floor -- the value its absence sits at.  Rounding that
+        // down to the decade below put absence a band or two up the
+        // ramp, past the faded end, and the panel flooded with the
+        // ramp's first colour.
+        return drawn(min, max.max(min + 1.0), true, FillRangeRule::LogFloor);
+    }
+    if min < 0.0 {
+        // The fill crosses zero, so zero is not its floor and the bottom
+        // of the bar is the lowest value on the cut.
+        return drawn(
+            min,
+            if max > min { max } else { min + 1.0 },
+            false,
+            FillRangeRule::CrossesZero,
+        );
+    }
+    let top = if max > 0.0 { max } else { 1.0 };
+    if max > min && max - min < ZERO_ANCHOR_MIN_BAR_FRACTION * top {
+        drawn(min, max, false, FillRangeRule::OwnMinimum)
+    } else {
+        drawn(0.0, top, true, FillRangeRule::ZeroAnchor)
+    }
+}
+
+/// Colour bar ticks for a fill drawn in log10 over `lo..hi` (both in
+/// log10): one at every whole decade inside the range, labelled with the
+/// field's own number (`0.1`, `1`, `10`), and the 2x and 5x steps of each
+/// decade as well when fewer than three whole decades fall inside, so a
+/// bar under a decade tall still carries numbers.
+pub fn log_decade_ticks(lo: f32, hi: f32) -> Vec<(f32, String)> {
+    if !(lo.is_finite() && hi.is_finite() && hi > lo) {
+        return Vec::new();
+    }
+    let first = lo.ceil() as i32;
+    let last = hi.floor() as i32;
+    let whole: Vec<i32> = (first..=last).collect();
+    let steps: &[f64] = if whole.len() >= 3 { &[1.0] } else { &[1.0, 2.0, 5.0] };
+    let mut ticks = Vec::new();
+    for decade in (lo.floor() as i32)..=(hi.ceil() as i32) {
+        for step in steps {
+            let value = step * 10f64.powi(decade);
+            let position = value.log10() as f32;
+            if position >= lo - 1e-4 && position <= hi + 1e-4 {
+                ticks.push((position.clamp(lo, hi), decade_label(value)));
+            }
+        }
+    }
+    ticks
+}
+
+/// `0.001`, `0.02`, `5`, `100`, `1000`, and `1e-4` or `2e4` past the
+/// decades a reader counts in their head.
+fn decade_label(value: f64) -> String {
+    if !(1e-3..1e4).contains(&value) {
+        let exponent = value.log10().floor() as i32;
+        let mantissa = value / 10f64.powi(exponent);
+        return format!("{}e{exponent}", mantissa.round() as i64);
+    }
+    let text = format!("{value:.3}");
+    let trimmed = text.trim_end_matches('0').trim_end_matches('.');
+    if trimmed.is_empty() {
+        "0".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+/// The bar a fill is drawn on when the product names its levels
+/// (`QCLOUD=0.01,0.1`): from the lowest named level to the highest, in
+/// the units the section draws the field in.
+///
+/// The grammar admitted a level list on the fill term and then read it
+/// only on overlays, so `xsec:QCLOUD=0.01,0.1` drew the same bar as
+/// `xsec:QCLOUD`.  A named range is the one thing that makes two cuts
+/// of one line comparable without the receipt, so it is honoured: a
+/// `~log` fill takes the decades of the named levels (a level at or
+/// below zero has no decade and is dropped), a diverging fill keeps zero
+/// as its middle and spans the larger reach, and a sequential fill fades
+/// its bottom band because below the named floor is, by the caller's
+/// own statement, nothing.  A list with no usable level, or one whose
+/// levels are all equal, names no range and the frame is fitted as if
+/// none were given.
+pub fn named_fill_range(levels: &[f32], diverging: bool, log: bool) -> Option<DrawnFill> {
+    let usable: Vec<f32> = levels
+        .iter()
+        .copied()
+        .filter(|v| v.is_finite())
+        .map(|v| if log { v.log10() } else { v })
+        .filter(|v| v.is_finite())
+        .collect();
+    let lo = usable.iter().copied().fold(f32::MAX, f32::min);
+    let hi = usable.iter().copied().fold(f32::MIN, f32::max);
+    if usable.is_empty() || !(hi > lo) {
+        return None;
+    }
+    if diverging {
+        let reach = lo.abs().max(hi.abs());
+        return Some(DrawnFill {
+            lo: -reach,
+            hi: reach,
+            absence: false,
+            rule: FillRangeRule::Named,
+        });
+    }
+    Some(DrawnFill {
+        lo,
+        hi,
+        absence: true,
+        rule: FillRangeRule::Named,
+    })
+}
+
 /// The ladder top a frame is drawn to: the highest rung carrying signal
 /// plus a kilometre of air above it, never less than two kilometres above
 /// the reference altitude, never above the caller's `--section-top-km`.
@@ -272,15 +493,22 @@ pub fn split_product_spec(spec: &str) -> Result<(String, Vec<SectionProduct>), S
     let mut store = Vec::new();
     let mut sections = Vec::new();
     // A level list inside a section term is comma-separated too
-    // (`wa=1,2,5,10@5`), so a purely numeric token that follows an
-    // `xsec:` token whose last term opened a level list is the list's
-    // continuation, not a product: no product slug is only digits, a
-    // sign, a point and an `@`.
+    // (`wa=1,2,5,10@5`), so a token that follows an `xsec:` token whose
+    // last term opened a level list and that starts with a level is the
+    // list's continuation, not a product: no product slug is only digits,
+    // a sign, a point and an `@`.  The continuation may carry the term
+    // that closes the list (`0.1/wa` in `xsec:QCLOUD=0.01,0.1/wa`): the
+    // comma before the last number is the list's own separator, and a
+    // splitter that cut there made `0.1/wa` a store product, which the
+    // catalog then refused, so the whole command line was refused for a
+    // spelling the grammar admits.
     let mut tokens: Vec<String> = Vec::new();
     for token in trimmed.split(',').map(str::trim).filter(|t| !t.is_empty()) {
         let continues = tokens
             .last()
-            .map(|prior| prior.starts_with(PREFIX) && level_list_open(prior) && is_level_token(token))
+            .map(|prior| {
+                prior.starts_with(PREFIX) && level_list_open(prior) && continues_level_list(token)
+            })
             .unwrap_or(false);
         if continues {
             let prior = tokens.last_mut().expect("checked above");
@@ -305,6 +533,17 @@ pub fn split_product_spec(spec: &str) -> Result<(String, Vec<SectionProduct>), S
 fn level_list_open(token: &str) -> bool {
     let last_term = token.rsplit('/').next().unwrap_or(token);
     last_term.contains('=') && !last_term.rsplit('=').next().unwrap_or("").contains('@')
+}
+
+/// A token that continues an open level list: a level (`-10`, `0.5`,
+/// `10@5`), or the last level of the list followed by the `/` term that
+/// closes it (`0.1/wa`, `10@5/tk=-20`).  What follows the first `/` is
+/// parsed as terms later; here it only has to exist.
+fn continues_level_list(token: &str) -> bool {
+    match token.split_once('/') {
+        Some((level, rest)) => is_level_token(level) && !rest.trim().is_empty(),
+        None => is_level_token(token),
+    }
 }
 
 /// `-10`, `0.5`, `10@5`: a level, optionally the highlight after it.
@@ -641,6 +880,11 @@ pub struct SectionRenderConfig<'a> {
 pub struct SectionOutcome {
     pub slug: String,
     pub result: Result<PathBuf, String>,
+    /// The range this cut's fill was drawn on, and the rule that set it.
+    /// `None` when nothing was drawn or the fill had no finite value on
+    /// the line.  The caller reports it so that two pictures of one line
+    /// drawn on two different bars are told apart by their receipt.
+    pub drawn: Option<DrawnFill>,
 }
 
 struct FrameRef {
@@ -1376,7 +1620,7 @@ fn term_section(
             return Ok(TermSection {
                 values,
                 units,
-                label: format!("log10 {label}"),
+                label,
                 log_floor: None,
             });
         }
@@ -1396,7 +1640,10 @@ fn term_section(
                 f32::NAN
             };
         }
-        label = format!("log10 {label}");
+        // The label stays the field's own name: the fill is drawn in
+        // log10, but its colour bar prints the field's numbers at the
+        // decades (`log_decade_ticks`), so "log10" in front of the name
+        // would tell a reader the ticks are exponents when they are not.
     }
     Ok(TermSection {
         values,
@@ -1502,6 +1749,7 @@ pub fn render_sections(
                         emit(SectionOutcome {
                             slug: format!("{}{}", product.slug(), tag),
                             result: Err(format!("{}: {err}", frame.path.display())),
+                            drawn: None,
                         });
                     }
                     continue;
@@ -1520,6 +1768,7 @@ pub fn render_sections(
                         emit(SectionOutcome {
                             slug: format!("{}{}", product.slug(), tag),
                             result: Err(format!("{}: {err}", frame.path.display())),
+                            drawn: None,
                         });
                     }
                     continue;
@@ -1537,7 +1786,7 @@ pub fn render_sections(
 
             for product in products {
                 let slug = format!("{}{}", product.slug(), tag);
-                let outcome = (|| -> Result<PathBuf, String> {
+                let outcome = (|| -> Result<(PathBuf, Option<DrawnFill>), String> {
                     let fill = term_section(
                         &product.fill,
                         &file,
@@ -1692,14 +1941,40 @@ pub fn render_sections(
                     // than as a staircase of eight steps.
                     let bands = 24usize;
                     let family = term_family(&product.fill);
+                    // The range is settled first, because it is what says
+                    // whether the bottom of the ramp is the field's
+                    // absence or the lowest thing on the cut, and only
+                    // absence may be faded away.
+                    let named_range = product
+                        .fill
+                        .levels
+                        .as_deref()
+                        .and_then(|levels| {
+                            named_fill_range(levels, family.is_diverging(), product.fill.log)
+                        });
+                    let drawn_range = match (named_range, fill_has_signal) {
+                        (Some(named), _) => Some(named),
+                        (None, true) => section.finite_range().map(|(min, max)| {
+                            fill_value_range(
+                                family.is_diverging(),
+                                product.fill.log,
+                                min,
+                                max,
+                            )
+                        }),
+                        (None, false) => None,
+                    };
                     let ramp = fill_palette(config.theme, product, family, bands);
-                    let ramp = if family.is_diverging() {
-                        // A diverging ramp's absence is its MIDDLE, which
-                        // already reads as nothing; fading its bottom would
-                        // erase descent.
-                        ramp
-                    } else {
+                    let ramp = if drawn_range
+                        .map_or(!family.is_diverging(), |drawn| drawn.absence)
+                    {
                         fade_ramp_bottom(ramp)
+                    } else {
+                        // A diverging ramp's absence is its MIDDLE, which
+                        // already reads as nothing, and a bar that starts
+                        // at the fill's own minimum has real air in its
+                        // first band.  Fading either erases signal.
+                        ramp
                     };
                     let mut request = build_request(config.theme, config.width, config.height)
                         .with_palette(ramp);
@@ -1713,37 +1988,34 @@ pub fn render_sections(
                         // bare under its overlays instead of flooding it
                         // with the ramp's first colour (a transparent ramp
                         // would composite onto white, not onto the page).
+                        // The bar keeps a range the product named, so an
+                        // empty frame of a ranged series states the same
+                        // bar as its neighbours; only an unranged empty
+                        // frame takes the 0..1 placeholder.
                         let bare = request.plot_background_top;
+                        let (lo, hi) = drawn_range.map_or((0.0, 1.0), |drawn| (drawn.lo, drawn.hi));
                         request = request
-                            .with_value_range(0.0, 1.0)
+                            .with_value_range(lo, hi)
                             .with_palette(vec![bare; 2]);
-                    } else if let Some((min, max)) = section.finite_range() {
-                        let (lo, hi) = if family.is_diverging() {
-                            // A diverging ramp's middle IS zero, so the
-                            // range is symmetric about it or the ramp says
-                            // the wrong thing about which way the air goes.
-                            let reach = min.abs().max(max.abs()).max(1e-6);
-                            (-reach, reach)
-                        } else if product.fill.log {
-                            // The low end is the fill's OWN minimum, which
-                            // for a log fill is its floor -- the value its
-                            // absence sits at.  Rounding that down to the
-                            // decade below put absence a band or two up the
-                            // ramp, past the faded end, and the panel
-                            // flooded with the ramp's first colour.
-                            (min, max.max(min + 1.0))
-                        } else if min >= 0.0 {
-                            (0.0, if max > 0.0 { max } else { 1.0 })
-                        } else {
-                            (min, if max > min { max } else { min + 1.0 })
-                        };
-                        request = request.with_value_range(lo, hi);
+                    } else if let Some(drawn) = drawn_range {
+                        request = request.with_value_range(drawn.lo, drawn.hi);
                     }
-                    let unit_label = if fill.units.is_empty() {
+                    let mut unit_label = if fill.units.is_empty() {
                         fill.label.clone()
                     } else {
                         format!("{} [{}]", fill.label, fill.units)
                     };
+                    if product.fill.log {
+                        // The fill is drawn in log10 and the bar is in
+                        // that space, but the ticks print the field's own
+                        // numbers at the decades: 0.1, 1, 10 g kg-1, not
+                        // -1, 0, 1.  Without them the bar read exponents
+                        // beside linear units.
+                        unit_label.push_str(" (log scale)");
+                        if let Some(drawn) = drawn_range {
+                            request = request.with_colorbar_ticks(log_decade_ticks(drawn.lo, drawn.hi));
+                        }
+                    }
                     request = request.with_colorbar_label(unit_label);
                     let mut bundles = Vec::new();
                     for (index, mut overlay, levels, highlight, term) in overlays {
@@ -1817,15 +2089,20 @@ pub fn render_sections(
                     let output = config.out_dir.join(name);
                     png.save(&output)
                         .map_err(|err| format!("write {}: {err}", output.display()))?;
-                    Ok(output)
+                    Ok((output, drawn_range))
                 })();
                 match &outcome {
                     Ok(_) => rendered += 1,
                     Err(_) => failed += 1,
                 }
+                let (result, drawn) = match outcome {
+                    Ok((output, drawn)) => (Ok(output), drawn),
+                    Err(err) => (Err(err), None),
+                };
                 emit(SectionOutcome {
                     slug,
-                    result: outcome,
+                    result,
+                    drawn,
                 });
             }
         }
@@ -1915,6 +2192,149 @@ mod tests {
             signal_rung(&vec![0.0f32; n_points * 5], n_points, overlay),
             None
         );
+    }
+
+    #[test]
+    fn a_fill_is_never_drawn_on_a_bar_it_uses_less_than_half_of() {
+        // Absolute temperature is the field the zero anchor ruins: a cut
+        // three kilometres deep spans under thirty kelvin somewhere above
+        // 290, and on a bar that starts at zero that is under a tenth of
+        // the ramp, so the whole cut comes out one colour.
+        let drawn = fill_value_range(false, false, 293.1, 321.1);
+        assert_eq!(
+            (drawn.lo, drawn.hi),
+            (293.1, 321.1),
+            "the bar starts at the coldest air"
+        );
+        assert!(!drawn.absence, "the first band is air, not absence");
+        assert_eq!(drawn.rule, FillRangeRule::OwnMinimum);
+        // The same field through the whole column is no better off: 240 to
+        // 321 is a quarter of a bar that starts at zero.
+        let deep = fill_value_range(false, false, 240.0, 321.0);
+        assert_eq!((deep.lo, deep.hi, deep.absence), (240.0, 321.0, false));
+        assert_eq!(deep.rule, FillRangeRule::OwnMinimum);
+    }
+
+    #[test]
+    fn a_fill_that_reaches_down_toward_zero_keeps_the_zero_anchor() {
+        // Mixing ratio, a thin trace of it, wind speed, and a field that is
+        // flat: zero is the floor of all of them and an empty column has to
+        // read as the bottom of the ramp.
+        for (min, max) in [(0.0f32, 3e-3f32), (1e-6, 2e-3), (2.0, 60.0), (7.0, 7.0)] {
+            let drawn = fill_value_range(false, false, min, max);
+            assert_eq!(drawn.lo, 0.0, "fill {min}..{max} lost its zero anchor");
+            assert!(drawn.hi > 0.0, "fill {min}..{max} has no top");
+            assert!(
+                drawn.absence,
+                "fill {min}..{max} stopped calling its floor absence"
+            );
+            assert_eq!(drawn.rule, FillRangeRule::ZeroAnchor);
+        }
+        // A fill with nothing above zero still gets a bar to draw on.
+        let flat = fill_value_range(false, false, 0.0, 0.0);
+        assert_eq!((flat.lo, flat.hi, flat.absence), (0.0, 1.0, true));
+    }
+
+    #[test]
+    fn the_zero_anchor_is_given_up_exactly_where_the_rule_says() {
+        // The rule is a fraction of the bar the zero anchor produces, so
+        // the boundary is the only place worth pinning: a span of exactly
+        // half the top keeps zero, a hair under it does not.
+        let top = 100.0f32;
+        let keeps = top * (1.0 - ZERO_ANCHOR_MIN_BAR_FRACTION);
+        let kept = fill_value_range(false, false, keeps, top);
+        assert_eq!(kept.lo, 0.0);
+        assert_eq!(kept.rule, FillRangeRule::ZeroAnchor);
+        let gives_up = keeps + 1.0;
+        let given_up = fill_value_range(false, false, gives_up, top);
+        assert_eq!(given_up.lo, gives_up);
+        assert_eq!(given_up.rule, FillRangeRule::OwnMinimum);
+    }
+
+    #[test]
+    fn a_fill_that_crosses_zero_or_diverges_is_unchanged_by_the_rule() {
+        // A Celsius cut crosses zero, so zero was never its floor.
+        let celsius = fill_value_range(false, false, -52.0, 31.0);
+        assert_eq!((celsius.lo, celsius.hi, celsius.absence), (-52.0, 31.0, false));
+        assert_eq!(celsius.rule, FillRangeRule::CrossesZero);
+        // A diverging fill stays symmetric about its middle.
+        let diverging = fill_value_range(true, false, -3.0, 11.0);
+        assert_eq!((diverging.lo, diverging.hi), (-11.0, 11.0));
+        assert!(!diverging.absence);
+        assert_eq!(diverging.rule, FillRangeRule::Symmetric);
+        // A log fill's own minimum IS its floor and stays absence.
+        let log = fill_value_range(false, true, 1e-7, 4.0);
+        assert_eq!((log.lo, log.hi, log.absence), (1e-7, 4.0, true));
+        assert_eq!(log.rule, FillRangeRule::LogFloor);
+    }
+
+    #[test]
+    fn a_log_fills_bar_prints_the_fields_own_numbers_at_the_decades() {
+        // A log fill spanning 0.1 to 10 g kg-1 is drawn on -1..1; the bar
+        // reads 0.1, 1, 10, never -1, 0, 1.
+        let ticks = log_decade_ticks(-1.0, 1.0);
+        assert_eq!(
+            ticks,
+            vec![
+                (-1.0, "0.1".to_string()),
+                (0.0, "1".to_string()),
+                (1.0, "10".to_string())
+            ]
+        );
+        // Six decades below the maximum, the way the log floor sets them.
+        let deep: Vec<String> = log_decade_ticks(-6.4, 0.6).into_iter().map(|(_, l)| l).collect();
+        assert_eq!(deep, vec!["1e-6", "1e-5", "1e-4", "0.001", "0.01", "0.1", "1"]);
+        // Under a decade of range: the 2x and 5x steps carry the numbers.
+        let narrow: Vec<String> = log_decade_ticks(-1.9, -1.2).into_iter().map(|(_, l)| l).collect();
+        assert_eq!(narrow, vec!["0.02", "0.05"]);
+        assert!(log_decade_ticks(1.0, 1.0).is_empty());
+        assert!(log_decade_ticks(f32::NAN, 1.0).is_empty());
+        assert_eq!(decade_label(2e4), "2e4");
+        assert_eq!(decade_label(1000.0), "1000");
+    }
+
+    #[test]
+    fn a_named_fill_range_is_the_bar_the_product_spelled() {
+        // The list on the fill term names the bar: lowest to highest, in
+        // the units the section draws (g kg-1 for a mixing ratio).
+        let named = named_fill_range(&[0.01, 0.1], false, false).expect("a range");
+        assert_eq!((named.lo, named.hi, named.absence), (0.01, 0.1, true));
+        assert_eq!(named.rule, FillRangeRule::Named);
+        assert_eq!(named.rule.label(), "named");
+        // Order in the list does not matter, and a log fill takes the
+        // decades of the named levels.
+        let log = named_fill_range(&[10.0, 0.1, 1.0], false, true).expect("a range");
+        assert_eq!((log.lo, log.hi), (-1.0, 1.0));
+        // A diverging fill keeps zero as its middle.
+        let diverging = named_fill_range(&[-2.0, 8.0], true, false).expect("a range");
+        assert_eq!((diverging.lo, diverging.hi, diverging.absence), (-8.0, 8.0, false));
+        // No usable level, or no span, names no range: a log fill of a
+        // list at zero, a single level, an empty list.
+        assert!(named_fill_range(&[0.0], false, true).is_none());
+        assert!(named_fill_range(&[5.0, 5.0], false, false).is_none());
+        assert!(named_fill_range(&[], false, false).is_none());
+    }
+
+    #[test]
+    fn the_bottom_band_is_faded_only_where_the_range_calls_it_absence() {
+        // The fade exists to stop absence flooding the panel.  Every range
+        // that starts at the fill's own minimum has real air in that band,
+        // so the two decisions are one decision and this is the pin on it.
+        for (diverging, log, min, max) in [
+            (false, false, 0.0f32, 3e-3f32),
+            (false, false, 2.0, 60.0),
+            (false, true, 1e-7, 4.0),
+            (false, false, 293.1, 321.1),
+            (false, false, -52.0, 31.0),
+            (true, false, -3.0, 11.0),
+        ] {
+            let drawn = fill_value_range(diverging, log, min, max);
+            let starts_at_the_fills_own_floor = drawn.lo == 0.0 || (log && drawn.lo == min);
+            assert_eq!(
+                drawn.absence, starts_at_the_fills_own_floor,
+                "fill {min}..{max} (diverging {diverging}, log {log}) fades the wrong band"
+            );
+        }
     }
 
     #[test]
@@ -2148,6 +2568,29 @@ mod tests {
         assert_eq!(sections[1].fill.levels.as_deref(), Some(&[-20.0, -10.0, 0.0][..]));
         assert!(is_level_token("-10") && is_level_token("0.5") && is_level_token("10@5"));
         assert!(!is_level_token("2m_temperature") && !is_level_token("10m_wind_speed_and_direction"));
+        // A level list whose last number is followed by the next '/' term
+        // is still one term: the continuation token carries the overlay,
+        // and the store product after it is still a product.
+        let (store, sections) = split_product_spec("xsec:QCLOUD=0.01,0.1/wa").expect("splits");
+        assert!(store.is_empty(), "store products invented from a level list: {store}");
+        assert_eq!(sections.len(), 1);
+        assert_eq!(sections[0].fill.levels.as_deref(), Some(&[0.01, 0.1][..]));
+        assert_eq!(sections[0].overlays.len(), 1);
+        let (store, sections) =
+            split_product_spec("xsec:QCLOUD=0.01,0.1/wa,composite_reflectivity").expect("splits");
+        assert_eq!(store, "composite_reflectivity");
+        assert_eq!(sections.len(), 1);
+        assert_eq!(sections[0].fill.levels.as_deref(), Some(&[0.01, 0.1][..]));
+        assert_eq!(sections[0].overlays.len(), 1);
+        let (store, sections) =
+            split_product_spec("xsec:wa=1,2,5,10@5/tk=-20,-10,0/QCLOUD,2m_temperature").expect("splits");
+        assert_eq!(store, "2m_temperature");
+        assert_eq!(sections[0].fill.levels.as_deref(), Some(&[1.0, 2.0, 5.0, 10.0][..]));
+        assert_eq!(sections[0].fill.highlight, Some(5.0));
+        assert_eq!(sections[0].overlays[0].levels.as_deref(), Some(&[-20.0, -10.0, 0.0][..]));
+        assert_eq!(sections[0].overlays.len(), 2);
+        assert!(continues_level_list("0.1/wa") && continues_level_list("10@5/tk=-20"));
+        assert!(!continues_level_list("wa/tk") && !continues_level_list("0.1/"));
         let (store, sections) = split_product_spec("all").expect("splits");
         assert_eq!(store, "all");
         assert!(sections.is_empty());

@@ -66,6 +66,8 @@ from gpuwm.aerosol_source_receipt import (  # noqa: E402
     aerosol_source_report_entry,
 )
 from gpuwm.experiment import build_experiment, load_experiment  # noqa: E402
+from gpuwm.vertical_adaptation import (  # noqa: E402
+    adopt_prepared_vertical, prepared_domain_coordinate_refusal)
 from gpuwm.explain import (  # noqa: E402
     add_explain_flag, explain_enabled, layered, render as render_explanation,
     warn,
@@ -115,6 +117,7 @@ from gpuwm.physics_compat import (  # noqa: E402
     WSM6_PROFILE_ID,
     acknowledgement_delivery,
     identify_single_domain_profile,
+    selection_values_one_spelling,
     single_domain_physics_selection,
     single_domain_runtime_switches,
     single_domain_verification_status,
@@ -583,11 +586,16 @@ MAPPED_DIRECT_PROOF_KEYS = frozenset({
     "forcing_hours", "boundary_interval_seconds", "execution_inputs",
     "source_composition", "preprocessing", "static", "geometry",
     "moisture_floors",
+    # The effective hybrid coordinate and the derivation behind it.  The
+    # forecast ADOPTS the coordinate from this key, so a reader that
+    # discarded it would run the configured etac against coefficient
+    # arrays built for another one.
+    "vertical_coordinate",
     "prepared_cache", "export", "timing_seconds", "proof_content_sha256",
 })
 MAPPED_HIERARCHY_PROOF_KEYS = frozenset({
     "schema", "status", "stock_wrf_export", "domain_count", "forcing_times",
-    "soil_texture_downscale", "forcing_hours",
+    "soil_texture_downscale", "forcing_hours", "vertical_coordinate",
     "boundary_interval_seconds", "target_contract", "execution_inputs",
     "source_composition", "preprocessing", "hierarchy_workers",
     "root_static", "root_geometry", "static_catalog", "source_coverage",
@@ -600,6 +608,14 @@ MAPPED_HIERARCHY_PROOF_KEYS = frozenset({
 #: discard needs told.
 MAPPED_MOISTURE_FLOOR_KEYS = frozenset({
     "moisture_floors", "moisture_floors_by_domain"})
+#: The effective-vertical-coordinate receipt, on the same footing and for
+#: the same reason: a bundle prepared before this release carries no such
+#: key, and its forecast is still a valid preparation -- one that could
+#: only ever have used the configured etac, which is exactly what
+#: :func:`gpuwm.vertical_adaptation.adopt_prepared_vertical` does with a
+#: document that has none.  A bundle that HAS it keeps the exactness,
+#: because the key is in the required sets above.
+MAPPED_VERTICAL_COORDINATE_KEYS = frozenset({"vertical_coordinate"})
 #: Top-level proof keys the writer publishes ONLY when that preparation
 #: opted in, so the runner has to take the document with them and
 #: without them.  ``gpuwm/mapped_direct.py`` spreads these in
@@ -1948,8 +1964,8 @@ def _profile_acknowledgements(switches, base_exp) -> tuple[str, ...]:
 
     from gpuwm.config import radiation_scheme_ids_from_settings
     from gpuwm.physics_compat import (
-        ASYMMETRIC_RADIATION_NOCTURNAL_ACK, CONSTANT_DOWNWARD_LONGWAVE_ACK,
-        downward_longwave_disposition, first_local_night_time)
+        ASYMMETRIC_RADIATION_NOCTURNAL_ACK, first_local_night_time,
+        settings_declared_acknowledgements)
 
     # RETIRED, with the reader it duplicated: this fell back to the
     # combined ``ra_physics`` only when a split key was ABSENT.  The
@@ -1962,7 +1978,6 @@ def _profile_acknowledgements(switches, base_exp) -> tuple[str, ...]:
     # route resolves: (-1, -1) -> ('consumed', 'Noah LSM'); (4, 4) ->
     # ('scheme', None).  The engine's own rule answers it now.
     lw, sw = radiation_scheme_ids_from_settings(switches)
-    surface = int(switches.get("sf_surface_physics", 0))
     required: list[str] = []
     if sw > 0 and lw == 0 and base_exp.projection is not None:
         if first_local_night_time(
@@ -1970,12 +1985,12 @@ def _profile_acknowledgements(switches, base_exp) -> tuple[str, ...]:
                 ref_lat=base_exp.projection.ref_lat,
                 ref_lon=base_exp.projection.ref_lon) is not None:
             required.append(ASYMMETRIC_RADIATION_NOCTURNAL_ACK)
-    # The load guard's own classification, so a materialized experiment
-    # can never need a token this function did not attach.
-    kind, _consumer = downward_longwave_disposition(
-        ra_lw_physics=lw, ra_sw_physics=sw, sf_surface_physics=surface)
-    if kind in ("consumed", "published"):
-        required.append(CONSTANT_DOWNWARD_LONGWAVE_ACK)
+    # THE SUITE'S OWN CLAIM, from the one classifier every route reads:
+    # gpuwm.physics_compat.settings_declared_acknowledgements asks the
+    # load guard's own disposition, so a materialized experiment here and
+    # a namelist-routed preparation resolve the same token from the same
+    # selectors, and neither can need a token the other did not attach.
+    required.extend(settings_declared_acknowledgements(switches))
     return tuple(required)
 
 
@@ -3850,11 +3865,33 @@ def _validate_profile_switches(
         cfg = domain.run
         observed = {name: getattr(cfg, name) for name in expected}
         observed_radiation = radiation_scheme_ids(cfg)
-        if observed != expected or observed_radiation != expected_radiation:
+        # Compared through the ONE spelling, the same reconciliation the
+        # capability door and the prepared-cache identity both use: the
+        # aggregate radiation selector and a cumulus-off cudt_minutes are
+        # how a WRF namelist writes the run a shipped profile writes
+        # differently, so a key-by-key comparison here refused a
+        # configuration that resolves to this profile switch for switch --
+        # every namelist-routed preparation of a coupled-radiation or
+        # cumulus-off profile, with the resolved radiation pair printed
+        # EQUAL in the same sentence that refused it.
+        compared = selection_values_one_spelling(cfg, expected)
+        canonical = selection_values_one_spelling(expected, expected)
+        # ONE VOCABULARY WITH THE CAPABILITY DOOR.  A namelist-routed
+        # run meets both refusals on the same command, and they named
+        # the same idea two ways: `settings={name: {selected, expected}}`
+        # there and `differs={name: {observed, expected}}` here.  The two
+        # reconciliations are one function now
+        # (gpuwm.physics_compat.selection_values_one_spelling); the two
+        # sentences say it the same way.
+        drift = {name: {"selected": compared[name],
+                        "expected": canonical[name]}
+                 for name in expected if compared[name] != canonical[name]}
+        if drift or observed_radiation != expected_radiation:
             label = labels.get(profile, f"named {profile} profile")
             raise ValueError(
                 f"experiment physics differs from the {label} on "
-                f"d{int(domain.grid_id):02d}: expected={expected}, "
+                f"d{int(domain.grid_id):02d}: settings={drift}, "
+                f"expected={expected}, "
                 f"radiation={expected_radiation}, observed={observed}, "
                 f"resolved_radiation={observed_radiation}.  A named "
                 f"--physics-profile asserts the experiment IS that suite; "
@@ -4326,6 +4363,7 @@ def _validate_packaged_mapped_evidence(
     # the required set above, so a document carrying a MALFORMED spelling
     # of it is still refused.
     expected_proof_keys -= MAPPED_MOISTURE_FLOOR_KEYS - set(proof)
+    expected_proof_keys -= MAPPED_VERTICAL_COORDINATE_KEYS - set(proof)
     # Every required key present, and nothing beyond them but the
     # declared-optional ones: a missing key and an unrecognised key are
     # both still refusals, which is the exactness this inventory exists
@@ -5604,6 +5642,11 @@ def preflight_prepared_forecast(
     proof = _load_json_object(proof_path, "preparation proof")
     manifest = _load_json_object(source_manifest_path, "portable source manifest")
     source_exp = load_experiment(experiment_config)
+    # THE COORDINATE THE PREPARED INPUTS CARRY, before anything derived
+    # from the configuration's own etac exists (see
+    # gpuwm.vertical_adaptation.adopt_prepared_vertical).
+    source_exp, _prepared_vertical = adopt_prepared_vertical(
+        source_exp, proof, announce=_announce_adopted_coordinate)
     from gpuwm.experiment import (
         refuse_unrouted_perturbation, refuse_unrouted_spawn,
     )
@@ -5908,6 +5951,17 @@ def preflight_prepared_forecast(
         reader, source=source, exp=exp, forcing_hours=forcing_hours,
         boundary_interval_seconds=boundary_interval_seconds, proof=proof,
         layout=layout.kind)
+    # The cache restores its OWN c1f..c4h, so the etac beside them is what
+    # the model will integrate.  Hold it to the one this run adopted, and
+    # hold that one to this domain's own prepared columns.
+    _coordinate_refusal = prepared_domain_coordinate_refusal(
+        label=f"d{int(exp.root.grid_id):02d}", vertical=exp.vertical,
+        coord_scalars=(reader.header.get("metadata") or {}).get(
+            "coord_scalars") or {},
+        base_arrays={"mub": reader.read_array("base/mub")}
+        if "base/mub" in reader.arrays else {})
+    if _coordinate_refusal is not None:
+        raise ValueError(_coordinate_refusal)
     if source in _MAPPED_SOURCES:
         _validate_mapped_static_proof(
             proof, layout, source=source, static=static,
@@ -6619,6 +6673,20 @@ def _validate_store_bundle_receipt(
             or receipt.get("content_sha256") != expected_content_sha256):
         raise ValueError(
             "prepared store differs from the caller-pinned cache content")
+
+
+def _announce_adopted_coordinate(sentence: str) -> None:
+    """Say, once, which coordinate this forecast is actually integrating."""
+
+    from gpuwm.explain import warn
+
+    warn(sentence,
+         "The prepared inputs carry the hybrid coefficient arrays "
+         "themselves, the way WRF's wrfinput carries C3H/C4H, so the model "
+         "integrates them rather than rebuilding from the configuration.  "
+         "The preparation derived this etac from the terrain the run can "
+         "touch because the configured one could not order every column; "
+         "its receipt names the governing column.  p_top is unchanged.")
 
 
 def _validate_store_direct_vertical_contract(reader, cfg, bundle) -> None:

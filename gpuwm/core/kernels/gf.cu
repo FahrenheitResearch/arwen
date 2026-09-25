@@ -59,10 +59,10 @@
 // So gamma cannot be a tolerance question -- but it is now an ACCURACY
 // question rather than a bit-matching one.
 //
-// Through 2.6.5 gfk_tgamma was a transcription of glibc's e_gammaf_r.c and
-// gamma_productf.c, and the kernel needed no fzu pin.  Both files are
-// glibc-authored, FSF-copyright, LGPL-2.1-or-later with no permissive
-// upstream, so an Apache-2.0 distribution cannot carry them; they are gone.
+// Through 2.6.5 gfk_tgamma was ArWen's earlier gamma, which returned the
+// same words as glibc 2.39's tgammaf, so the kernel needed no fzu pin.  2.6.6
+// replaced it; both gammas are this project's own work under the project's
+// licence, and the earlier one is gone.
 // gfk_tgamma is now ArWen's own correctly-rounded gamma
 // (glibc_flt32.cuh).  MEASURED against a 113-bit tgammaq oracle over all
 // 59,768,833 float32 arguments of [0.25, 36]: ours is correctly rounded on
@@ -2817,7 +2817,7 @@ extern "C" __global__ void gf_deep_const_dump(unsigned int *out)
 //
 // The probe was 7 slots through 2.6.5.  Slots 2/3/4 held gfk_lgamma_pos,
 // gfk_expm1 and gfk_exp2; those three were transcriptions whose only caller
-// was the LGPL gamma block, and all four are deleted at 2.6.6, so the stride
+// was the earlier gamma, and all four are gone at 2.6.6, so the stride
 // is 4.  tests/test_gf_gamma_correctly_rounded.py grades slot 0 against a
 // 113-bit oracle; tests/test_gf_deep_cuda.py keeps the slot-1 control.
 extern "C" __global__ void gf_libm_unary_probe(const float *__restrict__ x,

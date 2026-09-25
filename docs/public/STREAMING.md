@@ -41,7 +41,7 @@ wps_namelist = "/forecast/config/namelist.wps"
 namelist_input = "/forecast/config/namelist.input"
 stock_wrf_namelist_input = "/forecast/config/namelist.stock.input"
 geog_root = "/forecast/WPS_GEOG"
-physics_profile = "thompson-mp8-ysu-mm5-noah-rrtmg-legacy-v1"
+physics_profile = "thompson-mp8-ysu-mm5-noah-rte-rrtmgp-v1"
 pipeline_workers = 8
 prepare_workers = 8
 child_workers = 8
@@ -61,9 +61,11 @@ own: it does not run "no radiation", it runs Dudhia **shortwave** with
 longwave **off**, so nothing computes the downward longwave the land
 surface reads and a streaming job that crosses local night is running the
 1.7.1 dewpoint-collapse configuration. The template's registry entry now
-says so in its own warnings. `thompson-mp8-ysu-mm5-noah-rrtmg-legacy-v1`
+says so in its own warnings. `thompson-mp8-ysu-mm5-noah-rte-rrtmgp-v1`
 is the HRRR route's default and runs both radiation streams; it is what
-this plan hands you now.
+this plan hands you now. It ran the legacy RRTMG engines under the name
+`thompson-mp8-ysu-mm5-noah-rrtmg-legacy-v1` through 2.7.5; that profile
+is still selectable and is the same suite on the other 4/4 engine.
 
 Run it once:
 

@@ -424,6 +424,16 @@ pub enum CanonicalField {
     UpdraftHelicity,
     SmokeMassDensity,
     ColumnIntegratedSmoke,
+    /// The five hydrometeor mixing ratios a bulk microphysics scheme
+    /// carries, kg per kg of dry air.
+    CloudWaterMixingRatio,
+    RainWaterMixingRatio,
+    CloudIceMixingRatio,
+    SnowMixingRatio,
+    GraupelMixingRatio,
+    /// Cloud liquid water in a column, or a layer of it, where the air
+    /// is colder than 0 C, g m-2.
+    SupercooledLiquidWaterPath,
 }
 
 impl CanonicalField {
@@ -463,6 +473,12 @@ impl CanonicalField {
             Self::UpdraftHelicity => "updraft_helicity",
             Self::SmokeMassDensity => "smoke_mass_density",
             Self::ColumnIntegratedSmoke => "column_integrated_smoke",
+            Self::CloudWaterMixingRatio => "cloud_water_mixing_ratio",
+            Self::RainWaterMixingRatio => "rain_water_mixing_ratio",
+            Self::CloudIceMixingRatio => "cloud_ice_mixing_ratio",
+            Self::SnowMixingRatio => "snow_mixing_ratio",
+            Self::GraupelMixingRatio => "graupel_mixing_ratio",
+            Self::SupercooledLiquidWaterPath => "supercooled_liquid_water_path",
         }
     }
 
@@ -502,6 +518,12 @@ impl CanonicalField {
             Self::UpdraftHelicity => "Updraft Helicity",
             Self::SmokeMassDensity => "Smoke Mass Density",
             Self::ColumnIntegratedSmoke => "Column-Integrated Smoke",
+            Self::CloudWaterMixingRatio => "Cloud Water Mixing Ratio",
+            Self::RainWaterMixingRatio => "Rain Water Mixing Ratio",
+            Self::CloudIceMixingRatio => "Cloud Ice Mixing Ratio",
+            Self::SnowMixingRatio => "Snow Mixing Ratio",
+            Self::GraupelMixingRatio => "Graupel Mixing Ratio",
+            Self::SupercooledLiquidWaterPath => "Supercooled Liquid Water Path",
         }
     }
 
@@ -534,6 +556,12 @@ impl CanonicalField {
             Self::UpdraftHelicity => "m^2/s^2",
             Self::SmokeMassDensity => "kg/m^3",
             Self::ColumnIntegratedSmoke => "kg/m^2",
+            Self::CloudWaterMixingRatio
+            | Self::RainWaterMixingRatio
+            | Self::CloudIceMixingRatio
+            | Self::SnowMixingRatio
+            | Self::GraupelMixingRatio => "kg/kg",
+            Self::SupercooledLiquidWaterPath => "g/m^2",
         }
     }
 }
@@ -555,6 +583,12 @@ pub enum VerticalSelector {
     IsobaricHpa(u16),
     EntireAtmosphere,
     NominalTop,
+    /// The surface where the air is at this temperature: the lowest
+    /// crossing above the ground, for a field such as its height.
+    IsothermCelsius(i16),
+    /// The largest value in the column, for a field a model carries on
+    /// its own levels and a map shows as one number per column.
+    ColumnMaximum,
 }
 
 impl VerticalSelector {
@@ -571,7 +605,18 @@ impl VerticalSelector {
             Self::IsobaricHpa(level_hpa) => format!("{level_hpa}hpa"),
             Self::EntireAtmosphere => "entire_atmosphere".to_string(),
             Self::NominalTop => "nominal_top".to_string(),
+            Self::IsothermCelsius(celsius) => format!("isotherm_{}c", signed_slug(celsius)),
+            Self::ColumnMaximum => "column_maximum".to_string(),
         }
+    }
+}
+
+/// `0`, `10`, `minus10`: a signed number a slug can carry.
+fn signed_slug(value: i16) -> String {
+    if value < 0 {
+        format!("minus{}", value.unsigned_abs())
+    } else {
+        value.to_string()
     }
 }
 
@@ -589,6 +634,8 @@ impl std::fmt::Display for VerticalSelector {
             Self::IsobaricHpa(level_hpa) => write!(f, "{level_hpa}hpa"),
             Self::EntireAtmosphere => f.write_str("entire_atmosphere"),
             Self::NominalTop => f.write_str("nominal_top"),
+            Self::IsothermCelsius(celsius) => write!(f, "{celsius}C_isotherm"),
+            Self::ColumnMaximum => f.write_str("column_maximum"),
         }
     }
 }
@@ -780,6 +827,14 @@ impl FieldSelector {
             field,
             VerticalSelector::HeightAboveGroundLayerMeters { bottom_m, top_m },
         )
+    }
+
+    pub const fn isotherm_celsius(field: CanonicalField, celsius: i16) -> Self {
+        Self::new(field, VerticalSelector::IsothermCelsius(celsius))
+    }
+
+    pub const fn column_maximum(field: CanonicalField) -> Self {
+        Self::new(field, VerticalSelector::ColumnMaximum)
     }
 
     pub fn key(self) -> String {

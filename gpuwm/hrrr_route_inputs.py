@@ -8,7 +8,7 @@ contract gate demands -- and nothing at all for
 ``--root-domain-spec``, ``--namelist-input`` or
 ``--stock-wrf-namelist-input``.  So wizard output could not drive the
 route it was sized for, and the gate that proved the route ran at all
-had to borrow a lane's proof harness to author the missing files.
+had to borrow a separate proof harness to author the missing files.
 
 This module is that authoring, in the product, derived from ONE source
 of truth: the :class:`~gpuwm.experiment.ExperimentConfig` the wizard
@@ -32,6 +32,7 @@ from fractions import Fraction
 import json
 from pathlib import Path
 
+from gpuwm.config import effective_radt_minutes
 from gpuwm.core.microphysics_transition import PORTED_MP_PHYSICS
 from gpuwm.ingest.hrrr_target import TARGET_DOMAIN_SCHEMA
 
@@ -73,8 +74,18 @@ NUM_METGRID_SOIL_LEVELS = 9
 #: "hrrr" ran into the same depletion with no refusal at all.
 SUPPORTED_MICROPHYSICS = frozenset(PORTED_MP_PHYSICS)
 
-#: The existing recommended default. It does not restrict other valid suites.
-ROUTE_DEFAULT_PHYSICS_PROFILE = "thompson-mp8-ysu-mm5-noah-rrtmg-legacy-v1"
+#: The recommended default. It does not restrict other valid suites.
+#:
+#: RTE+RRTMGP is the default radiation arm on every route (owner
+#: ruling 2026-09-19). This route used to mirror the operational
+#: composition it is named for, which pinned the legacy RRTMG
+#: engines here while the other sources already defaulted to the
+#: modern pair; that made the radiation engine a property of which
+#: source a user picked. The suite is otherwise unchanged --
+#: Thompson mp8, YSU, classic MM5, Noah, no cumulus -- and the
+#: legacy arm remains selectable by name wherever it was,
+#: thompson-mp8-ysu-mm5-noah-rrtmg-legacy-v1 included.
+ROUTE_DEFAULT_PHYSICS_PROFILE = "thompson-mp8-ysu-mm5-noah-rte-rrtmgp-v1"
 
 #: The four -- and only four -- differences between the native namelist
 #: gpuwm integrates and the stock-WRF namelist beside it.  The route
@@ -84,8 +95,12 @@ ROUTE_DEFAULT_PHYSICS_PROFILE = "thompson-mp8-ysu-mm5-noah-rrtmg-legacy-v1"
 #: arms run 4 -- and the two stock-only keys stay stock-only for the
 #: same reason: each names a setting the native arm answers in CODE, so
 #: the native namelist would be claiming to control something gpuwm does
-#: not read from it.  ``ghg_input = 0`` mirrors what
-#: gpuwm/core/rrtmg_legacy.py pins; ``do_radar_ref = 1`` mirrors the
+#: not read from it.  ``ghg_input = 0`` mirrors the FIXED-gas
+#: configuration the native arm runs on either 4/4 engine --
+#: gpuwm/core/rrtmg_legacy.py pins it in its switch table, and the
+#: RTE+RRTMGP arm selects one annual mean CO2 for the run's
+#: calendar year (gpuwm/core/rrtmgp.py) rather than WRF's
+#: time-varying CAM gas table; ``do_radar_ref = 1`` mirrors the
 #: REFL_10CM gpuwm evaluates unconditionally at output time.  The
 #: certified raw-runtime contract
 #: (:func:`gpuwm.hrrr_hierarchy_direct._require_raw_stock_delta`)
@@ -97,7 +112,22 @@ _STOCK_DELTAS = ("ra_lw_physics 0->1 (native longwave off only), "
 
 
 class HrrrRouteInputError(ValueError):
-    """This experiment cannot drive the nested HRRR route."""
+    """This experiment cannot drive the nested HRRR route.
+
+    ``namelist_values`` names the fields whose namelist column every
+    domain agrees on, with that column's value.  A refusal that carries
+    it says the EDIT that makes the configuration and the files agree
+    rather than only the difference between them, so the door that
+    refused can offer a way out a reader carries out in one step and a
+    caller can follow it instead of copying it out of the sentence by
+    hand.  Empty where the columns disagree, where the difference is not
+    a per-domain field, or where the value has no spelling in a
+    settings document.
+    """
+
+    def __init__(self, *args, namelist_values=None):
+        super().__init__(*args)
+        self.namelist_values = dict(namelist_values or {})
 
 
 def _f(value) -> str:
@@ -616,8 +646,14 @@ def render_namelist_input(exp, *, stock: bool = False) -> str:
         f" ra_lw_physics                       = "
         f"{_column(longwave)}",
         f" ra_sw_physics                       = {_column(shortwave)}",
+        # The EFFECTIVE cadence, not the compatibility field beside it:
+        # a domain whose row never mentions radiation carries radt=0,
+        # which means "use radt_minutes" to the engine and "every model
+        # step" to WRF, so writing it raw emitted a namelist that does
+        # not reproduce the config it sits beside.  cudt one line below
+        # already reads the modern field; this is the same reading.
         f" radt                                = "
-        f"{_column(_f(r.radt) for r in runs)}",
+        f"{_column(_f(effective_radt_minutes(r)) for r in runs)}",
         f" icloud                              = {root.run.icloud},",
         f" swrad_scat                          = "
         f"{_f(root.run.swrad_scat)},",
@@ -698,8 +734,35 @@ def render_namelist_input(exp, *, stock: bool = False) -> str:
         # the ArWen arm read the TOML.
         f" moist_mix6_off                      = "
         f"{_column(_logical(r.moist_mix6_off) for r in runs)}",
+        # THE WHOLE TURBULENCE ROW, per domain, not c_s alone.  Every key
+        # here is max_domains in Registry.EM_COMMON (c_s :2862, c_k :2863,
+        # mix_isotropic :2896, mix_upper_bound :2897, tke_upper_bound
+        # :2899, tke_drag_coefficient :2900, tke_heat_flux :2901), every
+        # one sits in gpuwm.experiment._DOMAIN_RUN_OVERRIDES, and
+        # gpuwm.namelist_import reads every one back as a column.  With
+        # only c_s authored, a suite that departs from the WRF defaults on
+        # any of the others emitted a namelist describing a different run
+        # from the TOML beside it: the prognostic-TKE suite writes c_k =
+        # 0.1 and a wall stress, and the re-import read WRF's 0.15 and
+        # 0.0, so the route's own round-trip check refused the set at
+        # emission and the suite had no HRRR route at all.  Authored
+        # explicitly at every value, defaults included, on the rule
+        # moist_mix6_off already follows: an omitted key hands the WRF arm
+        # the Registry default while the gpuwm arm reads the TOML.
         f" c_s                                 = "
         f"{_column(_f(r.c_s) for r in runs)}",
+        f" c_k                                 = "
+        f"{_column(_f(r.c_k) for r in runs)}",
+        f" mix_isotropic                       = "
+        f"{_column(r.mix_isotropic for r in runs)}",
+        f" mix_upper_bound                     = "
+        f"{_column(_f(r.mix_upper_bound) for r in runs)}",
+        f" tke_upper_bound                     = "
+        f"{_column(_f(r.tke_upper_bound) for r in runs)}",
+        f" tke_heat_flux                       = "
+        f"{_column(_f(r.tke_heat_flux) for r in runs)}",
+        f" tke_drag_coefficient                = "
+        f"{_column(_f(r.tke_drag_coefficient) for r in runs)}",
         f" diff_6th_thresh                     = "
         f"{_column(_f(r.diff_6th_thresh) for r in runs)}",
         f" base_temp                           = "
@@ -754,6 +817,19 @@ def render_namelist_input(exp, *, stock: bool = False) -> str:
     return text
 
 
+def _settings_value(value) -> str:
+    """One setting's value as a settings document spells it."""
+
+    return str(value).lower() if isinstance(value, bool) else repr(value)
+
+
+def _settings_phrase(settings) -> str:
+    """``a = 1, b = false`` -- an edit a reader can carry out as printed."""
+
+    return ", ".join(f"{key} = {_settings_value(value)}"
+                     for key, value in sorted(settings.items()))
+
+
 def route_input_paths(config_path: Path) -> dict[str, Path]:
     """Where :func:`write_hrrr_route_inputs` puts each file.
 
@@ -768,6 +844,46 @@ def route_input_paths(config_path: Path) -> dict[str, Path]:
         "namelist_input": parent / f"{stem}.namelist.input",
         "stock_namelist_input": parent / f"{stem}.stock.namelist.input",
     }
+
+
+#: Per-domain keys of gpuwm's own schema that THIS route carries once
+#: for the whole tree.  Two mechanisms, one consequence, and both were
+#: measured through the real door rather than read off a table:
+#:
+#: * the importer refuses a column whose entries differ --
+#:   ``mp_physics`` and ``sf_sfclay_physics`` (``_mapped`` and the
+#:   surface-layer read in :mod:`gpuwm.namelist_import`), ``bldt`` and
+#:   ``diff_6th_opt`` (its ``_uniform`` reads in &physics and
+#:   &dynamics);
+#: * the file pair states one value for the tree -- ``isfflx``, which
+#:   WRF declares with one entry and :func:`render_namelist_input`
+#:   writes from the root.
+#:
+#: So an edit that sets one of these on ONE domain of a regional
+#: forecast cannot be written into the files that route runs from.  A
+#: door that publishes a candidate asks :func:`route_shared_domain_keys`
+#: and refuses such an edit with the sentence it already uses for a
+#: tree-wide setting, instead of letting the round trip below refuse the
+#: same edit in the importer's words with no way out.
+ROUTE_SHARED_DOMAIN_KEYS = ("bldt", "diff_6th_opt", "isfflx",
+                            "mp_physics", "sf_sfclay_physics")
+
+
+def route_shared_domain_keys(source) -> frozenset[str]:
+    """Which per-domain keys this candidate's route holds tree-wide.
+
+    ``source`` is the candidate's own ``[fetch].source``, resolved
+    through the dispatcher's own branch exactly as
+    :func:`candidate_companions` resolves it, so the answer cannot
+    disagree with the route the run will take.  Every other route reads
+    the configuration itself and holds none of them.
+    """
+
+    from gpuwm.source_drivability import candidate_route_chain
+
+    if candidate_route_chain(source) != "prepared:hrrr":
+        return frozenset()
+    return frozenset(ROUTE_SHARED_DOMAIN_KEYS)
 
 
 def verify_round_trip(exp, wps_namelist: Path, namelist_input: Path) -> None:
@@ -802,11 +918,24 @@ def verify_round_trip(exp, wps_namelist: Path, namelist_input: Path) -> None:
     # (:func:`gpuwm.hrrr_hierarchy_direct._native_experiment` takes it
     # from the prepared-cache identity header); this is the same
     # inheritance at emission.
+    #
+    # WHICH RRTMG LINEAGE is the third fact of the same kind, and it was
+    # missed with the second.  WRF has no key for
+    # ``wrf_rrtmg_compatibility`` either, and it is not decoration: the
+    # RTE+RRTMGP arm reads it to choose its snow treatment and stamps it
+    # into the restart algorithm identity, so 'none' and the mapping
+    # token are two different runs of one 4/4 pair.  Re-importing without
+    # saying so gave every 4/4 emission the mapping token and reported
+    # the difference against a shipped suite that declares 'none' --
+    # which made that suite unemittable on this route.
     variant = getattr(exp.root.run, "ra_rrtmg_variant", None)
+    compatibility = getattr(exp.root.run, "wrf_rrtmg_compatibility", None)
     text, _report = import_namelists(
         wps_namelist, namelist_input, name=exp.name,
         acknowledgements=tuple(exp.acknowledgements),
-        **({} if variant is None else {"rrtmg_variant": variant}))
+        **({} if variant is None else {"rrtmg_variant": variant}),
+        **({} if compatibility is None
+           else {"rrtmg_compatibility": compatibility}))
     imported = build_experiment(
         tomllib.loads(text),
         source=f"round trip of {namelist_input.name}")
@@ -818,6 +947,10 @@ def verify_round_trip(exp, wps_namelist: Path, namelist_input: Path) -> None:
             for domain in candidate.domains]
 
     differences = []
+    #: Per field, the value each domain's namelist column carries where
+    #: it differs from the configuration.  A field every domain agrees
+    #: on becomes the way out below.
+    columns: dict[str, list] = {}
     if len(imported.domains) != len(exp.domains):
         differences.append(
             f"domain count {len(imported.domains)} != {len(exp.domains)}")
@@ -832,6 +965,7 @@ def verify_round_trip(exp, wps_namelist: Path, namelist_input: Path) -> None:
                         f"d{grid_id:02d} {key}: config "
                         f"{left_run.get(key)!r} vs namelist "
                         f"{right_run.get(key)!r}")
+                    columns.setdefault(key, []).append(right_run.get(key))
     if imported.start_time != exp.start_time:
         differences.append(
             f"start_time {imported.start_time} != {exp.start_time}")
@@ -839,13 +973,38 @@ def verify_round_trip(exp, wps_namelist: Path, namelist_input: Path) -> None:
         differences.append(
             f"run_seconds {imported.run_seconds} != {exp.run_seconds}")
     if differences:
+        # The way out, exact where it can be: a field whose column every
+        # domain agrees on has ONE value that makes the two documents
+        # say the same thing, and a reader told that value carries the
+        # remedy out in one step.  A field the columns disagree on is
+        # left to the per-domain lines above, which already print both
+        # sides.
+        stated = {key: values[0] for key, values in columns.items()
+                  if len(values) == len(exp.domains)
+                  and all(value == values[0] for value in values)
+                  and isinstance(values[0], (bool, int, float, str))}
         raise HrrrRouteInputError(
             "the emitted HRRR namelists do not reproduce the emitted "
             "config -- refusing to write a set the route would read "
             "differently from the TOML beside it: "
             + "; ".join(differences[:8])
             + ("" if len(differences) <= 8
-               else f" (+{len(differences) - 8} more)"))
+               else f" (+{len(differences) - 8} more)")
+            # A refusal names the way out, and each difference above
+            # already names both values, so the way out can be exact:
+            # this route integrates what the namelists say, and the
+            # fields whose namelist column the pair cannot carry per
+            # domain are the ones :data:`ROUTE_SHARED_DOMAIN_KEYS`
+            # names.  Nothing here is a workaround for the defect this
+            # module exists to fix: it is what to do with a setting this
+            # route has no spelling for.
+            + ". This route runs the namelists rather than the TOML, so "
+            "the namelist value above is what would run. Next: set each "
+            "field to the value its namelist column carries"
+            + (f" ({_settings_phrase(stated)})" if stated else "")
+            + ", or keep the setting and run this forecast on a source "
+            "whose route reads the configuration itself",
+            namelist_values=stated)
 
 
 def write_hrrr_route_inputs(config_path: Path, exp, *, wps_text: str,
@@ -867,10 +1026,70 @@ def write_hrrr_route_inputs(config_path: Path, exp, *, wps_text: str,
             paths["namelist_input"], paths["stock_namelist_input"]]
 
 
+def candidate_companions(config_path, exp, *, wps_text: str, source):
+    """Every file a candidate configuration must carry beside it.
+
+    ONE answer for every door that publishes a configuration -- the
+    domain editor, the forcing editor, the schedule editor, the
+    saved-setup start, ``gpuwm domain-fit``, ``gpuwm domain-tiles`` and
+    the following-nest authoring door -- because the question belongs to
+    the ROUTE that configuration will run on, not to the edit, the refit
+    or the authoring that produced it.  Answered per door it was
+    answered wrong: the domain editor wrote the configuration and its
+    WPS namelist and nothing else, so EVERY edit it made to a
+    native-route configuration -- any action, any grid -- produced a
+    candidate that :func:`gpuwm.runplan._hrrr_chain` refuses at its
+    ``route_input_paths`` precheck, above the fetch stage, before
+    anything is downloaded or started.  The fit and tile doors published
+    the same short set for the same reason.
+
+    ``source`` is the candidate's own ``[fetch].source`` -- the very key
+    the dispatcher reads to choose the chain -- or ``None`` when it has
+    none.  Not "``None`` when the configuration carries ``[case_data]``":
+    a configuration with both would then be given a short copy and still
+    routed to the regional chain.  The chain is resolved through
+    :func:`gpuwm.source_drivability.candidate_route_chain`, which is
+    where that one branch lives so that a preprocessing install carrying
+    this module without the forecast dispatcher can still ask it;
+    :mod:`gpuwm.runplan` keeps the name as a re-export, so a reader of
+    the dispatcher still finds it.  One branch, so the set of files
+    written here and the set the run reads cannot be decided
+    differently.
+
+    Returns ``[(destination, text), ...]`` with the WPS namelist first.
+    Text rather than written files, because every one of these doors
+    publishes its whole set through one create-only helper that owns
+    rollback, and a file written here would sit outside it.  The route's
+    own writer still runs, into a staging directory, so what comes back
+    has been through :func:`verify_round_trip` against the real importer
+    -- the nest cadence an edit just set is read back out of the bytes
+    that carry it rather than assumed into them.
+    """
+    import tempfile
+
+    from gpuwm.source_drivability import candidate_route_chain
+
+    config_path = Path(config_path)
+    paths = route_input_paths(config_path)
+    if candidate_route_chain(source) != "prepared:hrrr":
+        return [(paths["wps_namelist"], wps_text)]
+    with tempfile.TemporaryDirectory(prefix="arwen-candidate-") as staging:
+        staged = Path(staging) / config_path.name
+        written = write_hrrr_route_inputs(
+            staged, exp, wps_text=wps_text,
+            writer=lambda path, content: path.write_text(
+                content, encoding="utf-8"))
+        return [(config_path.parent / path.name,
+                 path.read_text(encoding="utf-8")) for path in written]
+
+
 __all__ = [
     "FORCING_INTERVAL_SECONDS",
     "HrrrRouteInputError",
+    "candidate_companions",
     "ROUTE_DEFAULT_PHYSICS_PROFILE",
+    "ROUTE_SHARED_DOMAIN_KEYS",
+    "route_shared_domain_keys",
     "SUPPORTED_MICROPHYSICS",
     "render_namelist_input",
     "render_target_domain",

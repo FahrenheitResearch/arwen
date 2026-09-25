@@ -9,7 +9,6 @@ import math
 import os
 from pathlib import Path
 import sys
-import tempfile
 import tomllib
 
 REQUEST_SCHEMA = "arwen.companion-forcing-edit.v1"
@@ -133,8 +132,16 @@ def edit_configuration(request):
         "domains_geojson": domain_geojson(outlines), "experiment": experiment_config_document(exp),
         "fetch": raw["fetch"], "case_data": {key: raw["case_data"][key] for key in ("forcing_interval_s", "wps_namelist")}}
     wps = _wps_text(exp, original_wps, wps_output, raw, len(original_exp.domains))
+    # Through the shared helper, asked with the candidate's own
+    # [fetch].source as every door asks it: this door writes an ERA5
+    # route, whose answer is the WPS namelist alone, but a door that
+    # states its own answer is how the gap started.
+    from gpuwm.hrrr_route_inputs import candidate_companions
+    companions = candidate_companions(output, exp, wps_text=wps,
+        source=(raw.get("fetch") or {}).get("source"))
     result = {"schema": RESULT_SCHEMA, "created": True, "forecast_started": False, "acquisition_started": False,
         "config_path": str(output), "config_sha256": config_sha, "wps_path": str(wps_output),
+        "route_companions": [str(path) for path, _text in companions],
         "receipt_path": str(receipt_output), "source_path": str(authority.source), "source_sha256": authority.sha256,
         "configuration": configuration, "selection": {"product_type": request["product_type"], "provider": request["provider"],
             "member": member, "cadence_hours": cadence, "forcing_path": str(forcing), "request_sha256": identity_sha,
@@ -149,7 +156,7 @@ def edit_configuration(request):
     if hashlib.sha256(authority.source.read_bytes()).hexdigest() != authority.sha256:
         raise ValueError("The original configuration changed while preparing the candidate")
     output.parent.mkdir(parents=True, exist_ok=True)
-    _publish_new_files([(wps_output, wps), (receipt_output, _json(result)), (output, text)])
+    _publish_new_files([*companions, (receipt_output, _json(result)), (output, text)])
     return result
 
 
@@ -291,16 +298,16 @@ def edit_schedule(request):
             if key in ("forcing_interval_s", "start_time", "end_time", "wps_namelist")}}
     wps = _wps_text(exp, original_wps, wps_output, raw, len(original_exp.domains),
                     original_domain_ids=[domain.grid_id for domain in original_exp.domains])
-    companions = [(wps_output, wps)]
-    if data is None and source is not None and prepared_chain_for_source(source) == "prepared:hrrr":
-        # The native route reads all four companions. Regenerate and round-trip
-        # them through its own writer before publishing the new configuration.
-        from gpuwm.hrrr_route_inputs import write_hrrr_route_inputs
-        with tempfile.TemporaryDirectory(prefix="arwen-schedule-") as directory:
-            staged = Path(directory) / output.name
-            written = write_hrrr_route_inputs(staged, exp, wps_text=wps,
-                writer=lambda path, content: path.write_text(content, encoding="utf-8"))
-            companions = [(output.parent / path.name, path.read_text(encoding="utf-8")) for path in written]
+    if data is None and source is not None:
+        # Unchanged refusal: a saved fetch route no chain can drive is
+        # named here rather than at the launch this edit re-arms.
+        prepared_chain_for_source(source)
+    # One helper for every door that publishes a candidate, so the set of
+    # companions a route reads cannot be complete at one door and short
+    # at the next.
+    from gpuwm.hrrr_route_inputs import candidate_companions
+    companions = candidate_companions(output, exp, wps_text=wps,
+                                      source=(raw.get("fetch") or {}).get("source"))
     for path, _ in companions:
         if os.path.lexists(path):
             raise FileExistsError("Choose a new candidate path; existing route companions are preserved")

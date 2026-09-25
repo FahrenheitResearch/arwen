@@ -13,14 +13,15 @@ Measured on an RTX 5090 (compute capability 12.0, CUDA driver API version 13.3
 across the six
 compile routes the model uses, crossed with six arithmetic mechanisms; the receipt
 statement is generated into the hardware page and the raw evidence (bit-pattern
-tables, cubins, SASS) is committed [docs/public/HARDWARE.md:513-559;
-tools/ftz_receipt/receipt/]:
+tables, cubins, SASS) is committed [docs/public/HARDWARE.md, the block between
+the `BEGIN GENERATED ftz-statement: hardware-fp32-subnormals` and
+`END GENERATED` markers; tools/ftz_receipt/receipt/]:
 
 | route | what it is | verdict (6 mechanisms) |
 |---|---|---|
 | R1 | loader RawModule, `-ftz=true` | flush-to-zero 6/6 |
 | R1-ftztrue | R1 + explicit `--ftz=true` (control) | flush-to-zero 6/6 |
-| R2 | RawModule with the shortwave option tuple (`--ftz=false` then `-ftz=true`) | flush-to-zero 6/6 |
+| R2 | direct NVRTC with the shortwave option tuple, `--ftz=false` (the shortwave site left `RawModule` for the bypass R3 uses when NVRTC 13 rejected the duplicated flag, so no `-ftz=true` follows it) | ieee-agreement 6/6 |
 | R3 | direct NVRTC + module load, `--ftz=false` | ieee-agreement 6/6 |
 | R4 | CuPy ReductionKernel | flush-to-zero 6/6 |
 | R5 | inline PTX without `.ftz`, riding R1's compile | ieee-agreement 4/6, not-applicable 2 |
@@ -28,13 +29,13 @@ tools/ftz_receipt/receipt/]:
 The decisive observation: R5 and R1 are kernels inside one compiled object, same
 device, same flags, one compile, and they did not measure alike, so on this device
 the outcome follows the instruction the compiler emitted rather than the hardware
-alone [docs/public/HARDWARE.md:545-548]. The control arm matters: the three
+alone [the `R5` entry of that generated block]. The control arm matters: the three
 distinct bit tables among the six arms are what shows the pipeline responds to the
 flag at all. This corrects earlier project lore that "sm_120 flushes subnormals in
 all arithmetic and `--ftz=false` is ineffective"; on the direct-NVRTC route
 `--ftz=false` survives and all six mechanisms score ieee-agreement. The consequence
 that reaches the science is a branch flip on physically negligible inputs, not a
-change in a resolved quantity [docs/public/HARDWARE.md:560-561].
+change in a resolved quantity [the first bullet after that generated block].
 
 ## 4.2 The shortwave subnormal countermeasure
 
@@ -80,14 +81,40 @@ subnormal-sensitive block through the host by design
 
 Two further mechanisms scope the determinism claim [docs/public/DETERMINISM.md:128-150]:
 
-1. The vertical mass-flux construction uses CuPy's `sum`/`cumsum` over the
-   vertical axis, and the RRTMGP solar-spectrum normalization uses a NumPy float64
-   host sum; those reduction orders belong to CuPy and NumPy.
+1. The RRTMGP solar-spectrum normalization uses a NumPy float64 host sum, an
+   order that belongs to NumPy. The vertical mass-flux construction (WRF
+   `calc_ww_cp`, `gpuwm/core/dycore.py::_omega_ref`) used CuPy's `sum` and
+   `cumsum` over the vertical axis until 2.7.6; it is now one thread per column
+   in the Fortran's own operation order (`divv = (msftx*dnw)*(rdx*du + rdy*dv)`,
+   `dmdt` summed sequentially from the surface up, `ww(k) = (ww(k-1) -
+   (dnw*c1h)*dmdt) - divv(k-1)` as two subtractions) with explicit
+   round-to-nearest intrinsics under `-fmad=false`, bit-identical to a float32
+   scalar transcription of the loop [tests/test_omega_column_scan.py], so that
+   order is the project's. The readings of the move, taken on the seeded 64x64x32
+   state of `tools/benchmark_seeded_step.py` (Morrison, seed 20260731, RTX 5070
+   Ti, receipts under `tests/data/receipts/omega-column-scan/`): one call of Omega differs
+   from the retired construction by at most 6.0e-7 of max |Omega| (6.5 ULP of
+   the field maximum) on the flat route and 5.0e-7 (5.5 ULP) with map factors,
+   with 73 percent of the words moving: 17 percent of all words by 1 ULP of their
+   own magnitude, 14 percent by 2 and 42 percent by 3 or more, the last group
+   being small-magnitude words, since no word moves by more than 6.5 ULP of the
+   field maximum in absolute terms; after 60 steps u, v,
+   w, theta', phi' and mu' differ by 1.7e-4 to 7.2e-4 of each field's maximum,
+   dry core and Morrison alike, and every moisture mass field and number moment
+   is unchanged except Morrison's cloud droplet number `nc`, which follows the
+   thermodynamic state and moves by 2.5e-6 of its maximum. The whole step got 5.1 to
+   7.0 percent cheaper (1.07, 2.02 and 5.33 ms per step at 250x200x49, 320x256x49
+   and 480x384x49); the routine alone went from 1,933 to 164 microseconds at
+   480x384x49, of which `cp.cumsum` had been 1,054. The phase-2 step capture
+   [tests/data/phase2_step_regression.npz] was re-pinned with its readings in the
+   ledger of tests/test_coriolis_map.py.
 2. Kernels compile with no contraction restriction, so the compiler may fuse a
    multiply-add: a different operation sequence, not a different rounding of the
    same one. Live kernels call `expf`, `powf`, `logf`, `sinf`, `sqrtf`, `cbrtf`,
    `tgammaf`, which carry ULP bounds rather than correctly-rounded results. Nest
-   interpolation is the deliberate exception and compiles with `-fmad=false`.
+   interpolation and the fused dycore column kernels (couple-momentum, the
+   scalar update, the Omega column scan) are the deliberate exceptions and
+   compile with `-fmad=false`.
 
 None of these are defects; they are the reason the guarantee is scoped to one
 environment rather than to arithmetic in general. A concrete published consequence:

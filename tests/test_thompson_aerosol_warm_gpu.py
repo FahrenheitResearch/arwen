@@ -1840,7 +1840,14 @@ def test_the_cold_kernel_gate_is_the_literal_complement_of_the_warm_mask():
             / "thompson_aerosol_warm.cu").read_text(encoding="utf-8")
     adapter = (root / "gpuwm" / "core"
                / "microphysics.py").read_text(encoding="utf-8")
-    assert cold.count("if (temperature[idx] >= 273.15f) return;") == 1
+    # The cold network's gate: above the seam it only applies WRF's ice
+    # mass/number balance to the entry ice (:3033-3055) and returns.
+    gate = "    if (temperature[idx] >= 273.15f) {\n"
+    assert cold.count(gate) == 1
+    start = cold.index(gate)
+    block = cold[start:cold.index("        return;\n    }\n", start)]
+    assert "thompson_aa_bound_ice_number(" in block
+    assert "temperature[idx] =" not in block and "qv[idx] =" not in block
     # The warm side never re-tests temperature; it consumes the held mask,
     # because the cold network has already heated the temperature array.
     assert "const bool entry_warm = graupel_melt_marker[idx] != 0.0f;" in warm

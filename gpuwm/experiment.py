@@ -1313,6 +1313,50 @@ class ExperimentConfig:
         return self.dx_exact(dc.parent_id) / dc.parent_grid_ratio
 
 
+#: :func:`config_path_kind`'s answer for a zero-byte file.  Its own
+#: sentence names a remedy the other kinds have no use for, so the
+#: readers that need to tell it apart compare against this rather than
+#: matching prose.
+EMPTY_CONFIG_FILE = "is empty"
+
+#: The opening words of the kind reported when ``is_file()`` ITSELF
+#: failed -- a symlink loop, a permission wall, a dead mount.  The rest
+#: of that kind is the errno's own text, so it cannot be a constant.
+_UNREADABLE_CONFIG_PREFIX = "cannot be read as a configuration file"
+
+
+def config_path_kind(path: str | Path) -> str | None:
+    """``None`` when ``path`` is a configuration file that can be opened,
+    otherwise the words for what it is instead.
+
+    ONE vocabulary for "that is not a config file", because two doors ask
+    the question.  :func:`readable_config_path` asks it to refuse, and
+    ``gpuwm resume`` asks it of each rung of its resolution ladder to say
+    what each candidate was instead -- and a resume whose ladder reported
+    "missing" for a directory, while the loader one call later called the
+    same path "a directory", would be two answers about one file.
+
+    The kind is decided BEFORE anything opens the path.  ``is_file()`` is
+    what separates a regular file from a directory, a FIFO, a device and
+    a broken symlink in one call, and it is the guard the fleet's
+    hostile-input node asked for by name.
+    """
+
+    path = Path(path)
+    try:
+        if path.is_file():
+            if path.stat().st_size == 0:
+                return EMPTY_CONFIG_FILE
+            return None
+    except OSError as error:
+        return f"{_UNREADABLE_CONFIG_PREFIX} ({error.strerror or error})"
+    if path.is_dir():
+        return "is a directory"
+    if path.exists():
+        return "is not a regular file (a device, socket or FIFO)"
+    return "does not exist"
+
+
 def readable_config_path(path: str | Path) -> Path:
     """``path`` as a readable regular file, or a refusal saying which
     kind of thing it actually is.
@@ -1333,30 +1377,36 @@ def readable_config_path(path: str | Path) -> Path:
     """
 
     path = Path(path)
-    try:
-        if path.is_file():
-            if path.stat().st_size == 0:
-                raise ValueError(layered(
-                    f"{path} is empty, so there is no configuration in "
-                    "it to run.\n"
-                    "  remedy: gpuwm domain ... --out "
-                    f"{path}   # re-author it",
-                    "A zero-byte TOML parses to an empty table, which "
-                    "used to reach the RunConfig constructor and come "
-                    "back as its argument list."))
-            return path
-    except OSError as error:
+    kind = config_path_kind(path)
+    if kind is None:
+        return path
+    if kind == EMPTY_CONFIG_FILE:
+        raise ValueError(layered(
+            f"{path} is empty, so there is no configuration in "
+            "it to run.\n"
+            "  remedy: gpuwm domain ... --out "
+            f"{path}   # re-author it",
+            "A zero-byte TOML parses to an empty table, which "
+            "used to reach the RunConfig constructor and come "
+            "back as its argument list."))
+    if kind.startswith(_UNREADABLE_CONFIG_PREFIX):
         # A symlink loop, a permission wall, a dead mount: is_file()
         # itself is what failed, and its errno is the diagnosis.
-        raise ValueError(
-            f"{path} cannot be read as a configuration file "
-            f"({error.strerror or error}).") from None
-    if path.is_dir():
-        kind = "is a directory"
-    elif path.exists():
-        kind = "is not a regular file (a device, socket or FIFO)"
-    else:
-        kind = "does not exist"
+        #
+        # It carries a remedy for the same reason the other three kinds
+        # do.  This one used to end at the errno and a full stop, so the
+        # reader with the LEAST to go on -- the kind of the path is not
+        # even known here -- was the one given nothing to do next.
+        raise ValueError(layered(
+            f"{path} {kind}, so what it is could not be decided.\n"
+            "  remedy: resolve the path and check this account can read "
+            "it (a symbolic-link loop, a permission wall and a mount "
+            "that is gone all answer this way), then pass the "
+            "experiment .toml that `gpuwm domain` wrote.",
+            "The errno is quoted as the operating system gave it, and it "
+            "comes from the KIND check rather than from a read: nothing "
+            "is opened until the path is known to be a readable regular "
+            "file, because a FIFO would block this process forever."))
     raise ValueError(layered(
         f"{path} {kind}; pass the experiment .toml that `gpuwm domain` "
         "wrote.",
@@ -2396,7 +2446,8 @@ def _check_whole_second_cadence(label: str, seconds: Fraction, grid_id,
 
 def validate_boundary_timing(
         exp: ExperimentConfig, boundary_interval_seconds: int, *,
-        source: str = "boundary forcing") -> None:
+        source: str = "boundary forcing",
+        live_born_children=()) -> None:
     """Validate the structural hierarchy/forcing timing contract.
 
     There is no whole-hour requirement.  The decoded boundary cadence must
@@ -2405,6 +2456,15 @@ def validate_boundary_timing(
     seams.  A delayed child start must additionally be an exact parent-step
     boundary and an exact boundary-forcing seam.  History output cadence is
     independent and is deliberately absent from this contract.
+
+    ``live_born_children`` names the grid ids of children that are
+    initialized from their LIVE parent at their start instant rather
+    than from a forcing snapshot: the seam rule exists because a
+    declared late start reads the forcing at that instant and so has to
+    land on one, and a child that reads no snapshot has nothing to land
+    on.  A spawned nest is the built-in case; a nest a cycling analysis
+    attaches to its own trajectory declares itself here.  The
+    parent-step alignment is not relaxed for either.
     """
     if (isinstance(boundary_interval_seconds, bool)
             or not isinstance(boundary_interval_seconds, int)
@@ -2421,6 +2481,7 @@ def validate_boundary_timing(
             f"d{exp.root.grid_id:02d} dt = "
             f"{exp.dt_exact(exp.root.grid_id)} s exactly, cadence/dt = "
             f"{root_steps}.")
+    live_born = {int(grid_id) for grid_id in live_born_children}
     for dc in exp.domains[1:]:
         offset = exp.domain_start_offset_exact(dc.grid_id)
         parent_offset = exp.domain_start_offset_exact(dc.parent_id)
@@ -2448,6 +2509,12 @@ def validate_boundary_timing(
             # cadence, which for a six-hourly analysis is four instants a
             # day.  The parent-step alignment above is NOT relaxed: it is
             # the rule the spawn instant is already validated against.
+            continue
+        if int(dc.grid_id) in live_born:
+            # The same argument, declared by the caller: this child is
+            # SINT from its live parent at its start and reads no
+            # forcing snapshot there, so a forcing seam has nothing to
+            # bind.  The parent-step alignment above still applies.
             continue
         forcing_seams = offset / interval
         if forcing_seams.denominator != 1:

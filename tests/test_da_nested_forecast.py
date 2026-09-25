@@ -457,3 +457,141 @@ def test_cost_tool_reports_an_inadmissible_nest_instead_of_raising():
                      "--half-width-km", "20"]) == 0
     row, = json.loads(buffer.getvalue())["rows"]
     assert "gray-zone" in row["refused"]
+
+
+# ---------------------------------------------------------------------------
+# the child through the assimilation legs
+#
+# The child used to be attached to the FREE legs alone, so it was born at
+# the fork between the cycle and whatever ran after it and had no history
+# of its own.  These contracts hold the two halves of carrying it through
+# every leg instead: which legs it runs on, and how the parent's analysis
+# reaches a child that is restored from its own snapshot rather than
+# rebuilt from the analysed parent.
+# ---------------------------------------------------------------------------
+
+def test_the_child_runs_on_every_leg_observed_and_free():
+    assert nf.nest_legs(observed_legs=20, free_legs=1) == tuple(range(21))
+    assert nf.nest_legs(observed_legs=3, free_legs=0) == (0, 1, 2)
+    assert nf.nest_legs(observed_legs=0, free_legs=2) == (0, 1)
+
+
+def test_a_run_with_no_legs_at_all_carries_no_child():
+    assert nf.nest_legs(observed_legs=0, free_legs=0) == ()
+
+
+def _increment_pair():
+    """A parent experiment and its 1 km child, at the demo geometry."""
+    exp = _nowcast_experiment()
+    geometry = nf.NestGeometry(ratio=3, nx=150, ny=150, members=1)
+    child_dc = nf.nest_domain_config(exp, geometry)
+    return exp, child_dc
+
+
+def test_the_correction_is_two_interpolations_differenced_not_one():
+    """SINT is limited, so the interpolated increment is the wrong array.
+
+    If the correction is ever simplified to SINT(increment) this test is
+    what fails.  On a rough field the limiter's two flux-corrected passes
+    make SINT(background + increment) - SINT(background) differ from
+    SINT(increment) by a large fraction of the increment itself, so the
+    two forms are not a matter of taste.
+    """
+    from gpuwm.core.nest_interp import sint
+
+    exp, child_dc = _increment_pair()
+    parent_run = exp.root.run
+    rng = np.random.default_rng(20260918)
+    background = rng.normal(
+        300.0, 5.0, (4, parent_run.ny, parent_run.nx)).astype(np.float32)
+    increment = rng.normal(
+        0.0, 0.5, (4, parent_run.ny, parent_run.nx)).astype(np.float32)
+
+    correction = nf.nest_down_analysis(
+        {"thp": background}, {"thp": background + increment},
+        child_dc, parent_run)["thp"]
+    naive = np.asarray(sint(
+        np.ascontiguousarray(increment),
+        nf.increment_registration(child_dc, parent_run, "")))
+    assert np.max(np.abs(correction - naive)) > 0.1 * np.abs(
+        increment).max()
+
+
+def test_an_analysis_that_changed_nothing_leaves_the_child_alone():
+    """Exactly zero, not nearly: the same array interpolated twice."""
+    exp, child_dc = _increment_pair()
+    parent_run = exp.root.run
+    rng = np.random.default_rng(7)
+    field = rng.normal(
+        300.0, 5.0, (4, parent_run.ny, parent_run.nx)).astype(np.float32)
+    correction = nf.nest_down_analysis(
+        {"thp": field}, {"thp": field}, child_dc, parent_run)["thp"]
+    assert np.count_nonzero(correction) == 0
+
+
+def test_both_sides_are_raw_interpolations_of_the_parent():
+    """The child a builder produced is not the analysed side.
+
+    parent_only_init clamps the rounding-scale negatives out of every
+    number moment after it SINTs, so the child object build_nested_child
+    hands back differs from the raw interpolation on exactly those
+    fields.  Differencing against it returns the clamp as well as the
+    analysis.  On the card on 2026-09-18 that put the child's effective
+    cloud-droplet radius at -0.269 on a leg where nothing was analysed.
+    Held here as the property that stops it: the function interpolates
+    what it is given and takes no pre-made child-grid field.
+    """
+    import inspect
+
+    signature = inspect.signature(nf.nest_down_analysis)
+    assert "analysed_on_child" not in signature.parameters
+
+
+def test_a_field_the_analysis_never_named_gets_no_correction():
+    exp, child_dc = _increment_pair()
+    parent_run = exp.root.run
+    field = np.zeros((4, parent_run.ny, parent_run.nx), np.float32)
+    assert nf.nest_down_analysis({}, {"qv": field},
+                                 child_dc, parent_run) == {}
+
+
+def test_a_uniform_analysis_arrives_on_the_child_undiluted():
+    """Partition of unity: a constant correction is not spread out."""
+    exp, child_dc = _increment_pair()
+    parent_run = exp.root.run
+    background = np.full((4, parent_run.ny, parent_run.nx), 1e-3, np.float32)
+    down = nf.nest_down_analysis(
+        {"qv": background}, {"qv": background + np.float32(0.25)},
+        child_dc, parent_run)
+    assert down["qv"].shape == (4, child_dc.run.ny, child_dc.run.nx)
+    assert np.allclose(down["qv"], 0.25, atol=1e-6)
+
+
+def test_the_wind_components_take_their_own_staggered_registration():
+    exp, child_dc = _increment_pair()
+    parent_run = exp.root.run
+    zeros = {
+        "u": np.zeros((4, parent_run.ny, parent_run.nx + 1), np.float32),
+        "v": np.zeros((4, parent_run.ny + 1, parent_run.nx), np.float32),
+        "mup": np.zeros((parent_run.ny, parent_run.nx), np.float32)}
+    down = nf.nest_down_analysis(zeros, dict(zeros), child_dc, parent_run)
+    assert down["u"].shape == (4, child_dc.run.ny, child_dc.run.nx + 1)
+    assert down["v"].shape == (4, child_dc.run.ny + 1, child_dc.run.nx)
+    assert down["mup"].shape == (child_dc.run.ny, child_dc.run.nx)
+
+
+def test_an_analysis_on_the_wrong_grid_is_a_refusal_naming_the_field():
+    exp, child_dc = _increment_pair()
+    parent_run = exp.root.run
+    wrong = np.zeros((4, parent_run.ny + 7, parent_run.nx), np.float32)
+    with pytest.raises(nf.NestedForecastRefusal, match="thp"):
+        nf.nest_down_analysis({"thp": wrong}, {"thp": wrong},
+                              child_dc, parent_run)
+
+
+def test_a_field_with_only_one_side_of_the_difference_is_refused():
+    exp, child_dc = _increment_pair()
+    parent_run = exp.root.run
+    field = np.zeros((4, parent_run.ny, parent_run.nx), np.float32)
+    with pytest.raises(nf.NestedForecastRefusal, match="qv"):
+        nf.nest_down_analysis({"qv": field}, {}, child_dc, parent_run)

@@ -165,6 +165,55 @@ def test_the_gate_fires_on_the_shape_that_defeated_it(tmp_path, empty_runs):
         proc.wait(timeout=30)
 
 
+def test_the_matched_listing_prints_one_process_per_line(tmp_path, empty_runs):
+    """Two matching processes are two lines of the listing, and no carriage
+    return reaches what the gate prints.
+
+    The Windows arm reads the process table through a CIM query whose
+    answer ends every line in CRLF.  The script deletes the carriage
+    return; delete the line feed instead and the listing collapses into
+    one CR-joined line while the gate still refuses (the joined string is
+    not empty), so every other assertion in this file stays green over
+    it.  The bytes are read here because the interpreter's newline
+    translation would turn each stray CR back into a line break and hide
+    the collapse.
+    """
+    wrapper = tmp_path / "vram_timeline.py"
+    wrapper.write_text(textwrap.dedent("""
+        import time
+        time.sleep(30)
+    """), encoding="utf-8")
+    procs = [
+        subprocess.Popen(
+            [sys.executable, str(wrapper), f"out{n}.json",
+             "--prepared-root", str(tmp_path / f"prepared{n}"),
+             "--preparation-receipt-sha256", "0" * 64],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        for n in range(2)]
+    try:
+        time.sleep(3.0)
+        env = dict(os.environ)
+        env["GPUWM_RUNS_ROOT"] = msys(empty_runs)
+        result = subprocess.run([BASH, msys(GATE)], capture_output=True,
+                                env=env, timeout=120)
+        assert result.returncode == 1, result.stderr
+        assert b"\r" not in result.stderr, (
+            f"a carriage return reached the listing: {result.stderr!r}")
+        listing = result.stderr.split(b"matched by command line:\n", 1)[1]
+        listing = listing.split(b"\n\n", 1)[0].decode("utf-8", "replace")
+        starts = {line.split()[0] for line in listing.splitlines()
+                  if line.strip()}
+        missing = {str(p.pid) for p in procs} - starts
+        assert not missing, (
+            f"pids {sorted(missing)} do not begin a line of the listing; "
+            f"the listing reads {listing!r}")
+    finally:
+        for p in procs:
+            p.kill()
+        for p in procs:
+            p.wait(timeout=30)
+
+
 def test_the_gate_fires_on_a_freshly_written_progress_file(empty_runs):
     """The behavioural arm, with no matching process anywhere.
 

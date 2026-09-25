@@ -1,0 +1,39 @@
+{
+  "pin": "coriolis_map_sina0_pin",
+  "file": "tests/data/coriolis_map_sina0_pin.rtx4090.npz",
+  "against": "tests/data/coriolis_map_sina0_pin.npz",
+  "card": "NVIDIA GeForce RTX 4090",
+  "compute_capability": "8.9",
+  "driver": "610.57.04",
+  "cupy": "14.2.0",
+  "cuda_runtime": 13020,
+  "commit": "6c6e4428fdea78ff203743b93a7e122056bbb0c3",
+  "entries": {
+    "ru_t": {
+      "status": "held",
+      "max_abs_difference": 0.0,
+      "rms_of_old_entry": 61.476327909327985,
+      "max_abs_over_rms": 0.0,
+      "differing_words": 0,
+      "words": 528
+    },
+    "rv_t": {
+      "status": "moved",
+      "max_abs_difference": 3.0517578125e-05,
+      "rms_of_old_entry": 70.07210324894017,
+      "max_abs_over_rms": 4.355167992686387e-07,
+      "differing_words": 105,
+      "words": 560
+    },
+    "rw_t": {
+      "status": "held",
+      "max_abs_difference": 0.0,
+      "rms_of_old_entry": 4.777506599075966,
+      "max_abs_over_rms": 0.0,
+      "differing_words": 0,
+      "words": 540
+    }
+  },
+  "moved": 1,
+  "total": 3
+}

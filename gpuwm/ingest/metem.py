@@ -306,6 +306,29 @@ class MetgridCase:
         return tuple(self.terrain.shape)  # type: ignore[return-value]
 
 
+def read_met_em_terrain(path: Path | str) -> np.ndarray:
+    """Only ``HGT_M`` from one met_em file: the model terrain it carries.
+
+    The vertical coordinate a run can use is fixed by the highest ground
+    the run can touch, and that has to be known before the first
+    coordinate is built -- which on this route means before the first
+    met_em is turned into a state.  Reading one two-dimensional variable
+    per domain answers it; reading each domain's whole snapshot to find
+    out would cost the preparation twice over.
+    """
+
+    from gpuwm import netcdf_bridge
+
+    with netcdf_bridge.open_dataset(str(path)) as dataset:
+        if "HGT_M" not in dataset.variables:
+            raise ValueError(
+                f"{Path(path).name}: no HGT_M, so the model terrain this "
+                "file describes cannot be read; met_em files are written "
+                "with the geogrid terrain the run integrates")
+        return np.ascontiguousarray(
+            np.asarray(dataset.variables["HGT_M"][0]), dtype=np.float64)
+
+
 def read_met_em(path: Path | str) -> MetgridCase:
     """One met_em file -> the forcing object ArWen's real ingest takes.
 

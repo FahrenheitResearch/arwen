@@ -30,12 +30,11 @@ substitutions (see the end of this page).
 
 **A rung grades one OPTION, and most of the tree sits on the same
 rung.** `implemented-unverified` is not a mark against any particular
-scheme. It is carried by **24 of the registry's 41 component options**:
+scheme. It is carried by **23 of the registry's 40 component options**:
 YSU, MYJ, MYNN (PBL and surface layer both), Eta similarity, Shin-Hong,
 SASE, Milbrandt-Yau, Morrison, WDM6, P3 one-category, Thompson
 aerosol-aware, Noah, Noah-MP, RUC, Grell-Freitas, New Tiedtke, WRF RRTM
-longwave with Dudhia shortwave, the RTE+RRTMGP legacy-aggregate
-selector, and all five turbulence closures. It says
+longwave with Dudhia shortwave, and all five turbulence closures. It says
 that the option retains the evidence limits described in its own row.
 Some rows report an oracle or an idealized trajectory, while others
 explicitly report no independent oracle. This is separate from whether
@@ -86,7 +85,7 @@ record, and `tests/test_physics_composition_walk.py` regenerates it on
 every release cut and compares it byte for byte. As measured:
 
 - **2981 of 9831 admission attempts are accepted**, covering **2973 distinct
-  accepted suites**, against 26 registered templates. The presets are a
+  accepted suites**, against 27 registered templates. The presets are a
   corner of the space, not the space.
 - **Every accepted run keeps every switch the file set**, checked
   against the resolved per-domain `RunConfig`. Zero rewrites. An
@@ -237,7 +236,7 @@ closure is genuinely missing.
 | Morrison 2-moment | 10 | implemented-unverified | 28-column oracle vs unmodified WRF `MP_MORR_TWO_MOMENT`: theta within 154 ULP, but hydrometeor fields cross branch points and are not bitwise; both rimed-ice identities (graupel/hail) implemented. **Declared divergence:** deposition-freezing nucleation is bounded by the vapour excess over ice saturation and the nucleated number scales with it; WRF (F:2902-2905) applies no availability test and its FUDGEF rescale (F:3009-3015) tests only matching sign pairs, so below the 159.4887 K POLYSVP crossover -- where the extrapolated liquid curve falls under the ice curve and F:1315 clamps `QVI==QVS` -- the unbounded term drove qv to -1.87e-4 kg/kg out of 5.55e-8 available, dt-independent. That state is unreachable in WRF and in any p_top-limited regional domain; the bound also engages at 189.88-199.96 K where WRF does reach, scaling the number moment by 0.197-0.898 and moving the oracle fixture's ni by up to 67% relative, qi by 1.4e-3 and qv by 1.8e-16, with no pinned per-field max_ulp moved and the fixture mismatch count 3,512 -> 3,554 of 10,948 |
 | WDM6 double-moment warm rain | 16 | implemented-unverified | **no oracle comparison against the WRF Fortran has been run** -- the CUDA kernel and `wdm6init` are transcribed line by line from the byte-frozen `phys/module_mp_wdm6.F` with file:line citations, the float64 coefficient block pins the kernel's baked FP32 literals, and a column smoke through the shipped seams asserts finiteness, WDM6's own bounds, water conservation to the surface flux, and that CCN activation actually moves number from `nn` into `nc`; the oracle campaign is the declared next stage. WDM5 (14) and WDM7 (26) are refused by name. A preset selects it (with Grell-Freitas and RTE+RRTMGP) and it is also a per-domain override |
 | NSSL 2-moment | 18 | **validation-candidate** (default lane) / implemented-unverified (variants) | full CUDA port with fused-process oracles and a ratified 500 m comparison; explicitly not the default. The hail-off and diagnosed-CCN variants below carry column smoke and treatment proofs only, with no oracle comparison |
-| Thompson aerosol-aware | 28 | implemented-unverified | 22 WRF column fixtures end to end, 23 quantities each: 17 clear a flat 2e-6 gate, 4 do not, 1 clears only under two named allowances (numbers below); it runs multi-step and stays bounded; the one matched WRF forecast comparison is idealized only -- a single-domain doubly periodic warm bubble, [validation/mp28-matched-trajectory.md](validation/mp28-matched-trajectory.md), which publishes a failed declared condition alongside a control showing that condition fails for WRF against its own recompilation -- and no real-data or nested forecast has ever been validated against WRF; a preset on the prepared-domain-tree route selects it (with MYJ, the Eta surface layer and RTE+RRTMGP) and it is also a per-domain override. The fixed-template routes do not offer that preset: their cold-start contract has no arm for the aerosol-aware boundary species |
+| Thompson aerosol-aware | 28 | implemented-unverified | 22 WRF column fixtures end to end, 23 quantities each: 18 clear a flat 2e-6 gate, 3 do not, 1 clears only under two named allowances (numbers below); it runs multi-step and stays bounded; the one matched WRF forecast comparison is idealized only -- a single-domain doubly periodic warm bubble, [validation/mp28-matched-trajectory.md](validation/mp28-matched-trajectory.md), which publishes a failed declared condition alongside a control showing that condition fails for WRF against its own recompilation -- and no real-data or nested forecast has ever been validated against WRF; a preset on the prepared-domain-tree route selects it (with MYJ, the Eta surface layer and RTE+RRTMGP) and it is also a per-domain override. The fixed-template routes do not offer that preset: their cold-start contract has no arm for the aerosol-aware boundary species |
 | P3 one-category | 50 | implemented-unverified | **measured against WRF's own Fortran** — unmodified `phys/module_mp_p3.F` (P3 v4.5.2, byte-identical across WRF v4.6.1/v4.7.1/v4.8.0) compiled at -O0 -ffp-contract=off and driven through `mp_p3_wrapper_wrf` over twelve discriminating fixtures: 4 of 12 bit-identical, F02/F06/F08/F09/F11 within 2–7 ULP, F12 at 829 ULP (6.3e-5 relative); the two long mixed-phase cases (F07, F10) are exact for the first steps and then bifurcate — a property of the system, not the port (a one-ULP nudge to the Fortran's own input diverges it from itself by 100% within ten steps, measured); the parsed lookup table is exact (substituting the Fortran's own generated tables changes nothing); the column smoke still holds through the shipped seams (finite, non-negative, total water closing to 1e-4 against surface precipitation, rime mass ≤ ice mass, 50 ≤ rime density ≤ 900); STILL OPEN: an unexplained 1–6 ULP CUDA-specific `qib` residual on F06/F08/F11, and F09's separate, broader disagreement; no matched WRF forecast run and no comparison against observations — per-step agreement with Fortran is not evidence of forecast skill; reachable through the registered HRRR template `p3-mp50-ysu-mm5-noah-rrtmg-legacy-v1` and as a per-domain override on the tree route |
 
 ### P3 one-category (`mp_physics = 50`) — read this before selecting it
@@ -476,8 +475,12 @@ droplet evaporation, five cloud-number sinks under a shared balance
 limiter, six wet-scavenging rates, DeMott ice nucleation replacing
 Cooper, Koop homogeneous haze freezing, and number-weighted cloud
 sedimentation. It lives in its own CUDA translation units and its own
-Python launchers; `thompson.cu` and `thompson.py` are byte-frozen and
-mp=8 is unchanged by construction.
+Python launchers, and reuses mp=8's ice, snow, graupel and rain fallout
+from `thompson.cu`. The real-column comparison below changed two rules in
+that shared file because they are WRF's rules for both schemes (the
+snow-cloud collection table's 6 micron bin, and the fall-speed gates of
+the ice, snow and rain fallout), and added rain fallout entry points that
+only mp=28 launches.
 
 **Exactly what has been measured.** All 22 committed WRF v4.6.1 aerosol
 column fixtures, driven end to end through the shipped adapter, compared
@@ -495,9 +498,47 @@ shape (the 15 column fields plus `RAINNC`); the gate compares all 23.
 
 | result | fixtures |
 |---|---|
-| clear a **flat** gate on every one of the 23 quantities — no bounds dict, no excluded level, no per-fixture carve-out | 17 of 22 — `aero-ccn-activate`, `aero-ccn-sweep`, `aero-drop-evap`, `aero-ice-demott-dep`, `aero-ice-demott-idxin`, `aero-ice-koop`, `aero-init-profile`, `aero-nc-accrete`, `aero-nc-auto`, `aero-nc-cap`, `aero-nc-effrad`, `aero-nc-sed`, `aero-scav-frozen`, `aero-scav-rain`, `aero-sfc-emit`, `aero-warm-overlap`, `wp08-melt` (16 of the 19 spec'd `aero-*`, plus one `wp08-*`) |
-| clear only under a named allowance | 1 — `aero-reduces-to-classic`, taking the gated count to 18 of 22, and it now rests on ONE allowance rather than two. See the allowance table below |
-| miss the gate | 4, listed field by field below |
+| clear a **flat** gate on every one of the 23 quantities -- no bounds dict, no excluded level, no per-fixture carve-out | 18 of 22 -- `aero-ccn-activate`, `aero-ccn-sweep`, `aero-drop-evap`, `aero-ice-demott-dep`, `aero-ice-demott-idxin`, `aero-ice-koop`, `aero-init-profile`, `aero-nc-accrete`, `aero-nc-auto`, `aero-nc-cap`, `aero-nc-effrad`, `aero-nc-sed`, `aero-scav-frozen`, `aero-scav-rain`, `aero-sfc-emit`, `aero-warm-overlap`, `wp08-freeze`, `wp08-melt` (16 of the 19 spec'd `aero-*`, plus two `wp08-*`) |
+| clear only under a named allowance | 1 -- `aero-reduces-to-classic`, taking the gated count to 19 of 22, and it now rests on ONE allowance rather than two. See the allowance table below |
+| miss the gate | 3, listed field by field below |
+
+**Real model columns against WRF's own Fortran.** The fixtures above are
+single columns. `tools/thompson_real_column_parity` runs unmodified WRF
+v4.6.1 `module_mp_thompson.F` as a column driver beside the shipped
+adapter, both on the CPU, on 137,200 columns cut from seven saved
+real-data model states (five forecast frames and two analysis states),
+and compares all 64 process rates, the working state after the source
+and condensation stages, the final state, the surface accumulations and
+reflectivity. Twelve differences it found in the port are repaired. With
+them every process rate agrees within float32 rounding (a cell beyond
+2e-6 relative is counted as rounding only when the port's own response to
+a one-unit nudge of every input explains it), except two that rounding
+itself decides: rain evaporation where the adjustment has just brought
+the air to saturation, and rain self-collection at the 1950 micron
+break-up diameter. Reflectivity agrees within 0.024 dB everywhere. The
+five WRF rules the port still did not follow after those repairs are now
+followed too: the no-microphysics column exit and the terminal vapour
+floor (`:2020`, `:3974`), graupel at or below 1e-12 kg/kg written as zero
+(`:4058-4063`), the ice mass/number balance above 0 C (`:3033-3055`), the
+melt of cloud and ice at or below 1e-12 kg/kg before the terminal apply
+removes them (`:3943-3966`), and melting snow blended with the rain pass's
+own fall speed (`:3612-3634`, `:3722-3724`). What remains is rounding's
+alone: a graupel number re-balanced on a mass consumed to a one-unit
+residue, and on the analysis states a one-unit cloud evaporation
+residue (which can keep WRF's cloud fallout gate open where the port's
+closes). Classic Thompson (mp=8) is graded by the same harness on the same
+columns (`--mp 8`, and a committed companion fixture), and the classic
+kernels and adapter now carry the same WRF rules the mp=28 ones do (the
+entry rewrite, the cloud fallout gate, the 5 micron entry ice, the D0i
+minimum crystal mass, the source-stage rain and graupel balances, the
+graupel sublimation number gate, the terminal ice bound, the rain
+fallout's L_qr and presence tested on the mixing ratio): every mp=8 rate
+agrees with WRF within 1e-2 except where rounding decides it, within
+float32 rounding except the classic autoconversion's own evaluation order
+(at most 9.2e-4 relative), its final state beyond 1e-2 at seven cells of
+the seven frames, all rounding residues, and its echo within 0.045 dB.
+The host build
+does not see the device toolchain, so the device gates stay the device's.
 
 **The one allowance, on that one fixture, and needed for it.** Nothing
 here was ever widened, and two of the three this page used to carry have
@@ -518,8 +559,8 @@ level 5 5.700e-06 → **4.146e-07**, that fixture's worst ULP over all 23
 quantities 27.5 → **4.0**, its worst |dBZ − WRF| 3.242e-05 dB →
 **9.537e-06 dB**, and the `qr` levels where mp=28 is bit-exact against WRF
 and the frozen mp=8 pipeline is not went from three to **four** (1, 2, 4,
-5). Nothing moved the other way, and the four missing fixtures below miss
-at the same numbers they did before.
+5). Nothing moved the other way, and the four fixtures that missed then
+missed at the same numbers they did before.
 
 `aero-reduces-to-classic` now measures **`nr` 4.146e-07 at 0-based level
 5** — inside the flat gate — and nothing on the fixture is above the flat
@@ -551,8 +592,9 @@ unexceptioned table reports and the reason the allowance is named.
 | `aero-cold-overlap` | `qc` 1.000e+00, `nc` 1.000e+00, `effc` 8.102e-01 — **one mechanism, three views, and it is a one-ULP disagreement wearing a full-scale number.** At 0-based level 4 WRF ends the step with 1.4551915228366852e-11 kg/kg of cloud water (exactly 2⁻³⁶, exactly 1.000 float32 ULP of the 2.3252160e-04 kg/kg the level entered with) and `nc` = 1.8333361 per kg, while ArWen ends at exactly zero; `effc` then reports 8.102e-01 because with no cloud water ArWen takes the 2.49 µm floor while WRF's remainder gives 1.31176e-05 m. Recorded as a MISS rather than allowanced. Separately and genuinely: `nr` 1.261e-04, `qr` 4.443e-05 at level 6, where the rain number falls 255.407 → 0.0739 per kg (99.97% consumed) and the difference is 0.611 ULP of the entry value (`qr`: 1.789 ULP) |
 | `aero-cloud-freeze-nc` | `qc` 4.926e-06 — the fixture's only surviving row, at level 4, where 98.2% of the entry cloud water is frozen away and the survivor differs by exactly 1.000 ULP of the 8.247212e-05 kg/kg entry value. It is the SECOND float32 rounding of `qc` inside one step: WRF rounds once at `module_mp_thompson.F:3975` from a `qcten` carrying the source network and the condensation together, while ArWen applies the source network to `qc` and then applies the condensation to the already-rounded value |
 | `wp08-nusweep` | `qr` 4.642e-06 — 2.3x the gate, at level 12, created from exactly zero and reaching 2.242e-11 kg/kg; the absolute difference is 1.04e-16 kg/kg. **This cell is ill-conditioned, measured, and no FP32 implementation can hold it to the gate.** Perturbing the level's entry cloud water by ONE float32 ULP moves the exit `qr` by 128 ULP (up) or 32 ULP (down); perturbing the entry droplet number by one ULP moves it by 256 ULP either way. The measured disagreement is 60 ULP — *smaller* than a single-ULP input change produces — so it is consistent with a sub-ULP difference in an intermediate that FP32 cannot represent. The 2.0e-6 gate at that level is ~26 ULP, i.e. below the cell's own condition number. Level 12 is also the only level of this column where the droplet number **rises** across the step (1.417475e+08 → 1.428941e+08 per kg), the signature of the number-weighted cloud sedimentation feeding it from the level above while autoconversion drains it |
-| `wp08-freeze` | `nr` 2.724e-06 — 1.4x the gate, at level 0, created from exactly zero. **Attributed, un-attributed, measured, and then narrowed by the fix it prompted: 29 of its 34 ULP are the rain-presence gate, and what is left of that gate's disagreement is that the fallout kernel cannot see WRF's post-evaporation rewrite of `rr(k)`.** The shipped gate at `thompson.cu:450-452` is WRF's conjunction -- the TAU+1 test on the mixing ratio (`module_mp_thompson.F:3236`) with the R1 floor (`:3252`), then `rr(k) .gt. R1` (`:3616`) -- so it compares a mass concentration, as of `cb765336`. At 0-based level 1 of this column ArWen sees qr = 8.526513e-13 (closed, so it inherits the level-above fall speeds) and WRF sees rr = 1.174815e-12 (open, so it computes a real one 5.3x slower in number). Forcing ArWen's gate open on the shipped kernel moves level 0's `nr` from 34 ULP away from WRF to 5, while a mass change of the same size that does *not* flip the gate leaves the output bit-identical — the control that makes it a measurement (`tests/test_thompson_aerosol_adapter.py::test_the_wp08_freeze_residual_is_the_presence_gates_units_measured`). This page published the attribution as falsified for part of 2026-08-01; that falsification read `qr1d + qrten*DT` at the end of the step and took it for the value WRF's `:3236` tested, but the rain-evaporation block at `:3501` subtracts from `qrten` in between — instrumented WRF records `L_qr = .true.` there, so `:3236` took its true branch and `rr` was never floored to R1. `cb765336` DID reconcile the gate's units -- that is what it is -- and it did not move this residual because this level is in the one class that commit enumerated and left standing: `qr <= R1 < qr*rho` with `L_qr` true, 3 627 level-visits of the 2 h 12 km forecast it measured over. WRF's `L_qr` opens the evaporation block at `:3501`, whose rewrite at `:3568` leaves `rr(k)` = 1.174815e-12 above R1; ArWen's fallout kernel sees only qr = 8.526513e-13, fails the TAU+1 test, and floors rr to R1. NOT FIXED, and the reason is now a named change rather than a frozen file: closing it means carrying `L_qr` itself from the evaporation kernel to the fallout kernel, which nothing in the tree does. (An earlier revision of this row said the gate still compared a mixing ratio and that the kernel file was byte-frozen; both were true when the attribution was written and neither survived `cb765336`, so they are replaced rather than edited.) The residual <=5 ULP left over is not separately attributed |
 | `aero-reduces-to-classic` | **clears the gate under the one allowance above** and is listed here only because the flat gate is the yardstick this table uses: level 5 is inside the flat gate now (`nr` 4.146e-07), and what remains is `qr`/`nr` 1.238e-04 at level 6 if that level is measured relatively rather than in ULPs |
+
+**`wp08-freeze` left this table (2026-09-23).** Its `nr` 2.724e-06 at level 0 (34 ULP) was the rain fallout taking `L_qr` from the post-evaporation mixing ratio: at 0-based level 1 ArWen saw qr = 8.526513e-13 and inherited the level-above fall speeds, where WRF's `:3236` had taken its true branch on the post-source rain and `:3568` left `rr(k)` = 1.174815e-12 above R1, so `:3616` opened. The row's own last word was that closing it meant carrying `L_qr` from the evaporation kernel to the fallout kernel; that is what was built. The mp=28 rain evaporation writes a zero reference density where `:3236` failed (and a negative one where `:3568` floored the pair) and the adapter launches the fallout's `_with_presence` entry points, which take `L_qr` from it; the plain entry points keep the mixing-ratio stand-in, so the 92 classic kernel fixtures are untouched, and since 2026-09-23 the classic rain evaporation writes `L_qr` too and the mp=8 adapter launches the same presence forms. Level 0 `nr` is now 4.006e-07 (5 ULP) on a card, read bit for bit alike on an RTX 4090 and an RTX 5090, and that same 5 ULP is the fixture's worst over all 23 quantities (the host build of the kernels reads 8.012e-08, 1 ULP, and 3 ULP); the old gate, reproduced by stripping the hand-off, returns the published 34 ULP bit for bit (`tests/test_thompson_aerosol_adapter.py::test_the_wp08_freeze_residual_was_the_presence_gate_and_is_repaired`).
 
 **No surface accumulation misses any more, on any fixture.** All seven are
 compared separately and all seven are now inside the flat gate on all 22
@@ -668,6 +710,23 @@ is what holds the label at `implemented-unverified`. ArWen does couple
 from WRF's monthly WIF climatology; without that dataset a domain with
 external lateral boundaries is refused at the run door, before step 0,
 rather than run into the depletion described below.
+
+Through 2.7.5 that coupling stopped one operator short. The lateral
+relaxation and the per-step boundary tendency reached `nwfa`/`nifa`, but the
+finalizer that forces a specified domain's outermost row back onto its
+boundary table (WRF `spec_bdy_final`) named only `u`, `v`, `theta`, `phi`
+and `qv`, so the aerosol row integrated a tendency and was never put back on
+the value. On a 2.7 km specified domain forced from the climatology, the
+lowest level of the north-west boundary corner grew from 6.94e8 kg-1 to
+5.13e10 kg-1 in one forecast hour, about a factor of 74, while `qv` in the
+same cell moved by 1.2 percent over that hour and by 4.2 percent by the
+last history frame before the run stopped; three and a half hours in it
+reached 1.0114e15 kg-1 and the full-state health gate stopped the forecast
+at 03:36:51 of model time. 2.7.6 takes the finalizer's scalar list from the
+bound boundary table instead of a fixed tuple: the same hour now holds that
+corner at 6.96e8 kg-1, and the domain maximum goes back to being an interior
+value (3.88e9 kg-1), against a whole-domain maximum of 8.95e8 kg-1 at the
+start.
 
 **A matched IDEALIZED trajectory does now exist**, and it publishes its own
 failed gate:
@@ -1001,9 +1060,10 @@ column at a time (a measured 125 µs per column).
 
 Shin-Hong's entry records four of its own: the `q2xk(kpbl+1)`
 out-of-bounds read WRF performs and ArWen deliberately does not; WRF's
-own `prfac2 = 0/0` NaN reproduced rather than repaired; the sm_120
-subnormal-flush branch, closed at the branch by a double-compare
-countermeasure with 72 residual flush lanes pinned as counts; and the
+own `prfac2 = 0/0` NaN reproduced rather than repaired; the
+subnormal-flush branch on CuPy's `-ftz=true` compile route, closed at
+the branch by a double-compare countermeasure with 72 residual flush
+lanes pinned as counts; and the
 CUDA mirror's near-total-cancellation lanes on the momentum and
 moisture tendencies (the worst `du` lane is 3.4966e-06 against
 3.4756e-06 m/s2). It is the only option in this table whose behaviour
@@ -1162,10 +1222,28 @@ before relying on any of these over unusual surfaces):
 vocabulary. Legacy RRTMG is not a separate registry component option:
 it is the same registry option 4/4, selected by the
 `ra_rrtmg_variant = "rrtmg_legacy"` token and kept for matched-run
-verification against the WRF CPU reference. (The registry's
-`rte-rrtmgp-legacy-aggregate` entry is a different thing entirely --
-an RTE+RRTMGP route retained for a legacy aggregate selector, maturity
-`implemented-unverified` -- not this port.)
+verification against the WRF CPU reference.
+
+### The two spellings of one radiation choice
+
+A coupled pair may be written either way, and both name the same
+option:
+
+- the split pair, `ra_lw_physics = 4` with `ra_sw_physics = 4` and
+  `ra_physics = 0`, which every shipped profile pins;
+- the aggregate, `ra_physics = 4` with the split pair left at -1,
+  which is what `gpuwm import-namelist` emits for a coupled pair
+  (a WRF namelist selecting RRTMGP on both streams, and equally a
+  namelist with radiation off, which emits `ra_physics = 0`).
+
+`gpuwm.config.radiation_scheme_ids` resolves either spelling to the
+same `(LW, SW)` pair and refuses only a CONTRADICTION -- the aggregate
+naming one engine while the split pair names another. The registry
+resolves the same way, so an imported configuration matches the
+profile it names. There is no separate registry option for the
+aggregate spelling; there was one, keyed on the `(-1, -1)` sentinel,
+and it matched every aggregate-spelled configuration whatever engine
+that configuration asked for.
 
 The two 4/4 implementations are deliberately firewalled: a restart
 written under one refuses to resume under the other, and the RTE+RRTMGP
@@ -1254,7 +1332,7 @@ time. Choosing this pair on a large domain remains a deliberate trade.
 |---|---|---|---|
 | Kain-Fritsch | 1 | supported | outer (>=10 km) domains; packaged lookup table; cudt 5 min in the certified templates |
 | Grell-Freitas (scale-aware) | 3 | implemented-unverified | whole GFDRV at the WRF v4.6.1 boundary, CPU and CUDA; a preset selects it (with WDM6 and RTE+RRTMGP) and it is also a per-domain override -- a config writing `cu_physics = 3` is accepted directly; runs on the model step (cudt pinned 0) |
-| New Tiedtke | 16 | implemented-unverified | the WRF v4.6.1 `module_cu_ntiedtke` scheme; all 21 stages and the assembled pipeline reproduce the byte-frozen Fortran bitwise over an 18-case, 6-spacing oracle corpus, and `scientific_evidence` is `none`. Runs with or without a PBL scheme -- it reads no `KPBL`, takes its surface fluxes from the surface layer and the land-surface model, and folds zero advective-forcing lanes exactly as WRF's cumulus driver does when no PBL tendency exists (the PBL-off configuration is admitted on that field contract, not on evidence: every measured run carries a PBL scheme) -- and runs on the model step (cudt pinned 0); a preset selects it (with Milbrandt-Yau and the legacy RRTMG engine) and it is also a per-domain override -- a config writing `cu_physics = 16` is accepted directly. See [cumulus-new-tiedtke.md](../cumulus-new-tiedtke.md) |
+| New Tiedtke | 16 | implemented-unverified | the WRF v4.6.1 `module_cu_ntiedtke` scheme; all 21 stages and the assembled pipeline reproduce the byte-frozen Fortran bitwise over an 18-case, 6-spacing oracle corpus, and `scientific_evidence` is `none`. Runs with or without a PBL scheme -- it reads no `KPBL`, takes its surface fluxes from the surface layer and the land-surface model, and folds zero advective-forcing lanes exactly as WRF's cumulus driver does when no PBL tendency exists (the PBL-off configuration is admitted on that field contract, not on evidence: every measured run carries a PBL scheme) -- and runs on the model step (cudt pinned 0); a preset selects it (with Milbrandt-Yau and the legacy RRTMG engine) and it is also a per-domain override -- a config writing `cu_physics = 16` is accepted directly, and the WRF namelist importer reads it back with that cadence rule applied, so the pair the configuration door writes for the analyzed-input route can be read as the configuration beside it. See [cumulus-new-tiedtke.md](../cumulus-new-tiedtke.md) |
 | off | 0 | supported | the convection-permitting nests run with cumulus off |
 
 What is certified for Grell-Freitas, and what is not. The certified
@@ -1594,8 +1672,8 @@ with Grell-Freitas, SASE on the revised MM5 surface layer, and the three
 large-eddy closures (1.5-order TKE, 3D Smagorinsky, constant K). None of
 them reads anything source-specific, so none of them is a source's
 choice to make, and every source that names any suite at all names all
-six. On the prepared single-domain route that is seventeen of its
-eighteen sources; the other one is the caller-supplied composition row,
+six. On the prepared single-domain route that is eighteen of its
+nineteen sources; the other one is the caller-supplied composition row,
 which names no suite because the caller states the physics. A source
 with no measured suite of its own is not emptied: it reports the suites
 that route names for every source it HAS measured, with the limitation
@@ -1654,13 +1732,13 @@ user-facing walkthrough -- the symptom, how to tell which version is
 actually executing, and how to correct the config -- is
 [NOCTURNAL-DEWPOINTS.md](NOCTURNAL-DEWPOINTS.md).
 
-The table below classifies all **24 shipped single-domain profiles**
+The table below classifies all **25 shipped single-domain profiles**
 (`gpuwm.physics_compat.SINGLE_DOMAIN_PHYSICS_PROFILES`, which is the
-`--physics-profile` choice list). The registry carries one further
-template that no fixed-template route declares and so has no row here
+`--physics-profile` choice list). The registry carries two further
+templates that no fixed-template route declares and so have no row here
 -- `thompson-mp8-ysu-mm5-noah-kf-rte-rrtmgp-v1`, the declared default
-template -- and it runs RTE+RRTMGP on both components, so it is
-nocturnally valid. Being absent from this table is never a verdict: a
+template, and `thompson-aerosol-mp28-myj-eta-noah-rte-rrtmgp-v1` -- and
+both run RTE+RRTMGP on both components, so both are nocturnally valid. Being absent from this table is never a verdict: a
 config that composes its own suite is classified by the same rule, at
 load, by the same guard.
 
@@ -1669,7 +1747,8 @@ load, by the same guard.
 | `morrison-mp10-ysu-mm5-noah-kf-rte-rrtmgp-v1` | RTE+RRTMGP / RTE+RRTMGP | **yes** (the wizard's gfs/era5 default) |
 | `nssl2-mp18-ysu-mm5-noah-kf-rte-rrtmgp-validation-candidate-v1` | RTE+RRTMGP / RTE+RRTMGP | **yes** |
 | `nssl2-mp18-ysu-mm5-noah-kf-rrtmg-legacy-validation-candidate-v1` | legacy RRTMG / legacy RRTMG | **yes** |
-| `thompson-mp8-ysu-mm5-noah-rrtmg-legacy-v1` | legacy RRTMG / legacy RRTMG | **yes** (the wizard's hrrr default) |
+| `thompson-mp8-ysu-mm5-noah-rte-rrtmgp-v1` | RTE+RRTMGP / RTE+RRTMGP | **yes** (the wizard's hrrr default) |
+| `thompson-mp8-ysu-mm5-noah-rrtmg-legacy-v1` | legacy RRTMG / legacy RRTMG | **yes** (the same suite on the legacy engines) |
 | `thompson-mp8-shinhong-mm5-noah-rrtmg-legacy-v1` | legacy RRTMG / legacy RRTMG | **yes** |
 | `p3-mp50-ysu-mm5-noah-rrtmg-legacy-v1` | legacy RRTMG / legacy RRTMG | **yes** (legacy is P3's one admissible 4/4 engine -- see the P3 section above) |
 | `wsm6-mynn-mynn-noah-rte-rrtmgp-implemented-unverified-v1` | RTE+RRTMGP / RTE+RRTMGP | **yes** |
@@ -1864,6 +1943,19 @@ which is how ten shipped configs, including the two proof descriptors
 users copy first, came to integrate a frozen 300 W m-2. A config that
 means both claims now makes both.
 
+**Both preparation routes read the same declaration.** The
+configuration route reads it out of `[experiment].acknowledgements` in
+the case file. The route that reads a WRF `namelist.input` instead has
+no field to read it from -- WRF has no key for a gpuwm governance
+declaration -- so it takes it from the profile the run NAMES: a suite
+whose own selectors run shortwave with longwave off states, of itself,
+that its land surface integrates the declared constant, and
+`--physics-profile` is that statement. The token then lands in the
+imported configuration and the same load guard reads it from the same
+array on both routes. It is the suite's claim, so only the suite's
+claim travels this way: the nocturnal token is a claim about the WINDOW
+you chose and still comes from you.
+
 `gpuwm.core.physics.initialize_physics` enforces the same rule one
 layer down: its `glw` argument has **no default**. A caller that wants
 a constant types it (`glw=300.0`); a route with a source GLW hands over
@@ -1878,7 +1970,7 @@ storm nowcast (`tools/da_nowcast.py` and the auto/launcher doors), which
 was the exception through 1.8.7 --- it defaulted to
 `wsm6-ysu-mm5-noah-no-radiation-v1` on cases that are mostly nocturnal,
 and now defaults to the HRRR route's own
-`thompson-mp8-ysu-mm5-noah-rrtmg-legacy-v1`, because the nowcast's
+`thompson-mp8-ysu-mm5-noah-rte-rrtmgp-v1`, because the nowcast's
 background is HRRR. That costs more per member than a Dudhia-only call,
 so a member count or VRAM plan measured before 1.8.8 has to be
 re-measured rather than extrapolated.
@@ -1898,17 +1990,29 @@ before preprocessing --- and the constraint is gone rather than
 relaxed. The resolved table set is recorded in the physics receipt as
 `microphysics_table_authority`.
 
-The HRRR default is now `thompson-mp8-ysu-mm5-noah-rrtmg-legacy-v1`:
-Thompson microphysics with RRTMG longwave **and** shortwave and no
-cumulus parameterization. That is deliberately the composition the
+The HRRR default is `thompson-mp8-ysu-mm5-noah-rte-rrtmgp-v1`:
+Thompson microphysics with RTE+RRTMGP longwave **and** shortwave and no
+cumulus parameterization. RTE+RRTMGP is the default radiation arm on
+**every** route (owner ruling, 2026-09-19), so which model initialised a
+forecast no longer decides which radiation solver integrates it.
+
+Through 2.7.5 this route defaulted instead to
+`thompson-mp8-ysu-mm5-noah-rrtmg-legacy-v1`, the same suite on the
+legacy RRTMG engines, because that mirrored the composition the
 operational High-Resolution Rapid Refresh runs (NOAA/GSL; the CCPP
 `HRRR_suite` pairs Thompson aerosol-aware microphysics with RRTMG
-radiation on a convection-permitting 3 km grid), so the default should
-not surprise anyone who has driven WRF from HRRR before. gpuwm diverges
-from operations on two components: **YSU** rather than MYNN-EDMF, and
-**Noah** rather than the RUC LSM. Both of those shipped profiles run
-longwave OFF and are refused by the route's own surface-layer and
-land-surface pins anyway; closing that gap is a separate item.
+radiation on a convection-permitting 3 km grid). That history is not a
+reason, and the engine is the only thing that moved: the two profiles
+carry identical components and identical settings apart from the
+radiation variant, so `--physics-profile
+thompson-mp8-ysu-mm5-noah-rrtmg-legacy-v1` reproduces the old default
+exactly, on every door that offered it before.
+
+gpuwm still diverges from operations on two components: **YSU** rather
+than MYNN-EDMF, and **Noah** rather than the RUC LSM. Both of those
+shipped profiles run longwave OFF and are refused by the route's own
+surface-layer and land-surface pins anyway; closing that gap is a
+separate item.
 
 It is **not** the `gfs`/`era5` default. `morrison-mp10-...-kf-rte-rrtmgp-v1`
 selects Kain-Fritsch, and the HRRR route pins `cu_physics = 0` because
@@ -1916,18 +2020,44 @@ this source's native 3 km grid already resolves convection --- so that
 suite is refused at emission, naming the switch. The refusal is physics,
 not a limitation, and it is why HRRR's default differs from the others'.
 
-Two consequences worth stating plainly:
+Three consequences worth stating plainly:
 
-* **Layer ceiling.** The legacy-RRTMG shortwave port is a transcription
-  of WRF's and its wrapper caps total layers at 64. HRRR's native
-  vertical is 51 levels, so this does not bite on the source's own grid;
-  a hand-authored deeper vertical is refused by number, before anything
-  is paid for.
+* **Layer ceiling.** The default carries the same one the legacy arm
+  does: **both** 4/4 engines bound a longwave column at 128 radiation
+  layers. The legacy number is `RLW_MAXLAY`, a compile-time constant of
+  the longwave chain kernel (`gpuwm/core/kernels/rrtmg_lw_chain.cu`,
+  asserted host-side as `MAX_RADIATION_LAYERS` in
+  `gpuwm/core/rrtmg_lw.py`); the modern one is owned by the
+  Planck-source kernel's fixed `pfrac[128]` (`gpuwm/core/rrtmgp.py`),
+  while the RTE solvers themselves compile to the run's own layer count
+  and add no bound of their own. Both numbers are declared once, as
+  `MAX_LEGACY_LONGWAVE_LAYERS` and `MAX_RRTMGP_LAYERS` in
+  `gpuwm/physics_vertical_contract.py`, and both are refused by number
+  in the resolved vertical preflight (`gpuwm.physics_compat`), before
+  anything is paid for. A column carries more layers than the ladder
+  has levels because a cap is built above the model top either way, and
+  at `p_top = 5000` Pa the two arms add the same 13 longwave layers: a
+  51-level ladder is 64 longwave layers on both, 115 levels reach the
+  bound exactly, and 116 levels are refused on both. Earlier revisions
+  of this page called 64 a wrapper cap; it is not a cap at all, it is
+  the layer count that ladder reaches. The one asymmetry is shortwave:
+  the legacy shortwave workspace is sized at run time and declares no
+  ceiling (`gpuwm/core/rrtmg_sw.py`), while the modern arm holds both
+  streams to the same 128.
 * **Card cost.** The full-radiation default costs roughly 1.8 GiB more
   peak envelope than the suite it replaced, and no longer fits the
   minimum 12 km layout on a 12 GiB card. The sizing refusal now names a
   lighter `--physics-profile` alongside a shallower ladder and a bigger
   card, so the cheapest lever is stated rather than left to be guessed.
+* **What the engine swap costs.** Almost nothing per cell, and the
+  auto-sizer spends the difference on domain. Measured with `gpuwm
+  domain --source hrrr --ladder 12-3 --hours 6 --card 16gb`, once with
+  no `--physics-profile` and once naming the legacy profile: the default
+  fits 268x216 at 12 km with a 536x432 nest at 3 km, priced at a 13.76
+  GiB peak forecast envelope; the legacy arm fits 184x146 with a 368x288
+  nest, priced at 13.74 GiB. Same request, same card, same envelope to
+  within 0.02 GiB, and 2.15 times the root cells. `gpuwm check` prices
+  each emitted file at the same two numbers.
 
 The eight asymmetric profiles stay fully selectable. Through 1.7.1 the
 HRRR route wrote the nocturnal declaration for its own DEFAULT, which is

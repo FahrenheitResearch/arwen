@@ -35,7 +35,6 @@ from __future__ import annotations
 import os
 import subprocess
 from pathlib import Path
-from typing import NamedTuple
 
 from gpuwm import bridges
 from gpuwm.bridges import (RUSTWX_CRATE_RELATIVE, artifact_remedy,
@@ -69,8 +68,9 @@ CARGO_BUILD_HINT = cargo_build_one_liner(RUSTWX_CRATE_RELATIVE)
 #: The literal spells the contract out rather than carrying a version
 #: number, exactly as ``BRIDGE_ABI_MARKERS`` requires: the ``PRODUCT``
 #: /``CATALOG`` row grammar :func:`list_products` parses, the
-#: ``RENDERED``/``SKIPPED``/``FAILED`` events :func:`run_renderer`
-#: parses, and the generic ``var:`` and vertical-section ``xsec:``
+#: ``RENDERED``/``SKIPPED``/``FAILED`` events and the ``SECTIONFILL``
+#: line :func:`run_renderer` parses, and the generic ``var:`` and
+#: vertical-section ``xsec:``
 #: vocabularies whose absence from a stale build is what #106 was
 #: reported as.  Changing any of those changes this string, and every
 #: binary predating the change answers ``unknown option --abi`` instead
@@ -81,6 +81,8 @@ RENDERER_ABI_MARKER = (
     "gpuwm-rw-wrfbatch-requirements-v1\tNEEDS\tslug\tselector\tPLANNED\t"
     "store_field\t"
     "gpuwm-rw-wrfbatch-events-v1\tRENDERED\tSKIPPED\tFAILED\t"
+    "gpuwm-rw-wrfbatch-sections-v1\tSECTIONFILL\tslug\tlo\thi\tabsence\t"
+    "rule\t"
     "gpuwm-rw-wrfbatch-vocabulary-v1\tgeneric\tvar:\txsec:\tmesh:\t"
     "meshdiff:\tselectable_slugs")
 
@@ -96,23 +98,57 @@ GENERIC_FAMILIES: tuple[str, ...] = tuple(
 #: The vertical-section family's prefix, spelled once.
 SECTION_PREFIX = "xsec:"
 
+#: The event word carrying the range one vertical cut's fill was drawn
+#: over.  A section's colour bar is fitted per frame at BOTH ends -- to
+#: the rung its own signal reaches and, since a fill that would use less
+#: than half a zero-anchored bar takes its own minimum instead, to the
+#: air the cut holds -- so two pictures of one line an hour apart can be
+#: drawn on two different bars and neither picture says so.  This is
+#: what puts it in the receipt.
+SECTION_FILL_EVENT = "SECTIONFILL"
+
+#: The one generic family a STORE can be enumerated for.
+#:
+#: The generic catalog is, by construction, every stored 2-D variable
+#: that no named product already draws -- so for this prefix, and only
+#: this prefix, "there is no row" is PROOF that the store carries no
+#: such variable, and the renderer answers a request for one with
+#: ``stored 2-D variable "X" does not exist`` and fails the whole
+#: invocation.  ``xsec:`` is cut from the wrfout files by the section
+#: lane and ``mesh:``/``meshdiff:`` read a mesh, so none of those is a
+#: store product and none can be decided from a store listing.
+GENERIC_VAR_PREFIX = "var:"
+
 #: The group keywords that name no product and carry no section term.
-_GROUP_KEYWORDS = frozenset(
+#:
+#: Public because a door has to tell "the whole catalog, whatever it
+#: holds" apart from "these named slugs".  The engine expands a group
+#: itself and leaves out what it cannot draw, so a group token carries
+#: no promise a caller can check and must pass through untouched; a
+#: NAMED slug is a promise, and a door that forwards one the catalog
+#: has just refused gets the renderer's whole-invocation failure.
+GROUP_KEYWORDS = frozenset(
     {"all", "direct", "derived", "heavy", "windowed"})
 
-#: The two window-axis exclusions, as the engine's PROSE spelled them
-#: before the row carried a code.  Kept only so a renderer built before
-#: the code column still gets its window skip honoured; every row that
-#: carries a code is matched on the code.
-_WINDOW_AXIS_REASONS = frozenset({
-    "windowed accumulations need more than one stored whole-hour frame",
-    "exact-time ordinal axis; fixed-hour windows are undefined on it",
-})
+#: The spelling this module used before the set was public.
+_GROUP_KEYWORDS = GROUP_KEYWORDS
 
-#: The codes those two rows carry.  A reason may be reworded at any
-#: time; these may not, which is the whole point of them.
+#: The two codes a windowed row carries when the store's TIME AXIS is
+#: what excluded it: a history that is not on whole hours, or one whose
+#: frames sit on an exact-time ordinal axis.  No door branches on them
+#: -- :func:`catalog_verdict` drops every non-renderable row alike --
+#: and they are here as the engine's own vocabulary, named in
+#: ``docs/render-output-layout.md`` as the family a forwarded product
+#: FAILS a whole invocation on, and pinned by the catalog contract
+#: tests.  A reason may be reworded at any time; these may not.
 WINDOW_AXIS_CODES = ("windowed-needs-whole-hour-frames",
                      "windowed-ordinal-axis")
+
+#: How the generic emitter opens the row it prints for a stored
+#: variable whose name no request can carry.  It is the one
+#: ``GENERIC_EXCLUDED`` form that is NOT a renderable variable, so
+#: the listing skips it rather than folding it in.
+_GENERIC_NAME_REFUSED = "name is not request-safe"
 
 _PROBE_TIMEOUT_S = 20
 
@@ -550,163 +586,45 @@ def _catalog_listing(renderer: Path, wrfouts, *, store_root: Path,
     if not rows:
         raise RuntimeError(
             f"{wrfout}: renderer produced no catalog rows")
+    # The store's DEDUPED generic variables, which the listing reports on
+    # stderr: a variable the store carries whose grid a named product
+    # already draws, so the catalog drops the duplicate `var:` row.  They
+    # are folded in as renderable rows because the question a consumer
+    # asks of a `var:` token is "does this store carry the variable?" --
+    # and for these the answer is yes.  Without them, a listing's silence
+    # about a present-but-deduped variable reads as absence, and a door
+    # that drops on absence would refuse a spelling this build accepts.
+    #
+    # ONLY the deduped form.  The emitter prints this row for two
+    # OPPOSITE outcomes (`rusty-weather/src/batch_render.rs`): the
+    # deduped one, which is drawable, and a stored variable whose NAME
+    # no request can carry, printed escape_debug'd because such a name
+    # holds commas, control characters or edge whitespace.  Folding the
+    # second in would make `gpuwm render --list-products` print it as
+    # renderable, which is the opposite of what the row says.  No real
+    # request can match that name, so the skip refuses nothing; the
+    # listing simply stops claiming a spelling it cannot accept.
+    for line in (result.stderr or "").splitlines():
+        if not line.startswith("GENERIC_EXCLUDED\t"):
+            continue
+        parts = line.split("\t")
+        if len(parts) < 2 or not parts[1]:
+            continue
+        reason = parts[2] if len(parts) > 2 else ""
+        if reason.startswith(_GENERIC_NAME_REFUSED):
+            continue
+        rows.append((f"{GENERIC_VAR_PREFIX}{parts[1]}", "generic",
+                     "renderable",
+                     reason or "stored variable already drawn by a named "
+                     "product",
+                     "generic-deduped"))
     return rows, summary
-
-
-class CatalogRequirements(NamedTuple):
-    """What each catalog slug needs, and what this build's import writes.
-
-    Both halves are FILELESS: ``needs`` comes from the shared recipe
-    table and ``planned`` from the import's own static plan, so the pair
-    answers "can this install draw that product?" before a wrfout
-    exists.  That is the question a plan review asks, and the
-    store-aware listing cannot be asked it -- it needs an imported
-    store, which is the thing that does not exist yet.
-
-    ``needs`` is spelled in the STORE's selector vocabulary, never in
-    wrfout variable names.  A wrf-core diagnostic declares no input list
-    at all and its compute function reads whatever it needs at run time,
-    so a row spelled in netCDF variable names would be an invented
-    mapping of the kind this tree has already paid for once.
-    """
-
-    needs: dict[str, tuple[str, ...]]
-    planned: frozenset[str]
-    basis: str
-
-
-#: How a requirements answer describes itself, so a reader can price a
-#: warning built on it.  It is a PLAN, not a store: a run whose wrfout
-#: sheds a variable narrows it further, and the store-aware listing is
-#: still the authority once a file exists.
-REQUIREMENTS_BASIS = (
-    "this renderer build's own catalog requirements and wrfout import "
-    "plan (rw_wrfbatch --list-products with no file), not a store")
-
-
-def parse_catalog_requirements(text: str) -> CatalogRequirements:
-    """The NEEDS/PLANNED pair out of one fileless catalog listing."""
-
-    needs: dict[str, tuple[str, ...]] = {}
-    planned: set[str] = set()
-    for line in (text or "").splitlines():
-        parts = line.rstrip("\n").split("\t")
-        if parts[0] == "NEEDS" and len(parts) >= 3:
-            needs[parts[1]] = tuple(part for part in parts[2:] if part)
-        elif parts[0] == "PLANNED" and len(parts) >= 2 and parts[1]:
-            planned.add(parts[1])
-    return CatalogRequirements(needs, frozenset(planned), REQUIREMENTS_BASIS)
-
-
-_REQUIREMENTS_CACHE: dict[tuple, CatalogRequirements] = {}
-
-
-def catalog_requirements(renderer: Path | None = None) -> CatalogRequirements | None:
-    """Ask the installed renderer for the fileless pair, or ``None``.
-
-    ``None`` means the question could not be ASKED -- no renderer
-    resolvable, or a build too old to answer these rows.  It is never a
-    refusal and never an empty answer dressed as one: a caller that gets
-    ``None`` states its basis and warns once rather than declaring every
-    product undrawable, because "unmeasured" is not "impossible".
-
-    Parsed once per renderer build (path, size, mtime), because the
-    answer is a property of the binary and a picker asks it per preset.
-    """
-
-    path = Path(renderer) if renderer is not None else find_renderer()
-    if path is None:
-        return None
-    try:
-        stat = path.stat()
-    except OSError:
-        return None
-    key = (str(path), stat.st_size, stat.st_mtime_ns)
-    cached = _REQUIREMENTS_CACHE.get(key)
-    if cached is not None:
-        return cached
-    try:
-        result = subprocess.run(
-            [str(path), "--list-products"], capture_output=True, text=True,
-            errors="replace", env=renderer_env(), timeout=_PROBE_TIMEOUT_S)
-    except (OSError, subprocess.SubprocessError):
-        return None
-    if result.returncode != 0:
-        return None
-    answer = parse_catalog_requirements(result.stdout or "")
-    if not answer.needs or not answer.planned:
-        # A build predating the requirement rows.  Saying so is the
-        # answer; inventing rows for it is how two catalogs start
-        # disagreeing about one question.
-        return None
-    _REQUIREMENTS_CACHE[key] = answer
-    return answer
-
-
-def undrawable(slugs, *, requirements: CatalogRequirements | None) -> dict[str, str]:
-    """Which of ``slugs`` this install cannot draw, and why; by slug.
-
-    One function, both doors: the preset picker and the plan-time
-    history warning ask exactly this, and two answers to one question is
-    how a picker and a render come to disagree.
-
-    A slug the build carries no requirement row for is NOT reported.
-    Silence there is the truthful answer -- this says what it can prove
-    from the two tables it read, and nothing else.  Each reason names
-    the selector that is missing and the basis it was decided on, so a
-    reader can price it.
-    """
-
-    if requirements is None:
-        return {}
-    missing: dict[str, str] = {}
-    for slug in dict.fromkeys(str(slug) for slug in slugs):
-        required = requirements.needs.get(slug)
-        if not required:
-            continue
-        absent = [key for key in required if key not in requirements.planned]
-        if not absent:
-            continue
-        missing[slug] = (
-            f"the wrfout import does not write {', '.join(absent)}, which "
-            f"{slug} is drawn from (basis: {requirements.basis})")
-    return missing
 
 
 def catalog_code(row) -> str:
     """One row's machine code, or ``""`` for a build that emits none."""
 
     return row[4] if len(row) >= 5 else ""
-
-
-def window_axis_unavailable(rows, requested) -> dict[str, str]:
-    """Which requested slugs the catalog excluded on its WINDOW AXIS.
-
-    THE selector for that skip, and the reason it is a function rather
-    than a set of sentences at each door: the two exclusions are the
-    rows a caller must act on -- drop the slug, or the whole render
-    fails -- and a caller that recognised them by their English text
-    stopped recognising them the first time the engine reworded one.
-
-    The value is the engine's own detail, verbatim, because that is what
-    the reader is shown.  A row from a build older than the code column
-    is still matched, by its prose, so this is a strict improvement
-    rather than a new requirement on the binary.
-    """
-
-    wanted = [token.strip() for token in requested] if not isinstance(
-        requested, str) else [token.strip() for token in requested.split(",")]
-    wanted = [token for token in wanted if token]
-    excluded = {}
-    for row in rows:
-        slug, kind, status, detail = row[0], row[1], row[2], row[3]
-        if kind != "windowed" or status != "excluded":
-            continue
-        code = catalog_code(row)
-        if code in WINDOW_AXIS_CODES or (not code and detail in _WINDOW_AXIS_REASONS):
-            excluded[slug] = detail
-    return {slug: excluded[slug] for slug in dict.fromkeys(wanted)
-            if slug in excluded}
 
 
 def catalog_verdict(rows, requested) -> tuple[str, list[tuple[str, str]]]:
@@ -720,10 +638,29 @@ def catalog_verdict(rows, requested) -> tuple[str, list[tuple[str, str]]]:
     engine's reason rather than a Python paraphrase of it.
 
     A token with no row at all passes through untouched: the group
-    keywords (``all``, ``direct`` ...) and the generic families
-    (:data:`GENERIC_FAMILIES`) name no catalog row, and the engine is
-    the authority on an unknown slug -- guessing here would refuse a
-    spelling this build accepts.
+    keywords (``all``, ``direct`` ...), the section and mesh families
+    and any slug this build knows and this listing did not mention.  The
+    engine is the authority on an unknown slug, and guessing here would
+    refuse a spelling this build accepts.
+
+    :data:`GENERIC_VAR_PREFIX` is the ONE exception, and it is not a
+    guess.  The generic catalog enumerates the store: every stored 2-D
+    variable appears, as its own row or as a deduped one folded in by
+    the listing.  So a ``var:`` token with no row is PROVEN absent from
+    this store, and forwarding it gets ``stored 2-D variable "X" does
+    not exist`` and a failed invocation -- which is how a shipped
+    preset naming two variables in wrfout spelling rather than store
+    spelling discarded a whole 13-frame series.
+
+    That proof needs the enumeration to have RUN, so it is taken from
+    the listing rather than assumed: the exception applies only when
+    this listing carried a generic row at all.  A listing with none has
+    said nothing about the store's variables -- a build without the
+    generic enumeration is one way to get one -- and reading its silence
+    as absence would drop every ``var:`` request a user made, by guess,
+    with the engine never asked.  Those are forwarded unchanged and the
+    renderer decides, the same way :func:`catalog_rows` treats a build
+    whose rows carry no machine code.
 
     An empty spec is the caller's signal to refuse before launching
     rather than to run an empty render.
@@ -734,10 +671,25 @@ def catalog_verdict(rows, requested) -> tuple[str, list[tuple[str, str]]]:
               else [str(token).strip() for token in requested])
     wanted = [token for token in wanted if token]
     status = {row[0]: (row[2], row[3]) for row in rows}
+    # Whether this listing enumerated the store's 2-D variables at all,
+    # which is what makes an absent row a reading rather than a silence.
+    enumerated = any(row[1] == "generic"
+                     or row[0].startswith(GENERIC_VAR_PREFIX)
+                     for row in rows)
     available, excluded = [], []
     for token in dict.fromkeys(wanted):
         row = status.get(token)
-        if row is None or row[0] == "renderable":
+        if row is None:
+            if enumerated and token.startswith(GENERIC_VAR_PREFIX):
+                excluded.append((
+                    token,
+                    "no stored 2-D variable "
+                    f"{token[len(GENERIC_VAR_PREFIX):]!r} in this store; "
+                    "gpuwm render --list-products names the ones there are"))
+                continue
+            available.append(token)
+            continue
+        if row[0] == "renderable":
             available.append(token)
             continue
         excluded.append((token, row[1]))
@@ -793,30 +745,156 @@ def _is_level_token(token: str) -> bool:
     return all(char.isdigit() or char in "+-." for char in body)
 
 
-def section_required(products: str) -> bool:
-    """True when this ``--products`` spelling needs a section line."""
+#: The height range ``rw_wrfbatch`` accepts for ``--section-top-km``
+#: (``tools/rustwx/crates/rw-wrfbatch/src/main.rs``), and the ceiling it
+#: uses when the caller names none.
+SECTION_TOP_KM_RANGE = (1.0, 40.0)
+SECTION_TOP_KM_DEFAULT = 14.0
 
-    return bool(split_section_spec(products)[1])
 
-
-def section_spec_problem(products: str, *, section=None) -> str | None:
-    """The refusal for a section request with no line, or ``None``.
+def section_top_problem(top_km) -> str | None:
+    """The refusal for a section ceiling outside 1-40 km, or ``None``.
 
     The engine's own sentence, because the engine is the authority on
-    its own grammar -- and it fires HERE, at plan review, instead of
-    after a forecast: a chain that names an ``xsec:`` product but
-    composes no section line is refused by the renderer at render time,
-    which is hours of integration paid for before the mistake is read.
+    its own grammar, and it fires at the door so a caller reads it
+    before a render launches rather than after.
+
+    This is a refusal about a VALUE, not about a request: a spec that
+    names a cut with no line is not refused anywhere any more, it is
+    dropped per product by :func:`drop_storeless_terms` and the rest of
+    the request is drawn.
     """
 
-    if section is not None and str(section).strip():
+    if top_km is None:
         return None
-    if not section_required(products):
+    low, high = SECTION_TOP_KM_RANGE
+    try:
+        value = float(top_km)
+    except (TypeError, ValueError):
+        return (f"--section-top-km '{top_km}' is not within "
+                f"{low:g}-{high:g} km")
+    if not (value == value and abs(value) != float("inf")
+            and low <= value <= high):
+        return (f"--section-top-km '{top_km}' is not within "
+                f"{low:g}-{high:g} km")
+    return None
+
+
+#: The generic families drawn from a MESH file rather than from a
+#: history frame, read out of the pinned vocabulary marker.
+MESH_PREFIXES: tuple[str, ...] = tuple(
+    family for family in GENERIC_FAMILIES if family.startswith("mesh"))
+
+
+#: Why a mesh term cannot be drawn from history frames, per term.
+_MESH_TERM_REASON = (
+    "mesh products are drawn from a mesh file's cell boundaries "
+    "(rw_wrfbatch --mesh-grid FILE.nc); a history frame carries cell "
+    "centres and no polygons, and this render door passes no mesh file. "
+    "Ask for the instantaneous or windowed product of the same field, "
+    "which is drawn from the frames themselves, or draw the mesh panel "
+    "with rw_wrfbatch --mesh-grid FILE.nc directly")
+
+#: Why a section term cannot be drawn without a line, per term.
+_SECTION_TERM_REASON = (
+    "a vertical section is cut along a LINE and this invocation composes "
+    "none. Add --section lat,lon,lat,lon or --section FILE.json to draw "
+    "it, or drop the term")
+
+
+def drop_storeless_terms(products: str, *, section=None
+                         ) -> tuple[str, list[tuple[str, str]]]:
+    """``(the spec a wrfout render can carry, the terms dropped)``.
+
+    Three families are not store products and cannot be decided from a
+    store listing, so :func:`catalog_verdict` never sees them: ``mesh:``
+    and ``meshdiff:`` read a mesh file's cell boundaries, and ``xsec:``
+    is cut along a section line.  A request that names one of them on a
+    door with no mesh file and no line is answered here, with nothing
+    opened and nothing launched.
+
+    WHAT BREAKAGE THIS PREVENTS (gate law).  The renderer's own answer
+    to such a term is PER INVOCATION, taken before a single picture is
+    drawn (``rw-wrfbatch/src/main.rs``): a ``mesh:`` term with no
+    ``--mesh-grid`` is a usage error at argument validation, a ``mesh:``
+    term beside store or ``xsec:`` products is refused at the entry to
+    the batch render because the two families read different inputs, and
+    an ``xsec:`` term with no ``--section`` is refused before the store
+    render starts.  So ONE such term forwarded from a door costs every
+    other requested product its pictures: measured on the shipped wheel,
+    a two-product series naming ``mesh:cell_area`` exits 1 with no
+    pictures at all.
+
+    The drop is therefore per PRODUCT, which the renderer will not do
+    for itself: the term goes, the rest of the request is drawn, and the
+    caller reports each dropped term with the sentence returned beside
+    it.  A caller left with an empty spec has nothing to draw and
+    refuses rather than launching an empty render, the same signal
+    :func:`catalog_verdict` gives.
+
+    ``section`` is the line the caller will pass to the renderer.  With
+    one, an ``xsec:`` term is drawable here and is kept; the mesh
+    families have no such door, because no door in this package passes
+    ``--mesh-grid``.
+
+    A request that drops nothing comes back byte for byte.  One that
+    drops something is rebuilt from the engine's own tokenization
+    (:func:`split_section_spec`, so a section term's comma-separated
+    level list stays one term), which groups the surviving section
+    terms after the store terms; the renderer splits the spec into those
+    same two lists before it draws, so the order between families is not
+    a fact anything downstream reads.
+    """
+
+    store_spec, sections = split_section_spec(products)
+    kept: list[str] = []
+    dropped: list[tuple[str, str]] = []
+    for term in (token.strip() for token in store_spec.split(",")):
+        if not term:
+            continue
+        if term.lower().startswith(MESH_PREFIXES):
+            dropped.append((term, _MESH_TERM_REASON))
+        else:
+            kept.append(term)
+    drawable_section = section is not None and str(section).strip() != ""
+    for term in sections:
+        if drawable_section:
+            kept.append(term)
+        else:
+            dropped.append((term, _SECTION_TERM_REASON))
+    if not dropped:
+        return products, []
+    return ",".join(kept), dropped
+
+
+def parse_section_fill(line: str) -> dict | None:
+    """One ``SECTIONFILL`` line as a receipt row, or ``None``.
+
+    ``SECTIONFILL <slug> lo=<v> hi=<v> absence=<0|1> rule=<token>``.  A
+    line whose numbers do not parse is dropped rather than raised on: a
+    receipt is metadata beside a picture that was drawn, and a render
+    that succeeded is not failed over a field a later engine spells
+    differently.
+    """
+
+    if not line.startswith(SECTION_FILL_EVENT + " "):
         return None
-    return ("xsec: products need a line: --section lat,lon,lat,lon or "
-            "--section FILE.json.  This chain composes no section line, so "
-            "the renderer would refuse after the forecast; draw the cut with "
-            "`gpuwm render --section lat,lon,lat,lon FILE` instead.")
+    slug, _, rest = line[len(SECTION_FILL_EVENT) + 1:].partition(" ")
+    fields = {}
+    for token in rest.split():
+        key, sep, value = token.partition("=")
+        if sep:
+            fields[key] = value
+    try:
+        low = float(fields["lo"])
+        high = float(fields["hi"])
+    except (KeyError, ValueError):
+        return None
+    if not slug or low != low or high != high:
+        return None
+    return {"family": slug, "lo": low, "hi": high,
+            "absence": fields.get("absence") == "1",
+            "rule": fields.get("rule", "")}
 
 
 def run_renderer(renderer: Path, wrfout: Path, *, store_root: Path,
@@ -831,6 +909,8 @@ def run_renderer(renderer: Path, wrfout: Path, *, store_root: Path,
                  isotherms: str | None = None,
                  section_across_km: float | None = None,
                  section_size: tuple[int, int] | None = None,
+                 section_top_km: float | None = None,
+                 fills: list | None = None,
                  ) -> tuple[list[Path], list[str],
                             list[tuple[str, str]]]:
     """Render one wrfout file into ``out_dir``; (written, failures, skipped).
@@ -849,6 +929,12 @@ def run_renderer(renderer: Path, wrfout: Path, *, store_root: Path,
     lines, which made an accurate skip invisible to every caller -- the
     reason a reader saw 53 images and no word about the 54th.  All three
     are read now, and only ``FAILED`` is a failure.
+
+    ``fills``, when a list is given, collects one
+    :func:`parse_section_fill` row per vertical cut drawn: the range its
+    colour bar spans and the rule that set it.  It is an out-parameter
+    rather than a fourth return value because every caller of these two
+    functions already unpacks three.
     """
 
     return run_renderer_series(
@@ -857,7 +943,8 @@ def run_renderer(renderer: Path, wrfout: Path, *, store_root: Path,
         heavy=heavy, source_label=source_label, overlays=overlays,
         annotate=annotate, streamlines=streamlines, theme=theme,
         section=section, isotherms=isotherms,
-        section_across_km=section_across_km, section_size=section_size)
+        section_across_km=section_across_km, section_size=section_size,
+        section_top_km=section_top_km, fills=fills)
 
 
 def run_renderer_series(renderer: Path, wrfouts, *, store_root: Path,
@@ -872,6 +959,8 @@ def run_renderer_series(renderer: Path, wrfouts, *, store_root: Path,
                         isotherms: str | None = None,
                         section_across_km: float | None = None,
                         section_size: tuple[int, int] | None = None,
+                        section_top_km: float | None = None,
+                        fills: list | None = None,
                         ) -> tuple[list[Path], list[str],
                                    list[tuple[str, str]]]:
     """One invocation over a whole wrfout SERIES, into ONE store.
@@ -955,6 +1044,17 @@ def run_renderer_series(renderer: Path, wrfouts, *, store_root: Path,
     if section_size is not None:
         width, height = section_size
         command.extend(("--section-size", f"{int(width)}x{int(height)}"))
+    # The ceiling of a section's fitted height range.  Absent, the engine
+    # keeps its own 14 km, so a caller that never mentions it draws what
+    # every earlier release drew.  A published cut was 14 km tall whatever
+    # the air in it was doing, which puts a 1 km marine layer in the
+    # bottom fourteenth of the frame; the flag existed in the engine from
+    # the start and no door forwarded it.
+    top_problem = section_top_problem(section_top_km)
+    if top_problem is not None:
+        raise ValueError(top_problem)
+    if section_top_km is not None:
+        command.extend(("--section-top-km", repr(float(section_top_km))))
     command.extend(str(path) for path in inputs)
     try:
         result = subprocess.run(
@@ -975,6 +1075,10 @@ def run_renderer_series(renderer: Path, wrfouts, *, store_root: Path,
             slug, _, reason = line[len("SKIPPED "):].partition(" ")
             skipped.append(
                 (slug, f"{subject}: {reason or 'no reason given'}"))
+        elif fills is not None:
+            row = parse_section_fill(line)
+            if row is not None:
+                fills.append(row)
     for line in (result.stderr or "").splitlines():
         if line.startswith("FAILED "):
             failures.append(f"{subject}: {line[len('FAILED '):]}")
@@ -994,4 +1098,11 @@ __all__ = [
     "probe_renderer", "renderer_candidates", "renderer_env",
     "renderer_remedy", "resolve_basemap_dir", "run_renderer",
     "run_renderer_series", "list_products_series",
+    "GENERIC_FAMILIES", "GENERIC_VAR_PREFIX", "GROUP_KEYWORDS",
+    "SECTION_PREFIX", "SECTION_TOP_KM_DEFAULT", "SECTION_TOP_KM_RANGE",
+    "WINDOW_AXIS_CODES",
+    "catalog_code", "catalog_rows",
+    "catalog_verdict", "drop_storeless_terms",
+    "MESH_PREFIXES", "split_section_spec", "section_top_problem",
+    "SECTION_FILL_EVENT", "parse_section_fill",
 ]

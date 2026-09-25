@@ -6,6 +6,8 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
+from conftest import requires_cupy
+
 from gpuwm import prepared_single_domain_forecast as runner, stage_cli
 from gpuwm.cli import main as cli_main
 from gpuwm.io import restart
@@ -173,6 +175,10 @@ def test_only_uncommitted_history_belongs_to_resumed_segment(after, expected):
 
 
 @pytest.mark.parametrize("diagnostic", [False, True])
+# NEEDS CUPY INSTALLED, and opens no device: this test runs the public sim
+# entry point; without cupy it exits 2 on the capability refusal instead of
+# reaching the forward.
+@requires_cupy
 def test_public_sim_forwards_single_restart_and_diagnostics(tmp_path, monkeypatch, diagnostic):
     root = _single_domain_bundle(tmp_path / "prepared")
     config, wps = _authority(tmp_path / "authority")

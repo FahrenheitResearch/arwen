@@ -356,6 +356,76 @@ def _run(command: list[str], env: dict[str, str],
                    env=env)
 
 
+#: How much of a child's error text is kept so its refusal can be
+#: repeated by the step that launched it.  A refusal is a paragraph; a
+#: traceback in front of it is a few hundred characters more.
+REFUSAL_TAIL = 8192
+
+
+class _RepeatableStream:
+    """Pass a child's text straight through, keeping a bounded tail.
+
+    The pass-through is the whole point: the text still reaches this
+    process's own stream, which is what the host's diagnostic log is
+    fed from, so nothing about what a reader sees changes.  The tail
+    exists so the step that launched the child can SAY what the child
+    said, instead of pointing at a stream and trusting that the words
+    are still on it where the reader is standing.
+    """
+
+    def __init__(self, destination) -> None:
+        self.destination = destination
+        self.tail = ""
+
+    def write(self, text: str) -> int:
+        self.destination.write(text)
+        self.destination.flush()
+        self.tail = (self.tail + text)[-REFUSAL_TAIL:]
+        return len(text)
+
+    def flush(self) -> None:
+        self.destination.flush()
+
+
+def _run_keeping_refusal(command: list[str], env: dict[str, str],
+                         cwd: Path | None = None) -> tuple[int, str]:
+    """Run a child and return its exit code WITH its own error text."""
+
+    from gpuwm.command_output import run_streamed
+
+    recorded = _RepeatableStream(sys.stderr)
+    completed = run_streamed(command, sys.stdout, recorded, env=env,
+                             cwd=str(REPO if cwd is None else cwd))
+    return completed.returncode, recorded.tail
+
+
+#: Terminal styling, which a child emits whenever its own environment
+#: asks for colour.  It is stripped from the KEPT copy only: the
+#: pass-through keeps whatever the child wrote, and the copy this step
+#: quotes has to be plain text, because the reader of a quoted refusal
+#: is often a log file, and because the summariser matches an exception
+#: line by its first character.
+_TERMINAL_STYLING = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+
+
+def _refusal_sentence(text: str) -> str:
+    """The child's own last refusal, with styling and stack frames gone."""
+
+    from gpuwm.prep_output import failure_summary
+
+    plain = _TERMINAL_STYLING.sub("", text).strip()
+    if not plain:
+        return ""
+    sentence = failure_summary(plain).strip()
+    if not sentence:
+        # Not every child dies through a traceback the summariser can
+        # read.  The last thing it said is still what it said, and a
+        # step that quotes nothing because the shape was unfamiliar is
+        # the defect this exists to close.
+        sentence = plain.splitlines()[-1]
+    return " ".join(sentence.split())
+
+
 def _stage_environment() -> dict[str, str]:
     """The environment every stage this preparation launches receives.
 
@@ -537,11 +607,8 @@ def _stock_wrf_export(command: list[str], env: dict[str, str], *,
             "reason": "--skip-stock-wrf-export",
             "required": False,
         }
-    try:
-        _run(command, env)
-    except subprocess.CalledProcessError as error:
-        returncode = error.returncode
-    else:
+    returncode, error_text = _run_keeping_refusal(command, env)
+    if returncode == 0:
         # PASS is earned, not assumed: the declared outputs must exist
         # and hash-manifest, or this step refuses loudly.
         return {"status": "PASS", "required": required,
@@ -557,18 +624,27 @@ def _stock_wrf_export(command: list[str], env: dict[str, str], *,
     # fail-closed reading of a nonzero exit is refusal.  The explicit
     # opt-outs remain: --skip-stock-wrf-export skips the attempt up
     # front and says so in the receipt; a caller whose product really
-    # is only the prepared cache passes it deliberately.  The converter
-    # writes its own refusal to this process's stderr, so the reason is
-    # already on the terminal, verbatim; the prepared cache and the
-    # preparation work above are complete and remain on disk either way.
+    # is only the prepared cache passes it deliberately.
+    #
+    # The converter's own words travel WITH this refusal, rather than as
+    # a pointer to a stream.  They used to be left "on stderr", which is
+    # true of the terminal and useless to every reader that meets this
+    # exit through something else: a caller that keeps the last lines of
+    # a failed stage keeps THIS message and the frames under it, while
+    # the sentence saying why sits further up, outside the window.  The
+    # prepared cache and the preparation work above are complete and
+    # remain on disk either way.
+    refusal = _refusal_sentence(error_text)
+    said = (f'  The converter said: "{refusal}"' if refusal else
+            "  The converter wrote nothing to its error stream, which is "
+            "itself the thing to report.")
     raise RuntimeError(
         f"stock-WRF export was requested and failed (exit {returncode}); "
         "refusing to PASS a preparation whose declared WRF-arm outputs "
         "were not produced.  The prepared cache and preparation report "
-        "above are complete and stand on disk; fix the converter's "
-        "refusal (quoted on stderr) and re-run, or pass "
-        "--skip-stock-wrf-export to deliberately not produce WRF-arm "
-        "inputs")
+        f"above are complete and stand on disk.{said}  Fix that refusal "
+        "and re-run, or pass --skip-stock-wrf-export to deliberately not "
+        "produce WRF-arm inputs")
 
 
 def _namelist_start_time(path: Path) -> datetime | None:

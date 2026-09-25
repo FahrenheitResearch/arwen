@@ -1,13 +1,24 @@
-# A fine nest over the radar-DA free forecast
+# A fine nest over the radar-DA cycle
 
 EXPERIMENTAL. Nothing here is on a default route.
 
 The nowcast assimilates and forecasts on a single coarse domain.
 Interpolating its final output to a finer mesh produces an unbalanced
 field that spends its first 15–30 minutes adjusting — exactly the window
-a nowcast exists to serve. This runs a real one-way nest over the
-free-forecast legs instead, so the fine field is produced by the model
-and takes lateral forcing from the parent at every parent step.
+a nowcast exists to serve. This runs a real one-way nest over every
+leg instead, observed and free, so the fine field is produced by the
+model and takes lateral forcing from the parent at every parent step.
+The child crosses each leg boundary inside its trajectory's restart set
+(the same tree checkpoint `gpuwm run --restart` reads: its atmosphere,
+its soil and surface state, its accumulators, its held tendencies and
+its clock) and takes its parent's analysis as a correction (two raw
+interpolations of the parent, differenced over the analysed fields)
+rather than being rebuilt from it, so a window compared across the
+observed-to-free handoff is not measuring the child's birth. A nest
+born on a later leg activates at that leg's boundary: its physics
+counts that step as its step one, exactly as a nest WRF starts mid-run
+does, and every later leg finds that birth in the child's own
+checkpoint header.
 
 ## What you set
 
@@ -18,7 +29,7 @@ Everything about the child except these keys is derived. `dx`, `dy` and
 --nest-half-width-km 60      # or --nest-nx / --nest-ny in child cells
 --nest-ratio 3               # space AND time; 3 off 3 km is 1 km at 5 s
 --nest-members 0             # default: the control trajectory only
---free-legs 6                # required; the nest covers the free legs
+--free-legs 6                # the nest covers every leg, observed and free
 ```
 
 Optional: `--nest-i-parent-start` / `--nest-j-parent-start` (default is
@@ -57,14 +68,24 @@ one:
 
 The route taken is the one the DA driver's own shape makes available.
 `tools/da_cycle_prepared.py` rebuilds the entire model from scratch at
-every leg and joins legs through host snapshots, so **a leg is already a
-fresh model whose clock is placed at the leg boundary**. A nested leg is
-therefore not a mid-run introduction at all: it is an ordinary whole-run
-two-domain model whose run happens to be one leg long, and whose parent
-state at t=0 of that leg is the *analysed* state. The child is built from
-that parent by full SINT (`nest_init.parent_only_init`), so it inherits
-every increment the cycling produced, and is forced laterally by the
-parent every parent step for the rest of the leg.
+every leg and joins legs through the restart owner (`gpuwm.io.restart`:
+every trajectory writes its tree checkpoint set at a leg's end and the
+next leg restores it before the analysis is applied), so **a leg is a
+restarted model**, with every domain's clock placed by the checkpoint.
+A nested leg is therefore not a mid-run introduction at all: it is an
+ordinary two-domain model resumed at a leg boundary, whose parent state
+at the start of that leg is the *analysed* state. On the leg a child is
+born it is built from that parent by full SINT
+(`nest_init.parent_only_init`), so it inherits every increment the
+cycling produced, and is forced laterally by the parent every parent
+step for the rest of the leg; on every later leg it is restored from the
+trajectory's own set, and its birth is the activation epoch the
+checkpoint header carries (`gpuwm.da.nested_forecast.child_born_at`).
+The sets are staged under `--stage-dir` (default `<out>/stage`), one
+per trajectory per leg with the child inside it; a set is removed once
+the next leg has restored it, and the run removes whatever the stage
+still holds when it ends. A generation under `--save-ensemble` is the
+copy that stays.
 
 ## What that costs, stated plainly
 
@@ -97,6 +118,23 @@ under the same operator is what makes the child's initial state
 
 Vertical resolution is shared tree-wide: a 1 km nest inherits the
 parent's eta ladder. Often that, not `dx`, is what limits the result.
+
+Stacking that ladder is not free, and it is not a choice you make on
+its own. Halving a layer doubles the vertical Courant number
+`w*dt/dz` of an updraft through it, and past 1 WRF's vertical-velocity
+limiter pushes the w tendency against the motion where a run carries
+`w_damping = 1` (`gpuwm/core/dycore.py::apply_w_damping`; this tree's
+own default is 0, `gpuwm/config.py:113`, and the value comes from the
+imported namelist): the run stays up and the updraft pays.  With the limiter off
+the same crossing is a stability problem instead, not a safe one. On
+one measured case a 15 s parent step over a band whose layers came out
+198 m thick ran that number to 1.41, fired the limiter on 606 cells of
+the parent domain and halved the peak updraft from 33.9 to 18.5 m/s;
+the 49-level ladder the same case ran at 643 m layers and the same step
+reached 0.79 and never fired. Price a ladder against the step it will
+run before adopting it, and read the limiter line preflight prints.
+Both are in [`da-nowcast-demo.md`](da-nowcast-demo.md) under **The three
+findings that pick a cycle's configuration**.
 
 ## Admissibility is enforced, not conventional
 
@@ -149,12 +187,15 @@ envelope**, and the nest is priced on top of that:
 
 **These numbers moved with the nowcast's default physics profile.** They
 were +59/+108/+176/+735 MiB on a 618 MiB / 3606 MiB parent while the
-default was `wsm6-ysu-mm5-noah-no-radiation-v1`; the default is now
-`thompson-mp8-ysu-mm5-noah-rrtmg-legacy-v1`
+default was `wsm6-ysu-mm5-noah-no-radiation-v1`; the rows above were
+measured with `thompson-mp8-ysu-mm5-noah-rrtmg-legacy-v1` bound
 (`tools.da_nowcast.NOWCAST_DEFAULT_PHYSICS_PROFILE`, which
 `tools/da_nest_cost.py` imports rather than restates), and mp8's extra
-species plus RRTMG's two streams take the parent's binding envelope from
-3.5 GiB to 6.8 GiB. On a 16 GiB card that is the difference between
+species plus two full radiation streams take the parent's binding
+envelope from 3.5 GiB to 6.8 GiB. That constant moved to
+`thompson-mp8-ysu-mm5-noah-rte-rrtmgp-v1` on 2026-09-19, the same suite
+on the RTE+RRTMGP engines; these rows have not been re-measured under it
+and name the suite they were measured with. On a 16 GiB card that is the difference between
 comfort and a plan that does not fit, so **a VRAM plan measured before
 this change has to be re-measured, not extrapolated.** Pass
 `--physics-profile` to price any other shipped suite; the wall-time

@@ -1,0 +1,54 @@
+{
+  "commit": "221f66f14-repeat",
+  "card": "NVIDIA GeForce RTX 4090",
+  "compute_capability": "8.9",
+  "cupy": "14.2.0",
+  "fingerprint": {
+    "nvrtc_build": "13.0.48",
+    "nvrtc_build_id": "CL-36260728",
+    "nvrtc_library_sha256": "fd8dab022196d0a763a756b1bdc2b31767a63c9c6e774cad9ef77bad55328559",
+    "cuda_driver_version": "13030",
+    "device_compute_capability": "89",
+    "cupy_version": "14.2.0",
+    "numpy_version": "2.5.3"
+  },
+  "shinhong_ulp": {
+    "measured": {
+      "du": 93207,
+      "dv": 46603,
+      "dtheta": 0,
+      "dqv": 349526,
+      "dqc": 155602,
+      "dqi": 3055548,
+      "exch_h": 8,
+      "tke": 2022,
+      "el": 13,
+      "hpbl": 1,
+      "wstar": 1,
+      "delta": 1
+    },
+    "vs_rows": {
+      "13.0.48": {
+        "el": [
+          13,
+          14
+        ]
+      },
+      "12.9.86": {
+        "dv": [
+          46603,
+          1491308
+        ],
+        "tke": [
+          2022,
+          2005
+        ],
+        "el": [
+          13,
+          14
+        ]
+      }
+    }
+  },
+  "bl1_run_state_sha256": "854866c8c67f9c8ae8c058e7d4e1ba7365237466eaa76ebbbc8c2e188998e6ab"
+}

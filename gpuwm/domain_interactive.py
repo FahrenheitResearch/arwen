@@ -89,10 +89,11 @@ DEFAULT_LADDER = "12"
 #: parameterize convection it already resolves.  A bare hrrr session
 #: therefore emitted a config its own route would not take.  The entry is
 #: now the strongest ROUTE-ADMISSIBLE full-radiation suite: Thompson mp8
-#: with RRTMG longwave and shortwave and no cumulus, which is also the
-#: operational HRRR composition (NOAA/GSL) and matches
+#: with RTE+RRTMGP longwave and shortwave and no cumulus, which matches
 #: :data:`gpuwm.domain_wizard.HRRR_DEFAULT_PROFILE` -- the two doors
-#: agree, as they must.
+#: agree, as they must.  The same composition on the legacy RRTMG
+#: engines, which is what this entry named while that was the route's
+#: default, stays selectable by id.
 #:
 #: ``tests/test_domain_interactive.py`` re-derives every entry from the
 #: generated registry -- offered by that source's route, admitted by that

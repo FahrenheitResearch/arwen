@@ -425,6 +425,27 @@ PHYSICS_SLOT_DISPATCH: dict[str, dict[int, str | None]] = {
 LAND_SURFACE_SFCDIAGS_SCHEMES = frozenset({2})
 
 
+def sase_switch_value(cfg, name: str) -> bool:
+    """Read one SASE switch, falling back to RunConfig's SHIPPED default.
+
+    Every switch here is a per-run key whose default is declared once, in
+    :class:`~gpuwm.config.RunConfig`.  A configuration object that does
+    not carry the key must land on that declared default and nothing
+    else: a literal fallback written at the call site is a second
+    declaration of the same default, and a second declaration drifts.
+    It already had.  ``sase_additive_dissipation`` ships ON, and the
+    driver read it with a literal ``False`` fallback, so any object
+    without the field would have dropped the dissipation channel without
+    saying so -- the opposite of what a default-on remedy means.  The
+    fallback is now read off the dataclass, so the call site cannot
+    disagree with ``gpuwm/config.py`` about what ships.
+
+    RunConfig itself always carries all three keys, so for a RunConfig
+    this is ``getattr`` and nothing more.
+    """
+    return bool(getattr(cfg, name, getattr(RunConfig, name)))
+
+
 def resolve_physics_slot(selector: str, value) -> str | None:
     """Resolve one selector VALUE to its runner method, or fail loudly."""
     table = PHYSICS_SLOT_DISPATCH[selector]
@@ -3955,7 +3976,8 @@ class PhysicsDriver:
         # comparison it exists to make.  Keeping the launch
         # unconditional also keeps the preflight residency (the
         # launch_moist_n2 work field) identical either way.
-        n2_moist_arg = n2_eff if getattr(cfg, "sase_moist_n2", True) else None
+        n2_moist_arg = (n2_eff if sase_switch_value(cfg, "sase_moist_n2")
+                        else None)
         # S3-11b: ONE lowest-level moist density serves BOTH surface
         # seams -- the e source here and the S3-11a scalar-flux deposit
         # in the step-5 scalar loop below consume this same field (the
@@ -4016,12 +4038,15 @@ class PhysicsDriver:
             # is formed inside the e-update kernel from state it
             # already holds, so there is no second wire and no new
             # device field.
-            stable_dissipation=bool(
-                getattr(cfg, "sase_stable_dissipation", False)),
+            stable_dissipation=sase_switch_value(
+                cfg, "sase_stable_dissipation"),
             # SASE S3-12 SWITCH (RunConfig.sase_additive_dissipation,
-            # DEFAULT False = the model as built -- the launcher then
-            # gates the kernel's has_ced off and launches no l_B
-            # field, so the state is bitwise unchanged).  True ADDS
+            # DEFAULT True since 1a0e8a7f8, the 2026-08-17 real-data
+            # confirmation: config.py; authority module docstring,
+            # S3-12 section, "DEFAULT: TRUE, AND WHY".  False is the
+            # un-channeled formulation the RED legs pin -- the launcher
+            # then gates the kernel's has_ced off and launches no l_B
+            # field, so the state is bitwise that step).  True ADDS
             # Deardorff's second, grid-scale dissipation channel to
             # whichever base the S3-6k switch above selected, on the
             # state-independent reference length l_ref = delta**f *
@@ -4034,9 +4059,16 @@ class PhysicsDriver:
             # itself.  Before this wire the switch was authority-side
             # only -- a GPU run that set it got the channel silently
             # DROPPED; now the device path carries it (parity pinned
-            # in tests/test_sase_gpu.py, S3-12 section).
-            additive_dissipation=bool(
-                getattr(cfg, "sase_additive_dissipation", False)))
+            # in tests/test_sase_gpu.py, S3-12 section; the driver-tier
+            # ON-against-explicit-OFF reading is
+            # test_sase_driver_additive_switch_is_selectable_and_fires).
+            # The fallback is RunConfig's own shipped default, not a
+            # literal: this key ships True, and the literal False that
+            # used to stand here would have dropped the channel on any
+            # configuration object that does not carry the field.  See
+            # sase_switch_value.
+            additive_dissipation=sase_switch_value(
+                cfg, "sase_additive_dissipation"))
         # S3-6c/6e: the split step returns the K_v field its vertical
         # channel used and the governed horizontal diffusivity km_h;
         # the scalar loop below rides both (K_v/Pr_t(f) implicit
@@ -4438,6 +4470,35 @@ class PhysicsDriver:
                 # has no other writer for this carrier, and a carrier
                 # written once is a carrier that stops answering to the sun
                 # after its first minute.
+                # THE FIRST STEP OF A DRIVER IS NOT ALWAYS ITIMESTEP 1.
+                # WRF's mandatory itimestep == 1 radiation call is what
+                # seeds GLW/SWDOWN/GSW before the land surface consumes
+                # them, and `itimestep` above counts from the domain's
+                # activation -- so a driver that BEGINS mid-run starts at
+                # whatever phase of the radiation cadence its model time
+                # lands on, and may not be due again for most of an
+                # interval.  A DA cycle leg is exactly that driver: it is
+                # built fresh on an analysis state, its carriers are
+                # seeded UNWRITTEN because radiation is their producer,
+                # nothing else writes them, and the contract refused at
+                # the leg's first surface call with no producer in sight.
+                # A checkpoint resume never hit it, because a checkpoint
+                # restores the carriers and their provenance.
+                #
+                # So the producer runs when a CONSUMED carrier is still
+                # unsourced and a radiation call could write it -- the
+                # same remedy as the legacy-checkpoint refresh below,
+                # decided on the contract's own record rather than on how
+                # the driver was assembled.  A configuration whose
+                # radiation cannot write the missing carrier (no longwave
+                # scheme under a GLW-consuming land surface) does not
+                # reach here: its GLW is a declaration, which is a source,
+                # and the config door refuses it undeclared.
+                if (self.carriers is not None and not radiation_due
+                        and radiation_enabled(cfg)
+                        and self.carriers.unsourced_consumed(
+                            int(cfg.sf_surface_physics))):
+                    self.carriers_need_producer_refresh = True
                 # LEGACY-CHECKPOINT PRODUCER REFRESH.  A resume from a
                 # pre-contract checkpoint knows the carrier VALUES and
                 # nothing about their provenance, so the producers are

@@ -982,6 +982,46 @@ fn cmd_decode(options: &Options) -> Result<String, Box<dyn Error>> {
     Ok(format!("{}\n", serde_json::to_string_pretty(&record)?))
 }
 
+/// Every declared array lies inside the payload and its declared shape
+/// accounts for exactly its declared bytes.
+///
+/// Its own function so the rule is testable without a pack file, and
+/// because the rule is about the dtype each entry declares rather than
+/// about one width the container happened to start with.
+fn check_arrays(
+    arrays: &std::collections::BTreeMap<String, pack::ArrayEntry>,
+    payload_len: usize,
+) -> Result<(), Box<dyn Error>> {
+    for (key, entry) in arrays {
+        let end = entry.offset.saturating_add(entry.bytes);
+        if end > payload_len {
+            return Err(s3::boxed_error(format!(
+                "pack array {key} spans bytes {}..{end} of a {payload_len}-byte payload",
+                entry.offset
+            )));
+        }
+        let elements: usize = entry.shape.iter().product();
+        // The width comes off the array's OWN declared dtype.  A constant
+        // 4 here refused every `|u1` censor plane the decoder writes under
+        // `--censor-flags`, so a censored pack failed the verify step that
+        // runs immediately after its own decode, and the clear-air route
+        // that needs those planes was unreachable.
+        let Some(width) = pack::dtype_width(&entry.dtype) else {
+            return Err(s3::boxed_error(format!(
+                "pack array {key} declares dtype {:?}, which this container does not carry",
+                entry.dtype
+            )));
+        };
+        if elements * width != entry.bytes {
+            return Err(s3::boxed_error(format!(
+                "pack array {key} declares shape {:?} ({elements} elements) of {} but {} bytes",
+                entry.shape, entry.dtype, entry.bytes
+            )));
+        }
+    }
+    Ok(())
+}
+
 fn cmd_verify(options: &Options) -> Result<String, Box<dyn Error>> {
     let path = options
         .volume
@@ -993,23 +1033,7 @@ fn cmd_verify(options: &Options) -> Result<String, Box<dyn Error>> {
     let (meta, payload) = decode_pack(&bytes)?;
     // The header digest already matched; also prove every declared array
     // lies inside the payload it indexes.
-    for (key, entry) in &meta.arrays {
-        let end = entry.offset.saturating_add(entry.bytes);
-        if end > payload.len() {
-            return Err(s3::boxed_error(format!(
-                "pack array {key} spans bytes {}..{end} of a {}-byte payload",
-                entry.offset,
-                payload.len()
-            )));
-        }
-        let elements: usize = entry.shape.iter().product();
-        if elements * 4 != entry.bytes {
-            return Err(s3::boxed_error(format!(
-                "pack array {key} declares shape {:?} ({elements} elements) but {} bytes",
-                entry.shape, entry.bytes
-            )));
-        }
-    }
+    check_arrays(&meta.arrays, payload.len())?;
 
     #[derive(Serialize)]
     struct VerifyRecord<'a> {
@@ -1112,6 +1136,51 @@ fn cmd_sites(options: &Options) -> Result<String, Box<dyn Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn entry(dtype: &str, shape: Vec<usize>, offset: usize, bytes: usize) -> pack::ArrayEntry {
+        pack::ArrayEntry {
+            dtype: dtype.to_string(),
+            shape,
+            offset,
+            bytes,
+        }
+    }
+
+    #[test]
+    fn verify_measures_each_array_against_its_own_declared_width() {
+        // A `--censor-flags` pack carries one byte-wide census plane beside
+        // every float moment plane.  Measuring both at four bytes an element
+        // refused the byte-wide one, which refused the whole pack, which
+        // took clear-air observations off the board: the decode wrote the
+        // pack and the verify that runs straight after it rejected it.
+        let mut arrays = std::collections::BTreeMap::new();
+        arrays.insert(
+            "a00003".to_string(),
+            entry("<f4", vec![720, 992], 0, 720 * 992 * 4),
+        );
+        arrays.insert(
+            "a00004".to_string(),
+            entry("|u1", vec![720, 992], 720 * 992 * 4, 720 * 992),
+        );
+        let payload = 720 * 992 * 5;
+        check_arrays(&arrays, payload).expect("a censored pack verifies");
+
+        // The rule still bites: a byte-wide plane claiming four bytes an
+        // element is still a refusal, and so is a dtype the container does
+        // not write.
+        let mut wrong = std::collections::BTreeMap::new();
+        wrong.insert(
+            "a00004".to_string(),
+            entry("|u1", vec![720, 992], 0, 720 * 992 * 4),
+        );
+        let err = check_arrays(&wrong, payload).unwrap_err().to_string();
+        assert!(err.contains("declares shape"), "{err}");
+
+        let mut alien = std::collections::BTreeMap::new();
+        alien.insert("a00000".to_string(), entry("<i8", vec![4], 0, 32));
+        let err = check_arrays(&alien, payload).unwrap_err().to_string();
+        assert!(err.contains("does not carry"), "{err}");
+    }
 
     #[test]
     fn help_version_and_abi_are_stable_surfaces() {

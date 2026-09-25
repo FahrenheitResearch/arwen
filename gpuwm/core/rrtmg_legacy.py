@@ -61,22 +61,42 @@ carry MICRONS; the wrapper takes meters, so the adapter multiplies by
 written before the Thompson radii-units fix) is rejected with a
 migration pointer, never silently rescaled.
 
-Ozone nest routing (prep/ozone xhigh audit, 2026-07-27): WRF evaluates
-the CAM climatology chain (ozn_time_int/ozn_p_int) ONLY on the root
-domain (``o3input==2 .and. id==1``, module_radiation_driver.F:1799-1823)
-and hands nests the parent-interpolated ``o3rad``.  The adapter mirrors
-that STRUCTURE: a root adapter (``ozone_parent=None``) runs the
-bit-ported ``gpuwm.ingest.wrf_ozone`` chain on its own grid and RETAINS
-the resulting field; a child adapter takes an ``ozone_parent=`` provider
-(:class:`ParentOzoneProvider`, wired by ``runtime.prepare_child_case``)
-and obtains the parent's most recent retained field horizontally
-interpolated onto the child grid through gpuwm's certified SINT
-mass-point operator (``gpuwm.core.nest_interp.sint``) -- the child never
-invokes the climatology chain.  The horizontal-interpolation ARITHMETIC
-is gpuwm's own SINT transliteration, the same documented seam class as
-every other nest-interpolation arithmetic difference; the routing
-(root-compute + parent->child interpolation, the child's field updating
-when the parent's does) matches WRF.
+Ozone routing: WRF v4.7.1's EM_CORE guards BOTH halves of the
+``o3input = 2`` chain on ``id == 1`` -- ``oznini`` interpolates the
+packaged climatology to a domain's own XLAT under
+``o3input .EQ. 2 .AND. id .EQ. 1`` (module_physics_init.F:2203-2212), and
+``ozn_time_int``/``ozn_p_int`` run under the same guard
+(module_radiation_driver.F:1801-1823).  A NEST evaluates neither; it
+receives the root's field through the parent-to-child forcing stream the
+Registry declares on the variable itself (``rdf=(p2c)``,
+Registry/Registry.EM_COMMON:1264).  The decision is "is this domain a
+nest?", not "is this grid fine?".
+
+The adapter mirrors that structure and takes its word for what it did
+from :mod:`gpuwm.core.cam_ozone`:
+
+* A ROOT adapter (``ozone_parent=None``) runs the bit-ported
+  ``gpuwm.ingest.wrf_ozone`` chain on its own grid and RETAINS the
+  resulting field: ``ozone_routing = 'root-climatology'``.
+* A resident NEST takes an ``ozone_parent=`` provider
+  (:class:`ParentOzoneProvider`, wired by ``runtime.prepare_child_case``)
+  and obtains the parent's most recent retained field horizontally
+  interpolated onto the child grid through gpuwm's certified SINT
+  mass-point operator (``gpuwm.core.nest_interp.sint``); it never invokes
+  the climatology chain.  ``ozone_routing = 'parent-interpolated'``.  The
+  horizontal-interpolation ARITHMETIC is gpuwm's own SINT
+  transliteration, the same documented seam class as every other
+  nest-interpolation arithmetic difference; the routing (root-compute +
+  parent->child interpolation, the child's field updating when the
+  parent's does) matches WRF.
+* An OFFLINE child (``gpuwm.offline_child_run``, the ndown-equivalent
+  route) has no resident parent to interpolate from and is configured as
+  a WRF root: ``specified = true``, ``nested = false``, ``parent_id = 0``,
+  lateral boundaries read from a file.  WRF's own answer for such a
+  domain is the climatology on its own grid, so the route builds a root
+  adapter and declares ``ozone_routing = 'child-grid-climatology'`` -- the
+  same arithmetic, named so a report says the ozone came from the
+  climatology on the child grid and not from the parent.
 
 SW aerosol: the batched CUDA SW engine builds WRF's neutral aer_opt=0
 optics (tauaer 0 / ssaaer 1 / asmaer 0, module_ra_rrtmg_sw.F:11333-11460)
@@ -860,7 +880,8 @@ class RRTMGLegacyRadiation:
 
     def __init__(self, start_time, latitude_deg, longitude_deg, *,
                  p_top=None, column_chunk=None, ozone_parent=None,
-                 o3input=2, longwave=True, shortwave=True, trace_gas_overrides=None):
+                 o3input=2, longwave=True, shortwave=True, trace_gas_overrides=None,
+                 ozone_routing=None):
         if not isinstance(start_time, datetime):
             raise TypeError("radiation_start_time must be a datetime")
         self.start_time = start_time
@@ -902,6 +923,15 @@ class RRTMGLegacyRadiation:
                 "o3input=0 constructs ozone inside the legacy wrapper and "
                 "must not receive a parent o3rad provider")
         self._ozone_provider = ozone_parent
+        #: How this adapter obtains ozone, in the one vocabulary
+        #: gpuwm.core.cam_ozone owns.  Derived from the construction unless
+        #: the route declares a name the construction admits, which is how
+        #: the offline child route says "the climatology, on the child's own
+        #: grid" rather than being read as a root.
+        from gpuwm.core.cam_ozone import resolve_ozone_routing
+        self.ozone_routing = resolve_ozone_routing(
+            ozone_routing, o3input=self.o3input,
+            has_parent=ozone_parent is not None)
         #: the most recent o33d field (nz, ny, nx) host float32, retained
         #: so child domains can interpolate it (WRF's root-compute +
         #: parent->child o3rad routing); None until the first call.
@@ -934,9 +964,13 @@ class RRTMGLegacyRadiation:
             self._ozone_climo = None
             self._ozone_lat_interp = None
         elif self._ozone_provider is None:
-            # Root routing: the climatology chain runs here (WRF: o3rad
-            # is evaluated on id==1 only).  The latitude interpolation is
-            # WRF's oznini-time work, cached while latitude is unchanged.
+            # Root routing: the climatology chain runs here, on this
+            # adapter's own grid.  WRF evaluates it for id == 1, which is
+            # both a resident root and an offline child (that route's
+            # domain is configured as a root and stamps parent_id = 0);
+            # self.ozone_routing says which of the two this is.  The
+            # latitude interpolation is WRF's oznini-time work, cached
+            # while latitude is unchanged.
             try:
                 from gpuwm.ingest import wrf_ozone as _ozone
                 self._ozone = _ozone
@@ -1032,11 +1066,7 @@ class RRTMGLegacyRadiation:
             "aer_opt": 0,
             "column_chunk": self.column_chunk,
             "p_top": self.p_top,
-            "ozone_routing": (
-                "wrapper-o3data" if self.o3input == 0 else
-                ("parent-interpolated"
-                 if self._ozone_provider is not None
-                 else "root-climatology")),
+            "ozone_routing": self.ozone_routing,
             "statics_assets": {
                 "rrtmg_lw_statics.npz": RRTMG_LW_STATICS_SHA256,
             },

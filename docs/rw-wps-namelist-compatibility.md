@@ -67,7 +67,11 @@ is computed from the engine's own implemented set, never from this table.
 All are WRF `real` fields: NetCDF float32 on
 `Time,bottom_top,south_north,west_east`. Water vapor comes from the source;
 source-absent hydrometeors and number moments use real.exe's zero
-initialization policy. Restart/runtime-only effective radii and Morrison
+initialization policy, except that an aerosol-aware Thompson (`mp_physics =
+28`) cold start over analyzed condensate closes cloud droplet, rain and ice
+number through the scheme's own entry block once, and the prepared cache's
+`hydrometeor_initialization.cold_start_moment_closure` receipt says how many
+cells were written. Restart/runtime-only effective radii and Morrison
 convective tendencies are listed separately and are not falsely claimed as
 required `wrfinput` variables.
 

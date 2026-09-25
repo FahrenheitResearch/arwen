@@ -126,6 +126,8 @@ tests/test_no_forecast_gate.py  needs bash and the gate script; skipped on a
 #                              Windows box with no bash on PATH.
 tests/test_remote_worker_linux.py  needs Linux /proc process ownership and POSIX process groups; runs on the hosted Linux CPU lane and skips on Windows.
 tests/test_remote_completion_transition.py  needs Linux pidfd ownership (os.pidfd_open and signal.pidfd_send_signal); it drives real wrapper and runner exits, so nothing restores it on Windows or macOS, and it runs on the hosted Linux CPU lane.
+tests/test_local_da_obs_tables.py  needs the shared observation-table package (arwen_global.obs_table), which no extra of this tree installs; the deck adapts that package's row type and operators, so nothing in a fresh clone restores it.
+tests/test_local_da_windows_status_publication.py  holds the Windows file-sharing contract of the status publication (os.name is nt); on every other platform the contract does not exist and the deck skips by name.
 
 # Independent met_em fixtures are generated locally; reading them needs native decode.
 tests/test_metem_ingest.py    needs netCDF4 and the compiled Rust rw_netcdf decoder; build tools/rustwx and set GPUWM_RW_NETCDF to execute this deck.

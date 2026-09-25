@@ -68,6 +68,7 @@ from gpuwm.physics_compat import (  # noqa: E402
     RUC_PROFILE_ID,
     THOMPSON_LEGACY_RRTMG_PROFILE_ID,
     THOMPSON_PROFILE_ID,
+    THOMPSON_RTE_RRTMGP_PROFILE_ID,
     THOMPSON_SHINHONG_LEGACY_RRTMG_PROFILE_ID,
     THOMPSON_TABLE_ROOT_ENV,
     WRF_RRTMG_LEGACY,
@@ -245,6 +246,20 @@ def runner_capabilities() -> dict[str, object]:
                 **staged_thompson,
                 "explicit_expert_consent_required": False,
                 "radiation_solver": "legacy RRTMG",
+            },
+            # The route default since the owner ruling of 2026-09-19.  Same
+            # composition as the row above and the same staged tables; the
+            # readiness is its own because the registry ranks it at its
+            # composition ceiling, no receipt covering the composed suite
+            # on this engine existing yet.  A default whose receipt carries
+            # no readiness key is a default nobody can audit, which is why
+            # the row is written rather than inherited.
+            THOMPSON_RTE_RRTMGP_PROFILE_ID: {
+                "selector": 8,
+                **staged_thompson,
+                "readiness": "IMPLEMENTED_UNVERIFIED",
+                "explicit_expert_consent_required": False,
+                "radiation_solver": "RTE+RRTMGP",
                 "route_default": True,
             },
             THOMPSON_SHINHONG_LEGACY_RRTMG_PROFILE_ID: {
@@ -1265,6 +1280,12 @@ _HRRR_SOURCE_ABSENT_WRF_FIELDS = MappingProxyType({
 _INITIALIZATION_CONTRACT_ALIASES = MappingProxyType({
     NSSL2_LEGACY_RRTMG_PROFILE_ID: NSSL2_PROFILE_ID,
     THOMPSON_LEGACY_RRTMG_PROFILE_ID: THOMPSON_PROFILE_ID,
+    # The engine twin of the row above: which species HRRR supplies and
+    # what an absent one cold-starts to is a microphysics property, and
+    # the twin moves the radiation engine only.  Its NAMELIST contract
+    # aliases its own base rather than this one, because that table pins
+    # radiation values the validation row does not carry.
+    THOMPSON_RTE_RRTMGP_PROFILE_ID: THOMPSON_PROFILE_ID,
     # Same reasoning one component further: which species HRRR supplies
     # and what the absent ones cold-start to is a microphysics property,
     # and the gray-zone sibling changes the PBL closure, not the
@@ -1314,12 +1335,28 @@ def _unsupported_profile(profile: str) -> ValueError:
         "tools.prepared_domain_tree_forecast")
 
 
+#: Which profile's NATIVE NAMELIST contract serves another.  A row
+#: belongs here only when the two suites pin the SAME fields at the SAME
+#: values in the namelist, because this table is a hard per-field equality
+#: gate: an alias whose values differ would pin one suite's radiation
+#: against the other's namelist and refuse it one gate later.  The two
+#: rows below qualify for the same reason -- the namelist has no field for
+#: the 4/4 radiation IMPLEMENTATION (``ra_rrtmg_variant`` is a gpuwm
+#: setting, not a WRF one), so an engine twin's namelist is its base's
+#: namelist, field for field.  The Thompson legacy twin does NOT alias its
+#: validation base, and the gray-zone sibling does not alias either: both
+#: move fields this table pins.
+#:
+#: It was an inline conditional naming one pair, which is what a second
+#: pair had to become a second conditional to join.
+_NAMELIST_CONTRACT_ALIASES = MappingProxyType({
+    NSSL2_LEGACY_RRTMG_PROFILE_ID: NSSL2_PROFILE_ID,
+    THOMPSON_RTE_RRTMGP_PROFILE_ID: THOMPSON_LEGACY_RRTMG_PROFILE_ID,
+})
+
+
 def _native_hrrr_profile_contract(profile: str) -> dict[str, object]:
-    contract_profile = (
-        NSSL2_PROFILE_ID
-        if profile == NSSL2_LEGACY_RRTMG_PROFILE_ID
-        else profile
-    )
+    contract_profile = _NAMELIST_CONTRACT_ALIASES.get(profile, profile)
     if contract_profile not in _NATIVE_HRRR_NAMELIST_CONTRACTS:
         raise _unsupported_profile(profile)
     return {
@@ -1737,9 +1774,14 @@ def _validate_native_hrrr_physics_profile(
             NOAHMP_PROFILE_ID, MYNN_NOAHMP_PROFILE_ID,
             # P3: the port is oracle-measured but no receipt covers the
             # composed suite; the registry template says the same.
-            P3_LEGACY_RRTMG_PROFILE_ID):
+            P3_LEGACY_RRTMG_PROFILE_ID,
+            # The route default's engine twin, at its composition ceiling
+            # for the same reason: every component is measured and no
+            # receipt covers the composed suite on this engine.
+            THOMPSON_RTE_RRTMGP_PROFILE_ID):
         receipt["readiness"] = "IMPLEMENTED_UNVERIFIED"
-    if profile in (MORRISON_PROFILE_ID, NSSL2_PROFILE_ID):
+    if profile in (MORRISON_PROFILE_ID, NSSL2_PROFILE_ID,
+                   THOMPSON_RTE_RRTMGP_PROFILE_ID):
         receipt["radiation_substitution"] = {
             "contract": WRF_RRTMG_TO_RTE_RRTMGP,
             "requested_wrf_scheme_ids": [4, 4],

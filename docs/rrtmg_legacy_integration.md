@@ -199,18 +199,30 @@ variant. numpy>=2 is a hard dependency of the FP32 contract.
    reproducible function), so no oracle defines "bitwise" here. Same
    class as the handoff's cross-compiler caveat. Terminator-adjacent
    day/night classification can differ per compiler in WRF itself.
-2. **o33d on nests** (routing REDESIGNED per the prep+ozone audit):
-   WRF computes o33d on d01 only (`o3input==2 .and. id==1`,
-   `module_radiation_driver.F:1799-1823`) and hands nests
-   parent-interpolated `o3rad`. The adapter reproduces that ROUTING
-   STRUCTURE: the root adapter runs the (bitwise-ported) climatology
-   chain on its own grid and retains the field; child adapters take a
-   parent provider at construction and receive the parent's most
-   recent o33d horizontally interpolated by gpuwm's certified nest
-   helpers — a child never evaluates the climatology itself (gated).
-   The residual divergence is the horizontal-interpolation arithmetic
-   (gpuwm's vs WRF's), the same documented seam class as all nest
-   interpolation.
+2. **o33d routing**: WRF's EM_CORE build guards BOTH halves of the
+   `o3input = 2` chain on `id == 1`. `oznini` interpolates the packaged
+   climatology to a domain's own XLAT
+   (`phys/module_physics_init.F:2203-2212`) and `ozn_time_int`/`ozn_p_int`
+   run on that domain's own columns
+   (`phys/module_radiation_driver.F:1801-1823`). A nest evaluates neither
+   and receives the root's field through the parent-to-child forcing
+   stream the Registry declares on the variable itself (`rdf=(p2c)`,
+   `Registry/Registry.EM_COMMON:1264`). The decision is whether the
+   domain is a nest, not whether the grid is fine.
+   The adapter reproduces that structure and records which of the three
+   answers it gave, from the one vocabulary in `gpuwm/core/cam_ozone.py`:
+   a root adapter runs the (bitwise-ported) climatology chain on its own
+   grid and retains the field (`root-climatology`); a resident child
+   adapter takes a parent provider at construction and receives the
+   parent's most recent o33d horizontally interpolated by gpuwm's
+   certified nest helpers, never evaluating the climatology itself
+   (`parent-interpolated`, gated); and an offline child
+   (`gpuwm.offline_child_run`), whose domain is configured as a WRF root
+   and stamps `parent_id = 0`, runs the same chain the root adapter runs,
+   on the child's own grid, and declares it
+   (`child-grid-climatology`). The residual divergence on the resident
+   nest arm is the horizontal-interpolation arithmetic (gpuwm's vs
+   WRF's), the same documented seam class as all nest interpolation.
 3. **Radii carrier round-trip**: gpuwm state radii are µm-contract;
    the wrapper takes meters and multiplies by 1e6. `x_µm × 1e-6 × 1e6`
    can differ from `x_µm` by ≤1 ulp where the µm value was not itself

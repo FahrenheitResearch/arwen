@@ -586,12 +586,37 @@ def _admission(text: str, *, recipe: dict, source: str, sizing, path: Path,
                         "science_validation": recipe["validation_status"]}
 
 
-def _publish_bundle(stage: Path, destination: Path) -> list[Path]:
+def _publish_bundle(stage: Path, destination: Path, *, exp, source) -> list[Path]:
     """Create companions exclusively, then commit the TOML; roll back our files.
 
     Hard links are atomic create-only publication on the same filesystem. An
     existing companion, including a dangling symlink, is always a refusal.
+
+    ``exp`` is the experiment the staged configuration resolves to and
+    ``source`` its own ``[fetch].source``, both required rather than
+    optional: what a configuration must carry beside it belongs to the
+    ROUTE it will run on, and a publisher that could omit the question
+    would publish a configuration its route refuses before it starts.
+    Every file the route reads is rendered HERE, from the staged
+    configuration's own experiment, so a bundle whose TOML was edited
+    after the emission door wrote into this stage publishes namelists
+    that match the TOML beside them rather than the ones the emission
+    door rendered from an earlier draft.
     """
+    from gpuwm.hrrr_route_inputs import candidate_companions, route_input_paths
+
+    roles = {role: path.name for role, path in route_input_paths(destination).items()}
+    wps = stage / roles["wps_namelist"]
+    if not wps.is_file():
+        raise ValueError(
+            f"This configuration's input route reads {roles['wps_namelist']} "
+            f"beside {destination.name}, and the staged bundle has none. "
+            "Create it again with a source whose emission writes one")
+    for target, content in candidate_companions(
+            destination, exp, wps_text=wps.read_text(encoding="utf-8"),
+            source=source):
+        (stage / target.name).write_text(
+            content, encoding="utf-8", newline="\n")
     files = sorted(stage.iterdir(), key=lambda path: (path.name == destination.name, path.name))
     if any(not path.is_file() or path.is_symlink() for path in files):
         raise ValueError("Research staging produced an unexpected non-file companion")
@@ -601,8 +626,8 @@ def _publish_bundle(stage: Path, destination: Path) -> list[Path]:
             raise FileExistsError(f"Research creation preserves existing files: {target}")
     created = []
     try:
-        for source, target in zip(files, targets):
-            os.link(source, target)
+        for staged, target in zip(files, targets):
+            os.link(staged, target)
             stat = target.stat()
             created.append((target, (stat.st_dev, stat.st_ino)))
     except BaseException:
@@ -805,7 +830,8 @@ def create_workspace(args) -> dict:
             json.dumps(plots, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
         (stage / (destination.name + ".arwen-research.json")).write_text(
             json.dumps(receipt, indent=2, ensure_ascii=False, default=str) + "\n", encoding="utf-8")
-        _publish_bundle(stage, destination)
+        _publish_bundle(stage, destination, exp=experiment,
+                        source=(tomllib.loads(text).get("fetch") or {}).get("source"))
     return receipt
 
 

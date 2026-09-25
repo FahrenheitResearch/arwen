@@ -43,3 +43,15 @@ Provenance chain:
 `GPUWM_RW_ASOS` points at an `rw_asos` binary, and compares the seam
 fields with the committed record — the reader is tested against the other
 lane's real writer, never against its own fixture-making code.
+
+4. `surface_subset.v2.json` -- `gpuwm-obs.asos-surface.v2`, written by the
+   REAL writer over the same CSV and station table with the same command
+   as the v1 record (12:00 to 14:00Z, `--step-hours 1`, default
+   `--match-seconds 600`).  The v2 record carries each report's
+   `observation_time` (the archive's own `valid` column) beside the
+   `valid_time` slot it serves, and a report serves one slot.  The 24
+   reports are the same (station, slot) sequence as the v1 record's; all
+   24 sit off their slot.  `provenance.uri` was set to the repository-
+   relative source path exactly as the v1 record's is; nothing else was
+   edited.  `rw_asos verify` reads it PASS with `observation_times_proved`
+   true.  sha256 `b3b699eca0a7a7249edd0533934f9abddd0a3a0bbc3555f01ad227facdbd8e53`.

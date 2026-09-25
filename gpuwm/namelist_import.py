@@ -86,6 +86,7 @@ from gpuwm.static.projection import WRF_MAP_PROJ_CODES
 from gpuwm.physics_compat import (
     RRTMG_VARIANT_LEGACY,
     RRTMG_VARIANT_RTE_RRTMGP,
+    WRF_RRTMG_COMPATIBILITY_TOKENS,
     WRF_RRTMG_LEGACY,
     WRF_RRTMG_TO_RTE_RRTMGP,
     require_ready_wrf_physics,
@@ -760,6 +761,19 @@ _BL_MAP = {
     # phys/module_physics_init.F:3770-3772.
     2: (2, "MYJ", "MYJ"),
     5: (5, "MYNN2.5", "MYNN"),
+    # 900 IS NOT A WRF SELECTOR and this row does not pretend it is: SASE
+    # is ArWen's own closure, out of WRF's namespace on purpose
+    # (gpuwm.config.SASE_PBL_SCHEME, admitted by validate_sase_config,
+    # declared out of the WRF compatibility matrix's axes in
+    # gpuwm.wrf461_compatibility.AXIS_EXCLUSIONS).  The row exists because
+    # the native route's namelist is GPUWM'S OWN FILE: the configuration
+    # door writes bl_pbl_physics = 900 into it and the route reads it
+    # back, so an importer with no row for the value made the one shipped
+    # suite that selects the closure unwritable -- refused at its own
+    # emission, on the route that runs it.  Both names say what it is,
+    # because a substitution ledger that printed a WRF scheme name here
+    # would claim a transcription that does not exist.
+    900: (900, "none (no WRF counterpart)", "SASE"),
     # Native since the Shin-Hong port (certified CPU authority, max ULP 0
     # against WRF v4.6.1; see the physics registry's shinhong option).  The
     # row was (1, "Shin-Hong", "YSU") -- a ratified substitution -- until
@@ -789,7 +803,14 @@ _RA_SW_MAP = {
 # admissible only beside bl_pbl_physics=2 (validate_myj_pairing).
 _SFCLAY_ALLOWED = {0, 1, 2, 5, 91}
 _SFSFC_ALLOWED = {0, 2, 3, 4}
-_CU_ALLOWED = {0, 1, 3}
+# 16 is WRF's own NTIEDTKESCHEME number (module_cumulus_driver.F), and
+# gpuwm.config.CU_SCHEMES has admitted it since the New Tiedtke phase-2
+# edit.  It was absent here alone, so the one shipped suite that selects
+# it emitted a namelist this importer refused -- the emitter and the
+# importer disagreeing about a selector the emitter writes, which is a
+# configuration that cannot be read back as itself.  The cudt law that
+# comes with the scheme is applied at emission below.
+_CU_ALLOWED = {0, 1, 3, 16}
 
 #: The Grell-Freitas scheme-generation notice, recorded on EVERY import
 #: that selects cu_physics = 3 and printed by ``gpuwm import-namelist``.
@@ -1022,6 +1043,7 @@ def _fmt(value) -> str:
 def import_namelists(wps_path: str | Path, input_path: str | Path,
                      name: str | None = None,
                      rrtmg_variant: str | None = RRTMG_VARIANT_RTE_RRTMGP,
+                     rrtmg_compatibility: str | None = None,
                      acknowledgements: tuple[str, ...] = (),
                      landuse_identity: Mapping[str, object] | None = None,
                      wrf_boundary_use_theta_m: int | None = None,
@@ -1043,6 +1065,17 @@ def import_namelists(wps_path: str | Path, input_path: str | Path,
     ratios, clearance, vertical identity, cadence divisibility, derived
     dt/dx chain) binds at import time.
 
+    ``rrtmg_compatibility`` is the SECOND fact a WRF namelist cannot
+    spell about a 4/4 pair, and it was derived here instead of asked
+    for.  The token is not a label: the RTE+RRTMGP arm reads it to
+    choose its snow treatment and stamps it into the restart algorithm
+    identity, so 'none' and the mapping token are two different runs of
+    one selector pair.  Deriving it made every 4/4 import claim the
+    mapping receipt, and a shipped suite that declares 'none' could not
+    be written and read back as itself.  ``None`` keeps the derivation,
+    so every established import stays byte-identical; a caller holding
+    the authoritative configuration passes what that configuration says.
+
     ``acknowledgements`` carries declared-experiment acknowledgement ids
     into the emitted ``[experiment]`` table (the CLI ``--ack`` flag).  A
     WRF namelist has no spelling for a gpuwm governance declaration, so
@@ -1057,6 +1090,12 @@ def import_namelists(wps_path: str | Path, input_path: str | Path,
         raise ValueError(
             f"rrtmg_variant must be '{RRTMG_VARIANT_RTE_RRTMGP}' or "
             f"'{RRTMG_VARIANT_LEGACY}', got {rrtmg_variant!r}")
+    if rrtmg_compatibility is not None and rrtmg_compatibility not in (
+            "none", *WRF_RRTMG_COMPATIBILITY_TOKENS):
+        raise ValueError(
+            "rrtmg_compatibility must be 'none' or one of "
+            f"{sorted(WRF_RRTMG_COMPATIBILITY_TOKENS)}, got "
+            f"{rrtmg_compatibility!r}")
     if not isinstance(metgrid_initialization, bool):
         raise TypeError("metgrid_initialization must be boolean")
     if metgrid_initialization and wrf_boundary_use_theta_m is not None:
@@ -2530,8 +2569,19 @@ def import_namelists(wps_path: str | Path, input_path: str | Path,
             "wrapper; a selected modern-RRTMG spectrum has no equivalent "
             "calculated-radius branch.")
     o3input = None
+    # STATED BY THE CALLER WHERE THERE IS A CALLER TO STATE IT.  The
+    # derived answer below is what a bare `gpuwm import-namelist` has
+    # always produced and stays the default; a caller round-tripping its
+    # own configuration holds the authoritative value and passes it,
+    # because 'none' and the mapping token are two different runs of one
+    # 4/4 selector pair (the RTE+RRTMGP arm reads the token to choose its
+    # snow treatment) and nothing in the namelist distinguishes them.
+    # The stated value applies only where the pair IS 4/4: on any other
+    # pair the token has no consumer and gpuwm.config refuses it, so the
+    # derivation's 'none' stands.
     compatibility_col = [
-        (WRF_RRTMG_LEGACY if legacy else WRF_RRTMG_TO_RTE_RRTMGP)
+        (rrtmg_compatibility if rrtmg_compatibility is not None
+         else (WRF_RRTMG_LEGACY if legacy else WRF_RRTMG_TO_RTE_RRTMGP))
         if pair == (4, 4) else "none"
         for pair, legacy in zip(radiation_pairs, legacy_rrtmg_col)]
     wrf_rrtmg_compatibility = compatibility_col[0]
@@ -3699,6 +3749,19 @@ def import_namelists(wps_path: str | Path, input_path: str | Path,
                 drop("physics", f"cudt[{n + 1}]", [cudt[n]],
                      "GF carries no cudt cadence: WRF's GF runs every "
                      "model step and so does gpuwm's")
+        elif cu[n] == 16:
+            # New Tiedtke runs on the model step and carries no NCA hold,
+            # and gpuwm.config refuses cudt_minutes != 0 on it by name.
+            # Stated rather than omitted: an omitted key inherits
+            # RunConfig's 5.0, and this scheme's RAINCV is a per-call rate
+            # with no persistence, so a five-minute hold would reapply it
+            # every step.
+            lines.append("cudt_minutes = 0.0")
+            if cudt[n]:
+                drop("physics", f"cudt[{n + 1}]", [cudt[n]],
+                     "New Tiedtke carries no cudt cadence: the scheme runs "
+                     "on the model step and its RAINCV is a per-call rate "
+                     "with no NCA hold")
         elif cudt[n]:
             drop("physics", f"cudt[{n + 1}]", [cudt[n]],
                  "cudt is consumed only where cu_physics = 1")

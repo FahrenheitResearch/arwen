@@ -165,6 +165,333 @@ def _imports_cupy(path: str) -> bool:
     return whole or bool(functions)
 
 
+# --------------------------------------------------------------------------
+# the second property: cupy INSTALLED, which is not the same as a device
+# --------------------------------------------------------------------------
+#
+# The marker above is about OPENING A DEVICE, and this file's own reasoning
+# says why merely importing cupy is not the crime.  There is a separate
+# question it does not answer, and until 2026-09-17 nothing did: can this
+# selection even be COLLECTED on an install that has no cupy at all?
+#
+# MEASURED on node-1 in a venv built from the runtime dependencies with no
+# cupy extra: ``-m "not gpu and not slow and not network"`` over the stage-1
+# and always lists ends in ``Interrupted: 8 errors during collection`` and
+# runs NOTHING.  Six of those eight are cupy: a test module imports a
+# first-party module which imports cupy UNGUARDED at its own module scope,
+# so the import fails at collection and takes the session with it.  Seven
+# further tests are collected and fail with ModuleNotFoundError, five of
+# them through a route no source scan can see (the command line, then
+# ``gpuwm.core.clock.resolve_clock``, then ``gpuwm/core/physics.py:37``).
+#
+# THIS IS NOT FIXED BY MARKING THEM ``gpu``, and that was the first thing
+# tried.  It would mark 156 tests across 59 files, none of which opens a
+# device, and remove every one of them from the CPU legs on a properly
+# provisioned box -- which is coverage loss wearing a safety costume, in
+# this file's own words, and the tree's position is the opposite one:
+# ``tools/battery/provision_battery_venv.ps1`` installs the ``all`` extra
+# for the CPU legs and says in writing that "six stage-1 files import cupy
+# at collection".  Six is exactly what was measured.  cupy is PROVISIONED
+# for those legs by design.
+#
+# So the remedy matches the property.  When cupy is ABSENT, a module that
+# cannot be imported without it is not collected, and a test whose body
+# reaches such a module is skipped -- by name, counted, and printed in the
+# terminal summary, never silently.  When cupy is PRESENT, which is every
+# battery leg, nothing below changes anything at all: no item is skipped,
+# no module is dropped, and every count stays what the census recorded.
+# What changes is that an install without cupy now produces a CPU run with
+# a named set of skips instead of a collection that dies.
+
+#: Whether ``import cupy`` would succeed here.  Asked of the FINDER, so
+#: nothing is imported and no device is contacted even to answer: the
+#: question is about the install, not about a card.
+def _cupy_installed() -> bool:
+    import importlib.util
+    try:
+        return importlib.util.find_spec("cupy") is not None
+    except Exception:
+        return False
+
+
+CUPY_INSTALLED = _cupy_installed()
+
+#: Skip a test that needs cupy IMPORTABLE and opens no device.  The sibling
+#: of ``requires_gpu`` above, and spelled the same way, because the tree
+#: already says a skipif helper is how a missing optional dependency is
+#: expressed.  It is deliberately NOT a marker: adding one to the ``-m``
+#: vocabulary would change what every battery leg selects, and these tests
+#: must keep running wherever cupy is installed.
+requires_cupy = pytest.mark.skipif(
+    not CUPY_INSTALLED,
+    reason="needs cupy importable (opens no device); this install has none")
+
+#: The package roots whose import edges are followed.
+_FIRST_PARTY = ("gpuwm", "tilestream", "tools")
+_TREE_ROOT = pathlib.Path(__file__).resolve().parents[1]
+
+
+@functools.lru_cache(maxsize=None)
+def _first_party_file(dotted: str) -> str | None:
+    """The source file of a first-party module name, or None."""
+    base = _TREE_ROOT.joinpath(*dotted.split("."))
+    module = base.with_suffix(".py")
+    if module.is_file():
+        return str(module)
+    package = base / "__init__.py"
+    return str(package) if package.is_file() else None
+
+
+def _first_party_targets(node: ast.AST) -> set[str]:
+    """The first-party module names one import node binds."""
+    names: set[str] = set()
+    if isinstance(node, ast.Import):
+        for alias in node.names:
+            if alias.name.split(".")[0] in _FIRST_PARTY:
+                names.add(alias.name)
+    elif isinstance(node, ast.ImportFrom):
+        module = node.module or ""
+        if module.split(".")[0] in _FIRST_PARTY:
+            names.add(module)
+            # ``from gpuwm.core import physics`` names a MODULE in its
+            # alias list, not an attribute, and reading only the left half
+            # missed exactly that spelling on the measured routes.
+            for alias in node.names:
+                names.add(module + "." + alias.name)
+    return names
+
+
+@functools.lru_cache(maxsize=None)
+def _import_time_edges(path: str) -> tuple[frozenset[str], bool]:
+    """What runs when this file is imported: ``(first-party, cupy)``.
+
+    Module scope only, because that is what executes at import, and
+    UNGUARDED only.  A ``try: import cupy`` is not a card dependence and
+    must not be read as one: ``gpuwm/core/state.py`` guards its import
+    deliberately, with its own record of why -- an absent or unloadable
+    cupy used to kill the whole command line through
+    ``cli -> downscale -> offline_child -> here``, and ``run-plan
+    --probe``, whose job is to diagnose exactly that install, could not
+    run on it.  Reading a guarded import as a dependence would mark most
+    of this tree and would be measurably wrong.
+    """
+    try:
+        tree = ast.parse(pathlib.Path(path).read_text(encoding="utf-8"))
+    except (OSError, SyntaxError, UnicodeDecodeError):
+        return frozenset(), False
+    functions = [node for node in ast.walk(tree)
+                 if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))]
+    inside_function = {id(inner) for fn in functions for inner in ast.walk(fn)}
+    guarded = {id(inner) for node in ast.walk(tree)
+               if isinstance(node, ast.Try)
+               for statement in node.body for inner in ast.walk(statement)}
+    imports: set[str] = set()
+    cupy = False
+    for node in ast.walk(tree):
+        if id(node) in inside_function or id(node) in guarded:
+            continue
+        if isinstance(node, ast.Import):
+            if any(a.name.split(".")[0] == "cupy" for a in node.names):
+                cupy = True
+        elif isinstance(node, ast.ImportFrom):
+            if (node.module or "").split(".")[0] == "cupy":
+                cupy = True
+        imports |= _first_party_targets(node)
+    return frozenset(imports), cupy
+
+
+#: Memo for the closure below.  A plain dict rather than lru_cache because
+#: the recursion carries a cycle stack that must not become part of the key.
+_IMPORT_CLOSURE: dict[str, tuple[str, ...] | None] = {}
+
+
+def _cupy_import_chain(dotted: str,
+                       stack: tuple[str, ...] = ()) -> tuple[str, ...] | None:
+    """The import chain by which this module needs cupy, or None.
+
+    One indirection or ten: the answer is the same shape, and the chain is
+    returned rather than a boolean so a skip can say which edge did it.
+    """
+    if dotted in _IMPORT_CLOSURE:
+        return _IMPORT_CLOSURE[dotted]
+    if dotted in stack:
+        return None                      # a cycle proves nothing by itself
+    path = _first_party_file(dotted)
+    if path is None:
+        _IMPORT_CLOSURE[dotted] = None
+        return None
+    imports, cupy = _import_time_edges(path)
+    if cupy:
+        _IMPORT_CLOSURE[dotted] = (dotted,)
+        return _IMPORT_CLOSURE[dotted]
+    answer = None
+    for module in sorted(imports):
+        found = _cupy_import_chain(module, stack + (dotted,))
+        if found:
+            answer = (dotted,) + found
+            break
+    _IMPORT_CLOSURE[dotted] = answer
+    return answer
+
+
+@functools.lru_cache(maxsize=None)
+def _cupy_install_scope(path: str) -> tuple[str | None, frozenset[str]]:
+    """Which parts of a test module cannot run without cupy INSTALLED.
+
+    Returns ``(whole-module reason, {function name: reason})``.  The
+    whole-module answer is what decides collection, because a module-scope
+    edge fails during import and no marker can rescue it.
+    """
+    try:
+        tree = ast.parse(pathlib.Path(path).read_text(encoding="utf-8"))
+    except (OSError, SyntaxError, UnicodeDecodeError):
+        return None, frozenset()
+    imports, cupy = _import_time_edges(path)
+    if cupy:
+        return "imports cupy at module scope", frozenset()
+    for module in sorted(imports):
+        chain = _cupy_import_chain(module)
+        if chain:
+            return "imports " + " -> ".join(chain), frozenset()
+    reasons: dict[str, str] = {}
+    for fn in (node for node in ast.walk(tree)
+               if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))):
+        if not fn.name.startswith("test_"):
+            continue
+        for node in ast.walk(fn):
+            for module in sorted(_first_party_targets(node)):
+                chain = _cupy_import_chain(module)
+                if chain:
+                    reasons[fn.name] = "imports " + " -> ".join(chain)
+                    break
+            if fn.name in reasons:
+                break
+    return None, frozenset(f"{name}: {why}" for name, why in reasons.items())
+
+
+#: Modules not collected for want of cupy, printed in the terminal summary.
+#: A dropped module that nothing announces is the silent deselection this
+#: repository has a whole plugin about.
+_UNCOLLECTED_WITHOUT_CUPY: list[str] = []
+
+#: Tests that reached for cupy at CALL time on an install without it.
+_SKIPPED_AT_CALL_WITHOUT_CUPY: list[str] = []
+
+
+#: The text every route prints for the one absence this file is about.
+_CUPY_IS_ABSENT = "No module named 'cupy'"
+
+
+def _is_the_missing_cupy(error: BaseException) -> str | None:
+    """Why this failure is only the absent cupy, or None for everything else.
+
+    MEASURED, on the cupy-less venv on node-1: the absence arrives in three
+    shapes, and a hook that knew only the first left twelve tests failing
+    for it.
+
+    * ``ModuleNotFoundError`` named ``cupy`` -- an engine function
+      importing a device module when called.
+    * ``ImportError`` re-raised around it.  ``monkeypatch.setattr(
+      "gpuwm.core.dycore.step", ...)`` resolves the dotted path through a
+      loader that wraps the original: ``import error in gpuwm.core.dycore:
+      No module named 'cupy'``, which is not a ModuleNotFoundError at all.
+    * ``gpuwm.capabilities.CapabilityMissing`` -- the front door refusing
+      ahead of the work, exactly as designed, which is not an import
+      failure and never will be.
+
+    Each arm is exact in the same way. The module named must BE cupy, the
+    wrapped text must name cupy, and the refusal must name cupy; anything
+    else, and every other exception of every other kind, returns None and
+    is raised unchanged. The class is recognised by name and module rather
+    than imported, so this file still imports no part of the package it is
+    collecting.
+    """
+    if isinstance(error, ModuleNotFoundError):
+        if (getattr(error, "name", None) or "").split(".")[0] == "cupy":
+            return "imports cupy when it is called"
+        return None
+    if isinstance(error, ImportError):
+        if _CUPY_IS_ABSENT in str(error):
+            return ("reaches a module whose own import of cupy is re-raised "
+                    "as an ImportError")
+        return None
+    if any(cls.__module__ == "gpuwm.capabilities"
+           and cls.__name__ == "CapabilityMissing"
+           for cls in type(error).__mro__) and "cupy" in str(error):
+        return "meets the command line's own refusal for the absent cupy"
+    return None
+
+
+def _skip_for_the_absent_cupy(item, error: BaseException) -> None:
+    """Record and skip, or return so the caller re-raises untouched."""
+    if CUPY_INSTALLED:
+        return
+    why = _is_the_missing_cupy(error)
+    if why is None:
+        return
+    _SKIPPED_AT_CALL_WITHOUT_CUPY.append(item.nodeid)
+    pytest.skip(f"no cupy in this install; this test opens no device but "
+                f"{why}. The battery legs install cupy "
+                "(tools/battery/provision_battery_venv.ps1); remedy here is "
+                "pip install 'gpuwm[gpu-cu12]'")
+
+
+@pytest.hookimpl(wrapper=True)
+def pytest_runtest_setup(item):
+    """The same answer during SETUP, where a fixture reaches the device.
+
+    A module-scope or function-scope fixture that imports an engine module
+    fails before the test body runs, and an error in setup is reported as
+    an ERROR rather than a failure -- the shape ten tests in
+    tests/test_domain_wizard_forcing.py took on this same venv for an
+    unrelated reason. Same conditions as the call wrapper below, same
+    exactness, same dead branch wherever cupy is installed.
+    """
+    try:
+        return (yield)
+    except BaseException as error:
+        _skip_for_the_absent_cupy(item, error)
+        raise
+
+
+@pytest.hookimpl(wrapper=True)
+def pytest_runtest_call(item):
+    """The runtime half, which no source scan can reach.
+
+    THE MEASURED REMAINDER.  With the import-time closure above in place,
+    the cupy-less venv on node-1 still reported 214 failures, and 136 of
+    them were ``ModuleNotFoundError: No module named 'cupy'`` raised
+    DURING the test -- an engine function importing a device module when
+    called, most often through the command line and
+    ``gpuwm.core.clock.resolve_clock`` into ``gpuwm/core/physics.py:37``.
+    No AST closure can see that route: whether a given test reaches a
+    lazily imported module is a call-graph question, and this file already
+    records why enumerating intermediaries does not work.
+
+    So the answer is taken where the answer is: the exception itself.  The
+    conditions are exact, and each one is what keeps this from hiding
+    anything.
+
+    * ``CUPY_INSTALLED`` is False.  On every provisioned box -- which is
+      every battery leg -- this branch is dead and the failure is raised
+      unchanged.
+    * The exception is one of the three shapes
+      :func:`_is_the_missing_cupy` recognises, each of which has to NAME
+      cupy.  A different missing module, and any other failure of any
+      kind, re-raises untouched.
+    * The skip is recorded by node id and printed in the summary, so the
+      count is visible rather than absorbed.
+
+    This is not a test loosened to pass: on an install that can run these
+    tests, nothing here runs at all.
+    """
+    try:
+        return (yield)
+    except BaseException as error:
+        _skip_for_the_absent_cupy(item, error)
+        raise
+
+
 def _register_silent_deselection_guard(config):
     """Load tools/battery/no_silent_deselection BY PATH, on every run.
 
@@ -295,6 +622,126 @@ def pytest_configure(config):
         "requires_* marks defined beside the probes.")
 
 
+def _state_the_reason_to_the_deselection_guard(path, why: str) -> None:
+    """Tell the silent-deselection guard why this file said nothing.
+
+    That guard fails a leg when a file it was told to run contributes no
+    tests, because ``pytestmark = pytest.mark.gpu`` at the top of
+    tests/test_ruc.py once retired sixty bitwise-oracle tests and the leg
+    stayed green.  A module dropped above contributes nothing either, so
+    without this the guard turns every cupy-less run red -- which is the
+    same wrong answer in the other direction: the run is told the file was
+    silently retired when the file has just said, in the terminal summary
+    and in its own skip reason, exactly why it cannot be imported here and
+    what to install.
+
+    NOT A WEAKENING, and the conditions are what make that true.  The entry
+    is written only for a module THIS SESSION dropped, only on an install
+    with no cupy at all, and only with the import chain that forced it.  On
+    every provisioned battery leg nothing above ever runs, so the guard's
+    table stays empty and the marker fault it was built for still fails the
+    leg by name.  The guard's own contract for an entry is a claim about
+    where the coverage lives; this one names the leg: the battery installs
+    cupy, so it runs there.
+    """
+    import sys
+
+    guard = sys.modules.get("gpuwm_no_silent_deselection")
+    allowed = getattr(guard, "ZERO_COLLECT_ALLOWED", None)
+    if allowed is None:
+        return
+    root = pathlib.Path(__file__).resolve().parents[1]
+    try:
+        relative = pathlib.Path(path).resolve().relative_to(root).as_posix()
+    except (OSError, ValueError):
+        return
+    allowed[relative] = (
+        f"no cupy in this install and this module {why}; its coverage runs "
+        "on the battery legs, which install cupy "
+        "(tools/battery/provision_battery_venv.ps1)")
+
+
+class _ModuleNeedingCupy(pytest.Module):
+    """A module reported as SKIPPED instead of imported and errored.
+
+    The drop is RECORDED here and not where the node is made, measured:
+    pytest builds a node for every file in the collected directory and
+    then prunes to the paths the session asked for, so recording at node
+    creation made ``pytest tests/test_config.py`` report 37 modules
+    skipped in a run that had asked for one file and would never have
+    imported any of them.  ``collect`` runs only for a node that survived
+    the pruning, so the count is the number of modules this session
+    really lost.
+    """
+
+    def collect(self):
+        why = _SKIP_REASON.get(str(self.path), "needs cupy importable")
+        _UNCOLLECTED_WITHOUT_CUPY.append(f"{self.path.name}: {why}")
+        _state_the_reason_to_the_deselection_guard(self.path, why)
+        pytest.skip(f"no cupy in this install; this module {why}. It opens "
+                    "no device: the battery legs install cupy "
+                    "(tools/battery/provision_battery_venv.ps1), remedy here "
+                    "is pip install 'gpuwm[gpu-cu12]'",
+                    allow_module_level=True)
+
+
+#: Why each dropped module needs cupy, for the skip reason it reports.
+_SKIP_REASON: dict[str, str] = {}
+
+
+def pytest_pycollect_makemodule(module_path, parent):
+    """Do not IMPORT a module that cannot be imported without cupy.
+
+    Only when cupy is absent, and only for a module whose import-time
+    closure reaches an unguarded ``import cupy``.  With cupy installed --
+    which is every provisioned battery leg -- this returns None for
+    everything and changes nothing whatsoever.
+
+    A MARKER CANNOT DO THIS JOB: pytest imports a module to collect it, so
+    the failure lands before any marker is consulted, and six modules
+    ended the whole session with ``Interrupted: 8 errors during
+    collection`` on the measured cupy-less venv -- nothing ran at all.
+
+    And it is this hook rather than ``pytest_ignore_collect``, measured:
+    a path named on the command line is collected without consulting the
+    ignore hook, so the six errors survived that version of the fix, and
+    the battery names every file on its list explicitly.  This hook is
+    consulted for a walked directory and for an explicit argument alike,
+    and it can answer SKIPPED, which an ignore cannot.
+    """
+    if CUPY_INSTALLED:
+        return None
+    whole, _functions = _cupy_install_scope(str(module_path))
+    if whole is None:
+        return None
+    _SKIP_REASON[str(module_path)] = whole
+    return _ModuleNeedingCupy.from_parent(parent, path=module_path)
+
+
+def pytest_terminal_summary(terminalreporter, exitstatus, config):
+    """Say what was dropped for want of cupy, every time it happens."""
+    if _SKIPPED_AT_CALL_WITHOUT_CUPY:
+        terminalreporter.write_sep(
+            "=", f"{len(_SKIPPED_AT_CALL_WITHOUT_CUPY)} test(s) SKIPPED at "
+                 "call: this install has no cupy")
+        terminalreporter.write_line(
+            "  They reach a device module through a runtime route no source "
+            "scan can see. Each raised ModuleNotFoundError('cupy') and "
+            "nothing else was absorbed.")
+    if not _UNCOLLECTED_WITHOUT_CUPY:
+        return
+    terminalreporter.write_sep(
+        "=", f"{len(set(_UNCOLLECTED_WITHOUT_CUPY))} module(s) SKIPPED whole: "
+             "this install has no cupy")
+    for row in sorted(set(_UNCOLLECTED_WITHOUT_CUPY)):
+        terminalreporter.write_line("  " + row)
+    terminalreporter.write_line(
+        "  These open no device; they cannot be IMPORTED without cupy. "
+        "The battery legs install it (tools/battery/provision_battery_venv"
+        ".ps1), so this list is empty there; remedy here: pip install "
+        "'gpuwm[gpu-cu12]'.")
+
+
 def pytest_collection_modifyitems(config, items):
     """Mark every cupy-importing test ``gpu``, and skip them when banned.
 
@@ -327,6 +774,21 @@ def pytest_collection_modifyitems(config, items):
         if NO_LOCAL_GPU and (detected
                              or item.get_closest_marker("gpu") is not None):
             item.add_marker(skip_local)
+        if not CUPY_INSTALLED:
+            # The function-level half of the install question.  A test body
+            # that imports a module which needs cupy fails at CALL time,
+            # not at collection, so the module is collected and only this
+            # item is skipped -- with the edge that did it in the reason.
+            _whole, functions = _cupy_install_scope(str(path))
+            if functions:
+                name = getattr(item, "originalname", None) or item.name
+                bare = name.split("[")[0]
+                for row in functions:
+                    if row.split(":", 1)[0] == bare:
+                        item.add_marker(pytest.mark.skip(
+                            reason="no cupy in this install; this test "
+                                   "opens no device but " + row))
+                        break
     _gate_on_capabilities(items)
 
 

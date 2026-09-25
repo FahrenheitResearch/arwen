@@ -1330,6 +1330,23 @@ def radiation_enabled(cfg: RunConfig) -> bool:
     return any(radiation_scheme_ids(cfg))
 
 
+def effective_radt_minutes(cfg) -> float:
+    """The radiation cadence this configuration actually runs, in minutes.
+
+    ``radt`` is the Phase-3 compatibility spelling declared above: a
+    POSITIVE one overrides ``radt_minutes``, and zero means "not stated
+    here", which is what a domain row that never mentions radiation
+    carries.  Every integrator resolves it that way -- physics.py,
+    clock.py, rrtmgp.py, dudhia.py, analytic_radiation.py and
+    radiation_composition.py all spell ``radt if radt > 0 else
+    radt_minutes`` -- so an EMITTER that wrote the raw field published
+    ``radt = 0``, radiation every model step, for a configuration that
+    means twelve minutes.  Named here, beside the two fields, so the
+    next emitter asks rather than picks one.
+    """
+    return cfg.radt if cfg.radt > 0.0 else cfg.radt_minutes
+
+
 # --------------------------------------------------------------------------
 # P3 (mp_physics = 50) and its three unported siblings.
 # --------------------------------------------------------------------------

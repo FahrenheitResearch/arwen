@@ -80,7 +80,7 @@ jobs:
             tests/test_publish_workflow_state_machine.py \
             tests/test_publish_dist_shape_agreement.py \
             tests/test_release_version_declaration.py tests/test_release_bump_version.py \
-            tests/test_precut_gate_completion.py \
+            tests/test_precut_gate_completion.py tests/test_gpu_pin_set.py \
             tests/test_bridge_bundle_adopt.py \
             tests/test_verify_source_bridge_pins.py \
             tests/test_verify_release_artifacts.py

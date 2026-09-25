@@ -32,8 +32,19 @@ wires the model exactly as the serial path does and runs the same
 kernels on the same inputs.  What changes between the two arms is
 allocator history and process identity, neither of which any computed
 value depends on -- every device buffer in the step path is
-zero-allocated.  ``tests/test_da_member_leg_identity.py`` is the proof
-rather than the argument.
+zero-allocated.  The identity test is held back with the flag
+(``docs/da-ensemble-parallel.md``), so that it is asserted where the
+concurrent arm exists.
+
+**The leg join here is not the driver's.**  ``--member-workers`` is not
+on the driver, so nothing reaches this module but its own tests.  The
+driver joins its legs through the restart owner
+(``tools.da_cycle_prepared.write_leg_restart`` and
+``restore_leg_restart``: every domain, the physics driver's soil and
+surface state, the accumulators, the held tendencies and the clock);
+this worker still joins them through a host copy of the serialised
+atmosphere and :func:`jump_clock`, the join the driver retired, and
+takes the owner's join when it is ported to the driver's flags.
 """
 from __future__ import annotations
 
@@ -101,9 +112,9 @@ def jump_clock(clock, start_seconds: float, dt: float) -> None:
         # it to this clock on its own first step; zeroing it here would
         # hand the integrator a state it never produces, and the two only
         # happen to agree because the reset lands next.  Reproducing what
-        # the integrator would have HAD is the rule -- a clock this driver
+        # the integrator would have HAD is the rule -- a clock this worker
         # places must be indistinguishable from one that stepped there,
-        # and ``tests/test_da_cycle_prepared.py`` compares them bit for
+        # and ``tests/test_da_member_leg_clock.py`` compares them bit for
         # bit at exactly this instant.
         if since == 0 and steps > 0:
             since = per_seam

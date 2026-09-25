@@ -105,32 +105,107 @@ def _omega_ref(state: DomainState, cfg: RunConfig,
                ru: cp.ndarray, rv: cp.ndarray) -> cp.ndarray:
     """Reference eta mass flux Omega (nz+1, ny, nx) at w levels.
 
-    WRF ``calc_ww_cp``: integrate the continuity equation over the column
-    for the (eta-uniform) d(mu)/dt, then diagnose Omega level by level from
-    the coupled horizontal mass fluxes ``ru``/``rv``, weighting the column-
-    mass tendency by the hybrid c1h (``ww(k) = ww(k-1) -
-    dnw(k-1)*c1h(k-1)*dmdt - divv(k-1)``).  Omega = 0 at the surface and
-    (by construction, since sum(dnw*c1h) = -1) at the model top.
+    WRF ``calc_ww_cp`` (dyn_em/module_big_step_utilities_em.F): integrate
+    the continuity equation over the column for the (eta-uniform) d(mu)/dt,
+    then diagnose Omega level by level from the coupled horizontal mass
+    fluxes ``ru``/``rv``, weighting the column-mass tendency by the hybrid
+    c1h.  Omega = 0 at the surface and at the model top: WRF sets
+    ``ww(kte)`` to zero rather than trusting the column sum (which closes
+    only to rounding, since sum(dnw*c1h) = -1), and so does this.
 
-    Map factors (Task 3): the layer divergence carries WRF's ``msftx``
-    weight (``divv = msft*dnw*(d(ru)/dx + d(rv)/dy)`` with ru/rv already
-    msf-coupled), making ``ww`` the tech-note Omega = mu*deta/dt / m_y.
+    One thread per column evaluates the routine in WRF's own arithmetic,
+    every product and sum boundary where the Fortran has one:
+
+    * the layer divergence is ``divv(k) = (msftx*dnw(k)) * (rdx*(ru(i+1) -
+      ru(i)) + rdy*(rv(j+1) - rv(j)))``, the map factor and the layer
+      thickness multiplied FIRST and that product applied to the bracket
+      (Fortran evaluates ``msftx*dnw*(...)`` left to right);
+    * the column total ``dmdt`` is the sequential sum of ``divv`` from the
+      surface up, one rounding per layer, not a tree reduction;
+    * the recurrence is ``ww(k) = (ww(k-1) - (dnw(k-1)*c1h(k-1))*dmdt) -
+      divv(k-1)``: the level product, then the first subtraction, then the
+      second, never a pre-added operand ``ww - (a + b)``.
+
+    ``rdx``/``rdy`` are single-precision reciprocals (``rdx = 1./dx`` in
+    solve_em), and multiplication commutes exactly, so the order of the two
+    factors inside any one product is free; the boundaries are not.  Same
+    discipline as :func:`_couple_momentum_kernel`: explicit round-to-nearest
+    intrinsics plus ``-fmad=false``.  Without map factors the same kernel
+    omits the factor, which is WRF with ``msftx = 1`` exactly (a multiply by
+    one is exact).
+
+    Map factors (Task 3): with ru/rv already msf-coupled, the ``msftx``
+    weight makes ``ww`` the tech-note Omega = mu*deta/dt / m_y.
+
+    Replaces the ufunc/``sum``/``cumsum`` construction: three full-size
+    ufunc passes, a CuPy tree reduction and a CuPy batched scan whose
+    summation orders belonged to the library (docs/public/DETERMINISM.md,
+    "library-owned reduction order") and whose scan alone cost about 1.2 ms
+    per call at 480x384x49 on a 5070 Ti; the per-column scan does the same
+    work in about a tenth of that (GitHub issue #5, weiserhase).
     """
     nz, ny, nx = state.p.shape
-    rdx, rdy = 1.0 / cfg.dx, 1.0 / cfg.dy
     ww = state.scratch((nz + 1, ny, nx), "rk_ww")
-    dnw = state.dnw[:, None, None]
-    c1h = state.c1h[:, None, None]
-    divv = dnw * (rdx * (ru[:, :, 1:] - ru[:, :, :-1])
-                  + rdy * (rv[:, 1:, :] - rv[:, :-1, :]))
+    rdx = np.float32(1.0) / np.float32(cfg.dx)         # WRF: rdx = 1./dx
+    rdy = np.float32(1.0) / np.float32(cfg.dy)
+    args = [ru.reshape(-1), rv.reshape(-1), state.dnw, state.c1h]
     if state.has_msf:                                  # WRF calc_ww_cp msftx
-        divv *= state.msft[None]
-    dmdt = divv.sum(axis=0)                            # (ny, nx)
-    ww[0] = 0.0
-    ww[1:nz] = -cp.cumsum((c1h * dnw)[:nz - 1] * dmdt[None] + divv[:nz - 1],
-                          axis=0)
-    ww[nz] = 0.0
+        args.append(state.msft.reshape(-1))
+    _omega_column_kernel(state.has_msf)(
+        *args, rdx, rdy, np.int32(nz), np.int32(ny), np.int32(nx),
+        ww.reshape(-1), size=ny * nx)
     return ww
+
+
+@lru_cache(maxsize=None)
+def _omega_column_kernel(has_msf: bool):
+    """WRF ``calc_ww_cp`` for one column per thread; see :func:`_omega_ref`.
+
+    Pass one walks the column upward forming ``divv(k)`` in WRF's grouping
+    and accumulating ``dmdt`` sequentially; each layer's ``divv`` is parked
+    in ``ww(k+1)``, the slot the recurrence reads it back from before
+    overwriting it, so no second scratch and no second read of the fluxes.
+    Pass two walks the recurrence with its two separate subtractions and
+    writes ``ww(0) = 0`` and ``ww(nz) = 0`` explicitly.  Every parameter is
+    ``raw`` (the launch size is the column count), the flux and map-factor
+    views are contiguous, and index arithmetic is 32-bit for the same reason
+    :func:`gpuwm.core.moist._update_scalar_kernel` gives.
+    """
+    params = ["raw T ru", "raw T rv", "raw T dnw", "raw T c1h"]
+    if has_msf:
+        params.append("raw T msft")
+    params += ["T rdx", "T rdy", "int32 nz", "int32 ny", "int32 nx"]
+    weight = "__fmul_rn(msft[col], dnw[k])" if has_msf else "dnw[k]"
+    body = [
+        "const int col = static_cast<int>(i);",
+        "const int ncol = ny * nx;",
+        "const int jj = col / nx;",
+        "const int ii = col - jj * nx;",
+        "T dmdt = T(0);",
+        "for (int k = 0; k < nz; ++k) {",
+        "  const int u0 = (k * ny + jj) * (nx + 1) + ii;",
+        "  const int v0 = (k * (ny + 1) + jj) * nx + ii;",
+        "  const T du = __fsub_rn(ru[u0 + 1], ru[u0]);",
+        "  const T dv = __fsub_rn(rv[v0 + nx], rv[v0]);",
+        "  const T bracket = __fadd_rn(__fmul_rn(rdx, du), __fmul_rn(rdy, dv));",
+        f"  const T divv = __fmul_rn({weight}, bracket);",
+        "  dmdt = __fadd_rn(dmdt, divv);",
+        "  ww[(k + 1) * ncol + col] = divv;",
+        "}",
+        "T w = T(0);",
+        "ww[col] = w;",
+        "for (int k = 1; k < nz; ++k) {",
+        "  const int at = k * ncol + col;",
+        "  const T divv = ww[at];",
+        "  w = __fsub_rn(w, __fmul_rn(__fmul_rn(dnw[k - 1], c1h[k - 1]), dmdt));",
+        "  w = __fsub_rn(w, divv);",
+        "  ww[at] = w;",
+        "}",
+        "ww[nz * ncol + col] = T(0);",
+    ]
+    return cp.ElementwiseKernel(", ".join(params), "raw T ww",
+                                "\n".join(body), "gpuwm_omega_column_scan",
+                                options=("-fmad=false",))
 
 
 @lru_cache(maxsize=None)
@@ -3260,3 +3335,97 @@ def stability_gate_failed(report: dict, *, max_cfl: float,
         or not math.isfinite(float(w_max))
         or float(w_max) > max_w_ms
     )
+
+
+#: The state carriers a non-finite survey reads, each under the name the
+#: history file gives it.  The dynamics come first because that is where
+#: an ARW blow-up starts and the moisture species after, because they go
+#: non-finite as a consequence of it; a reader shown the list in that
+#: order reads the cause before the symptom.  A carrier the configuration
+#: never allocated is simply absent from the state and skipped, which is
+#: why this is a table rather than a fixed sequence of reads.
+NONFINITE_SURVEY_CARRIERS = (
+    ("w", "W"), ("u", "U"), ("v", "V"), ("thp", "T"), ("php", "PH"),
+    ("mup", "MU"), ("p", "P"), ("al", "AL"), ("alt", "ALT"),
+    ("tke", "TKE"),
+    ("qv", "QVAPOR"), ("qc", "QCLOUD"), ("qr", "QRAIN"),
+    ("qi", "QICE"), ("qs", "QSNOW"), ("qg", "QGRAUP"),
+)
+
+#: The axis letters a surveyed carrier's index is reported under, by rank.
+#: Three-dimensional carriers are (k, j, i) -- the order a WRF reader
+#: already thinks in -- and a two-dimensional one is (j, i) rather than a
+#: (k, j, i) with a fabricated level.
+NONFINITE_SURVEY_AXES = {3: ("k", "j", "i"), 2: ("j", "i"), 1: ("k",)}
+
+
+def nonfinite_field_survey(state, *, carriers=NONFINITE_SURVEY_CARRIERS) -> dict:
+    """WHICH carriers stopped being finite, WHERE, and how many cells.
+
+    :func:`decode_stability_record` answers "is anything non-finite" with
+    one bit, because that is all its eight-word reduction can carry: its
+    ``nan`` is a finiteness test on three MAXIMA (u, w, theta') and the
+    record holds no field name and no index at all -- ``w_argmax`` exists
+    only when a caller asks for ``boundary_width``, which the offline
+    child does not.  So a run that blew up could say the step it happened
+    on and nothing else about it, and "at step 6624" is the one sentence
+    that tells a reader to go and re-run the thing to find out more.
+
+    This is the survey taken ONCE, on the failure path, after that bit
+    comes back true.  It is a full pass over the allocated carriers and
+    it costs a bool temporary per field, which is why it is not on the
+    per-step route: a run pays for it exactly when it is already over.
+
+    Returns ``{"fields": [...], "surveyed": [names]}`` with one entry per
+    non-finite carrier carrying its cell count, the index of the FIRST
+    non-finite value in memory order, and the bounding box the whole set
+    of them falls inside -- the three numbers that distinguish one bad
+    cell from a column, a column from a plume, and a plume from a field
+    that has gone entirely.  A state whose carriers are all finite
+    returns an empty ``fields``, which is itself a reading: the record
+    said non-finite and the fields do not agree.
+    """
+
+    fields = []
+    surveyed = []
+    for attribute, name in carriers:
+        array = getattr(state, attribute, None)
+        if array is None or not hasattr(array, "shape"):
+            continue
+        if getattr(array, "size", 0) == 0 or array.ndim == 0:
+            continue
+        surveyed.append(name)
+        xp = cp.get_array_module(array)
+        bad = xp.logical_not(xp.isfinite(array))
+        count = int(bad.sum())
+        if not count:
+            del bad
+            continue
+        axes = NONFINITE_SURVEY_AXES.get(
+            array.ndim, tuple(f"a{rank}" for rank in range(array.ndim)))
+        index = np.unravel_index(int(xp.argmax(bad)), array.shape)
+        box = {}
+        for rank, label in enumerate(axes):
+            other = tuple(n for n in range(array.ndim) if n != rank)
+            present = bad.any(axis=other) if other else bad
+            where = xp.nonzero(present)[0]
+            box[label] = [int(where[0]), int(where[-1])]
+        fields.append({
+            "field": name,
+            "carrier": attribute,
+            "shape": [int(value) for value in array.shape],
+            "size": int(array.size),
+            "count": count,
+            "first_cell": {label: int(value)
+                           for label, value in zip(axes, index)},
+            "bounding_box": box,
+        })
+        del bad
+    return {"fields": fields, "surveyed": surveyed}
+
+
+def format_survey_cell(cell) -> str:
+    """One surveyed index as a reader types it: ``(k=12, j=401, i=388)``."""
+
+    return "(" + ", ".join(f"{label}={value}"
+                           for label, value in cell.items()) + ")"

@@ -1,5 +1,142 @@
 # Changelog
 
+## 2.7.6 (2026-09-22)
+
+New:
+
+**Speed and numerics, measured on an RTX 5070 Ti**
+
+- Omega is diagnosed one column per thread in WRF's own operation order: a whole step is 5.1 to 7.0 percent cheaper, 1.07, 2.02 and 5.33 ms per step at 250x200x49, 320x256x49 and 480x384x49 under Morrison. The summation order changed with it: one Omega call moves by at most 6.0e-7 of its maximum, the dynamic fields by 1.7e-4 to 7.2e-4 of theirs after 60 steps, and of the moisture fields only Morrison's cloud droplet number (2.5e-6 of its maximum). Proposed and measured by weiserhase in issue #5.
+
+**Modern radiation on every route**
+
+- `--source hrrr` defaults to `thompson-mp8-ysu-mm5-noah-rte-rrtmgp-v1`, with RTE+RRTMGP in place of the legacy RRTMG pair, so every route, door and catalog case shares one radiation default. The legacy suite stays selectable on every door as `--physics-profile thompson-mp8-ysu-mm5-noah-rrtmg-legacy-v1`. A proposal that types the engine through `ra_rrtmg_variant` composes instead of being refused.
+- It buys domain: `gpuwm domain --source hrrr --ladder 12-3 --hours 6 --card 16gb` fits 268x216 at 12 km with a 536x432 nest at 3 km (13.76 GiB peak forecast envelope) against 184x146 and 368x288 (13.74 GiB) on the legacy suite, 2.15 times the root cells; both engines still bound a longwave column at 128 radiation layers.
+
+**The nowcast front door**
+
+- The fine nest is reachable from the nowcast door: `--nest-half-width-km` (or `--nest-nx`/`--nest-ny`) turns it on, and `--nest-ratio`, `--nest-members`, `--nest-i-parent-start`, `--nest-j-parent-start`, `--nest-history-interval-s` and `--nest-acknowledge` are forwarded to the cycle driver. The receipt's `sizing.nested_free_forecast` reports what was asked for.
+- The receipt says where the forecast is: `outputs.forecast_frames` names the frame directory and which legs are the free forecast, and the nowcast pages show the `gpuwm render --engine rust` line that draws one. Each frame is a one-level composite snapshot; full fields come from the prepared forecast (`tools/da_cycle_prepared.py`).
+- The fine nest's forecast can be drawn: the cycle writes `wrfout_legNN_<trajectory>_dNN.nc` beside the child's `.npz`, and `gpuwm render --engine rust` draws its composite reflectivity into a `d02-1km` folder.
+
+**Rendering**
+
+- `gpuwm render --section-top-km N` sets how tall a vertical cut is drawn, 1 to 40 km, on every render route; every cross section had been fitted to 14 km. Saying nothing keeps 14 km, and `render-summary.json` records `section_tops_km`.
+- `gpuwm render` draws twelve column products from a wrfout: the 0, -10 and -20 C isotherm heights (metres above sea level, blank where a column never gets that cold), the supercooled liquid water path over the whole column and the 0 to 3 and 3 to 6 km layers (g m-2 on the model's own layer mass), each hydrometeor's column maximum (g kg-1, one fixed 0.01 to 5 bar) and `simulated_ir_satellite`, whose stored field nothing had written.
+
+**Preparation**
+
+- A run whose terrain the configured vertical coordinate cannot order derives one that can instead of stopping: `etac` becomes the largest value WRF's cubic hybrid supports for the highest ground any domain, or a following nest's corridor, can touch; preparation prints the choice, the receipt carries the numbers, every domain takes it, and terrain no positive `etac` orders is still refused.
+- `tools/build_stretched_eta_ladder.py --dt` with `--price-band` reports a ladder's vertical Courant number and the step that would hold it: 200 m layers under the 15 s step chosen for 680 m ones ran the limiter at 1.41 on 606 cells and halved a storm's peak updraft from 33.9 to 18.5 m/s. The DA cycle's preflight names the updraft at which they start being limited. Both read the full-level layer a parcel crosses, not the midpoint spacing: on the shipped 49-level ladder the thinnest convective layer is 630.30 m, not 614.90 m, and its Courant number at 15 s under 33.9 m/s 0.8068, not 0.8270.
+
+**Downscaling**
+
+- `gpuwm downscale` states the LES regime at the door: a child at or below 250 m spacing that inherits its parent's ladder, runs a 1-D boundary-layer scheme with no 3-D closure, or mixes vertically by no route (`bl_pbl_physics = 0` with `km_opt` 1 or 4) is told so with the ways out: `--child-levels N,STRETCH`, `km_opt = 3` or `km_opt = 2` with `bl_pbl_physics = 0` in `--child-config`, and `--child-surface-from`.
+
+Fixed:
+
+**Resume and run directories**
+
+- `gpuwm resume` reads the configuration out of the run directory it was given: as typed, with a hidden `.toml`, against `--outdir`, then from the configuration the run recorded (`child.toml`, `experiment.toml` or `captured-config-<run id>.toml`); `--explain` says which, and a refusal names every path tried. A path that cannot be classified (a link loop, a permission wall, a gone mount) names its errno and the way out.
+- `gpuwm resume` refuses a downscaled child's run directory by name: a finished child is given the `gpuwm render ... --series` line for its frames, and one that stopped inside its forecast is sent back to `gpuwm downscale`.
+- The prepared-tree runner imports the `tilestream` that shipped with it from any directory, so `python -m gpuwm.prepared_domain_tree_forecast ...` no longer dies with `ImportError: cannot import name 'ValidatedStreamedRestart'` beside an older checkout.
+
+**Initialization and forcing**
+
+- An ERA5 window sized for a 16 GiB card initializes and runs instead of refusing with "specific humidity must be finite in [0, 1)": the check judges the mapped field against the interpolation operator's envelope and floors every admitted value at WRF's qv_min, and a source small enough to window no longer stops preparation with an `AttributeError`.
+- `gpuwm check` admits the forcing `gpuwm run` runs: ERA5's descending pressure levels are accepted on both doors.
+- `--source hrrr-prs` starts a run with the hydrometeor masses the `wrfprs` file carries (cloud water, cloud ice, rain, snow, graupel), mapped bilinearly; the route began dry. Vertical velocity still starts at zero and the boundaries omit the five.
+- `gpuwm run --wrfinput` and `run --met-em` write their run report again instead of failing at the end with `AttributeError: 'WrfTreeInputs' object has no attribute 'physics_profile_assertion'`. The wrfbdy/wrfinput seam refusal names `USE_THETA_M` and what it compared, and says WRF 3.7 to 3.9.1.1 wrote a dry `T_BXS` where 4.0 onward writes a moist one.
+- A specified domain forced with an aerosol boundary table keeps its outermost row on that table. Under `mp_physics = 28` the `nwfa` and `nifa` boundary row was never put back: on a 2.7 km domain over 81 levels one corner grew from 6.94e8 kg-1 to 5.13e10 kg-1 in an hour, a factor of 74, until the health gate stopped the forecast; the same hour now holds it at 6.96e8 kg-1.
+- An `mp_physics = 28` cold start with analysed condensate closes cloud droplet, rain and ice number the scheme's way, counted under `hydrometeor_initialization.cold_start_moment_closure` in the prepared cache; the orphan state it replaces read 145.38 dBZ between steps, 62.89 dBZ as prepared.
+- `--soil-source` pointed at the run's WPS directory recovers the soil column when the producing table declares more layers than that cycle stacked, naming the met_em and the layer authority chosen. A layer that cannot be converted is refused with what it converted, pointing at `source_quantity`/`source_units` and `source_layer_bounds_m`.
+- The prepared single-domain and domain-tree doors offer `icon-global`, with the same fourteen physics profiles as `icon-eu`.
+- The standalone rw-wps bundle carries `gdt101_remap` and `rw_fetch`, so `rw-wps --source icon-global` runs on a bundle install; a build that omits a bridge is refused naming it.
+- `docs/public/CONFIGURATION.md` documents `ra_lw_physics` and `ra_sw_physics`, the two per-domain override keys it accepted and never listed; the page promised 61 keys and printed 59.
+
+**Nowcast replay**
+
+- `python -m tools.da_nowcast run --window-end <ISO>` is about that hour: the volumes, the lag, the echo census and the storm motion that sites the domain come from the window asked for, not the clock (one archived hour's 15 volumes and motion 8.27 m/s toward 166.7 became 18 volumes and 15.14 m/s toward 146.5). Only `--window-end latest` reads the clock, the receipts record `clock` and `listing_window`, and a malformed `--window-end` is refused before any download.
+
+**Data assimilation**
+
+- A reflectivity or hydrometeor analysis runs under Thompson (`mp_physics` 8 and 28): a cell given mass and no number moment is repaired the scheme's own way instead of refused (one cycle had refused 1,834 cells), and the reflectivity operator diagnoses the graupel number itself instead of raising "requires the same-call classic graupel number shadow".
+- The positivity policy covers every number concentration and volume the prognostic contract carries (`nwfa`, `nifa`, Milbrandt-Yau's hail number, WDM6's CCN number, P3's rime mass and volume); a filter increment had driven one to -1.005e8 per kilogram and the next leg refused the state. A field the policy has no opinion about is refused at the merge; the moment conditioning reads the running scheme's condensate threshold (1e-12 under Thompson, 1e-14 under Morrison), rescales a number only from an active background and declines a result above the health gate's ceiling.
+- The hot start's insertion and the filter's increment are bounded as one analysis; each alone was admissible while their sum put water vapour at -1.02e-4 kg/kg. The correction carried down to a nested child is bounded against the child's own background, which had received -1.014e-5 kg/kg on a boundary row.
+- The 1 km child runs on every cycling leg and is corrected by its parent's analysis instead of being rebuilt from it; on the free legs alone it lived 90 to 165 seconds. An analysis that changed nothing leaves the child bitwise alone.
+- A forecast leg that begins part way through a run makes the radiation call its land surface needs, so a cycle under a both-streams profile no longer dies at its first surface call with "GLW has no producer and Noah is about to consume it"; a nest born on a later leg counts its steps from its birth.
+- A cycling analysis leg is a restart: soil, surface, accumulators and held physics tendencies carry across each leg through the checkpoint set `gpuwm run --restart` reads, so two 60 s legs equal one 120 s run byte for byte; a 2.7.5 ensemble generation is refused by name.
+- `rw_nexrad verify` measures each pack array against its own declared dtype, so a pack written by `decode --censor-flags` verifies and `--clear-air-from-censor` keeps every radar it was given.
+
+**Observation times and heights**
+
+- A radar volume is dated by its own radials: each cut and the volume carry `start_time` and `end_time` beside the header's `valid_time` (one real volume: header 12:02:36Z, last radial 12:09:14Z), and the nowcast survey and the cycle admit a volume only once its last radial is collected.
+- A surface report carries the instant it was taken and serves one valid time: `rw_asos decode` writes `gpuwm-obs.asos-surface.v2` with `observation_time` on every report, and one 12:54 report is no longer written under both 12:00 and 13:00 with a 3600 s window.
+- A cloudy satellite pixel is gridded beneath its retrieved cloud top, not at the ground under the satellite's line of sight: a 9 km top over 35 N 97 W moves 9,724 m, and on one GOES-19 CONUS scan 1,933,447 pixels moved a median 6,165 m. A pixel with no retrieved top stays at the ground and is counted.
+
+**The HRRR route and its configuration doors**
+
+- Every door that publishes an HRRR configuration (edits, `domain-fit` and `domain-tiles` copies, `cyclone-setup`, catalog cases, research workspaces, cycling directories and retained drafts) writes the whole file set its route reads (`route_companions` in the result); they wrote only the TOML and `namelist.wps`, so the run refused every such edit. A per-domain change to a tree-wide setting (`mp_physics`, `sf_sfclay_physics`, `bldt`, `diff_6th_opt`, `isfflx`) is refused with "Select All domains to change them", a configuration whose suite the namelists cannot state is refused naming `moist_cq`, and a nest added through the domain editor inherits its parent's radiation cadence.
+- A configuration that spells its radiation through the aggregate `ra_physics` selector, or carries the live cumulus interval with cumulus off, matches the profile it names on every door: 9 of 22 profiles had been refused on the namelist route with "selected physics differs from profile". An HRRR replay of the nowcast door's default profile completes domain to cycle in 114 s of stage time on an RTX 4090.
+- The nowcast front door and `gpuwm domain` offer the same physics suites; the warm-rain suite had been refused at one as invalid. A shortwave-only suite prepares on the HRRR background too, and `gpuwm domain` writes a namelist set the importer reads back for the New Tiedtke, ArWen boundary-layer closure, prognostic-TKE and 20CRv3 suites.
+- A preparation that fails puts its reason in the file it points at: `python -m gpuwm.source_cli` printed `Details: <path>` and left that file empty.
+
+**Sizing and memory**
+
+- `gpuwm domain`, `gpuwm check` and `gpuwm run-plan --estimate` price a plan on one device and print one number, naming the card priced (`device_profile`, `device_total_bytes`). On a declared 16 GiB card the 12/3 km ladder was sized at 13.73 GiB and refused by its own check at 14.72 GiB (exit 4); it now emits and checks at 13.74 GiB, domains 184x146 and 368x288 rather than 204x162 and 408x320, about 19 percent fewer cells.
+- A machine whose card can be read but whose kernels cannot be compiled prices the card it reads and says so, instead of quoting the reference card: one RTX 4090 read 1,353,931,428 bytes from `gpuwm check --json` and 1,205,295,780 from `gpuwm run-plan --estimate`.
+
+**Downscaling**
+
+- A downscaled child that blows up says what, where and how: the carriers that went non-finite, the cell and model second, the last w_max and CFL health checks, and the command that draws the frames on disk; the refusal had been `offline child became non-finite at step N` alone. `report.json` carries the same, a gone reading as `null` beside `w_max_state`, never `NaN`.
+- A downscaled child that does not finish keeps the pictures it drew: `DID-NOT-FINISH.txt` atop the picture folder says where the forecast stopped, why, and which frames were written, and `report.json` carries `result` FAIL, the reason and a `products` block (`status` `KEPT`, `pictures_on_disk`, the banner's path). A child composed with `--child-config` is recognised by what the run wrote, not by a `child.toml` beside it.
+- `gpuwm downscale` runs a child whose parent used legacy RRTMG with `o3input = 2` instead of refusing it for a missing parent ozone field: the child evaluates the packaged ozone climatology on its own grid, `report.json` names the routing under `child_ozone_routing`, and `o3input = 0` keeps the wrapper's own profile; two 10-minute runs differing only in that field end at most 0.0086 K apart.
+- `gpuwm downscale --child-levels` runs on the default preprocess backend instead of dying on its first boundary frame with a `TypeError`.
+
+**Rendering**
+
+- `gpuwm render` and `gpuwm downscale` draw the products they can: a `mesh:` or `meshdiff:` term, an `xsec:` term without `--section`, a `var:` product no store carries and any slug the catalog refuses are dropped before the renderer launches, named with the reason in `render-summary.json`; `--products composite_reflectivity,mesh:cell_area` had exited 1 with no pictures, and the `snow` preset's `var:SNOW` had failed a thirteen-frame child render after 143 pictures. A request left with nothing to draw is refused by name.
+- A failed child render says what the renderer said, in the refusal and `report.json`, and counts the pictures on disk; a picture tree that cannot be read is reported as unreadable with the error, not as empty, and so is an availability listing.
+- The terminal preset picker no longer calls a product undrawable from the renderer build's fileless import plan, which called sixteen of the `snow` preset's twenty-one products undrawable on a run that then drew 143 pictures of them.
+- A vertical cut's fill is drawn on a colour bar fitted to the air it holds; the bar started at zero for every all-positive field, so a three-kilometre cut of air temperature in kelvin used 30 of its 447 rungs, 6.7 percent, and read as one dark red. It now uses 60.4 percent, a fourteen-kilometre cut 88.6 from 28.6. `render-summary.json` records each cut's `lo`, `hi` and rule under `section_fills` (eight rows, `additional_section_fills` counting the rest); a renderer build predating that line is refused at the handshake.
+- `xsec:QCLOUD=0.01,0.1/wa` is one product on its own 0.01 to 0.1 g kg-1 bar on every frame, a no-signal frame included (`rule=named` in `render-summary.json`); the splitter had cut the list at its last comma, refused the command line and ignored the list. `xsec:QCLOUD~log` prints 0.1, 1, 10 g kg-1 at its decades under a (log scale) label, not -1, 0, 1 beside g kg-1 under a log10 prefix.
+- `render-georef.json` carries a transform for a regional panel whose map a post-render pass pushed past the image's edge, clipped to the surviving pixels within two pixels of drawn markers; only a rectangle with no surviving pixel is withheld.
+- The 2 m temperature plate reads at its hot end: the fixed -60 to 120 F ramp drew everything at or above 100 F in neutral ink; those three anchors are now a pink band (on one field's 235,789 cells at or above 100 F, median saturation 0.032 before, 0.925 after), the sixteen anchors at or below 90 F are unchanged byte for byte, and the surface temperature, windowed 2 m and 2 m range products take the repair.
+- A mixing ratio is drawn in g kg-1 on every route: a stored kg kg-1 plane through `var:` or `mesh:` is converted on its units attribute, never its name, so the plane at 1.0071096e-3 to 3.8782053e-3 kg kg-1 whose fourteen ticks all read `0` reads 1.0 to 3.9 g kg-1, as a cut of the same air does, where the decade remedy alone had read it 1.2 to 3.8 against `1e-3 kg kg-1`. A generic `var:<stored 2-D variable>` panel whose values still sit below a tick's one decimal after that is drawn on the decade its legend states (2e-7 to 8.3e-7 kg kg-1 reads 200 to 830 against `1e-6 g kg-1`), and a `mesh:<field>:colmax@LO..HI` panel takes the same remedy on the band it was clamped to.
+
+**Reports and the terminal**
+
+- A run's row in the terminal carries the forecast lead it starts from, so an analysis start and a twelve-hour forecast off the same cycle no longer read as one row.
+- `gpuwm report` removes a Windows profile reached through a mounted drive (`/mnt/<letter>/Users/<name>`).
+- A stale Rust shared library is refused by the name its workspace declares, `gpuwm_preprocess_cpu` rather than `libgpuwm_preprocess_cpu`.
+
+**Source checkouts**
+
+- A checkout's bridge build is checked against its sources, so a `git pull` that moves the Rust half is refused up front, naming the binary, the file that moved past it and the cargo command, instead of a mid-run decode error. `gpuwm doctor` reports the same line; wheels and bundles are untouched.
+- `pip install 'gpuwm[dev]'` installs pyyaml, which four release contract tests need, and `gpuwm doctor` judges it by importing `yaml`.
+- Three tests in a source checkout pass again: the additive-dissipation switch test compares an explicit `true` against an explicit `false`, the resident-estimate test reads the closure's two added items off the domain estimate's own itemization, and the clock-module audit finds no reflection in the domain-tree builder. No model bytes and nothing the model allocates changed.
+
+**Microphysics**
+
+- Aerosol-aware Thompson (`mp_physics = 28`) agrees with WRF v4.6.1's own Fortran process rate by process rate on saved real-data columns, reflectivity within 0.024 dB; it had been up to 8.7 dB off in 505 to 939 cells per frame.
+- Classic Thompson (`mp_physics = 8`) agrees with the same Fortran on the same columns, reflectivity within 0.045 dB; it had been up to 43.9 dB off.
+- The repairs are WRF's own rules: condensate at or below 1e-12 kg/kg is zeroed on entry and on exit, a column with no microphysics is left untouched, vapour is floored at 1e-10 kg/kg, ice numbers stay inside their bounds, melting snow falls at its blended speed, collected ice uses the 12.9 micron minimum crystal mass and the rain fallout opens on WRF's `L_qr` gate.
+- The `wp08-freeze` column fixture now clears the flat gate: 18 of 22 WRF column fixtures clear it with nothing held out and 19 of 22 as gated.
+- `tools/thompson_real_column_parity` runs WRF's Fortran beside the port on the CPU, and a 42-column fixture for each scheme holds the port to it.
+
+**Licence notices**
+
+- `NOTICE` and the Grell-Freitas gamma note no longer describe the gamma as derived from glibc, because it is this project's own work.
+
+Known limits:
+
+- What the fine nest costs at the nowcast door is not stated yet.
+- `gpuwm cycle` shows no picture while it runs.
+- The local DA nowcast score masks a 9 km rim and scores one member, which the receipt names.
+- The desktop's weather map cannot draw ICON global fields; the forecast itself is unaffected.
+
+Detail behind every row: [the 2.7.6 development record](docs/2.7.6-development-record.md).
+
 ## 2.7.5 (2026-09-16)
 
 New:
@@ -103,7 +240,6 @@ Known limits:
 - The standalone rw-wps bundle does not carry `gdt101_remap`; `gpuwm doctor` names the gap.
 - The desktop's weather map cannot draw ICON global fields; the forecast itself is unaffected.
 - The local DA nowcast score masks a 9 km rim and scores one member, which the receipt names.
-- An ARCO window sized for a 16 GiB card refuses in initialization with "specific humidity must be finite in [0, 1)"; the 8 GiB sizing runs end to end.
 
 Detail behind every row: [the 2.7.5 development record](docs/2.7.5-development-record.md).
 ## 2.7.4 (2026-09-13)
@@ -2500,9 +2636,10 @@ Fixed:
   the check line carries the same measurement and the receipt field to
   look for.
 - The shortwave unit no longer depends on a compiler flag to keep its
-  subnormals. `tools/ftz_receipt` measures that every compiler-emitted
-  FP32 instruction flushes under CuPy's appended `-ftz=true`, and that
-  inline PTX without `.ftz` does not. The module currently escapes the
+  subnormals. `tools/ftz_receipt` measures that each of the six
+  compiler-emitted FP32 mechanisms it probes flushes under CuPy's appended
+  `-ftz=true`, and that inline PTX without `.ftz` does not. The module
+  currently escapes the
   append by compiling through `compile_using_nvrtc` rather than
   `RawModule`, and that escape is load-bearing but incidental: it was
   adopted because NVRTC 13 started rejecting the duplicate flag, and a
@@ -4785,8 +4922,9 @@ Fixed:
   surface it also sets the convective velocity scale, so it reaches the
   momentum and moisture tendencies too and the refusal names the wind
   tendency instead. The named input is the heat flux either way.
-- Two silent wrong answers on sm_120, where FP32 subnormals are flushed
-  in all arithmetic. A friction velocity of 1e-13 is an ordinary float32
+- Two silent wrong answers on CuPy's compile route, measured on sm_120,
+  where FP32 subnormals are flushed in each of the six mechanisms the
+  receipt measures. A friction velocity of 1e-13 is an ordinary float32
   whose cube is subnormal and flushes to zero, turning a quotient into
   NaN and laundering it into an exchange coefficient of 1000 m2/s where
   the float64 authority says 131; validation saw nothing. And a

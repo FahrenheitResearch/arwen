@@ -25,6 +25,22 @@ def test_future_contributing_radar_is_not_hidden_by_nominal_product_time():
     assert not assigned_document(document, T, SCHEDULE, 900.)
 
 
+def test_a_radar_still_scanning_at_the_analysis_is_not_hidden_by_its_start():
+    # The volume started five minutes before the analysis and its last
+    # radial was collected one second after it: the product holds the
+    # future, whatever its header start says.
+    document = dict(valid_time=T.isoformat(), provenance={'per_radar': [
+        {'volume_valid_time': (T - timedelta(minutes=5)).isoformat(),
+         'volume_end_time': (T + timedelta(seconds=1)).isoformat()}]})
+    assert not assigned_document(document, T, SCHEDULE, 900.)
+    # Complete a second before the analysis, it is this cycle's and no
+    # later one's.
+    document['provenance']['per_radar'][0]['volume_end_time'] = (
+        T - timedelta(seconds=1)).isoformat()
+    assert assigned_document(document, T, SCHEDULE, 900.)
+    assert not assigned_document(document, SCHEDULE[1], SCHEDULE, 900.)
+
+
 def test_newest_complete_product_is_selected_without_merging_alternatives():
     records = {'a': {'valid_time': (T - timedelta(minutes=2)).isoformat()},
                'b': {'valid_time': (T - timedelta(minutes=1)).isoformat()}}

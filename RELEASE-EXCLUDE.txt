@@ -231,3 +231,15 @@ tools/cycle_demo_c.py
 tools/da_real_leg.py
 tools/da_real_series.py
 tools/ens_sweep/release_card.sh
+
+# A lane's proof directory: the receipts a defect fix is reported on --
+# the reproduction read off the sealed cut, the node's build and test
+# transcripts, the `gpuwm doctor` reports before and after, and the
+# scripts that produced them.  Committed rather than left on one disk,
+# because a receipt whose only copy is a worktree is not a receipt; kept
+# out of the snapshot because every line of it names the node path the
+# work ran under, which is precisely what the machine-path scan refuses,
+# and because a stranger opening the release tree should find the
+# product, not one lane's transcripts.  Same reason `evidence/**` and
+# `work/**` are excluded above rather than deleted.
+proof/**

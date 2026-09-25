@@ -412,16 +412,23 @@ class Stage4PrecipSource(_GriddedSource):
 
 
 class AsosSurfaceSource:
-    """Surface reports from a decoded ``gpuwm-obs.asos-surface.v1`` record."""
+    """Surface reports from a decoded ``gpuwm-obs.asos-surface`` record.
+
+    Reads ``v2`` (every report carries its ``observation_time``) and the
+    ``v1`` records written before it, whose reports are dated to the hour
+    they were matched to.
+    """
+
+    SCHEMAS = ("gpuwm-obs.asos-surface.v2", "gpuwm-obs.asos-surface.v1")
 
     def __init__(self, record_path):
         self.path = Path(record_path)
         self.record = json.loads(self.path.read_text())
         schema = str(self.record.get("schema", ""))
-        if schema != "gpuwm-obs.asos-surface.v1":
+        if schema not in self.SCHEMAS:
             raise ValueError(
-                f"{self.path} declares schema {schema!r}, expected "
-                f"'gpuwm-obs.asos-surface.v1'")
+                f"{self.path} declares schema {schema!r}, expected one of "
+                f"{list(self.SCHEMAS)}")
 
     # -- the StationObsSource protocol ----------------------------------
 

@@ -1,0 +1,3 @@
+REFUSED   composite_reflectivity,mesh:cell_area -> mesh:cell_area: mesh products are drawn from a mesh file's cell boundaries, which a history frame does not carry and this render d
+REFUSED   composite_reflectivity,xsec:wa -> xsec: products need a line: --section lat,lon,lat,lon or --section FILE.json.  This chain composes no section line, so the rendere
+ADMITTED  2m_temperature,composite_reflectivity,var:SNOW

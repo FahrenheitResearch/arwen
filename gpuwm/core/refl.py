@@ -787,7 +787,17 @@ def compute_refl_10cm(
         if thompson_graupel_number is None:
             raise ValueError(
                 f"mp_physics={cfg.mp_physics} reflectivity requires the "
-                "same-call classic graupel number shadow")
+                "same-call classic graupel number shadow: classic "
+                "Thompson carries no graupel number in the Registry, its "
+                "wrapper diagnoses one at call entry and evolves it "
+                "through the call's source and fallout tendencies, and "
+                "WRF's calc_refl10cm reads THAT moment, so a caller "
+                "inside the call has to hand it over rather than let a "
+                "re-diagnosis stand in for it.  A caller BETWEEN steps "
+                "has no evolved moment and needs none: "
+                "gpuwm.da.obsop.simulated_reflectivity derives the "
+                "wrapper's own diagnosis from the state and passes it "
+                "here.")
         launch_refl10cm_thompson(
             state.qv, state.qr, state.nr, state.qs, state.qg,
             thompson_graupel_number, t, p, refl)

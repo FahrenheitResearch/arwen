@@ -210,8 +210,8 @@ fn panel_georeference_for_save(
             None,
             Some(
                 "a post-render pass (map-viewport crop, horizontal recentre, or vertical \
-                 trim) moved the map in a way its reported offset cannot describe -- the \
-                 adjusted plot rectangle would fall outside the written PNG"
+                 trim) moved the map entirely outside the written PNG, so no pixel of the \
+                 plot rectangle survives for a transform to describe"
                     .to_string(),
             ),
         );
@@ -243,11 +243,88 @@ fn panel_georeference_for_save(
                 height: image_timing.map_h,
             },
             resolved_projection,
-            projected_domain.extent.clone(),
+            clipped_projected_extent(&projected_domain.extent, image_timing),
             geographic_bounds,
         )),
         None,
     )
+}
+
+/// The projected box the CLIPPED plot rectangle spans: the domain's
+/// extent with each side cut by the fraction of the unclipped pixel span
+/// a post-render pass removed (`RenderImageTiming::map_clip_*`).  The
+/// rectangle and the extent are cut by the same fractions, so a point
+/// maps to the same pixel through the clipped pair as it did through the
+/// unclipped one.  All-zero fractions return the extent unchanged.
+pub fn clipped_projected_extent(
+    extent: &ProjectedExtent,
+    image_timing: &RenderImageTiming,
+) -> ProjectedExtent {
+    let dx = extent.x_max - extent.x_min;
+    let dy = extent.y_max - extent.y_min;
+    ProjectedExtent {
+        x_min: extent.x_min + dx * image_timing.map_clip_left,
+        x_max: extent.x_max - dx * image_timing.map_clip_right,
+        y_min: extent.y_min + dy * image_timing.map_clip_bottom,
+        y_max: extent.y_max - dy * image_timing.map_clip_top,
+    }
+}
+
+/// The plot rectangle after a post-render pass moved it, intersected
+/// with the written image.
+///
+/// `x`, `y` is the moved rectangle's origin (signed: a pass that cut the
+/// left or top edge puts it below zero), `width`/`height` its unclipped
+/// size, `image_w`/`image_h` the written image.  The result is the part
+/// inside the image plus the fraction of the unclipped pixel span cut
+/// off each side, in the span [`georeference::PanelGeoReference`] maps
+/// the extent onto (width less one, height less one).  `None` when no
+/// pixel survives.
+pub fn clip_plot_rect_to_image(
+    x: i64,
+    y: i64,
+    width: u32,
+    height: u32,
+    image_w: u32,
+    image_h: u32,
+) -> Option<ClippedPlotRect> {
+    if width == 0 || height == 0 || image_w == 0 || image_h == 0 {
+        return None;
+    }
+    let right = x + i64::from(width);
+    let bottom = y + i64::from(height);
+    let left_in = x.max(0);
+    let top_in = y.max(0);
+    let right_in = right.min(i64::from(image_w));
+    let bottom_in = bottom.min(i64::from(image_h));
+    if right_in <= left_in || bottom_in <= top_in {
+        return None;
+    }
+    let x_span = f64::from(width.saturating_sub(1)).max(1.0);
+    let y_span = f64::from(height.saturating_sub(1)).max(1.0);
+    Some(ClippedPlotRect {
+        x: left_in as u32,
+        y: top_in as u32,
+        width: (right_in - left_in) as u32,
+        height: (bottom_in - top_in) as u32,
+        left: (left_in - x) as f64 / x_span,
+        right: (right - right_in) as f64 / x_span,
+        top: (top_in - y) as f64 / y_span,
+        bottom: (bottom - bottom_in) as f64 / y_span,
+    })
+}
+
+/// See [`clip_plot_rect_to_image`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ClippedPlotRect {
+    pub x: u32,
+    pub y: u32,
+    pub width: u32,
+    pub height: u32,
+    pub left: f64,
+    pub right: f64,
+    pub top: f64,
+    pub bottom: f64,
 }
 
 #[derive(Default)]
@@ -428,10 +505,15 @@ impl RustRenderer {
                 // frame takes one, only global panels ever published a
                 // georeference, which is not "fixed" by default.  Each
                 // pass now reports the offset it applied; the rectangle
-                // FOLLOWS the map, and it is retired only when the
-                // adjusted rectangle would fall outside the written image
-                // (a pass cut into the map itself), because publishing
-                // that rectangle would be quietly wrong.
+                // FOLLOWS the map.  Where the moved rectangle overhangs
+                // the written image it is CLIPPED to the surviving pixels
+                // and the cut fractions are recorded, so the projected
+                // extent is cut by the same amount and the transform
+                // still describes the file: a regional grid drawn in a
+                // frame wider than its data is recentred by more than its
+                // margin on every frame, and withholding the sidecar for
+                // that left a correctly drawn map with no transform.  It
+                // is retired only when no pixel survives.
                 let mut moved_x: i64 = 0;
                 let mut moved_y: i64 = 0;
                 let image = match opts.domain_frame {
@@ -471,15 +553,25 @@ impl RustRenderer {
                 image_timing.image_h = trimmed.height();
                 let adjusted_x = i64::from(image_timing.map_x) + moved_x;
                 let adjusted_y = i64::from(image_timing.map_y) + moved_y;
-                let rect_fits = adjusted_x >= 0
-                    && adjusted_y >= 0
-                    && adjusted_x + i64::from(image_timing.map_w) <= i64::from(trimmed.width())
-                    && adjusted_y + i64::from(image_timing.map_h) <= i64::from(trimmed.height());
-                if rect_fits {
-                    image_timing.map_x = adjusted_x as u32;
-                    image_timing.map_y = adjusted_y as u32;
-                } else {
-                    image_timing.plot_rect_describes_the_png = false;
+                match clip_plot_rect_to_image(
+                    adjusted_x,
+                    adjusted_y,
+                    image_timing.map_w,
+                    image_timing.map_h,
+                    trimmed.width(),
+                    trimmed.height(),
+                ) {
+                    Some(clip) => {
+                        image_timing.map_x = clip.x;
+                        image_timing.map_y = clip.y;
+                        image_timing.map_w = clip.width;
+                        image_timing.map_h = clip.height;
+                        image_timing.map_clip_left = clip.left;
+                        image_timing.map_clip_right = clip.right;
+                        image_timing.map_clip_top = clip.top;
+                        image_timing.map_clip_bottom = clip.bottom;
+                    }
+                    None => image_timing.plot_rect_describes_the_png = false,
                 }
                 let trim_ms = trim_start.elapsed().as_millis();
                 image_timing.postprocess_ms = image_timing.postprocess_ms.saturating_add(trim_ms);

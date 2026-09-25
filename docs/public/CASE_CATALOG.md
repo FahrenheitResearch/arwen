@@ -117,8 +117,13 @@ gpuwm case-catalog export --catalog cases.toml --out original-cases.toml --origi
 
 Preview shows the chosen source, cycle, tier, explicit settings and source
 availability guidance. Native geometry and memory admission run during create.
-Creation writes a new TOML, its native companions, the exact original catalog
-and a `.arwen-case.json` receipt. Existing files are preserved. The receipt
+Creation writes a new TOML, every file that configuration's input route
+reads beside it (its `namelist.wps`, and on the native regional route the
+two namelists and the target-domain document the run reads), the exact
+original catalog and a `.arwen-case.json` receipt. Existing files are
+preserved. A selection those route files cannot state, which is a physics
+suite outside the shipped profiles on that route, is refused at creation
+naming the setting, and nothing is written. The receipt
 records the original SHA-256, selected case, applied settings, actual domain
 sizes and native admission. Continue through the existing `gpuwm go` workflow.
 

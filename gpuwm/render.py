@@ -1164,6 +1164,8 @@ def render_series_rust(paths, *, products: str, timeidx: int | None,
                        isotherms: str | None = None,
                        section_across_km: float | None = None,
                        section_size: tuple[int, int] | None = None,
+                       section_top_km: float | None = None,
+                       fills: list | None = None,
                        context_paths=(),
                        ) -> tuple[list[Path], list[str],
                                   list[tuple[str, str]]]:
@@ -1212,7 +1214,8 @@ def render_series_rust(paths, *, products: str, timeidx: int | None,
         # and timestamps; only requested history frames are delivered.
         engine_out = store / "png" if context else outdir
         available, unavailable = _available_window_request(
-            renderer, subject, products, store, heavy=heavy, paths=series)
+            renderer, subject, products, store, heavy=heavy, paths=series,
+            section=section)
         if not available:
             return [], [], unavailable
         written, failures, skipped = rustwx.run_renderer_series(
@@ -1223,7 +1226,8 @@ def render_series_rust(paths, *, products: str, timeidx: int | None,
             annotate=annotate, streamlines=streamlines, theme=theme,
             section=section, isotherms=isotherms,
             section_across_km=section_across_km,
-            section_size=section_size)
+            section_size=section_size,
+            section_top_km=section_top_km, fills=fills)
         skipped = unavailable + skipped
         if wanted_times is not None:
             selected = []
@@ -1338,49 +1342,104 @@ def group_history_series(paths) -> list[list[Path]]:
 
 
 def _available_window_request(renderer: Path, path: Path, products: str,
-                              store: Path, *, heavy: bool, paths=None
+                              store: Path, *, heavy: bool, paths=None,
+                              section=None
                               ) -> tuple[str, list[tuple[str, str]]]:
-    """Relay only the native catalog's declared window-axis exclusions.
+    """The request this invocation can actually draw; ``(spec, skipped)``.
 
-    General plots explicitly requests one-hour rain. Minute-level wrfouts
-    cannot supply that window, so forwarding it as a strict low-level
-    request used to fail the whole otherwise successful forecast. The
-    real importer/catalog decides availability; Python computes no time
-    axis or accumulation. Corrupt metadata, unknown slugs and every other
-    native refusal retain the original request and failure behavior.
+    Every NAMED slug whose catalog row is not ``renderable`` is dropped
+    here and reported as a skip carrying the engine's own reason.  The
+    catalog is asked about exactly the files this invocation is about to
+    render -- one file on the per-file route, the whole series store on
+    the series route -- so its verdict is not a guess about a different
+    store, and Python computes no time axis, no accumulation and no
+    field list of its own.
+
+    WHAT BREAKAGE THIS PREVENTS (gate law).  A named slug the catalog
+    has refused, forwarded to the renderer anyway, is not skipped by it:
+    ``rusty-weather``'s batch lane turns an unavailable window into
+    ``ItemFailed``, and ``rw_wrfbatch`` exits nonzero when
+    ``summary.failed > 0`` -- one product takes the WHOLE invocation
+    down.  On the downscale route that invocation is the finalize render
+    of a finished child, so six hours of integration ended with
+    "Forecast failed" and a partial picture tree.
+
+    This used to drop window-axis rows by matching two of the engine's
+    English sentences.  The catalog has FIVE windowed outcomes
+    (``rw-wrfbatch/src/main.rs``): excluded on the whole-hour axis,
+    excluded on the ordinal axis, renderable, ``blocked`` with a
+    per-slug reason, and excluded because the window compute itself was
+    unavailable -- whose sentence is composed at run time and can never
+    be in a frozen set.  Two of five matched, and only while the wording
+    held.  Matching on the STATUS matches all five and every status the
+    catalog grows later, which is why the verdict is asked of
+    :func:`gpuwm.rustwx.catalog_verdict` rather than spelled again here.
+
+    A token with no catalog row passes through untouched: the group
+    keywords name no row and the engine expands them itself, leaving out
+    what it cannot draw.  A non-empty request that is ONLY group
+    keywords is returned unchanged without asking, because there is no
+    named promise in it to check; an EMPTY request is not, and comes
+    back empty so the caller refuses rather than running an empty
+    render.
+
+    The three STORELESS families are dropped first, by
+    :func:`gpuwm.rustwx.drop_storeless_terms` and before anything is
+    launched: a store listing cannot decide a ``mesh:``, ``meshdiff:``
+    or ``xsec:`` term, and the renderer answers one it cannot draw by
+    refusing the whole invocation.  Doing it here rather than only at
+    the front door covers every caller of this render path, and costs a
+    mesh-only request no catalog listing it could not have used.
+
+    Corrupt metadata and every other native refusal keep the original
+    request, so the import/launch failure stays visible.
     """
 
     from gpuwm import rustwx
 
+    products, storeless = rustwx.drop_storeless_terms(
+        products, section=section)
     requested = [token.strip() for token in products.split(",")
                  if token.strip()]
-    if "all" in requested:
-        # The native automatic catalog already excludes these products.
-        return products, []
+    if not requested:
+        # Nothing named and no group keyword: an empty or comma-only
+        # request.  It comes back as an empty spec, which is the
+        # caller's signal to refuse before launching -- the short
+        # circuit below cannot decide it, because all() of nothing is
+        # True and it would return the comma-only spelling straight
+        # into the renderer.
+        return "", storeless
+    if all(token.lower() in rustwx.GROUP_KEYWORDS for token in requested):
+        # The native automatic catalog already excludes what it cannot
+        # draw from a group it expands itself.
+        return products, storeless
     try:
-        if paths is None:
-            rows, _summary = rustwx.list_products(
-                renderer, path, store_root=store, heavy=heavy)
-        else:
-            rows, _summary = rustwx.list_products_series(
-                renderer, paths, store_root=store, heavy=heavy)
-    except (OSError, RuntimeError):
+        rows, _summary = rustwx.catalog_rows(
+            renderer, (path,) if paths is None else paths,
+            store_root=store, heavy=heavy)
+    except (OSError, RuntimeError) as error:
         # No trustworthy availability verdict: run the unchanged native
         # request so its import/metadata/launch failure remains visible.
-        return products, []
-    axis_reasons = {
-        "windowed accumulations need more than one stored whole-hour frame",
-        "exact-time ordinal axis; fixed-hour windows are undefined on it",
-    }
-    unavailable = {slug: detail for slug, kind, status, detail in rows
-                   if kind == "windowed" and status == "excluded"
-                   and detail in axis_reasons}
-    skipped = [(slug, f"{path}: {unavailable[slug]}")
-               for slug in dict.fromkeys(requested) if slug in unavailable]
-    if not skipped:
-        return products, []
-    return (",".join(slug for slug in requested if slug not in unavailable),
-            skipped)
+        #
+        # SAYING SO is the difference between that and a silent forward.
+        # This arm is the one path on which a named slug the catalog
+        # would have refused still reaches the renderer, and a windowed
+        # slug that reaches it on a sub-hourly axis fails the whole
+        # invocation -- so a reader who got "exit 1" and a render
+        # command had no way to learn that the availability question was
+        # never answered.  It is a note, not a refusal: the request is
+        # still attempted, and the engine's own failure is still what
+        # decides the outcome.
+        print(f"note: product availability could not be read for {path} "
+              f"({error}); the request is sent to the renderer unchanged, "
+              "so a product these frames cannot draw will fail this render "
+              "rather than be skipped", file=sys.stderr)
+        return products, storeless
+    available, excluded = rustwx.catalog_verdict(rows, requested)
+    if not excluded:
+        return products, storeless
+    return available, storeless + [(slug, f"{path}: {detail}")
+                                   for slug, detail in excluded]
 
 
 def render_wrfouts_rust(paths, *, products: str, timeidx: int | None,
@@ -1396,6 +1455,8 @@ def render_wrfouts_rust(paths, *, products: str, timeidx: int | None,
                         isotherms: str | None = None,
                         section_across_km: float | None = None,
                         section_size: tuple[int, int] | None = None,
+                        section_top_km: float | None = None,
+                        fills: list | None = None,
                         series: bool = False, context_paths=(),
                         ) -> tuple[list[Path], list[str],
                                    list[tuple[str, str]]]:
@@ -1425,7 +1486,16 @@ def render_wrfouts_rust(paths, *, products: str, timeidx: int | None,
     ``section`` is the line ``xsec:`` products are cut along
     (``lat,lon,lat,lon`` or a JSON file), ``isotherms`` the isotherm set
     drawn on them, ``section_across_km`` an optional second frame across
-    the line.
+    the line, ``section_top_km`` the ceiling of the fitted height range
+    (1-40 km; the engine's own 14 km when none is named, which is why a
+    shallow feature used to occupy the bottom fourteenth of every
+    published cut).
+
+    ``fills``, when a list is given, collects the range each vertical
+    cut's colour bar was drawn over and the rule that set it, for the
+    receipt.  A section's bar is fitted to its own frame at both ends,
+    so two cuts of one line are compared through that record rather
+    than by colour.
     """
 
     from gpuwm import rustwx
@@ -1441,7 +1511,8 @@ def render_wrfouts_rust(paths, *, products: str, timeidx: int | None,
                            layout=layout, overlays=overlays, annotate=annotate,
                            streamlines=streamlines, theme=theme, section=section,
                            isotherms=isotherms, section_across_km=section_across_km,
-                           section_size=section_size)
+                           section_size=section_size,
+                           section_top_km=section_top_km, fills=fills)
             if len(group) == 1:
                 batch = render_wrfouts_rust(group, **options)
             else:
@@ -1479,7 +1550,8 @@ def render_wrfouts_rust(paths, *, products: str, timeidx: int | None,
         episode = history_episode(path)
         with scratch_store(outdir) as store:
             available, unavailable = _available_window_request(
-                renderer, path, products, store, heavy=heavy)
+                renderer, path, products, store, heavy=heavy,
+                section=section)
             skipped.extend(unavailable)
             if not available:
                 # Main still returns nonzero when the entire request
@@ -1492,7 +1564,8 @@ def render_wrfouts_rust(paths, *, products: str, timeidx: int | None,
                 overlays=overlays, annotate=annotate,
                 streamlines=streamlines, theme=theme, section=section,
                 isotherms=isotherms, section_across_km=section_across_km,
-                section_size=section_size)
+                section_size=section_size, section_top_km=section_top_km,
+                fills=fills)
         file_written = [_place_engine_output(png, outdir, token, layout,
                                              episode=episode)
                         for png in file_written]
@@ -2541,6 +2614,47 @@ def render_main(args: argparse.Namespace) -> int:
         print(explain.render(
             history_note, explain=explain.explain_enabled(args),
             command="gpuwm render"), file=sys.stderr)
+    # THE STORELESS FAMILIES, answered here rather than by the renderer.
+    # `mesh:` and `meshdiff:` are drawn from a mesh file's cell
+    # boundaries and this door passes none; `xsec:` is cut along a line
+    # and may have none.  The renderer refuses any of the three for the
+    # WHOLE invocation before it draws anything, so a term forwarded
+    # from here used to cost every other requested product its pictures:
+    # `--products composite_reflectivity,mesh:cell_area` exited 1 with
+    # no pictures where it could have drawn every reflectivity frame.
+    # Dropped per PRODUCT, which is what the renderer will not do, and
+    # named -- and when the drop leaves nothing, refused here, before a
+    # run directory is claimed.
+    door_skips: list[tuple[str, str]] = []
+    requested_spec = rust_products if engine == "rust" else None
+    if engine == "rust":
+        from gpuwm import rustwx
+
+        rust_products, door_skips = rustwx.drop_storeless_terms(
+            rust_products, section=args.section)
+        if not rust_products:
+            print("render: " + explain.render(explain.layered(
+                ", ".join(term for term, _reason in door_skips)
+                + ": this render has nothing left to draw.\n"
+                + "\n".join(f"  {term}: {reason}"
+                            for term, reason in door_skips),
+                "These families do not come from the history store, so the "
+                "store's own catalog cannot decide them and the renderer "
+                "refuses the whole invocation rather than skipping the "
+                "term.  Asked for beside products that ARE drawable, they "
+                "are dropped and the rest is drawn; asked for alone, there "
+                "is nothing to draw."),
+                explain=explain.explain_enabled(args),
+                command="gpuwm render"), file=sys.stderr)
+            return 2
+        # `reason`, never `why`: the name beside it holds how the ENGINE
+        # was resolved and is printed one line below.  Reusing it here
+        # made the engine line quote a dropped product's sentence as the
+        # basis on which the renderer had been chosen.
+        for term, reason in door_skips:
+            print(f"render: note: {term} is dropped from this render and "
+                  f"the other requested products are still drawn. {reason}.",
+                  file=sys.stderr)
     print(f"render: engine {engine} ({why})")
     # AFTER every refusal and after --list-products: this creates a
     # directory, and a command that draws nothing must leave none --
@@ -2574,11 +2688,15 @@ def render_main(args: argparse.Namespace) -> int:
 
             verdict = bridge_tree_match(rustwx.find_renderer(),
                                         env_var=rustwx.RENDERER_ENV)
+            # Filled by the renderer's own event stream: the range each
+            # vertical cut was drawn over.  It reaches the receipt below.
+            section_fills: list = []
             print(f"render: engine bridge {verdict.verdict} "
                   f"({verdict.basis})")
             try:
                 written, failures, skipped = render_wrfouts_rust(
-                    args.wrfout, products=rust_products, timeidx=timeidx,
+                    args.wrfout, fills=section_fills,
+                    products=rust_products, timeidx=timeidx,
                     outdir=args.out, size=size, heavy=args.heavy,
                     source_label=args.source_label, layout=args.layout,
                     overlays=args.overlays, annotate=args.annotate,
@@ -2586,6 +2704,7 @@ def render_main(args: argparse.Namespace) -> int:
                     section=args.section, isotherms=args.isotherms,
                     section_across_km=args.section_across_km,
                     section_size=args.section_size,
+                    section_top_km=args.section_top_km,
                     series=getattr(args, "series", False),
                     context_paths=getattr(args, "context_wrfout", ()))
             except (RuntimeError, ValueError) as exc:
@@ -2599,10 +2718,28 @@ def render_main(args: argparse.Namespace) -> int:
                 outdir=args.out, dpi=args.dpi,
                 source_label=args.source_label, layout=args.layout)
         from gpuwm.render_receipts import publish_invocation
+        # How tall the cuts were: the ceiling the door forwarded, or the
+        # engine's own when a section was drawn and none was named.  A
+        # receipt that records the products but not the height axis
+        # cannot explain two different pictures of one line.  Read off
+        # the spec that REACHES the renderer, so a section term the door
+        # dropped for want of a line records no ceiling.
+        section_top_km = None
+        if engine == "rust" and rustwx.split_section_spec(rust_products)[1]:
+            section_top_km = (args.section_top_km
+                              if args.section_top_km is not None
+                              else rustwx.SECTION_TOP_KM_DEFAULT)
+        # WHAT WAS ASKED FOR, not what survived the door: the receipt's
+        # request and its skips are read together, and a request the
+        # door had already trimmed would name no term to match the skip
+        # against.
         render_summary = publish_invocation(root=args.out, engine=engine,
-            requested_spec=rust_products if engine == "rust" else ",".join(products),
-            written=written, failures=failures, skipped=skipped, layout=args.layout,
-            inputs=args.wrfout, context_inputs=getattr(args, "context_wrfout", ()))
+            requested_spec=requested_spec if engine == "rust" else ",".join(products),
+            written=written, failures=failures, skipped=door_skips + skipped,
+            layout=args.layout,
+            inputs=args.wrfout, context_inputs=getattr(args, "context_wrfout", ()),
+            section_top_km=section_top_km,
+            section_fills=section_fills if engine == "rust" else ())
         for failure in failures:
             print(f"render FAIL: {failure}", file=sys.stderr)
         notice = skip_notice(skipped, wrote_any=bool(written))
@@ -2646,6 +2783,23 @@ def _section_size(value: str) -> tuple[int, int]:
             raise argparse.ArgumentTypeError(
                 f"--section-size {name} {side} is not 200-12000 pixels")
     return width, height
+
+
+def _section_top_km(value: str) -> float:
+    """``N`` for ``--section-top-km``, refused in the engine's sentence.
+
+    The engine owns the range (``rw_wrfbatch`` takes 1-40 km), so the
+    door repeats the engine's own refusal rather than inventing a second
+    wording for the same rule -- and repeats it HERE, before a render
+    launches, instead of after the renderer has opened the frames.
+    """
+
+    from gpuwm import rustwx
+
+    problem = rustwx.section_top_problem(value)
+    if problem is not None:
+        raise argparse.ArgumentTypeError(problem)
+    return float(value)
 
 
 def register_cli(subparsers) -> None:
@@ -2788,6 +2942,13 @@ def register_cli(subparsers) -> None:
         metavar="KM", default=None,
         help="rust engine: also draw each section product across the "
              "line, this many km long, through the fill's maximum column")
+    parser.add_argument(
+        "--section-top-km", dest="section_top_km", type=_section_top_km,
+        metavar="N", default=None,
+        help="rust engine: the ceiling of a section's height axis, 1-40 "
+             "km; absent, the engine fits up to 14 km, which draws a "
+             "shallow feature in the bottom fourteenth of the frame -- "
+             "give it 3 for a boundary-layer cut")
     parser.add_argument(
         "--list-products", action="store_true",
         help="list the engine's product catalog with per-file "

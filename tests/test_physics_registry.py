@@ -222,6 +222,42 @@ def test_every_repo_local_registry_citation_still_says_what_the_claim_says():
             f"the mp=28 option cites {citation}, which nothing resolves")
 
 
+def test_a_carrier_of_a_named_routine_may_not_cite_that_file_by_line_too():
+    """A line number kept beside the name is checked by nothing.
+
+    ``NAMED_ROUTINES`` asks only that a declared carrier cite the routine
+    SOMEWHERE, so a page carrying both ``path::routine`` and
+    ``path:2293`` passes its carrier check while the number rots
+    unnoticed -- which is the defect the name was adopted to remove,
+    surviving on the page that adopted it.  Measured, not supposed:
+    ``docs/da-nowcast-demo.md`` carried ``gpuwm/core/dycore.py:2293``
+    one paragraph above ``gpuwm/core/dycore.py::apply_w_damping``,
+    correct on the day and checked by nothing, and the next thing to
+    move above that routine would have rotted it in silence exactly as
+    :2178 rotted before it.
+    """
+    sys.path.insert(0, str(ROOT / "tools"))
+    try:
+        import check_registry_citations as checker
+    finally:
+        sys.path.pop(0)
+
+    # The instrument first: a name alone is clean, and the rule finds
+    # every number, so a test that reports nothing cannot pass by
+    # matching nothing.
+    assert checker.line_citations(
+        "cite gpuwm/core/dycore.py::apply_w_damping and nothing else",
+        "gpuwm/core/dycore.py") == ()
+    assert checker.line_citations(
+        "(`gpuwm/core/dycore.py:2293`), also gpuwm/core/dycore.py:7 here",
+        "gpuwm/core/dycore.py") == (2293, 7)
+
+    assert checker.NAMED_ROUTINES, (
+        "the named-routine table is empty, so this rule is checking nothing")
+    failures = checker.named_routine_failures()
+    assert failures == [], "; ".join(failures)
+
+
 def test_mixed_thompson_outer_and_nssl_inner_plan_is_launchable():
     report = validate_physics_plan(_mixed_plan())
     assert report["schema"] == VALIDATION_SCHEMA

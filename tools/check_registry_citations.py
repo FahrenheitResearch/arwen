@@ -32,6 +32,12 @@ Four tables, and all four are exhaustive by construction:
     warning meant is a judgement, so it is recorded rather than guessed.
     Currently empty, and an unused row here is a failure like any other.
 
+``NAMED_ROUTINES``
+    ``path::routine`` -> (the definition line, the files citing it).  For
+    citations that live in source text rather than in the registry and that
+    name a routine instead of a line, because a line number rots and a name
+    does not.
+
 ``DRIFTED``
     citation text -> (repo-relative path, the anchor the claim is about, why
     the citation is wrong, who owns the fix).
@@ -175,13 +181,114 @@ RESOLVED: dict[str, tuple[str, str]] = {
     # so a citation that slides onto the other closure's launcher -- the
     # one drift these two are actually at risk of, since the bodies are
     # near-identical -- fails here instead of reading plausibly.
-    "gpuwm/core/dycore.py:910": (
+    #
+    # RE-PINNED with a reading.  Both had drifted 75 lines and this
+    # checker had been failing on them: :910 is now an int32 argument in
+    # a kernel call and :1000 a scratch reshape, while the km_opt=2
+    # header is at :985 (launch_wrf_tke_km, def at :983) and the km_opt=3
+    # header at :1075 (launch_wrf_smag3d_km, def at :1073).  The anchors
+    # are unchanged, which is what made the drift visible rather than
+    # plausible.
+    "gpuwm/core/dycore.py:985": (
         "gpuwm/core/dycore.py",
         "WRF v4.6.1 km_opt=2:"),
-    "gpuwm/core/dycore.py:1000": (
+    "gpuwm/core/dycore.py:1075": (
         "gpuwm/core/dycore.py",
         "WRF v4.6.1 km_opt=3:"),
 }
+
+#: Citations written as ``path::routine`` rather than ``path:line``, and
+#: every file that carries one.
+#:
+#: A line number rots the moment anything above it moves.  The vertical
+#: limiter's receipt and the two docstrings that quote it cited
+#: ``gpuwm/core/dycore.py:2178`` until :2178 had become a batching helper
+#: for staggered flux sums, 115 lines above the limiter itself, which is
+#: at :2293.  Nothing caught it because nothing was looking: the tables
+#: above cover the physics registry, and these citations live in source
+#: text.
+#:
+#: Spelling the citation as the routine's NAME removes the class rather
+#: than re-pinning a number that will drift again, and these rows are what
+#: keep the name from going stale in its turn.  Each is checked four
+#: ways: the target file exists, it still DEFINES the routine, every
+#: declared carrier still cites it, and no carrier cites the routine's
+#: file by LINE as well.  So a rename fails here, so does a carrier that
+#: quietly drops the citation, which is how a table stops describing
+#: anything, and so does a line number kept beside the name -- which is
+#: not hypothetical: docs/da-nowcast-demo.md carried
+#: ``gpuwm/core/dycore.py:2293`` one paragraph above the routine's own
+#: name, correct on the day and checked by nothing, because the carrier
+#: check is satisfied by the name appearing anywhere in the page.
+#:
+#: ``citation -> (the definition line that must exist, the files citing it)``
+NAMED_ROUTINES: dict[str, tuple[str, tuple[str, ...]]] = {
+    "gpuwm/core/dycore.py::apply_w_damping": (
+        "def apply_w_damping(",
+        ("docs/da-nested-forecast.md",
+         "docs/da-nowcast-demo.md",
+         "tests/test_eta_ladder_time_step.py",
+         "tools/build_stretched_eta_ladder.py",
+         "tools/da_cycle_prepared.py"),
+    ),
+}
+
+
+def line_citations(text: str, path: str) -> tuple[int, ...]:
+    """The line numbers ``text`` cites ``path`` by, as ``path:123``.
+
+    A ``path::routine`` citation is not checked for a line, so a line
+    citation of the same file sitting beside it is checked by nothing at
+    all and rots the moment anything above the routine moves.  Split out
+    so the rule can be exercised on a string rather than on the tree.
+    """
+
+    return tuple(int(found.group(1))
+                 for found in re.finditer(re.escape(path) + r":(\d+)", text))
+
+
+def named_routine_failures() -> list[str]:
+    """One message per named-routine citation that has stopped being true."""
+
+    failures: list[str] = []
+    for citation, (definition, carriers) in sorted(NAMED_ROUTINES.items()):
+        path, _, routine = citation.partition("::")
+        target = MODEL / path
+        if not target.is_file():
+            failures.append(f"{citation}: {path} does not exist")
+            continue
+        body = target.read_text(encoding="utf-8", errors="replace")
+        if definition not in body:
+            failures.append(
+                f"{citation}: {path} no longer contains {definition!r}, so "
+                f"the {len(carriers)} place(s) citing {routine} are citing "
+                "something that is not there")
+        if not carriers:
+            failures.append(
+                f"{citation} declares no carrier, so nothing checks that "
+                "anything still cites it")
+        for carrier in carriers:
+            source = MODEL / carrier
+            if not source.is_file():
+                failures.append(
+                    f"{citation}: declared carrier {carrier} does not exist")
+                continue
+            text = source.read_text(encoding="utf-8", errors="replace")
+            if citation not in text:
+                failures.append(
+                    f"{citation} is not cited in {carrier} any more; drop "
+                    "the carrier from NAMED_ROUTINES or restore the "
+                    "citation")
+            beside = line_citations(text, path)
+            if beside:
+                failures.append(
+                    f"{carrier} cites {routine} by name and also cites "
+                    f"{path} by line ("
+                    + ", ".join(f":{line}" for line in beside)
+                    + f"); the name check passes without the number, so the "
+                    f"number rots unread. Cite {citation} alone")
+    return failures
+
 
 #: OPEN, ENUMERATED CITATION DEFECTS.  Each row is a citation the registry
 #: publishes that resolves into this worktree and does NOT say what the claim
@@ -352,7 +459,7 @@ def check(registry: dict | None = None) -> list[str]:
     if registry is None:
         registry = json.loads(REGISTRY_PATH.read_text(encoding="utf-8"))
     found = citations(registry)
-    failures: list[str] = []
+    failures: list[str] = named_routine_failures()
 
     overlap = sorted(set(RESOLVED) & set(DRIFTED))
     if overlap:                                       # pragma: no cover

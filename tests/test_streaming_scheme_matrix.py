@@ -82,10 +82,6 @@ COMPONENT_ADAPTERS: dict[str, tuple[tuple[str, str], ...]] = {
         ("gpuwm.core.rrtmgp", "RRTMGPRadiation"),
         ("gpuwm.core.rrtmg_legacy", "RRTMGLegacyRadiation"),
     ),
-    "rte-rrtmgp-legacy-aggregate": (
-        ("gpuwm.core.rrtmgp", "RRTMGPRadiation"),
-        ("gpuwm.core.rrtmg_legacy", "RRTMGLegacyRadiation"),
-    ),
     "dudhia-shortwave": (
         ("gpuwm.core.dudhia", "DudhiaShortwaveRadiation"),
         ("gpuwm.core.rrtm_lw", "RRTMLongwaveRadiation"),

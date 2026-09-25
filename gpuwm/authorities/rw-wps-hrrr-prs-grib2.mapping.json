@@ -134,6 +134,156 @@
     "kind": "reject"
    }
   },
+  "cloud_water_mixing_ratio": {
+   "selectors": [
+    {
+     "format": "grib2",
+     "discipline": 0,
+     "category": 1,
+     "parameter": 22,
+     "level_type": 100
+    }
+   ],
+   "units": {
+    "source": "kg kg-1",
+    "target": "kg kg-1"
+   },
+   "source_axes": [
+    "vertical",
+    "y",
+    "x"
+   ],
+   "target_axes": [
+    "vertical",
+    "y",
+    "x"
+   ],
+   "location": "mass",
+   "staggering": "none",
+   "missing": {
+    "kind": "reject"
+   }
+  },
+  "cloud_ice_mixing_ratio": {
+   "selectors": [
+    {
+     "format": "grib2",
+     "discipline": 0,
+     "category": 1,
+     "parameter": 82,
+     "level_type": 100
+    }
+   ],
+   "units": {
+    "source": "kg kg-1",
+    "target": "kg kg-1"
+   },
+   "source_axes": [
+    "vertical",
+    "y",
+    "x"
+   ],
+   "target_axes": [
+    "vertical",
+    "y",
+    "x"
+   ],
+   "location": "mass",
+   "staggering": "none",
+   "missing": {
+    "kind": "reject"
+   }
+  },
+  "rain_water_mixing_ratio": {
+   "selectors": [
+    {
+     "format": "grib2",
+     "discipline": 0,
+     "category": 1,
+     "parameter": 24,
+     "level_type": 100
+    }
+   ],
+   "units": {
+    "source": "kg kg-1",
+    "target": "kg kg-1"
+   },
+   "source_axes": [
+    "vertical",
+    "y",
+    "x"
+   ],
+   "target_axes": [
+    "vertical",
+    "y",
+    "x"
+   ],
+   "location": "mass",
+   "staggering": "none",
+   "missing": {
+    "kind": "reject"
+   }
+  },
+  "snow_mixing_ratio": {
+   "selectors": [
+    {
+     "format": "grib2",
+     "discipline": 0,
+     "category": 1,
+     "parameter": 25,
+     "level_type": 100
+    }
+   ],
+   "units": {
+    "source": "kg kg-1",
+    "target": "kg kg-1"
+   },
+   "source_axes": [
+    "vertical",
+    "y",
+    "x"
+   ],
+   "target_axes": [
+    "vertical",
+    "y",
+    "x"
+   ],
+   "location": "mass",
+   "staggering": "none",
+   "missing": {
+    "kind": "reject"
+   }
+  },
+  "graupel_or_hail_mixing_ratio": {
+   "selectors": [
+    {
+     "format": "grib2",
+     "discipline": 0,
+     "category": 1,
+     "parameter": 32,
+     "level_type": 100
+    }
+   ],
+   "units": {
+    "source": "kg kg-1",
+    "target": "kg kg-1"
+   },
+   "source_axes": [
+    "vertical",
+    "y",
+    "x"
+   ],
+   "target_axes": [
+    "vertical",
+    "y",
+    "x"
+   ],
+   "location": "mass",
+   "staggering": "none",
+   "missing": {
+    "kind": "reject"
+   }
+  },
   "eastward_wind": {
    "selectors": [
     {
@@ -903,6 +1053,56 @@
     "target_units": "kg kg-1"
    },
    {
+    "name": "cloud_water_mixing_ratio",
+    "axes": [
+     "vertical",
+     "y",
+     "x"
+    ],
+    "location": "mass",
+    "target_units": "kg kg-1"
+   },
+   {
+    "name": "cloud_ice_mixing_ratio",
+    "axes": [
+     "vertical",
+     "y",
+     "x"
+    ],
+    "location": "mass",
+    "target_units": "kg kg-1"
+   },
+   {
+    "name": "rain_water_mixing_ratio",
+    "axes": [
+     "vertical",
+     "y",
+     "x"
+    ],
+    "location": "mass",
+    "target_units": "kg kg-1"
+   },
+   {
+    "name": "snow_mixing_ratio",
+    "axes": [
+     "vertical",
+     "y",
+     "x"
+    ],
+    "location": "mass",
+    "target_units": "kg kg-1"
+   },
+   {
+    "name": "graupel_or_hail_mixing_ratio",
+    "axes": [
+     "vertical",
+     "y",
+     "x"
+    ],
+    "location": "mass",
+    "target_units": "kg kg-1"
+   },
+   {
     "name": "eastward_wind",
     "axes": [
      "vertical",
@@ -1048,11 +1248,6 @@
    "sea_ice_fraction"
   ],
   "initialization_policies": {
-   "cloud_water_mixing_ratio": "explicit_zero_with_adapter_validation",
-   "rain_water_mixing_ratio": "explicit_zero_with_adapter_validation",
-   "cloud_ice_mixing_ratio": "explicit_zero_with_adapter_validation",
-   "snow_mixing_ratio": "explicit_zero_with_adapter_validation",
-   "graupel_or_hail_mixing_ratio": "explicit_zero_with_adapter_validation",
    "vertical_velocity": "explicit_zero_with_adapter_validation"
   }
  }

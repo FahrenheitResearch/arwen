@@ -11,17 +11,38 @@ evidence about it belongs with the tests.
 
 The FP64 pair freezes the authority's six-row layout, the off-diagonal
 weight-1 convention, the cond threshold, and the clip/recovery order.
-The DEVICE pair is the measured FP32 result of the same fixture on the
-RTX 5090 (deterministic block reduction + host np sum): any toolchain
-change that shifts these digits must arrive as a deliberate re-pin,
+The DEVICE pair is the measured FP32 result of the same fixture
+(deterministic block reduction + host np sum), and it is a property of
+the card as well as of the code: ``GOLDEN_DEVICE_BY_CARD`` holds one pair
+per card, keyed by the device name cupy reports, and the device golden
+gate in ``test_sase_gpu.py`` skips with the reason on a card with no
+pair rather than failing for the card and not the code.  Any toolchain
+change that shifts a card's digits must arrive as a deliberate re-pin,
 mirroring the CPU golden-pin policy.
+
+READING, 2026-09-18, node-1's RTX 4090 (compute capability 8.9, driver
+610.57.04, CUDA runtime 13020, cupy 14.2.0, NVRTC 13.3.33): the 5090 pair
+below fails the rtol 1e-9 gate there in ``f`` by rel 1.481e-08 (abs
+1.381e-08) while ``c_nu`` holds at rel 4.844e-10; the 4090's own pair,
+identical across two processes and across the test's second in-process
+call, is rel 1.845e-07 (c_nu) and 1.039e-08 (f) from the FP64 authority,
+inside the 5e-4 real-lift gate like the 5090's.  Receipt:
+tests/data/receipts/pin-gates/extra-pin-readings-221f66f14-run1.json.
 """
 
 GOLDEN_C_NU_FP64 = 0.001735249587725131
 GOLDEN_F_FP64 = 0.9325844743877104
 
-GOLDEN_C_NU_DEVICE = 0.0017352499069869236     # rel 1.84e-7 vs FP64
-GOLDEN_F_DEVICE = 0.9325844702650841           # rel 4.42e-9 vs FP64
+GOLDEN_C_NU_DEVICE = 0.0017352499069869236     # RTX 5090; rel 1.84e-7 vs FP64
+GOLDEN_F_DEVICE = 0.9325844702650841           # RTX 5090; rel 4.42e-9 vs FP64
+
+#: (c_nu, f) as the device solve produces them on each card the pair has
+#: been recorded on.  The 5090 pair is the original (2026-07); the 4090
+#: pair is the 2026-09-18 reading above.
+GOLDEN_DEVICE_BY_CARD = {
+    "NVIDIA GeForce RTX 5090": (GOLDEN_C_NU_DEVICE, GOLDEN_F_DEVICE),
+    "NVIDIA GeForce RTX 4090": (0.0017352499078274765, 0.932584484076787),
+}
 
 # ---------------------------------------------------------------------------
 # S3-6b split-step trajectory goldens: the S3-6c device-mirror parity
@@ -106,9 +127,9 @@ GOLDEN_F_DEVICE = 0.9325844702650841           # rel 4.42e-9 vs FP64
 # RANS-side shifts are the expected and registered signature.
 #
 # RE-PINNED for S3-6j (surface momentum stress in the vertical solve)
-# -- THE MISSING-FRICTION FIX, and the lane's ONE INTENTIONAL
-# CROSS-LIMB CHANGE (the drag applies at ALL f; flagged prominently
-# per the S3-6j adjudication): the golden fixture now passes a uniform
+# -- THE MISSING-FRICTION FIX, and its ONE INTENTIONAL CROSS-LIMB
+# CHANGE (the drag applies at ALL f; flagged prominently per the
+# S3-6j adjudication): the golden fixture now passes a uniform
 # ust = 0.3 m/s field (constructed with np.full AFTER the rng draws --
 # the frozen seed-20260720 field sequence is untouched), so the u/v
 # Thomas solves carry the implicit surface-stress bottom row

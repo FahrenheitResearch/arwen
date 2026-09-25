@@ -3022,6 +3022,139 @@ def test_the_reserve_the_loop_targets_is_the_one_the_verifier_uses(tmp_path):
     assert estimate.alloc_estimate_bytes <= verifier.budget_bytes(free_bytes)
 
 
+def test_the_price_the_loop_targets_is_the_one_the_verifier_uses(
+        tmp_path, capsys):
+    """The sibling of the budget test above, for the other half.
+
+    Two BUDGETS in one command's output was the earlier mechanism. This
+    is two PRICES: the wizard sized the HRRR 12/3 km ladder on a declared
+    16 GiB card at a 13.73 GiB peak envelope, inside the 14.54 GiB budget
+    it printed, and the `gpuwm check` it then runs on its own output
+    priced the same file at 14.72 GiB and refused it, exit 4. One
+    command, one file, two prices, and a shipped door that refuses what
+    it just wrote. Measured against the 2.7.5 wheel from PyPI as well as
+    the branch, so it reached users.
+
+    The mechanism was a guard that outlived its defect.
+    ``estimate_experiment`` priced the legacy shortwave chunk workspace
+    with ``resident_threads=0`` whenever the caller handed no device
+    profile, which ``rrtmg_sw.sw_batch_column_chunk`` reads as "no
+    device" and answers with the fixed no-device width. That answer
+    equalled the reference profile's until c5f942ad128 (2026-09-15)
+    retired the 2,048-column ceiling and made the width the device's own
+    saturation width. `gpuwm check` fills an absent profile from
+    ``card_local_memory_profile``; the estimator's own legacy branch did
+    not, so the two halves of one command stopped agreeing.
+
+    THE SECOND MECHANISM, and the reason this test now reads the printed
+    numbers rather than the exit code alone. An exit code of 0 says only
+    that the two prices landed on the same side of the budget. They were
+    still two: the loop sized the ladder at the producer's own 3,600 s
+    boundary cadence and printed `peak envelope 13.74 GiB`, and the check
+    read the emitted file, found no `cadence` key in the `[fetch]` table
+    that producer's fetch does not take, fell back to the 21,600 s
+    constant and printed `forecast needs 13.69 GiB` -- for a file whose
+    own emitted namelist.wps says `interval_seconds = 3600`. The schedule
+    read now answers the producer's published cadence when the file
+    carries no other one, so both doors price the file at the cadence it
+    will be prepared with and the command prints one number.
+
+    Asserted as the PROPERTY, not the number, and to the BYTE: an
+    estimate for a declared card is the same estimate whether or not the
+    caller spells the reference profile out, and the estimate at the
+    cadence the emitting loop sized against is the same estimate as at
+    the cadence the verifying read returns, because those are what the
+    verifier does. Two non-vacuity assertions keep the equalities from
+    holding for want of a difference to find.
+    """
+    from gpuwm.core.preflight import (DEFAULT_FORCING_INTERVAL_SECONDS,
+                                      card_local_memory_profile,
+                                      config_forcing_schedule,
+                                      config_forcing_source, estimate_phases)
+    from gpuwm.core.rrtmg_sw import (SW_BATCH_COLUMN_CHUNK_NO_DEVICE,
+                                     sw_batch_column_chunk)
+    from gpuwm.source_adapters import source_forcing_interval_seconds
+
+    rc, out = _run_wizard(tmp_path, card="16gb", ladder="12-3",
+                          source="hrrr", cycle="2026-07-28T05")
+    printed = capsys.readouterr().out
+    assert rc == 0, (
+        "the wizard wrote a configuration and then exited nonzero on its "
+        "own memory check, which is the defect this test is about")
+    exp = experiment_from_text(out.read_text(encoding="utf-8"),
+                               source=str(out))
+
+    # ONE FILE, ONE PRICE, AS PRINTED. The sizing line is the loop's
+    # answer and the binding-phase line is the check's answer on the file
+    # the loop just wrote; a reader sees both in one command's output.
+    sized = re.search(r"peak envelope (\d+\.\d+) GiB", printed)
+    verified = re.search(r"BINDING PHASE: \w+ needs (\d+\.\d+) GiB", printed)
+    assert sized is not None and verified is not None, printed
+    assert sized.group(1) == verified.group(1), (
+        "one command printed two prices for the one file it emitted: "
+        f"{sized.group(1)} GiB from the sizing loop and "
+        f"{verified.group(1)} GiB from the check it ran on its own "
+        "output")
+
+    # ...AND TO THE BYTE, through the two routes that produced them. The
+    # emitted file carries no cadence key, so what the verifying read
+    # returns for it is the whole question.
+    producer = config_forcing_source(out, priced_only=False)
+    emitted_cadence, retained = config_forcing_schedule(out, exp)
+    sizing_cadence = source_forcing_interval_seconds(producer)
+
+    def envelope(cadence):
+        return estimate_phases(
+            exp, source=producer, forcing_intervals=retained,
+            ingest_forcing_interval_seconds=cadence,
+            forcing_interval_seconds=cadence, vram_gib=16.0,
+            profile=card_local_memory_profile(16.0)).peak_envelope_bytes
+
+    # The envelope comparison comes BEFORE the cadence comparison, so a
+    # read that answered a different cadence is caught here, as a
+    # different envelope in bytes, rather than three lines earlier by an
+    # assertion that would make this one unable to fail.
+    assert envelope(sizing_cadence) == envelope(emitted_cadence), (
+        "one configuration, two boundary cadences, two envelopes: "
+        f"{envelope(sizing_cadence)} against {envelope(emitted_cadence)} "
+        "bytes")
+    assert emitted_cadence == sizing_cadence, (
+        "the file the loop emitted reads back at a different boundary "
+        f"cadence than the loop sized it at: {emitted_cadence!r} against "
+        f"{sizing_cadence!r} seconds")
+    assert sizing_cadence != DEFAULT_FORCING_INTERVAL_SECONDS, (
+        "this producer's published cadence equals the fallback constant, "
+        "so the equality above holds whatever the read returns")
+    assert envelope(DEFAULT_FORCING_INTERVAL_SECONDS) != envelope(
+        sizing_cadence), (
+        "the envelope does not move with the boundary cadence on this "
+        "configuration, so the equality above proves nothing")
+    interval = 3600.0
+    bare = estimate_experiment(exp, forcing_interval_seconds=interval,
+                               vram_gib=16.0)
+    declared = estimate_experiment(exp, forcing_interval_seconds=interval,
+                                   vram_gib=16.0,
+                                   profile=card_local_memory_profile(16.0))
+    assert bare.workspace_bytes == declared.workspace_bytes, (
+        "the radiation workspace is priced differently depending on "
+        "whether the caller spelled out the profile the estimator would "
+        f"have filled in: {bare.workspace_bytes} against "
+        f"{declared.workspace_bytes} bytes")
+    assert bare.peak_envelope_bytes == declared.peak_envelope_bytes, (
+        "one configuration, one declared card, two peak envelopes: "
+        f"{bare.peak_envelope_bytes} against "
+        f"{declared.peak_envelope_bytes} bytes")
+    nlay = exp.domains[0].run.nz + 1
+    saturation = sw_batch_column_chunk(
+        nlay,
+        resident_threads=card_local_memory_profile(
+            16.0).resident_thread_capacity)
+    assert saturation != SW_BATCH_COLUMN_CHUNK_NO_DEVICE, (
+        "the no-device shortwave width and the reference profile's "
+        "saturation width are equal again, so the equalities above hold "
+        "whatever the estimator passes and prove nothing")
+
+
 def test_detailed_steps_keep_the_measured_check_and_declared_alternative(tmp_path, capsys):
     """Two documented commands, one file, one machine, opposite verdicts.
 

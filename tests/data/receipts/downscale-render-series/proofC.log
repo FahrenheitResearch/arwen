@@ -1,0 +1,68 @@
+########## 0. the lane tip over the sealed 2.7.5 dependencies ##########
+d0b6bc8ef fix(downscale): the door stops pricing requested products against the renderer build's fileless import plan, because that plan calls products undrawable that the very next run draws
+TIP=d0b6bc8ef5a0dae59f2130f0c891be5f63ef5de4
+render.py lane=9d4f0c3ec952c96e venv-fixed=9d4f0c3ec952c96e shipped=c2a8856c6a97d6ef venv-2.7.5=c2a8856c6a97d6ef
+rustwx.py lane=06b8fe27ea033a1b venv-fixed=06b8fe27ea033a1b shipped=24a137ff350f3a7d venv-2.7.5=24a137ff350f3a7d
+go_cli.py lane=0c5ed7246634face venv-fixed=0c5ed7246634face shipped=0b66ce0160a6237e venv-2.7.5=0b66ce0160a6237e
+offline_child_run.py lane=7a5397a02caf1993 venv-fixed=7a5397a02caf1993 shipped=4732b5dc7e8c46dc venv-2.7.5=4732b5dc7e8c46dc
+downscale.py lane=aa6e4d4211cc8dcd venv-fixed=aa6e4d4211cc8dcd shipped=0e302c73075ac1ed venv-2.7.5=0e302c73075ac1ed
+########## 1. focused tests ##########
+FOCUSED EXIT=1
+=========================== short test summary info ============================
+FAILED tests/test_render_rust.py::test_doctor_reports_the_rust_renderer - Ass...
+FAILED tests/test_render_history_selection.py::test_the_front_door_refuses_by_name_and_leaves_no_run_directory
+FAILED tests/test_render_history_selection.py::test_the_front_door_draws_the_surviving_product_and_says_what_died
+3 failed, 351 passed, 50 skipped, 6480 warnings in 14.49s
+########## 1b. the same files at the lane base, for the environmental reds ##########
+hint: Using 'master' as the name for the initial branch. This default branch name
+hint: will change to "main" in Git 3.0. To configure the initial branch name
+hint: to use in all of your new repositories, which will suppress this warning,
+hint: call:
+hint:
+hint: 	git config --global init.defaultBranch <name>
+hint:
+hint: Names commonly chosen instead of 'master' are 'main', 'trunk' and
+hint: 'development'. The just-created branch can be renamed via this command:
+hint:
+hint: 	git branch -m <name>
+hint:
+hint: Disable this message with "git config set advice.defaultBranchName false"
+warning: remote HEAD refers to nonexistent ref, unable to checkout
+BASE EXIT=1
+FAILED tests/test_render_rust.py::test_doctor_reports_the_rust_renderer - Ass...
+FAILED tests/test_render_history_selection.py::test_the_front_door_refuses_by_name_and_leaves_no_run_directory
+FAILED tests/test_render_history_selection.py::test_the_front_door_draws_the_surviving_product_and_says_what_died
+3 failed, 50 passed, 29 skipped, 31 warnings in 1.68s
+########## 2. the contract set ##########
+contract files: 23
+CONTRACT EXIT=1
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+FAILED tests/test_release_version_declaration.py::test_the_declared_version_is_never_behind_the_changelog
+1 failed, 770 passed, 21 skipped, 1 warning, 97 subtests passed in 105.98s (0:01:45)
+########## 3. the flip ##########
+SNOW DOOR=2.7.4 EXIT=1 PNG=143 RENDERFAIL=26
+SNOW DOOR=2.7.5 EXIT=1 PNG=143 RENDERFAIL=26
+SNOW DOOR=fixed EXIT=0 PNG=143 RENDERFAIL=0
+--- 2.7.5 failed ---
+wrfout_d02_1974-04-04_00_10_00: var:SNOWH stored 2-D variable "SNOWH" does not exist
+wrfout_d02_1974-04-04_00_10_00: var:SNOW stored 2-D variable "SNOW" does not exist
+--- fixed skipped and named ---
+skipped 10 product render(s) (10m_wind_gusts, categorical_freezing_rain, categorical_ice_pellets, categorical_snow, precipitation_type, qpf_1h, var:SNOW, var:SNOWH, wetbulb_2m, wind_chill_2m)
+fixed summary: png=143 failures=0 skipped_families=10
+    var:SNOW -> : no stored 2-D variable 'SNOW' in this store; gpuwm render --list-products names the ones there are
+    var:SNOWH ->  no stored 2-D variable 'SNOWH' in this store; gpuwm render --list-products names the ones there are
+########## 4. the admission door, with no fileless noise ##########
+REFUSED   composite_reflectivity,mesh:cell_area -> mesh:cell_area: mesh products are drawn from a mesh file's cell boundaries, which a history frame does not carry and this render d
+REFUSED   composite_reflectivity,xsec:wa -> xsec: products need a line: --section lat,lon,lat,lon or --section FILE.json.  This chain composes no section line, so the rendere
+ADMITTED  2m_temperature,composite_reflectivity,var:SNOW
+########## 5. the whole downscale door on the card ##########
+gpu busy, waiting
+DOWNSCALE DOOR=2.7.5 EXIT=2 frames=13 png=143
+gpuwm downscale: The child integrated and its frames are on disk, but the render stage exited 1, so this run's pictures are incomplete: 11 drawn early from the first frame, the rest not drawn. Next: draw the saved frames by hand, which names the product that could not be drawn:
+   result=PASS products.status=FAILED
+   reason = the render stage exited 1; the forecast itself passed and its frames are on disk
+   drawn_early = 11
+DOWNSCALE DOOR=fixed EXIT=0 frames=13 png=143
+   result=PASS products.status=DRAWN
+PROOFC_DONE

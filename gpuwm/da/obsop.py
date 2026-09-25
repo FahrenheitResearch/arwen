@@ -879,6 +879,67 @@ def _nssl_reflectivity(state, temperature, pressure):
     return refl
 
 
+def _thompson_graupel_number(state, temperature, pressure):
+    """Classic Thompson's transient graupel number, diagnosed here.
+
+    ``mp_physics=8`` carries no graupel number in the Registry.  WRF's
+    ``mp_gt_driver`` DIAGNOSES one from qg at the beginning of every
+    call, evolves that private moment through the source and
+    sedimentation operators, applies one final lower bound and MVD
+    reconstruction, and hands the result to ``calc_refl10cm``
+    (module_mp_thompson.F 1265-1281, 1915-1939 and 4059-4077).  gpuwm
+    transcribes the two ends of that as
+    ``launch_classic_graupel_number_init`` and
+    ``launch_classic_graupel_number_finalize``, and the microphysics
+    adapter passes the evolved moment to the reflectivity operator on
+    every output-due step.  The operator requires it rather than
+    inventing one, which is right for an in-call caller: a shadow that
+    skipped the call's source and fallout tendencies would not be the
+    moment WRF's own Z read.
+
+    AN OBSERVATION OPERATOR IS NOT AN IN-CALL CALLER.  H_Z(x) is
+    evaluated BETWEEN steps, on a state no microphysics call is in the
+    middle of, and for that state the wrapper's diagnosis IS the moment:
+    no tendency has acted since, so init followed by finalize is exactly
+    the sequence WRF would carry into ``calc_refl10cm`` on a call whose
+    graupel tendency was zero.  Both ends read only qg, T, p and qv off
+    the state, so the derivation asks for nothing the analysis does not
+    already hold.
+
+    Written into the microphysics adapter's own shadow slot rather than
+    a second buffer: it is the same quantity, the slot is scratch the
+    scheme rewrites unconditionally at the entry of its next call, and a
+    DA operator runs between calls, so there is no value here for this
+    to destroy.
+
+    Returns ``(temperature, pressure, shadow)`` because the temperature
+    the shadow was diagnosed at is the temperature the reflectivity has
+    to be diagnosed at; handing the pair on is what keeps the two from
+    being formed twice and differing.
+    """
+    import cupy as cp                                  # noqa: PLC0415
+
+    from gpuwm.core.state import DTYPE                 # noqa: PLC0415
+    from gpuwm.core.thompson import (                  # noqa: PLC0415
+        launch_classic_graupel_number_finalize,
+        launch_classic_graupel_number_init,
+    )
+
+    shape = tuple(state.p.shape)
+    if temperature is None:
+        thb = state.thb if state.thb.ndim == 3 else state.thb[:, None, None]
+        pressure = state.p
+        temperature = state.scratch(shape, "refl_t")
+        temperature[...] = (thb + state.thp) * cp.power(
+            state.p / DTYPE(c.P0), DTYPE(c.RCP))
+    shadow = state.scratch(shape, "mp_thompson_graupel_number_shadow")
+    launch_classic_graupel_number_init(
+        state.qg, temperature, pressure, state.qv, shadow)
+    launch_classic_graupel_number_finalize(
+        state.qg, temperature, pressure, state.qv, shadow)
+    return temperature, pressure, shadow
+
+
 _P3_NO_PURE_OPERATOR = (
     "mp_physics=50 (P3) has no H_Z(x) in this module, and this is a NAMED "
     "refusal, not an absence. P3 is an ACTIVE microphysics scheme and it "
@@ -993,6 +1054,15 @@ def simulated_reflectivity(state, cfg, *, temperature=None, pressure=None,
     them diagnoses temperature from the current state, which is the
     right choice for a DA operator evaluated between steps.
 
+    ``mp_physics`` 8 and 28 carry no graupel number in the Registry and
+    their Z reads one, so this operator DERIVES it from the state with
+    the scheme's own wrapper diagnosis when the caller supplies none
+    (:func:`_thompson_graupel_number`).  The product-side authority
+    requires the moment instead, because its caller is inside the
+    microphysics call and has the evolved one; an operator evaluated
+    between steps has no evolved one to have, and refusing there left
+    the whole Thompson family with no H_Z(x) at all.
+
     ``mp_physics=50`` is refused BY NAME through
     :data:`NATIVE_Z_NOT_SEPARABLE_FROM_THE_STEP`: P3 is active and does
     produce reflectivity, but only from inside ``p3_main``'s final
@@ -1047,6 +1117,11 @@ def simulated_reflectivity(state, cfg, *, temperature=None, pressure=None,
 
         return my2_reflectivity(
             state, temperature=temperature, pressure=pressure)
+
+    if (int(cfg.mp_physics) in (8, 28)
+            and thompson_graupel_number is None):
+        temperature, pressure, thompson_graupel_number = (
+            _thompson_graupel_number(state, temperature, pressure))
 
     from gpuwm.core.refl import compute_refl_10cm
 

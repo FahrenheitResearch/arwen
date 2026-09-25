@@ -128,11 +128,28 @@ def _series_request() -> str:
     return text[start:start + 400]
 
 
-def _unreleased_changelog() -> str:
-    """The body of the topmost `## ` section of CHANGELOG.md."""
+def _mechanism_changelog() -> str:
+    """The CHANGELOG section that carries the Plot history guide entry.
 
-    sections = CHANGELOG.read_text(encoding="utf-8").split("\n## ")
-    return sections[1]
+    Located by the entry rather than by position.  The mechanism was
+    written into the section of the release that ships the guide, which
+    was the topmost section while that release was open and is a dated
+    one once it cuts.  Reading the topmost section instead pinned this
+    record to whichever release is unreleased NOW, so the first lane to
+    open the next version's heading turned this case red without
+    touching the guide, the help or the entry.  What the case is about
+    is that the tree still says somewhere why a timeline needs the
+    native engine, and a released section says it just as well.
+    """
+
+    sections = CHANGELOG.read_text(encoding="utf-8").split("\n## ")[1:]
+    holding = [section for section in sections
+               if "Plot history guide" in section]
+    assert holding, (
+        "no CHANGELOG section carries the Plot history guide entry that "
+        "holds the mechanism the help pane cannot: the tree no longer says "
+        "anywhere why a timeline needs the native engine")
+    return holding[0]
 
 
 def test_the_guide_source_is_read_in_one_piece() -> None:
@@ -217,10 +234,7 @@ def test_the_changelog_keeps_the_mechanism_the_pane_cannot_hold() -> None:
     requirement becomes a rule with no reason behind it.
     """
 
-    entry = _unreleased_changelog()
-    assert "Plot history guide" in entry, (
-        "the unreleased section no longer carries the Plot history guide "
-        "entry that holds this mechanism:\n" + entry)
+    entry = _mechanism_changelog()
     for phrase in (
         # Why one timeline has to reach one renderer.
         "one renderer store",

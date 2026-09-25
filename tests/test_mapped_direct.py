@@ -60,6 +60,10 @@ def _experiment(domain_count: int, *, nz: int = 49, run_seconds: int = 3600,
             ny=2,
             hybrid_opt=2,
             etac=0.2,
+            # The analytic base state's t00: the vertical-coordinate
+            # survey turns a domain's terrain into ITS base surface
+            # pressure, and that depends on the domain's own base_temp.
+            base_temp=290.0,
             spec_bdy_width=5,
             spec_zone=1,
             relax_zone=4,
@@ -90,6 +94,11 @@ def _experiment(domain_count: int, *, nz: int = 49, run_seconds: int = 3600,
             eta_levels=(
                 tuple(np.linspace(1.0, 0.0, nz + 1)) if eta else ()),
             p_top=10_000.0,
+            # The two hybrid selectors a real VerticalConfig always
+            # carries.  The route reads them before it builds any
+            # coordinate, to derive the one this run's terrain can order.
+            hybrid_opt=2,
+            etac=0.2,
         ),
     )
     exp.dt_exact = lambda grid_id: Fraction(60, 3 ** (grid_id - 1))
@@ -258,6 +267,12 @@ class _Selection:
 
     def __init__(self, geog_root: Path):
         self._geog_root = geog_root
+
+    @property
+    def root(self):
+        # A real GeogSelection carries the tree it resolved against, and
+        # every builder passes it back in beside the selection.
+        return self._geog_root
 
     def path(self, field):
         return self._geog_root / f"{field}.bin"
@@ -448,6 +463,34 @@ def _install_prepare_fakes(
         return static
 
     monkeypatch.setattr(mapped_direct, "build_static", build_static)
+    # The vertical-coordinate survey reads the terrain of every domain
+    # this run can touch before the first coordinate is built, through
+    # the geography ladder the route itself uses.  This fixture's
+    # geography is synthetic, so the survey is pointed at the same
+    # synthetic terrain the rest of the route gets.
+    import gpuwm.hrrr_native_static as _native_static
+    import gpuwm.static.build as _static_build
+
+    monkeypatch.setattr(
+        _native_static, "verified_static_catalog",
+        lambda *_args, **_kwargs: (SimpleNamespace(), {}))
+    monkeypatch.setattr(
+        _static_build, "geog_selection_from_catalog",
+        lambda *_args, **_kwargs: _Selection(geog_root))
+    monkeypatch.setattr(
+        _static_build, "build_terrain",
+        lambda *_args, **_kwargs: static["HGT_M"])
+    # With a [static.highres] overlay the survey reads the complete field
+    # set instead, because the overlay replaces HGT_M out of it; both the
+    # build and the overlay are answered with this fixture's statics.
+    import gpuwm.static.highres_production as _highres_production
+
+    monkeypatch.setattr(
+        _static_build, "build_static_for_domain",
+        lambda *_args, **_kwargs: static)
+    monkeypatch.setattr(
+        _highres_production, "apply_highres_statics",
+        lambda fields, *_args, **_kwargs: (fields, {}))
     preprocess = SimpleNamespace(receipt=lambda: {"backend": backend})
     monkeypatch.setattr(
         mapped_direct, "resolve_preprocess_backend",

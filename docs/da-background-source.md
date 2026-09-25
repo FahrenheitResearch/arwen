@@ -36,6 +36,17 @@ analysis to build every storm out of wind increments and whatever the
 hot-start nudge inserts. An HRRR background arrives with the storms
 already in it.
 
+On a background with no condensate at hour zero the hot start is not a
+convenience, it is what gives the filter something to correct. Measured
+on one case: turning it off cost 42 minutes of storm life, and with it
+off the full analysis (reflectivity and hydrometeors beside the winds)
+collapsed the storm faster than a wind-only analysis did. It is on by
+default and `--no-hotstart` is the way off; treat turning it off on a
+storm-free background as the thing that decides the run, not as a
+detail. The measurement and what it implies for the analysis variable
+set are in [`da-nowcast-demo.md`](da-nowcast-demo.md) under **The three
+findings that pick a cycle's configuration**.
+
 ## How to select it
 
 Preparation, one added flag:

@@ -24,13 +24,14 @@ if str(REPO) not in sys.path:
 
 from gpuwm import __version__  # noqa: E402
 from gpuwm.native_wrf_distribution import (  # noqa: E402
-    BRIDGE_NAMES,
     CPU_BACKEND_LIBRARY,
     CUDA_KERNEL_SOURCES,
     HRRR_HELPERS,
     PYTHON_DISTRIBUTION,
     RUNTIME_SCHEMA,
+    add_bridge_options,
     bridge_identity,
+    bridge_inputs,
     cpu_backend_identity,
     distribution_contract,
 )
@@ -339,17 +340,8 @@ def build_distribution(args: argparse.Namespace) -> dict[str, object]:
         raise FileExistsError(staging)
     staging.mkdir(parents=True)
     _copy_file(wheel, staging / "wheel" / wheel.name)
-    bridge_inputs = {
-        "grib1_bridge": args.grib1_bridge.resolve(),
-        "grib2_inventory": args.grib2_inventory.resolve(),
-        "grib2_dump": args.grib2_dump.resolve(),
-        "gfs_grib2_bridge": args.gfs_bridge.resolve(),
-        "hrrr_grib2_bridge": args.hrrr_bridge.resolve(),
-        "rw_fetch": args.rw_fetch.resolve(),
-    }
     bridge_build_identity = {}
-    for bridge_name in BRIDGE_NAMES:
-        source = bridge_inputs[bridge_name]
+    for bridge_name, source in bridge_inputs(args).items():
         identity = bridge_identity(source, bridge_name)
         identity["path"] = source.name
         bridge_build_identity[bridge_name] = identity
@@ -443,12 +435,7 @@ def build_distribution(args: argparse.Namespace) -> dict[str, object]:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--wheel", type=Path, required=True)
-    parser.add_argument("--grib1-bridge", type=Path, required=True)
-    parser.add_argument("--grib2-inventory", type=Path, required=True)
-    parser.add_argument("--grib2-dump", type=Path, required=True)
-    parser.add_argument("--gfs-bridge", type=Path, required=True)
-    parser.add_argument("--hrrr-bridge", type=Path, required=True)
-    parser.add_argument("--rw-fetch", type=Path, required=True)
+    add_bridge_options(parser)
     parser.add_argument("--cpu-backend", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--archive", type=Path, required=True)

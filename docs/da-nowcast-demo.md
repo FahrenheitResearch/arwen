@@ -118,12 +118,28 @@ Three separate reasons, none of them a defect:
    and it is also why an ensemble that looks tight is not automatically
    an ensemble that is confident.
 
+   **That result is not the wider analysis on its own.** It was
+   measured with the hot start on, which is the default. On one
+   measured case with the hot start turned off, the wider analysis
+   collapsed the storm FASTER than the velocity-only analysis did --
+   so the wider set is not strictly better than winds alone, and a page
+   that says it is would be describing a configuration nobody ran. What
+   the two measurements together say is that the wider set needs
+   condensate already in the background to correct, and the hot start
+   is what puts it there. See **The three findings that pick a cycle's
+   configuration** below.
+
 ## What one run does
 
 1. **survey** -- S3 listing for the site; archive freshness measured
    and enforced (default ceiling 15 min; `--allow-stale` to override);
    two volumes decoded through the rw_nexrad seam; echo census and
-   centroid-displacement motion.
+   centroid-displacement motion.  The listing window ends at the
+   moment the run is ABOUT: the `--window-end` that was asked for, or
+   now when it was `latest`.  A replay of an archived hour is surveyed,
+   sited and timed on that hour's own volumes, and the survey receipt
+   carries `clock` (`window` or `wall`) and `listing_window` so a case
+   read later says which it was.
 2. **domain** -- a range-authority-sized box centered on the echo,
    biased downstream by the measured motion and clamped so the radar
    keeps observing the grid, emitted by the `gpuwm domain` wizard
@@ -135,7 +151,17 @@ Three separate reasons, none of them a defect:
 5. **obs** -- one `gpuwm-obs.radar-grid.v1` file per cycle.
 6. **cycle** -- N-member cycled LETKF (`tools/da_cycle_prepared.py`,
    CUDA solves by default) with free forecast legs past the last
-   observation.
+   observation.  Every leg of every trajectory, free legs included,
+   leaves a frame in `CASE_DIR/cycle/composites/`: a column-max
+   composite `legNN_<trajectory>.npz` and the same field as a real
+   wrfout beside it (`wrfout_legNN_<trajectory>.nc`) for `gpuwm render
+   --engine rust`.  The receipt names that directory and the free legs
+   under `outputs.forecast_frames`.  A nest over the free legs is asked
+   for with `--nest-half-width-km` (or `--nest-nx`/`--nest-ny`) and
+   writes the same pair beside them under a `_d02` name, so the child
+   draws through the same renderer as the parent.  Parent and child
+   frames are one-level surface snapshots, and composite reflectivity
+   is the field drawable from either.
 7. **render** -- the map-styled gallery (`tools/da_nowcast_render.py`):
    ArWen product-map frame from the vendored basemap assets, one
    reflectivity scale, accuracy stamps throughout.
@@ -269,29 +295,134 @@ at the card that is actually in the box (`--vram-gib 16`), which the
 wizard would otherwise guess, and it names a configuration that has been
 run rather than estimated.  An explicit flag always beats the profile.
 
-Ada-specific, recorded while there: on sm_89 NVRTC `--ftz=false` **is**
-effective and FP32 subnormals survive, unlike sm_120
+Recorded while there: on sm_89 NVRTC `--ftz=false` **is** effective and
+FP32 subnormals survive, as the tree's receipt records for the
+direct-NVRTC routes on sm_120 as well
 (`evidence/16gb-frontier/receipts/ftz_probe_sm89.json`, with its
-negative control).  The FP64-emulation countermeasure the 5090 carries
-is unnecessary on a 4080.
+negative control; the same file shows CuPy's own compile route flushing
+on the 4080 too).  The shortwave chain's subnormal countermeasure is
+inline PTX without `.ftz`: the receipt's R5 arm keeps subnormals on
+sm_120 riding the loader's tuple (`ieee-agreement` on the four
+mechanisms PTX can express), the committed bit table reproduced on an
+sm_89 card through the same arm (`evidence/ftz-side-readings-20260919/`),
+and what fixes that instruction's behaviour is the PTX ISA, not the
+option tuple.
 
 ### Off by default, and why
 
-Both of these are opt-in, and neither is reachable from this front door.
+Both of these are opt-in.  One of them is reachable from this front
+door now; the other is not in this tree at all.
 
-- **The fine free-forecast nest** (`--nest-*` on
-  `tools/da_cycle_prepared.py`, default off).  The parent is proven
-  bitwise unchanged by the nest's presence, but its cost is only
-  *computed* -- `evidence/da-nested-forecast/cost-model.json` says
-  `"basis": "computed (gpuwm.core.preflight), not measured"`.  The
-  measured A/B was still queued behind a busy card when these defaults
-  were set.  The computed prices, for scale: a 60 km half-width 1 km
-  nest adds 176 MiB and about 47 s to a control-only free forecast, and
-  about 513 s if every member carries one.
+- **The fine free-forecast nest** (`--nest-*`, default off, on
+  `tools/da_cycle_prepared.py` AND on this front door, which forwards
+  the driver's own flags).  The parent is proven bitwise unchanged by
+  the nest's presence.  Its cost model is still *computed* --
+  `evidence/da-nested-forecast/cost-model.json` says `"basis":
+  "computed (gpuwm.core.preflight), not measured"` -- and the computed
+  prices, for scale, are 176 MiB and about 47 s added to a control-only
+  free forecast at a 60 km half-width, about 513 s if every member
+  carries one.  A MEASURED pair is owed: the same replay was run with
+  and without a 45 km half-width nest on the control and one member,
+  two free legs at 3 km, but the two arms met different card loads --
+  one began its cycle stage on an idle card, the other on a card at 70
+  percent -- so no measured cost is quoted from it.  It stays opt-in
+  until that pair and the three-arm comparison exist, which is what the
+  table below is waiting on.
 - **Concurrent member advance** (`--member-workers`).  Not in this tree
   at all: the lane carrying it was held out of the integration with its
   byte-identity proof still open, and its extracted worker had three
   silent failures on the resume path.  There is nothing to enable.
+
+### The three findings that pick a cycle's configuration
+
+This page is where these belong: it is the one the quickstart names as the
+reference for the pipeline, it is the page that holds *The defaults, and
+the measurements behind them*, *Off by default, and why* and *Pending
+measurement*, and it is therefore the page a reader is on when they decide
+what a cycle will run. [`da-nested-forecast.md`](da-nested-forecast.md)
+owns the nest and [`da-background-source.md`](da-background-source.md)
+owns the background; neither owns the cycle.
+
+All three were measured on this engine's own radar cycle, on real
+observations, one storm each.  They are measurements, not laws: one case
+each, and stated as one case each.
+
+**1. The hot start is what keeps a storm alive through the first cycles,
+and the wider analysis is not strictly better than winds alone.**  The hot
+start is the reflectivity insertion that runs before the first analysis.
+It is on by default; `--no-hotstart` turns it off. On one measured case it
+was worth **42 minutes of storm life** on its own.  On the same case with
+it off, the full analysis -- reflectivity and hydrometeors beside the
+winds -- **collapsed the storm faster than a wind-only analysis did**.  So
+the analysis variable set is not a ladder with winds at the bottom: the
+wider set corrects condensate the background already carries, and on a
+background that carries none the hot start is what puts it there for the
+filter to work on.  Turning the hot start off is a decision about whether
+the run has a storm at the end, not a tuning detail.
+
+**2. A ladder is chosen together with the time step it will run at.** The
+vertical Courant number of an updraft through a layer is `w*dt/dz`, so
+halving the layer doubles it, and past 1 WRF's vertical-velocity limiter
+pushes the w tendency against the motion
+(`gpuwm.core.dycore.apply_w_damping`).  It is a limiter, not physics: the
+run stays up and the updraft pays.  It acts only where the run carries
+`w_damping = 1`; this tree's own default is 0 (`gpuwm/config.py:113`) and
+the value comes from the imported namelist, so a run is in one regime or
+the other and the preflight line below is how you tell which.  Past 1 with
+the limiter OFF is not the safe case, it is a different one: the vertical
+advection is then outside its stability limit with nothing damping it.  On
+one measured case, same storm, same minute, same analysis: a 49-level
+ladder ran the band at **643 m layers** and a vertical Courant number of
+**0.79** at the 15 s parent step, with no cell over 1; the same band
+stacked to layers specified at 200 m, **198 m as built**, under the same
+step ran **1.41** with **606 cells over 1**, its strongest updraft halved
+from **33.9 m/s to 18.5 m/s**, and the area it held above 45 dBZ lasted
+**25 minutes against 53**.  The ladder was right and nothing priced the
+step it needed.  Two surfaces say it before a card is spent.  Both are in
+2.7.6; a 2.7.5 install has neither.
+
+- `tools/build_stretched_eta_ladder.py` takes **`--dt SECONDS`** and
+  prices the ladder over a height band.  With it the tool prints `priced
+  at dt`, `thinnest layer in band`, `vertical Courant` (with `-- HOLDS` or
+  `-- OVER 1: the limiter ... fires here`) and `step for Courant 0.80`,
+  and the emitted score carries a `time_step` block: `dt_s`, `w_max_ms`,
+  `band_m`, `thinnest_layer_in_band_m`, `mean_layer_in_band_m`,
+  `vertical_courant_in_band`, `target_courant`, `holds`, `dt_for_target_s`
+  and `limiter`, which names the routine itself:
+  `gpuwm/core/dycore.py::apply_w_damping`.  **`--w-max M/S`** is the
+  updraft the ladder has to carry (default 35, the measured peak of a
+  strong convective storm), **`--price-band BOTTOM,TOP`** is the height
+  band the step is priced over, in metres, the part of the column an
+  updraft occupies, and **`--target-courant`** is the number the named
+  step aims at (default 0.8).  There is no default band: without `--dt`
+  the tool has no opinion about the step, because it would have to
+  invent the updraft to have one, and `--dt` with no `--price-band` is
+  refused naming the flag and what it means.
+- `tools/da_cycle_prepared.py` prints one preflight line under `preflight
+  OK`, and only when `w_damping = 1`: **`vertical limiter: thinnest layer
+  <N> m at <H> m, so w_damping starts limiting above <W> m/s at
+  dt=<DT>`**.  That onset is `dz/dt` and depends on nothing but the ladder
+  and the step: no storm and no assumption enters it.  The layer it reads
+  is the thinnest one **between 2 km and 12 km**, the part of the column a
+  convective updraft occupies: below the floor the layers are thin because
+  the boundary layer needs them and the velocities there are small, and
+  above the ceiling they can be thin again in the anvil and the
+  stratosphere for reasons that have nothing to do with updrafts.  The
+  reference model's own 60-level ladder makes that concrete: its thinnest
+  layer above 2 km sits at 18.7 km.  The line is a floor on where limiting
+  can begin, not a promise that it will, and it is absent when the limiter
+  is off or the column cannot be read, because a diagnostic is never worth
+  failing a run over.  An absent line means the limiter is not armed; it
+  does not mean the ladder and the step suit each other.  Price them with
+  `--dt` either way.
+
+**3. Level count is not a free lever.**  On one storm, four ladders were
+run and the **60-level ladder was the worst of the four**.  More levels is
+not a better forecast, and the count on its own says nothing about a
+ladder: two ladders of the same count put their layers in different
+places, and a ladder that is right about where its layers go can still be
+wrong about the step that has to run them (finding 2).  Judge a ladder on
+the storm, with its step, against what the storm did.  Never by count.
 
 ### Pending measurement
 

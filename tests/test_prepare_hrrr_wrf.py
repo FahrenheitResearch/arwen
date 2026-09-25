@@ -42,6 +42,7 @@ from gpuwm.physics_compat import (
     NSSL2_LEGACY_RRTMG_PROFILE_ID,
     NSSL2_PROFILE_ID,
     THOMPSON_LEGACY_RRTMG_PROFILE_ID,
+    THOMPSON_RTE_RRTMGP_PROFILE_ID,
     THOMPSON_PROFILE_ID,
     THOMPSON_SHINHONG_LEGACY_RRTMG_PROFILE_ID,
     WSM6_PROFILE_ID,
@@ -98,6 +99,7 @@ _PROFILE_MICROPHYSICS = {
     # absent one cold-starts to is a microphysics property, which is why
     # the shipped cold-start contract aliases them the same way.
     THOMPSON_LEGACY_RRTMG_PROFILE_ID: 8,
+    THOMPSON_RTE_RRTMGP_PROFILE_ID: 8,
     THOMPSON_SHINHONG_LEGACY_RRTMG_PROFILE_ID: 8,
     MORRISON_PROFILE_ID: 10,
     NSSL2_PROFILE_ID: 18,
@@ -1312,6 +1314,8 @@ def _legacy_public_wrapper_extends_one_hour_without_rebuilding_prefix(
             Path(command[command.index("--output") + 1]).mkdir()
 
     monkeypatch.setattr(prepare, "_run", fake_run)
+    monkeypatch.setattr(prepare, "_run_keeping_refusal",
+                        _keeping_refusal(fake_run))
     monkeypatch.setattr(
         prepare, "_validated_worker_receipts",
         lambda *args, **kwargs: ({"backend": "fixture"}, {}, {}))
@@ -1588,7 +1592,8 @@ def test_public_wrapper_preserves_absolute_source_leads_and_rebases_model_time(
 
     commands: list[list[str]] = []
 
-    def fake_run(command: list[str], _env: dict[str, str]) -> None:
+    def fake_run(command: list[str], _env: dict[str, str],
+                 cwd=None) -> None:
         commands.append(command)
         if any(value.endswith("hrrr_single_domain_benchmark.py")
                for value in command):
@@ -1629,6 +1634,8 @@ def test_public_wrapper_preserves_absolute_source_leads_and_rebases_model_time(
             }), encoding="utf-8")
 
     monkeypatch.setattr(prepare, "_run", fake_run)
+    monkeypatch.setattr(prepare, "_run_keeping_refusal",
+                        _keeping_refusal(fake_run))
     output = tmp_path / "output"
     assert prepare.main([
         "--experiment-config", str(authority),
@@ -1727,12 +1734,38 @@ def test_public_wrapper_rejects_mismatched_or_incomplete_physics_receipt():
 # wheel install, and the second threw away a completed preparation.
 # ---------------------------------------------------------------------------
 
-def _wrapper_case(tmp_path: Path, monkeypatch, *, export_returncode: int = 0):
+def _keeping_refusal(fake_run, error_text: str = ""):
+    """A faked launcher for the seam that KEEPS what the child said.
+
+    The WRF-arm export is launched through it rather than through the
+    plain one, because its refusal has to be repeatable by the step that
+    launched it, so a case that fakes ``_run`` fakes this beside it and
+    hands back the same pair the real one does: the exit code and the
+    child's own error text.
+    """
+
+    import subprocess
+
+    def run(command, env, cwd=None):
+        try:
+            fake_run(command, env, cwd)
+        except subprocess.CalledProcessError as error:
+            return error.returncode, error_text
+        return 0, ""
+
+    return run
+
+
+def _wrapper_case(tmp_path: Path, monkeypatch, *, export_returncode: int = 0,
+                  export_error_text: str = ""):
     """One runnable wrapper invocation, with every subprocess faked.
 
     Returns ``(argv, commands, output)``: the argument vector, the list
-    every faked ``_run`` appends to, and the output root -- so a test can
+    every faked launcher appends to, and the output root -- so a test can
     assert what was launched and what was written.
+
+    ``export_error_text`` is what the faked converter wrote to its error
+    stream, which the step that launched it has to be able to repeat.
     """
 
     import subprocess as subprocess_module
@@ -1801,6 +1834,8 @@ def _wrapper_case(tmp_path: Path, monkeypatch, *, export_returncode: int = 0):
             }), encoding="utf-8")
 
     monkeypatch.setattr(prepare, "_run", fake_run)
+    monkeypatch.setattr(prepare, "_run_keeping_refusal",
+                        _keeping_refusal(fake_run, export_error_text))
     output = tmp_path / "output"
     argv = [
         "--experiment-config", str(authority),
@@ -1844,6 +1879,48 @@ def test_a_refused_stock_wrf_export_fails_the_command_keeping_the_work(
     assert json.loads(report.read_text(encoding="utf-8"))["status"] == "PASS"
     # No wrapper PASS receipt is written over the failure.
     assert not (output / "public-wrapper-result.json").exists()
+
+
+def test_a_refused_export_repeats_what_the_converter_said(
+        tmp_path: Path, monkeypatch) -> None:
+    """The refusal carries the sentence, not a pointer to a stream.
+
+    Measured on the shipped nowcast front door: the step said "fix the
+    converter's refusal (quoted on stderr)", and the caller, which keeps
+    the last lines of a failed stage, kept exactly this message and the
+    frames under it while the converter's own sentence sat further up,
+    outside that window.  A refusal that names its breakage has to carry
+    the words with it.
+    """
+
+    said = ("stock-WRF wrfinput export for mp_physics=1 is not available "
+            "on this route: no evidenced package contract is packaged for "
+            "that selector.")
+    frames = f'''Traceback (most recent call last):
+  File 'x', line 1, in <module>
+ValueError: {said}
+'''
+    argv, _commands, _output = _wrapper_case(
+        tmp_path, monkeypatch, export_returncode=1,
+        export_error_text=frames)
+    with pytest.raises(RuntimeError) as refusal:
+        prepare.main(argv)
+    message = str(refusal.value)
+    assert said in message
+    assert "--skip-stock-wrf-export" in message
+    # The frames are the child's, and they are not the reader's problem.
+    assert "Traceback" not in message
+
+
+def test_a_refused_export_says_so_when_the_converter_said_nothing(
+        tmp_path: Path, monkeypatch) -> None:
+    """A silent child is itself the thing to report, and is reported."""
+
+    argv, _commands, _output = _wrapper_case(
+        tmp_path, monkeypatch, export_returncode=1)
+    with pytest.raises(RuntimeError) as refusal:
+        prepare.main(argv)
+    assert "wrote nothing to its error stream" in str(refusal.value)
 
 
 def test_a_required_stock_wrf_export_still_fails_the_command(

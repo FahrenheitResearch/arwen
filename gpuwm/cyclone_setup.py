@@ -1674,26 +1674,40 @@ def main(args) -> int:
                         raise ValueError("Save the cyclone configuration as a new .toml file")
                     text = result["config_text"]
                     experiment = dw.experiment_from_text(text, source=str(out))
-                    wps = out.with_suffix(".namelist.wps")
                     receipt = out.with_suffix(".cyclone.json")
                     # A source whose preparation recipe names a companion
                     # table writes it beside the configuration, so the
                     # never-overwrite rule has to cover that file too.
                     inputs = companion_input_files(forcing_source, out)
-                    if any(path.exists()
-                           for path in (out, wps, receipt, *(p for p, _ in inputs))):
-                        raise ValueError("Choose a new output path; cyclone setup never overwrites an existing configuration")
                     # The namelist carries the SELECTED source's interval,
                     # passed as the number it is rather than patched into
                     # the rendered string afterwards.
                     wps_text = render_wps_namelist(
                         experiment,
                         interval_seconds=result["forcing_interval_seconds"])
+                    # This door authors on any planable source, the native
+                    # regional one included, and that route reads namelists
+                    # beside the configuration: written short, the
+                    # configuration this door just authored is refused at
+                    # the prepare precheck before anything starts. Asked
+                    # through the one helper every publishing door asks,
+                    # with the published configuration's own [fetch].source,
+                    # so the files it gets and the files its run reads are
+                    # decided by one function.
+                    from gpuwm.hrrr_route_inputs import candidate_companions
+                    companions = candidate_companions(
+                        out, experiment, wps_text=wps_text,
+                        source=(tomllib.loads(text).get("fetch") or {}).get("source"))
+                    if any(path.exists()
+                           for path in (out, receipt, *(p for p, _ in inputs),
+                                        *(p for p, _ in companions))):
+                        raise ValueError("Choose a new output path; cyclone setup never overwrites an existing configuration")
                     proof = {key: value for key, value in result.items() if key != "config_text"}
                     proof.update(created=True, output=str(out), output_sha256=hashlib.sha256(text.encode()).hexdigest(),
-                                 wps_sha256=hashlib.sha256(wps_text.encode()).hexdigest())
+                                 wps_sha256=hashlib.sha256(wps_text.encode()).hexdigest(),
+                                 route_companions=[str(path) for path, _ in companions])
                     out.parent.mkdir(parents=True, exist_ok=True)
-                    _publish_new_files((*inputs, (wps, wps_text),
+                    _publish_new_files((*inputs, *companions,
                         (receipt, json.dumps(proof, indent=2, allow_nan=False) + "\n"), (out, text)))
                     result["configuration"] = inspect_configuration(out)
                     result.update(created=True, config_path=str(out), receipt_path=str(receipt))

@@ -7,7 +7,7 @@ without a network round trip, and so the set a case used is a reviewable
 artifact rather than whatever the archive answered that afternoon.
 
 Only the ASOS/METAR families are kept. They are the ones
-``gpuwm-obs.asos-surface.v1`` is defined over: hourly synoptic-style surface
+``gpuwm-obs.asos-surface.v2`` is defined over: hourly synoptic-style surface
 reports with temperature, dewpoint, wind and pressure. The archive's other
 families (COOP, DCP, RWIS, COCORAHS) report different variables on different
 cadences and would need their own decode contract before they could be

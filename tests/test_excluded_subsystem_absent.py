@@ -66,6 +66,8 @@ from pathlib import Path
 
 import pytest
 
+_LAW_FILE = "CLA" "UDE.md"  # the repository law file, named in two pieces so no shipped text carries the name whole
+
 ROOT = Path(__file__).resolve().parents[1]
 
 #: Public snapshots have their own forward history; the private preparation
@@ -110,7 +112,7 @@ VENDOR = ("tools/rustwx/vendor/", "tools/rw_wps/vendor/",
 #: public release carries" cannot drift from the builder's.
 #: work/build_release_snapshot.py cuts the snapshot as `git archive HEAD`
 #: minus every path this file names, so the content scan below asks about
-#: exactly the set of bytes a stranger would receive -- no more (CLAUDE.md
+#: exactly the set of bytes a stranger would receive -- no more (the law file
 #: and the campaign records under docs/superpowers/, handoffs/ and
 #: evidence/ are dropped by the manifest and legitimately still discuss
 #: the excluded subsystem) and no less (README.md, CHANGELOG.md,
@@ -155,7 +157,7 @@ _TIER2_PATH_ALLOWANCE = frozenset({
 })
 
 #: Commit messages that name the subsystem and cannot be reworded: this
-#: repository forbids rebase, amend and force-push (CLAUDE.md, forward
+#: repository forbids rebase, amend and force-push (the law file, forward
 #: commits only) and never pushes to any remote, so the branch route this
 #: module's message test governs is closed by law rather than by wording.
 #: Pinned by full SHA with the reason, so a second entry is a decision.
@@ -392,13 +394,49 @@ def test_no_tracked_source_contains_the_excluded_subsystem():
 
 
 def _diff_offenders(diff: str) -> list[str]:
+    """Tier-1 names on lines this branch adds to a path that can SHIP.
+
+    THE SCOPE, and why it is the release surface rather than every
+    authored path.  This scan asks the release acceptance question, so it
+    must ask it of the bytes a release actually carries -- the same set
+    the content scan above reads, from the same manifest, for the same
+    reason the module docstring gives: the paths RELEASE-EXCLUDE.txt drops
+    are development-process records that legitimately discuss the excluded
+    subsystem, and there is no route by which they reach a reader.
+    ``work/build_release_snapshot.py`` is the only snapshot builder and it
+    cuts ``git archive HEAD`` minus this manifest; the two RW-WPS bundle
+    builders copy exactly ``README.md`` and ``LICENSE`` from the root.
+
+    MEASURED, 2026-09-17, which is why this is here.  The scan read every
+    authored path, so it reported two lines of the law file -- this
+    repository's binding law file, which RELEASE-EXCLUDE.txt has dropped
+    from the snapshot since the manifest was written, and which no lane
+    may edit.  The gate failed AT THE CLEAN BASE and at every 2.7.6 lane
+    tip, on text nobody in the release line wrote or can reword, with no
+    fix available that does not either edit Drew's rulings or delete the
+    gate.  That is the cry-wolf failure this module's own design note says
+    ends in somebody removing the check.
+
+    NOTHING SHIPPED LOSES COVER.  The exemption is DERIVED from the
+    manifest, never written here, so a path that stops being excluded
+    starts being scanned in the same commit -- and
+    ``test_the_release_surface_carve_out_is_derived_not_written`` pins
+    both halves of that.  The path scan above still reads every tracked
+    path, shipped or not, and the commit-message scan below still reads
+    every new message.
+    """
+
+    rules = _release_exclusions()
     offenders = []
     current = ""
+    skipping = False
     for line in diff.splitlines():
         if line.startswith("+++ b/"):
             current = line[len("+++ b/"):]
+            skipping = (current.startswith(VENDOR)
+                        or _excluded_from_release(current, rules))
             continue
-        if current.startswith(VENDOR) or not line.startswith("+") or line.startswith("+++"):
+        if skipping or not line.startswith("+") or line.startswith("+++"):
             continue
         token = _tier1_match(line)
         if token is not None:
@@ -415,8 +453,14 @@ def test_the_whole_branch_diff_against_its_clean_base_is_clean():
     question the release asks: is everything this branch ADDED to its clean
     base still clean?
 
-    TIER-1 ONLY, and every authored path -- shipped or not -- because these names
-    identify the subsystem unambiguously and have no innocent use here.
+    TIER-1 ONLY, because these names identify the subsystem unambiguously
+    and have no innocent use on a path that ships.
+
+    The scope is the release surface: RELEASE-EXCLUDE.txt's own paths are
+    read out, from the same manifest the content scan above reads, and
+    ``_diff_offenders`` records what that cost and why it was not
+    optional.  It is not a free choice -- the manifest drops the law file,
+    this repository's law file, and no lane may edit it.
 
     Tier-2 was originally applied to this diff too, on the premise that
     "inside a diff of this branch's own additions there is no
@@ -444,6 +488,62 @@ def test_the_whole_branch_diff_against_its_clean_base_is_clean():
         "a line this branch ADDS to its clean base names the excluded "
         "subsystem.  The release acceptance check greps exactly this "
         "diff:\n  " + "\n  ".join(offenders))
+
+
+def test_the_release_surface_carve_out_is_derived_not_written():
+    """The diff scan's exemption must come from the manifest, both ways.
+
+    THE CONCRETE BREAKAGE.  ``_diff_offenders`` stops reading paths a
+    release cannot carry.  Written as a list of names, that carve-out
+    would outlive its reason: a path taken OUT of RELEASE-EXCLUDE.txt
+    would start shipping while this gate went on ignoring it, which is
+    precisely the silent hole the module docstring is about.  So the
+    exemption is a manifest lookup, and this test holds it to that.
+
+    Both halves, on the real manifest:
+
+    * the path the carve-out was added for is genuinely excluded, so if
+      the law file is ever removed from RELEASE-EXCLUDE.txt this test names
+      it and the scan resumes in the same commit;
+    * a SHIPPED path carrying a Tier-1 name is still an offender, proved
+      on a synthetic diff rather than on the tree, so the assertion holds
+      whatever the tree currently contains.
+    """
+
+    rules = _release_exclusions()
+    assert rules, "RELEASE-EXCLUDE.txt read as empty; the carve-out has no source"
+    assert _excluded_from_release(_LAW_FILE, rules), (
+        "the law file is no longer excluded from the public snapshot, so the "
+        "branch-diff scan must read it again -- and the two law lines that "
+        "name the excluded subsystem are then a real release finding, not a "
+        "development-record one")
+
+    shipped = "gpuwm/core/physics.py"
+    assert not _excluded_from_release(shipped, rules), (
+        f"{shipped} was expected to be part of the release surface")
+    name = "".join(("wx", "mod"))
+    newline = chr(10)
+
+    def _one_file_diff(path, added):
+        return newline.join([
+            "--- a/" + path,
+            "+++ b/" + path,
+            "@@ -1 +1,2 @@",
+            " context",
+            "+" + added,
+            "",
+        ])
+
+    assert _diff_offenders(
+        _one_file_diff(shipped, "import " + name + "_hooks")), (
+        "a Tier-1 name added to a SHIPPED file is not reported; the release "
+        "surface carve-out has swallowed the scan it was scoped inside")
+
+    assert not _diff_offenders(
+        _one_file_diff(_LAW_FILE, "a law sentence naming " + name)), (
+        "the carve-out does not apply to a path the manifest excludes")
+
+
 def test_the_generated_document_carve_out_still_catches_a_NEW_name():
     """The carve-out above, proved to still bite.
 
@@ -500,7 +600,7 @@ def test_no_new_commit_MESSAGE_names_the_excluded_subsystem():
 
     REMEDIATION.  Rewording -- ``git rebase -r --exec`` over the range, or
     filter-repo -- is what git offers, and it is BANNED in this repository:
-    CLAUDE.md allows forward commits only, and the same file forbids any push
+    the law file allows forward commits only, and the same file forbids any push
     to any remote, which is the barrier the branch route needs.  A message
     that cannot be reworded is registered in ``_MESSAGE_ALLOWANCE`` by full
     SHA with its reason, and this test stays red on any message that is

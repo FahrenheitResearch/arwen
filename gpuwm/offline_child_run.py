@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from datetime import timedelta
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import sys
@@ -37,6 +38,7 @@ from gpuwm.io.wrfout import INITIAL_CONDITION_GLOBAL_ATTRS
 from gpuwm.explain import warn
 from gpuwm.core.microphysics_transition import TRANSITION_ORDER
 from gpuwm.offline_child import (
+    CHILD_REPORT_PIPELINE,
     DERIVED_CHILD_SURFACE_CAVEAT,
     PARENT_SCHEME_CONTRACT,
     OfflineChildContractError,
@@ -47,7 +49,9 @@ from gpuwm.offline_child import (
     build_offline_lateral_boundaries,
     child_surface_requirement,
     derive_child_surface_from_parent,
+    child_inherits_parent_levels,
     interpolate_parent_initial_state,
+    les_child_regime,
     read_child_surface_state,
     require_offline_child_root_forcing,
     require_runnable_child_radiation_from_archive,
@@ -123,8 +127,46 @@ _CAPABILITIES = {
 }
 
 
+def _strict_json(document, **options) -> str:
+    """One document as JSON a strict reader can open.
+
+    WHAT BREAKAGE THIS PREVENTS (gate law).  ``NaN`` is not a JSON token:
+    RFC 8259 has no spelling for it, and ``JSON.parse``, ``serde_json``,
+    ``encoding/json`` and ``jq`` all reject a document carrying one,
+    while Python's ``json`` writes and reads it by default.  A document
+    written from this module could therefore be opened by the tree that
+    wrote it and by nothing else -- and the outcome that writes the most
+    of them is the one whose readings are exactly the ones that went.
+    ``allow_nan=False`` is this tree's own convention for a receipt
+    (``gpuwm/background_contract.py``, ``gpuwm/branch.py``,
+    ``gpuwm/case_catalog.py``, ``gpuwm/certify/band.py``,
+    ``gpuwm/certify/verdict.py``).
+
+    Its REFUSAL is the wrong outcome here: these documents are written on
+    the way out of a run that has already failed, and losing the whole
+    report to save one number inverts what the report is for.  So a
+    non-finite value that still reaches this function -- a health
+    record's own CFL through the layer-geometry channel, a mean over no
+    samples -- is written as ``null``, which every reader has, and the
+    document stays strict.  The health readings never take that route:
+    they arrive in the carrying shape :func:`child_health_log_fields`
+    gives them, a number or ``null`` beside a state word.
+    """
+
+    try:
+        return json.dumps(document, allow_nan=False, **options)
+    except ValueError:
+        # Written permissively, read back with every non-finite token
+        # mapped to null, written strictly.  Token-level, so a numpy
+        # float that ``default=`` resolved is covered by the same pass.
+        relaxed = json.loads(json.dumps(document, default=_jsonable),
+                             parse_constant=lambda _token: None)
+        return json.dumps(relaxed, allow_nan=False, **options)
+
+
 def _log(event: str, **values) -> None:
-    print(json.dumps({"event": event, **values}, sort_keys=True), flush=True)
+    print(_strict_json({"event": event, **values}, sort_keys=True),
+          flush=True)
 
 
 from gpuwm.first_products import DEFAULT_WAIT_SECONDS as _EARLY_RENDER_WAIT
@@ -175,6 +217,15 @@ class _ChildProgress:
         self._started_wall = time.perf_counter()
         self._first_products = None
         self._first_products_seconds = None
+        #: How far the forecast got, from the last progress sample that
+        #: carried a step number.  ``None`` until the first one, which
+        #: is the state a child refused before its first step is in --
+        #: and the banner says so rather than quoting a zero nobody
+        #: measured.
+        self._stopped = None
+        #: The history frames this run has committed, in order, named
+        #: for the banner a stopped run leaves.
+        self._frames: list[str] = []
         #: The domain a coarse progress sample is attributed to.  A
         #: child is one domain and :meth:`start` learns which.
         self._root_domain = 1
@@ -226,8 +277,49 @@ class _ChildProgress:
                   config_sha256=document["plan_sha256"])
 
     def emit(self, event: str, **fields) -> None:
+        # Read on the way past, because this is the one funnel every
+        # route's events go through: the forecast loop emits
+        # ``model_progress`` straight through here, and a banner written
+        # on a failure path cannot ask a loop that already unwound how
+        # far it got.
+        if event == "model_progress":
+            self._note_progress(fields)
+        elif event == "output_committed":
+            path = fields.get("path")
+            if path is not None:
+                self._frames.append(Path(str(path)).name)
         if self.events is not None:
             self.events.emit(event, **fields)
+
+    def _note_progress(self, fields) -> None:
+        """Keep the last sample that names a STEP.
+
+        The render stage's coarse heartbeat emits the same tag with a
+        model clock and no step (:meth:`stage_progress`), and taking it
+        would leave a stopped forecast reporting the render's second as
+        the second it stopped at.
+
+        The two SECONDS stay real and the two COUNTS stay integers.  A
+        step count carried as a float reaches the banner as a float and
+        was printed as one, which is how the sentence a reader opens
+        after losing a forecast came to hold a mantissa.
+        """
+
+        if fields.get("outer_step") is None:
+            return
+
+        def number(key):
+            value = fields.get(key)
+            return None if value is None else float(value)
+
+        def count(key):
+            value = fields.get(key)
+            return None if value is None else int(float(value))
+
+        self._stopped = {"model_seconds": number("model_seconds"),
+                         "run_seconds": number("run_seconds"),
+                         "step": count("outer_step"),
+                         "total_steps": count("total_steps")}
 
     def failed(self, error: BaseException | None = None, *,
                stage: str = "forecast") -> None:
@@ -247,7 +339,19 @@ class _ChildProgress:
         if error is None:
             self.emit("failed", stage=stage)
             return
-        message = " ".join(f"{type(error).__name__}: {error}".split())
+        # ONE SENTENCE, the same one the banner and the report's
+        # ``failure.summary`` carry, with the class name in front.  This
+        # message is what a run view puts on one line, and a whitespace
+        # join of the whole exception turned a multi-paragraph refusal --
+        # a survey block, a table of health checks, a command to type --
+        # or a contract error's paragraphs into 1,600 characters of prose
+        # with the sentence that matters buried at the front of it.
+        # :func:`_stop_reason` chooses the sentence (a refusal's own
+        # ``summary`` where it composed one, the first sentence of the
+        # text otherwise); the whole text is in ``report.json`` under
+        # ``failure.message``, so nothing is lost by saying it once here.
+        body = _stop_reason(error)
+        message = " ".join(f"{type(error).__name__}: {body}".split())
         self.emit("failed", stage=stage, message=message[:1600])
 
     # -- the run-plan observer surface the shared render stage drives --
@@ -423,40 +527,107 @@ class _ChildProgress:
         written = receipt.get("written") if isinstance(receipt, dict) else None
         return len(written) if isinstance(written, list) else 0
 
-    def withdraw_early_render(self, reason: str) -> int:
-        """Drop what the early render published; return how many pictures.
+    def pictures_drawn(self) -> tuple[int | None, str | None]:
+        """``(pictures on disk, why they could not be counted)``.
+
+        COUNTED from the tree rather than inferred from the early
+        render's receipt.  A ``--series`` render draws frame by frame
+        and the renderer exits nonzero at the END, when its batch
+        summary carries a failure, so a run whose render stage failed
+        has usually drawn every frame's other products: measured on the
+        shipped 2.7.5 wheel, a 13-frame child whose two requested snow
+        variables could not be drawn left 143 pictures on disk while its
+        capsule said the rest were not drawn.  A reader who believed
+        that re-drew six hours of frames for pictures already there.
+
+        TWO ANSWERS, because a count that could not be TAKEN is not a
+        count of zero.  A tree whose listing fails -- a permission wall,
+        a dead mount, a path that is a regular file -- used to come back
+        as ``0`` and print as "this run has no pictures", which is the
+        sentence that sends a reader to re-draw a whole child.  It now
+        comes back as ``(None, the error)`` and the caller says the tree
+        could not be read.  A directory that is simply not there is
+        still the empty case and still counts zero: a render stage that
+        never created its output directory drew nothing, and that is a
+        reading rather than a failure to read.
+
+        Nothing raises: this is a number for a sentence in a refusal
+        that is already being raised.
+        """
+
+        from gpuwm.first_products import count_pictures
+
+        if self.render_plan is None:
+            return 0, None
+        try:
+            root = Path(self.render_plan["render"])
+        except (KeyError, TypeError, ValueError) as error:
+            return None, f"this run recorded no picture directory ({error})"
+        # ONE counter for the capsule, the banner, the render summary
+        # and the report, so a reader cannot be handed two numbers for
+        # one tree, and neither route can lose the difference between an
+        # empty folder and one nothing could list.
+        return count_pictures(root)
+
+    def keep_early_render(self, why: str) -> dict:
+        """Keep what the early render drew, under a did-not-finish banner.
 
         THE DECISION, recorded where it is enforced: a child that does
-        not pass publishes NO picture.  The early render draws the
-        analysis frame while the run still looks healthy, and a run that
-        then refuses itself would otherwise leave pictures as its only
-        artifact that does not carry the verdict -- and no frame of a
-        run that went non-finite can be shown to be the frame that was
-        still finite.  The frames, the checkpoints and the report stay:
-        they are the evidence.  The pictures are a derivative of it and
-        can be redrawn by hand from the frames at any time.
+        not finish KEEPS its pictures.  The early render draws the
+        analysis frame while the forecast is still integrating, and this
+        door used to remove every picture it had published the moment
+        the run stopped -- so a child that stopped part way through its
+        forecast left its reader nothing at all to look at.
+        What the pictures were missing was never the pictures: it was
+        the verdict beside them.  So the verdict is written beside them,
+        in the banner at the top of the render directory, in the render
+        summary and in this run's event stream, and nothing is removed.
+        IN THE REPORT TOO: a child that stops inside its forecast
+        publishes ``report.json`` whatever stopped it, carrying its
+        failure capsule or, for a stop that composed none, the sentence
+        this banner carries with the whole of what was raised
+        (:func:`_stop_capsule`); and both stop arms put what this
+        returned into that document's ``products`` block as ``status``
+        ``KEPT`` with the count on disk and the banner's path, so the
+        folder, the summary and the document say one thing about one
+        run.
 
-        Nothing else writes into this directory on a failed run -- the
-        finalize render never runs -- so the whole picture tree is
-        exactly what the early render put there.
+        The wait is UNBOUNDED, as the removal's was, for the same two
+        reasons in their new order: the render thread owns a subprocess
+        that must not outlive this process, and the count in the banner
+        has to be the count of a render that finished drawing rather
+        than of one caught mid-publish.
+
+        ``{"pictures": n, "pictures_error": None, "banner": path or
+        None, ...}`` comes back; nothing raises.  ``pictures`` is
+        ``None`` with the error beside it when the tree could not be
+        listed, which is not the same reading as a tree with nothing in
+        it and is not printed as one.
+
+        A run with no render at all keeps the same shape with a count of
+        zero: it drew nothing because it was asked for nothing, which is
+        a reading and not a failure to read.
         """
 
         if self._first_products is None or self.render_plan is None:
-            return 0
-        from gpuwm.first_products import withdraw
+            return {"pictures": 0, "pictures_error": None,
+                    "banner": None, "summary": None}
+        from gpuwm.first_products import keep
 
-        # No timeout here: a withdrawal that ran ahead of the render
-        # thread would remove a tree that thread is still writing into.
         self.wait_early_render(timeout=None)
         render_dir = Path(self.render_plan["render"])
-        pictures = withdraw(render_dir)
+        kept = keep(render_dir, why=why, stopped=self._stopped,
+                    frames=list(self._frames))
         # A `warning` carrying its own code, because the event
         # vocabulary is a closed schema shared with every reader of
-        # every route (:data:`gpuwm.runplan.EVENT_TAGS`) -- a tag
+        # every route (:data:`gpuwm.runplan.EVENT_TAGS` for the tag and
+        # :data:`gpuwm.runplan.WARNING_CODES` for the code) -- either one
         # invented for one route is a record nothing can read.
-        self.warn("early_render_withdrawn", reason,
-                  render=str(render_dir), pictures=pictures)
-        return pictures
+        self.warn(
+            "early_render_kept", _kept_sentence(kept, render_dir),
+            render=str(render_dir), pictures=kept["pictures"],
+            banner=kept["banner"], status=kept["status"], why=why)
+        return kept
 
     def close(self) -> None:
         # The floor under wait_early_render: every exit path closes the
@@ -688,42 +859,40 @@ def _initialize_child_physics(child, cfg, initial, surface, start_time):
     if 4 in radiation_scheme_ids(cfg):
         from gpuwm.physics_compat import RRTMG_VARIANT_LEGACY, rrtmg_variant
         if rrtmg_variant(cfg) == RRTMG_VARIANT_LEGACY:
-            if cfg.o3input == 2:
-                # FAIL CLOSED, the same refusal runtime._child_radiation_
-                # adapter raises for the in-memory child routes.
-                #
-                # o3input = 2 means the child takes its ozone INTERPOLATED
-                # FROM THE PARENT: WRF evaluates the CAM climatology on
-                # id == 1 only and passes o3rad down.  This route has no
-                # parent to interpolate from -- it is the ndown-equivalent
-                # offline path, and it stamps parent_id = 0 on its own
-                # DomainTicks precisely because no parent domain is
-                # resident.  So the constructor below cannot be given an
-                # ozone_parent even in principle.
-                #
-                # It used to be called WITHOUT one, which is not a
-                # degradation but a silent wrong answer: with
-                # ozone_parent=None the constructor takes its ROOT branch
-                # and evaluates a fresh CAM climatology on the CHILD's own
-                # latitudes, then identity() reports
-                # "ozone_routing": "root-climatology" for a nested domain
-                # without complaint.  o3input = 2 is also the RunConfig
-                # DEFAULT, and `gpuwm downscale --point` copies every
-                # RunConfig field from the parent (o3input and
-                # ra_rrtmg_variant are not in its geometry-override set),
-                # so the default path walked straight into it.
-                raise ValueError(
-                    "ra_rrtmg_variant='rrtmg_legacy' with o3input=2 needs "
-                    "ozone interpolated from the parent domain, and the "
-                    "offline child route has no resident parent to take it "
-                    "from (this route stamps parent_id=0). Set o3input=0 "
-                    "to use the legacy-RRTMG wrapper's own O3DATA profile, "
-                    "or run the child on the nested route "
-                    "(gpuwm.runtime.prepare_child_case), which wires the "
-                    "parent's o3rad through ParentOzoneProvider.")
+            from gpuwm.core.cam_ozone import ROUTING_CHILD_GRID_CLIMATOLOGY
             from gpuwm.core.radiation_composition import make_radiation
+            # OZONE ON THIS ROUTE, under o3input = 2.
+            #
+            # There is no resident parent to interpolate from: this is the
+            # ndown-equivalent offline path and it stamps parent_id = 0 on
+            # its own DomainTicks precisely because no parent domain is in
+            # memory.  What WRF does for exactly this domain is the answer,
+            # and WRF's answer is the climatology on the domain's own grid:
+            # an offline child is configured as a WRF ROOT (specified =
+            # true, nested = false, lateral boundaries read from a file),
+            # and for id == 1 WRF calls oznini on that domain's own XLAT
+            # (phys/module_physics_init.F:2203-2212) and evaluates
+            # ozn_time_int/ozn_p_int on its own columns
+            # (phys/module_radiation_driver.F:1801-1823).  Only a resident
+            # NEST is handed the parent's field, through the rdf=(p2c)
+            # forcing stream the Registry declares on o3rad
+            # (Registry/Registry.EM_COMMON:1264).
+            #
+            # So the constructor takes its root branch, which is the
+            # bit-ported chain on the child grid, and the route DECLARES
+            # what that is.  The declaration is the whole difference from
+            # what this did before the refusal was installed: it used to
+            # evaluate the same field and then report
+            # "ozone_routing": "root-climatology", which told a reader the
+            # domain was a root rather than a refinement of an archived
+            # forecast.  It now reports "child-grid-climatology", in the
+            # radiation identity that reaches every checkpoint manifest and
+            # in the run's report.json.
             radiation = make_radiation(
-                cfg, start_time, lat, lon, p_top=float(initial.receipt["p_top"]))
+                cfg, start_time, lat, lon,
+                p_top=float(initial.receipt["p_top"]),
+                ozone_routing=(ROUTING_CHILD_GRID_CLIMATOLOGY
+                               if cfg.o3input == 2 else None))
 
     if surface is None:
         return initialize_physics(
@@ -772,6 +941,21 @@ def _initialize_child_physics(child, cfg, initial, surface, start_time):
     return driver
 
 
+def _child_ozone_routing(driver):
+    """Where this child's radiation took its ozone from, for the report.
+
+    One of :data:`gpuwm.core.cam_ozone.OZONE_ROUTINGS`, or ``None`` when the
+    child's radiation carries no ozone routing at all: no radiation, or a
+    scheme that builds its own gas profile rather than reading the WRF CAM
+    climatology.  ``None`` is a third state and is reported as one, because
+    a missing key would read as "not recorded" for a run that has an answer.
+    """
+    from gpuwm.core.radiation_composition import legacy_radiation_adapter
+    scheme = getattr(driver, "radiation_callable", None)
+    adapter = None if scheme is None else legacy_radiation_adapter(scheme)
+    return None if adapter is None else adapter.ozone_routing
+
+
 def _jsonable(value):
     """Plain JSON types for a receipt built from mappings, tuples and numpy."""
     if value is None or isinstance(value, (bool, int, float, str)):
@@ -788,6 +972,389 @@ def _jsonable(value):
 def _create_output_root(path: Path) -> Path:
     """Reserve one output tree without ever adopting a prior run's."""
     return reserve_output_root(path, flag="--outdir")
+
+
+def _survey_nonfinite_child(streaming, stepper, child) -> dict:
+    """The field survey behind a non-finite refusal, which cannot raise.
+
+    THE WHOLE POINT of this survey is that a diagnostic died in front
+    of the refusal it was decorating: 2.7.5 coerced a ``None`` CFL with
+    ``float()`` in the health line immediately before "offline child
+    became non-finite at step N" (``offline_child_run.py`` lines 1460
+    and 1477 of the 2.7.5 tree) and the reader got a ``TypeError``
+    traceback instead of the sentence.  A survey that can fail -- a device out of memory on a card
+    that just filled itself, a carrier in a shape this does not expect --
+    must therefore fail INTO the capsule and never over it.  A survey
+    that could not be taken says so in the capsule, with its own error,
+    and the refusal is raised either way.
+    """
+
+    try:
+        streaming.refresh_streamed_state(stepper, child)
+        from gpuwm.core.dycore import nonfinite_field_survey
+
+        return nonfinite_field_survey(child)
+    except BaseException as error:  # noqa: BLE001 - see the docstring
+        return {"fields": [], "surveyed": [],
+                "error": " ".join(f"{type(error).__name__}: {error}".split())}
+
+
+#: What a health reading IS, carried beside the reading itself.  A
+#: number is ``"measured"``; a reading nothing ever produced is
+#: ``"not computed"``; a reading that exists and is not finite is
+#: ``"non-finite"``.  For both non-numbers the reading itself is
+#: ``null``, which is what keeps every document this outcome writes
+#: openable by a strict JSON reader.
+READING_MEASURED = "measured"
+READING_NOT_COMPUTED = "not computed"
+READING_NON_FINITE = "non-finite"
+
+#: The two spellings that are not a quantity, so not a thing a unit can
+#: be put after.  One tuple, read by the row renderer and by the state
+#: preserver, because a guard written against one spelling and not the
+#: other is the defect this replaces.
+READING_STATES_WITHOUT_A_NUMBER = (READING_NON_FINITE, READING_NOT_COMPUTED)
+
+
+def _health_reading(value):
+    """One health number as ``(value, state)``, never a non-finite float.
+
+    The distinction is kept because it IS the reading: ``"non-finite"``
+    is a number that went, and ``"not computed"`` is a number nothing
+    ever produced (:func:`gpuwm.core.dycore.decode_stability_record`
+    computes no CFL from fields that are not finite).  Flattening both to
+    ``null`` would say the same thing about a field that blew up and a
+    field nobody measured, which on this outcome is the whole reading.
+    """
+
+    if value is None:
+        return None, READING_NOT_COMPUTED
+    value = float(value)
+    if not math.isfinite(value):
+        return None, READING_NON_FINITE
+    return value, READING_MEASURED
+
+
+def child_health_log_fields(record) -> dict:
+    """The health numbers one child step records, from its stability record.
+
+    THE CARRYING SHAPE.  ``w_max`` and ``cfl`` are each a number or
+    ``null``, and ``w_max_state`` / ``cfl_state`` beside them is
+    ``"measured"``, ``"non-finite"`` or ``"not computed"``.  A non-finite
+    reading never leaves here as a float, so the ``child_step`` event
+    line and ``report.json`` are strict JSON on exactly the run that
+    produces one, and the human row keeps both meanings rather than
+    printing the same null twice.
+
+    ``cfl`` travels as ``None``, never through ``float()``: the record's
+    ``cfl`` IS ``None`` by construction whenever ``nan`` is true --
+    :func:`gpuwm.core.dycore.decode_stability_record` computes no CFL
+    from fields that are not finite -- and coercing it raised
+
+        TypeError: float() argument must be a string or a real number,
+        not 'NoneType'
+
+    in the health line immediately before the refusal that names the
+    breakage -- lines 1460 and 1477 of the 2.7.5 tree.  So a child
+    that went non-finite, which is the one event this record exists to
+    report, died with that traceback at exit 1 instead of with the
+    capsule :func:`describe_nonfinite_child` composes -- which reads this
+    record's ``w_max`` and ``cfl`` back over the last several checks, so
+    the ``None`` this function is careful to pass through is a value the
+    refusal prints as "not computed" rather than a hole in the trend.
+    """
+
+    cfl, cfl_state = _health_reading(record["cfl"])
+    w_max, w_max_state = _health_reading(record["w_max"])
+    return {"nan": bool(record["nan"]),
+            "cfl": cfl, "cfl_state": cfl_state,
+            "w_max": w_max, "w_max_state": w_max_state}
+
+
+#: How far back the non-finite capsule reads the health record, in MODEL
+#: seconds.  Five minutes: long enough that a reader is shown a trend
+#: rather than two samples, short enough that every number quoted belongs
+#: to the blow-up rather than to the calm hour before it.
+NONFINITE_TREND_SECONDS = 300.0
+
+#: The most checks that window is ever spelled out as, whatever the
+#: cadence.  A one-second health cadence would otherwise quote 301 rows
+#: into a capsule a run view shows a few lines of.
+NONFINITE_TREND_CHECKS_MAX = 12
+
+
+def nonfinite_trend_checks(cadence_seconds) -> int:
+    """How many health checks cover the window, FROM the record's cadence.
+
+    The window is a duration, not a row count: at the default 60-second
+    cadence it is six checks and at a 300-second one it is two, and both
+    cover the same five minutes of model time.  Deriving it from the
+    cadence is what keeps the sentence "over the last 300 model seconds"
+    true for a run that chose its own ``--health-interval-seconds``.
+
+    The capsule quotes this many checks PLUS the one that found the
+    fields gone, which is the row the window is measured back from and
+    carries no w_max and no CFL of its own.
+    """
+
+    try:
+        cadence = float(cadence_seconds)
+    except (TypeError, ValueError):
+        return 2
+    if not math.isfinite(cadence) or cadence <= 0.0:
+        return 2
+    return max(2, min(NONFINITE_TREND_CHECKS_MAX,
+                      int(math.ceil(NONFINITE_TREND_SECONDS / cadence)) + 1))
+
+
+def _number(value, digits: int = 4) -> str:
+    """One measured number, at the precision a reader can check it to."""
+
+    if value is None:
+        return "not computed"
+    value = float(value)
+    if not math.isfinite(value):
+        return "non-finite"
+    return f"{value:.{digits}g}"
+
+
+def _reading(row, name: str, digits: int = 4) -> str:
+    """One health reading out of a trend row, as a reader reads it.
+
+    The state word wins when the row carries one, because the value
+    beside it is ``null`` for BOTH non-numbers and the value alone can no
+    longer tell them apart.  A row built before the state words existed,
+    or by hand, still reads correctly: :func:`_number` spells a bare
+    ``None`` "not computed" and a bare non-finite float "non-finite".
+    """
+
+    state = row.get(f"{name}_state")
+    if state in READING_STATES_WITHOUT_A_NUMBER:
+        return state
+    return _number(row.get(name), digits)
+
+
+def _health_row(row) -> dict:
+    """One trend row with both readings in the carrying shape.
+
+    :func:`describe_nonfinite_child` is handed the run loop's own trend,
+    whose rows already come from :func:`child_health_log_fields` -- and
+    it is also the composer a test, a sibling door or a later route can
+    call with rows of its own.  Normalising here is what makes the
+    capsule a document that cannot carry a non-finite float whoever built
+    the row, which is the property ``report.json``, the ``child_step``
+    line and the run-plan ``failed`` event are all written under.
+    """
+
+    row = dict(row)
+    for name in ("w_max", "cfl"):
+        if name not in row and f"{name}_state" not in row:
+            continue
+        value, state = _health_reading(row.get(name))
+        given = row.get(f"{name}_state")
+        # A row that already carries its state word keeps it: with the
+        # value null for both non-numbers, re-deriving the state from the
+        # value alone would turn every "non-finite" row into a
+        # "not computed" one.
+        if value is None and given in READING_STATES_WITHOUT_A_NUMBER:
+            state = given
+        row[name] = value
+        row[f"{name}_state"] = state
+    return row
+
+
+def _plain_list(names) -> str:
+    """``[a, b, c]`` as ``a, b and c``; one name as itself."""
+
+    names = [str(name) for name in names]
+    if not names:
+        return ""
+    if len(names) == 1:
+        return names[0]
+    return ", ".join(names[:-1]) + f" and {names[-1]}"
+
+
+def _survey_line(entry: dict) -> str:
+    """One surveyed carrier, as the capsule prints it.
+
+    One cell is named and nothing else, because a bounding box around a
+    single cell is that cell written twice.  Many cells are a count and
+    the box they fall inside, which is the difference between a column
+    that went, a plume that went, and a field that has gone entirely.
+    """
+
+    from gpuwm.core.dycore import format_survey_cell
+
+    cell = format_survey_cell(entry["first_cell"])
+    if int(entry["count"]) == 1:
+        return f"{entry['field']}: 1 cell at {cell}"
+    box = ", ".join(f"{label} {bounds[0]}-{bounds[1]}"
+                    for label, bounds in entry["bounding_box"].items())
+    return (f"{entry['field']}: {int(entry['count']):,} cells of "
+            f"{int(entry['size']):,}, first at {cell}, all inside {box}")
+
+
+def describe_nonfinite_child(*, step, total_steps, model_seconds,
+                             run_seconds, cadence_seconds, trend, survey,
+                             regime=None, render_command=None) -> dict:
+    """The capsule a reader is handed when a child stops being finite.
+
+    WHAT BREAKAGE THIS PREVENTS (gate law).  "offline child became
+    non-finite at step 6624" was the whole of what a blown-up child said,
+    and it is the one sentence that sends a reader back to re-run the
+    thing to learn anything at all: it names no field, no place in the
+    grid, no model time, and none of the trend the health record was
+    already holding.  On the run this was built from, that record held
+    six checks of w_max climbing 10.73, 13.22, 15.77, 18.12, 21.05,
+    22.97 m/s over the five minutes before the end, with the CFL never
+    leaving the 0.19-0.21 band -- a reading that says plainly the time
+    step was not what ran out -- and every one of those numbers was
+    dropped at the moment it mattered.
+
+    Returns the capsule as a document: ``summary`` is the one sentence
+    the run-plan ``failed`` event carries and a run view shows first,
+    ``message`` is the whole refusal, and the rest are the same facts as
+    fields, so the sentence and ``report.json`` cannot disagree.
+
+    THE CARRYING SHAPE, which this document is written under and which
+    :func:`child_health_log_fields` produces: every ``trend`` row holds
+    ``w_max`` and ``cfl`` as a number or ``null``, with ``w_max_state``
+    and ``cfl_state`` beside them spelling ``"measured"``,
+    ``"non-finite"`` or ``"not computed"``.  A row handed in any other
+    shape is normalised to it here (:func:`_health_row`), so no reading
+    this capsule carries can reach a serializer as a non-finite float --
+    which is what lets ``report.json`` and the ``child_step`` line be
+    written with ``allow_nan=False``, the receipt convention of the rest
+    of this tree, on precisely the outcome whose readings went.
+    """
+
+    quoted = [_health_row(row) for row in
+              list(trend)[-(nonfinite_trend_checks(cadence_seconds) + 1):]]
+    finite = [row for row in quoted
+              if row.get("w_max_state") == READING_MEASURED]
+    fields = list((survey or {}).get("fields") or [])
+    survey_error = (survey or {}).get("error")
+
+    names = [str(entry["field"]) for entry in fields]
+    if fields:
+        from gpuwm.core.dycore import format_survey_cell
+
+        cell = format_survey_cell(fields[0]["first_cell"])
+        blew = f"{names[0]} went non-finite at cell {cell}"
+        # The other carriers ride a clause of their own after the full
+        # stop, never inside the sentence: read in the middle they push
+        # the model second and the step off the end of the one line a run
+        # view shows, which are the two facts the old refusal had.
+        also = (f"  {_plain_list(names[1:])} went with it."
+                if len(names) > 1 else "")
+    else:
+        blew = "its fields went non-finite"
+        also = ""
+
+    if len(finite) >= 2:
+        span = (float(finite[-1]["model_seconds"])
+                - float(finite[0]["model_seconds"]))
+        lead = ("w_max ran "
+                + ", ".join(_reading(row, "w_max") for row in finite)
+                + f" m/s over the {span:g} model seconds before ")
+    elif len(finite) == 1:
+        lead = (f"w_max was {_reading(finite[0], 'w_max')} m/s at the health "
+                "check before ")
+    else:
+        lead = ""
+    summary = (f"The child blew up: {lead}{blew}, at model second "
+               f"{_number(model_seconds, 8)} of {_number(run_seconds, 8)} "
+               f"and step {int(step)} of {int(total_steps)}.{also}")
+
+    paragraphs = [summary]
+    if survey_error:
+        paragraphs.append(
+            "The field survey could not be taken, so this capsule names no "
+            f"cell: {survey_error}")
+    elif fields:
+        paragraphs.append("Non-finite carriers at that check:\n"
+                          + "\n".join(f"  {_survey_line(entry)}"
+                                       for entry in fields))
+    else:
+        paragraphs.append(
+            "No allocated carrier was still non-finite when the survey ran, "
+            "so the reading came from the health record's own maxima (u, w "
+            "and theta') and nothing narrower.")
+
+    if quoted:
+        rows = []
+        for row in quoted:
+            w_max = _reading(row, "w_max")
+            # The unit rides the NUMBER, and the guard is on the RENDERED
+            # text rather than on one spelling of it: "w_max non-finite
+            # m/s" and "w_max not computed m/s" both read as a quantity
+            # with a unit, and the whole point of either row is that
+            # there is no quantity.  Written against the one spelling,
+            # this guard covered the field that went and missed the field
+            # nothing measured.
+            unit = "" if w_max in READING_STATES_WITHOUT_A_NUMBER else " m/s"
+            rows.append(
+                f"  step {int(row['step'])}"
+                f"  model second {_number(row['model_seconds'], 8)}"
+                f"  w_max {w_max}{unit}"
+                f"  CFL {_reading(row, 'cfl')}")
+        cadence_text = (f", {_number(cadence_seconds, 6)} model seconds apart"
+                        if cadence_seconds else "")
+        paragraphs.append(
+            f"The last {len(quoted)} health checks{cadence_text}:\n"
+            + "\n".join(rows))
+
+    if regime is not None:
+        paragraphs.append("This child's shape: " + regime["statement"])
+
+    if render_command:
+        paragraphs.append(
+            "Next: every frame the run did reach is on disk and can be "
+            "drawn by hand:\n  " + render_command)
+    else:
+        paragraphs.append(
+            "Next: every frame the run did reach is on disk; `gpuwm render` "
+            "draws them, and docs/public/DOWNSCALE.md says what a child "
+            "that did not finish leaves behind.")
+
+    return {
+        "kind": "non-finite",
+        "summary": summary,
+        "message": "\n".join(paragraphs),
+        "step": int(step),
+        "total_steps": int(total_steps),
+        "model_seconds": float(model_seconds),
+        "run_seconds": float(run_seconds),
+        "health_cadence_seconds": (None if cadence_seconds is None
+                                   else float(cadence_seconds)),
+        "fields": fields,
+        "surveyed": list((survey or {}).get("surveyed") or []),
+        "survey_error": survey_error,
+        "trend": quoted,
+        "les_regime": regime,
+        "render_command": render_command,
+    }
+
+
+class OfflineChildNonFinite(OfflineChildContractError):
+    """A child whose own fields stopped being finite mid-integration.
+
+    A RUN-TIME refusal, not an admission one, and it shares the contract
+    error's class for one reason: that class is a ``ValueError``, and
+    ``gpuwm.cli`` prints a ``ValueError`` as one message at exit 2 with
+    no traceback.  Raised as a bare ``RuntimeError`` this capsule would
+    reach its reader as the tail of a stack trace, which is the shape the
+    2.7.5 failure already had and the reason none of it was readable.
+
+    ``capsule`` is the document :func:`describe_nonfinite_child` built and
+    ``summary`` is its first sentence, which is what the run-plan
+    ``failed`` event carries.
+    """
+
+    def __init__(self, capsule: dict) -> None:
+        super().__init__(capsule["message"])
+        self.capsule = dict(capsule)
+        self.summary = str(capsule["summary"])
 
 
 def _parent_grid_metadata(path: Path) -> tuple[float, float, dict[str, object]]:
@@ -928,28 +1495,51 @@ def run(args: argparse.Namespace) -> dict[str, object]:
     try:
         report = _run(args, progress)
     except BaseException as error:
-        # The run did not finish, so it publishes no picture: the early
-        # render's analysis frame is withdrawn before the stream is
-        # closed, and the wait inside that withdrawal is what keeps the
-        # render subprocess from outliving this process.
-        progress.withdraw_early_render(
-            "the child did not finish, and a run that did not finish "
-            "publishes no picture of itself")
+        # The run did not finish, so it KEEPS what it drew and says so
+        # twice: the early render's pictures stay where they are under a
+        # banner naming the stop, and the same facts go into the report
+        # this run leaves behind.  Every way a child stops reaches here
+        # -- non-finite, a refusal raised mid-run, an interrupt -- so
+        # there is one answer rather than one per cause, and the wait
+        # inside the keep is what stops the render subprocess outliving
+        # this process.
+        kept = progress.keep_early_render(_stop_reason(error))
+        # AND A RUN THAT BLEW UP LEAVES A DOCUMENT.  Every other outcome
+        # of this route writes ``report.json`` -- a pass, a pass whose
+        # pictures failed, a forecast its own health check refused -- and
+        # the one outcome that wrote nothing was the one a reader most
+        # needs to read afterwards, because the process was gone and the
+        # event stream was all that was left of it.  Written from what
+        # stopped the run (:func:`_stop_capsule`) and from what the keep
+        # left on disk, so the banner, the sentence and the document are
+        # the same facts.  EVERY stop, not only the ones that composed a
+        # capsule: gating the document on the capsule left the interrupt,
+        # the dead mount and the contract error raised mid-run writing a
+        # banner over kept pictures and no report beside it, which is
+        # this same hole three exception classes narrower.
+        _publish_failure_report(progress, _stop_capsule(error), kept=kept)
         progress.failed(error)
         progress.close()
         raise
     if str(report["result"]) != "PASS":
-        pictures = progress.withdraw_early_render(
-            "the child's own health check refused this forecast, and a "
-            "run that refused itself publishes no picture of itself")
+        kept = progress.keep_early_render(
+            "the child's own health check refused this forecast")
         if progress.render_plan is not None:
+            from gpuwm.first_products import DID_NOT_FINISH_STATUS
+
+            # TWO fields, because they answer two questions.  ``status``
+            # is the PICTURES' own verdict in this block's existing
+            # vocabulary beside DRAWN and FAILED; ``run_status`` is the
+            # RUN's state, and it is the same string the banner and the
+            # render summary carry, so a reader keys on one value across
+            # all three documents.
             _record_products(
-                progress, report, status="WITHDRAWN",
-                reason=("this child did not pass, so the "
-                        f"{pictures} picture(s) the early render had "
-                        "published were removed; the frames and the "
-                        "checkpoints are on disk and can be drawn by "
-                        "hand"),
+                progress, report, status="KEPT",
+                run_status=DID_NOT_FINISH_STATUS,
+                reason=_did_not_finish_capsule(kept),
+                pictures_on_disk=kept["pictures"],
+                pictures_on_disk_error=kept.get("pictures_error"),
+                banner=kept["banner"],
                 render_command=_render_command_text(progress.render_plan))
     else:
         try:
@@ -975,12 +1565,188 @@ def run(args: argparse.Namespace) -> dict[str, object]:
     return report
 
 
+def _first_sentence(error: BaseException) -> str:
+    """The refusal's first sentence, for the banner's ``Why it stopped``.
+
+    One sentence rather than the whole capsule: a banner is read at a
+    glance, the full text is already on the stream's ``failed`` event,
+    and a capsule that runs to three paragraphs would bury the four
+    facts this file exists to state.  An exception with nothing to say
+    -- an interrupt is the ordinary one -- is named by its type instead
+    of leaving the line blank.
+    """
+
+    text = " ".join(str(error).split())
+    if not text:
+        return type(error).__name__
+    head = text.split(". ")[0].strip()
+    return (head or text)[:400]
+
+
+def _stop_reason(error: BaseException) -> str:
+    """Why the run stopped, in the one sentence the banner carries.
+
+    BOTH rules survive, one calling the other, because they answer two
+    different exceptions.  A refusal that composed a capsule has already
+    chosen which of its sentences is the one to read first and published
+    it as ``summary`` -- :class:`OfflineChildNonFinite` does, and its
+    capsule runs to paragraphs whose first sentence is not the one a
+    reader needs.  Everything else that reaches the stop arm carries no
+    such attribute: an interrupt, an ``OSError`` from a dead mount, a
+    contract error raised mid-run.  Those are read by
+    :func:`_first_sentence` off the exception's own text.
+
+    The run-plan ``failed`` event (:meth:`_ChildProgress.failed`) and the
+    report's ``failure.summary`` are built from this same function, so the
+    banner, the report and the event say the same sentence about one run,
+    the event with the exception's class name in front of it.
+    """
+
+    summary = getattr(error, "summary", None)
+    if isinstance(summary, str) and summary.strip():
+        return " ".join(summary.split())[:400]
+    return _first_sentence(error)
+
+
+def _stop_capsule(error: BaseException) -> dict:
+    """The ``failure`` block of a stopped child's report, whatever stopped it.
+
+    A refusal that composed a capsule publishes it verbatim: it holds
+    the field that went, the cell, the model second and the trend the
+    health record was keeping, and the report is where a reader goes for
+    all of it.
+
+    EVERYTHING ELSE GETS A DOCUMENT TOO, of the three keys every reader
+    of this file keys on.  ``summary`` is the one sentence the banner
+    and the run-plan ``failed`` event carry (the event with the class
+    name in front), so the three say one thing;
+    ``message`` is the whole of what the exception said, VERBATIM, line
+    breaks included -- a contract error raised mid-run composes
+    paragraphs, and running them onto one line here would leave the only
+    copy of them unreadable -- which for an interrupt, an ``OSError``
+    from a dead mount or such an error is all there is; ``error_type``
+    names the class,
+    because "KeyboardInterrupt" is a fact about the stop and an empty
+    string is not.  Without this a reader who opened a folder of kept
+    pictures under a banner found no document beside them on exactly
+    the stops that leave no other trace, and could not tell a run that
+    stopped from one that never wrote its report.
+    """
+
+    capsule = getattr(error, "capsule", None)
+    if isinstance(capsule, Mapping):
+        return dict(capsule)
+    message = str(error).strip()
+    return {"summary": _stop_reason(error),
+            "message": message or type(error).__name__,
+            "error_type": type(error).__name__}
+
+
+def _pictures_phrase(count: int) -> tuple[str, str, str]:
+    """``("1 picture", "is", "it")`` or ``("20 pictures", "are", "them")``.
+
+    ONE pair for every sentence this module writes about a kept render,
+    because a count made singular over a verb or a pronoun that stayed
+    plural is the same defect as the parenthesised plural it replaced,
+    and two sentences that disagree with each other about one run are
+    worse than either.  The banner's own clause comes from
+    :func:`gpuwm.first_products.banner_text` for the same reason.
+    """
+
+    if count == 1:
+        return "1 picture", "is", "it"
+    return f"{count} pictures", "are", "them"
+
+
+def _kept_sentence(kept: dict, render_dir) -> str:
+    """The warning's message: what was kept, and where the banner is.
+
+    The event stream is read by run views as well as by logs, so this
+    message agrees with itself on number exactly as the report's capsule
+    and the banner do -- including on the third outcome, where the tree
+    could not be listed and there is no number to agree about.
+    """
+
+    unreadable = kept.get("pictures_error")
+    if kept.get("pictures") is None:
+        return ("the child did not finish; its picture directory could not "
+                f"be listed ({unreadable}), so what is in "
+                f"{render_dir} is not known from here, and the banner at "
+                "the top of it says where the forecast stopped")
+    count = int(kept.get("pictures") or 0)
+    if not count:
+        return ("the child did not finish; its early render had published no "
+                f"picture yet, and the banner at the top of {render_dir} says "
+                "where the forecast stopped")
+    had, verb, them = _pictures_phrase(count)
+    return (f"the child did not finish; the {had} the early render had "
+            f"already drawn {verb} kept, and the banner beside {them} says "
+            "where the forecast stopped")
+
+
+def _did_not_finish_capsule(kept: dict) -> str:
+    """What the report says about a stopped child's pictures.
+
+    Its ``Next`` points at the pictures and the banner, NOT at redrawing
+    the frames.  The reader of this sentence has just lost a forecast;
+    what is useful to them is the pictures already on disk of the part
+    that ran, and redrawing frames they can already see is work that
+    answers nothing.  The command to draw them again is in the block
+    beside this sentence for the reader who wants it.
+    """
+
+    where = kept.get("render") or "this run's picture directory"
+    if kept.get("pictures") is None:
+        # NOT "there is none to keep".  Nothing was removed and nothing
+        # was counted: the tree could not be listed, and the sentence
+        # that says a run has no pictures is the one that sends a reader
+        # off to re-draw a child whose pictures are sitting behind the
+        # error quoted here.
+        return (f"this child did not finish.  {where} could not be listed "
+                f"({kept.get('pictures_error')}), so what it holds is "
+                "unknown; nothing was removed from it, and the frames this "
+                "run did write and its checkpoints are on disk.")
+    count = int(kept.get("pictures") or 0)
+    if not count:
+        return ("this child did not finish.  Its early render had published "
+                "no picture yet, so there is none to keep; the frames it did "
+                "write and its checkpoints are on disk.")
+    had, verb, them = _pictures_phrase(count)
+    banner = kept.get("banner")
+    if banner is None:
+        return (f"this child did not finish; the {had} the early render had "
+                f"already drawn {verb} kept.  Next: open {where}.  Every "
+                "picture there was drawn before the forecast stopped.")
+    return (f"this child did not finish; the {had} the early render had "
+            f"already drawn {verb} kept.  Next: open {where} to see "
+            f"{them}, and {Path(banner).name} beside {them} says where the "
+            "forecast stopped and that every picture there is from before "
+            "it.")
+
+
 def _render_command_text(render_plan: dict) -> str:
     """The render command for this plan, as a reader would type it."""
 
     from gpuwm.go_cli import printable, render_command
 
     return printable(render_command(render_plan))
+
+
+def _renderer_said(text: str) -> str:
+    """The render stage's last lines, indented under one heading.
+
+    Indented rather than run into the sentence: these are the engine's
+    own lines and a reader has to be able to tell them from ours, and a
+    capsule read in a run view has no other formatting to do it with.
+
+    The block carries no leading space and no trailing newline.  The
+    caller joins the refusal's paragraphs with one newline each, so
+    this heading and the ``Next:`` clause under it each begin a line
+    of their own instead of running on from the sentence before.
+    """
+
+    body = "\n".join(f"  {line}" for line in text.splitlines() if line.strip())
+    return f"The render stage said:\n{body}" if body else ""
 
 
 def _record_products(progress: "_ChildProgress", report: dict,
@@ -1005,12 +1771,61 @@ def _record_products(progress: "_ChildProgress", report: dict,
 
 
 def _publish_report(report: dict, outdir: Path) -> None:
-    """Write ``report.json`` through a rename, from its one writer."""
+    """Write ``report.json`` through a rename, from its one writer.
+
+    Strictly (:func:`_strict_json`), because this document is read by
+    whatever a reader has: a blown-up child's report carrying the token
+    ``NaN`` is refused by ``JSON.parse``, ``serde_json``,
+    ``encoding/json`` and ``jq`` alike, and this is the only outcome that
+    writes that document.
+    """
 
     temporary = outdir / "report.json.tmp"
     temporary.write_text(
-        json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")
+        _strict_json(report, indent=2, sort_keys=True), encoding="utf-8")
     os.replace(temporary, outdir / "report.json")
+
+
+def _publish_failure_report(progress: "_ChildProgress", capsule: dict, *,
+                            kept: dict) -> dict:
+    """``report.json`` for a child that did not finish.
+
+    The same two-document rule the render lane keeps
+    (:func:`_finish_child_render`): the refusal a reader is shown and the
+    report a reader opens afterwards carry the SAME facts, because one
+    run cannot have two accounts of why it stopped.  ``result`` is the
+    forecast's verdict, ``failure`` is what stopped the run as
+    :func:`_stop_capsule` states it -- the refusal's own capsule
+    verbatim where there is one -- and
+    ``products`` is the pictures' own outcome, which for a run that did
+    not finish is that they are KEPT: the block names the count on disk
+    and the banner that stands over them, from the dict
+    :meth:`_ChildProgress.keep_early_render` returned, so the document
+    and the folder cannot disagree about how many pictures there are.
+    """
+
+    from gpuwm.first_products import DID_NOT_FINISH_STATUS
+
+    report = {
+        "result": "FAIL",
+        "pipeline": CHILD_REPORT_PIPELINE,
+        "failure": dict(capsule),
+    }
+    # TWO fields, because they answer two questions, exactly as they do
+    # on the arm holding a report whose result is not PASS: ``status``
+    # is the PICTURES' own verdict beside DRAWN and FAILED, and
+    # ``run_status`` is the RUN's state, the one string the banner and
+    # the render summary carry too.
+    _record_products(
+        progress, report, status="KEPT",
+        run_status=DID_NOT_FINISH_STATUS,
+        reason=_did_not_finish_capsule(kept),
+        pictures_on_disk=kept.get("pictures"),
+        pictures_on_disk_error=kept.get("pictures_error"),
+        banner=kept.get("banner"),
+        render_command=(None if progress.render_plan is None
+                        else _render_command_text(progress.render_plan)))
+    return report
 
 
 def _finish_child_render(progress: "_ChildProgress", *,
@@ -1045,20 +1860,58 @@ def _finish_child_render(progress: "_ChildProgress", *,
     except GoStageFailed as failure:
         command = _render_command_text(progress.render_plan)
         early = progress.early_pictures()
-        outcome = (f"this run's pictures are incomplete: {early} drawn early "
-                   "from the first frame, the rest not drawn" if early
-                   else "this run has no pictures")
+        drawn, uncounted = progress.pictures_drawn()
+        # WHAT IS ON DISK, counted.  This sentence used to report the
+        # early render's count and call everything after it undrawn,
+        # which a series render makes false: the renderer fails at its
+        # batch summary, after drawing every frame it could.
+        #
+        # THREE OUTCOMES, not two.  A tree that could not be listed says
+        # so and names the error; it used to count zero and print as an
+        # empty tree, which is the one sentence that tells a reader to
+        # re-draw everything.
+        if uncounted is not None:
+            outcome = ("this run's picture tree could not be read "
+                       f"({uncounted}), so what it holds is unknown")
+        elif drawn:
+            outcome = ("this run's pictures are incomplete: "
+                       + (f"{drawn} pictures are" if drawn != 1
+                          else "1 picture is") + " on disk"
+                       + (f", {early} of them drawn early from the first "
+                          "frame" if early else "")
+                       + ", and at least one product was not drawn")
+        else:
+            outcome = "this run has no pictures"
+        # THE RENDERER'S OWN LAST LINES, in the refusal itself.  This
+        # sentence used to carry the command and the exit code and
+        # nothing else, and the stage's output went only to a terminal
+        # -- which a desktop run view does not have.  A reader was shown
+        # a 24-product render command and left to re-run the whole thing
+        # to find out which product had failed.  The stage already
+        # composes this tail for its event; the exception carries it, so
+        # the refusal says what the renderer said.
+        said = (failure.diagnostic or "").strip()
         _record_products(
             progress, report, status="FAILED",
             reason=(f"the render stage exited {failure.code}; the "
                     "forecast itself passed and its frames are on disk"),
-            render_command=command, drawn_early=early)
-        raise OfflineChildContractError(
+            render_command=command, drawn_early=early,
+            pictures_on_disk=drawn, pictures_on_disk_error=uncounted,
+            renderer_output=said)
+        # ONE newline between paragraphs, so the heading above and
+        # the "Next:" clause below each begin a line of their own.
+        # The sentence that opens this refusal already runs past the
+        # 220 characters a run view shows of a first line, so the
+        # break pushes nothing off that used to be visible.
+        paragraphs = [
             "The child integrated and its frames are on disk, but the "
-            f"render stage exited {failure.code}, so {outcome}. Next: draw "
-            "the saved frames by hand, which names the product that could "
-            "not be drawn:\n  "
-            + command) from failure
+            f"render stage exited {failure.code}, so {outcome}.",
+            *([_renderer_said(said)] if said else []),
+            "Next: draw the saved frames by hand, which names the "
+            "product that could not be drawn:\n  " + command,
+        ]
+        raise OfflineChildContractError(
+            "\n".join(paragraphs)) from failure
     progress.finish_stage()
     _record_products(
         progress, report, status="DRAWN",
@@ -1194,6 +2047,13 @@ def _run(args: argparse.Namespace,
     # checkpoint_due is the cadence.
     cadence = child_cadence(
         cfg, health_interval_seconds=float(args.health_interval_seconds))
+    # The parent tape's own level count, off the dimensions
+    # ``validate_parent_history`` already read, so the regime statement in
+    # a refusal costs no second open of the archive.  ``None`` from a tape
+    # that does not name the dimension, which only makes the sentence
+    # shorter.
+    parent_levels = contract.frames[0].dimensions.get("bottom_top")
+    parent_levels = None if parent_levels is None else int(parent_levels)
     steps = cadence.steps
     output_steps = cadence.output_steps
     health_steps = cadence.health_steps
@@ -1334,8 +2194,9 @@ def _run(args: argparse.Namespace,
         cfg, lbc_interval_seconds=contract.interval_seconds,
         steps=steps, output_steps=output_steps)
     bind_lateral_boundary_clock(child, clock)
-    _initialize_child_physics(child, cfg, initial, surface,
-                              initial.valid_time)
+    driver = _initialize_child_physics(child, cfg, initial, surface,
+                                       initial.valid_time)
+    ozone_routing = _child_ozone_routing(driver)
     cp.cuda.runtime.deviceSynchronize()
     # ``[tiles]``, wired exactly the way the prepared front doors wire it
     # (gpuwm.prepared_single_domain_forecast: decide ONCE, hand the decision
@@ -1434,6 +2295,15 @@ def _run(args: argparse.Namespace,
     emit_output()
     step_seconds = []
     child_health = child_stability(child, cfg)
+    # THE HEALTH RECORD'S OWN HISTORY, kept because the capsule reads it
+    # back.  The per-step line already carried w_max and the CFL and then
+    # dropped them on the floor, so the refusal at the end of a blow-up
+    # could say nothing about the climb that produced it.  Bounded by the
+    # window the capsule quotes, so a 69,120-step run holds a dozen rows
+    # and not 480.
+    trend: list[dict] = []
+    trend_depth = nonfinite_trend_checks(
+        None if health_steps is None else health_steps * float(cfg.dt))
     for step_index in range(1, steps + 1):
         # The executor's exact per-step recurrence (core/clock.py
         # execute_schedule): dtbc zeroes at every external interval seam
@@ -1451,14 +2321,26 @@ def _run(args: argparse.Namespace,
         clock.advance()
         if step_index % health_steps == 0 or step_index == steps:
             child_health = child_stability(child, cfg)
+            health_fields = child_health_log_fields(child_health)
+            trend.append({"step": int(step_index),
+                          "model_seconds": float(clock.elapsed_seconds),
+                          # Both readings in the carrying shape the
+                          # health decoder produced them in, state words
+                          # included: the row goes into the capsule and
+                          # from there into report.json, and a number
+                          # that went is null with its state beside it
+                          # rather than a token no strict reader takes.
+                          "w_max": health_fields["w_max"],
+                          "w_max_state": health_fields["w_max_state"],
+                          "cfl": health_fields["cfl"],
+                          "cfl_state": health_fields["cfl_state"]})
+            del trend[:-(trend_depth + 1)]
             memory = _memory_snapshot(cp)
             child_pool_reserved_peak = max(
                 child_pool_reserved_peak, memory["pool_reserved_bytes"])
             _log("child_step", step=step_index, total_steps=steps,
                  elapsed_seconds=float(clock.elapsed_seconds),
-                 nan=bool(child_health["nan"]),
-                 cfl=float(child_health["cfl"]),
-                 w_max=float(child_health["w_max"]),
+                 **health_fields,
                  boundary_device_reload_count=lateral_boundary_reload_count(child),
                  memory=memory,
                  wall_seconds=time.perf_counter() - started)
@@ -1473,8 +2355,33 @@ def _run(args: argparse.Namespace,
                           **({"last_checkpoint": str(checkpoint_paths[-1])}
                              if checkpoint_paths else {}))
             if child_health["nan"]:
-                raise RuntimeError(
-                    f"offline child became non-finite at step {step_index}")
+                # WHICH field, WHERE, and the climb that got there -- the
+                # survey taken once, here, on the way out.  A streamed
+                # child's forecast lives in the pinned host store and this
+                # DomainState is the snapshot that filled it, so the
+                # refresh comes first for exactly the reason the history
+                # writer does it: without it the survey would read the
+                # initial condition and report a perfectly finite field
+                # over a run that had just gone non-finite.
+                survey = _survey_nonfinite_child(streaming, stepper, child)
+                raise OfflineChildNonFinite(describe_nonfinite_child(
+                    step=step_index, total_steps=steps,
+                    model_seconds=float(clock.elapsed_seconds),
+                    run_seconds=float(cfg.run_seconds),
+                    cadence_seconds=(None if health_steps is None
+                                     else health_steps * float(cfg.dt)),
+                    trend=trend, survey=survey,
+                    regime=les_child_regime(
+                        cfg,
+                        inherits_parent_levels=child_inherits_parent_levels(
+                            cfg,
+                            child_levels_spec=getattr(
+                                args, "child_levels", None),
+                            parent_levels=parent_levels),
+                        parent_levels=parent_levels),
+                    render_command=(
+                        None if progress.render_plan is None
+                        else _render_command_text(progress.render_plan))))
         if output_due:
             emit_output()
         if step_index in checkpoint_due:
@@ -1494,7 +2401,7 @@ def _run(args: argparse.Namespace,
         surface_file_receipts, label="child surface source")
     report = {
         "result": "PASS" if not child_health["nan"] else "FAIL",
-        "pipeline": "archived-parent-to-native-standalone-cuda-child",
+        "pipeline": CHILD_REPORT_PIPELINE,
         "online_parent_present_during_child": False,
         "parent_frames": [str(frame.path) for frame in contract.frames],
         "parent_frame_receipts": parent_file_receipts,
@@ -1540,6 +2447,13 @@ def _run(args: argparse.Namespace,
             "lbc_interval_seconds": float(contract.interval_seconds),
             "final_ticks": int(clock.ticks),
         },
+        # WHERE THE OZONE CAME FROM, said rather than inferred.  Under
+        # o3input = 2 this route evaluates the packaged CAM climatology on
+        # the CHILD's own grid (WRF's own answer for a domain configured as
+        # a root, which is what an offline child is), so a reader never has
+        # to work out from parent_id whether a parent field was involved.
+        # None means the child's radiation carries no ozone routing.
+        "child_ozone_routing": ozone_routing,
         "child_surface_source": (
             None if surface is None else dict(surface.receipt)),
         "child_surface_file_receipts": surface_file_receipts,

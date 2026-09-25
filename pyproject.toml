@@ -9,7 +9,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "gpuwm"
-version = "2.7.5"
+version = "2.7.6"
 description = "Native WRF preprocessing and GPU-native limited-area weather modeling"
 readme = "README.md"
 # The SPDX expression (PEP 639), not `{ file = "LICENSE" }`: the file
@@ -144,7 +144,7 @@ requires-python = ">=3.11"
 # tests/test_companion_distribution.py fails if the two ever disagree.
 dependencies = ["numpy>=2.0", "netCDF4>=1.6", "matplotlib>=3.8",
                 "jsonschema>=4.0",
-                "scipy>=1.11", "pyshp>=2.3", "cdsapi>=0.7.7", "gpuwm-data==2.7.5"]
+                "scipy>=1.11", "pyshp>=2.3", "cdsapi>=0.7.7", "gpuwm-data==2.7.6"]
 keywords = ["WRF", "WPS", "GRIB", "NetCDF", "weather", "CUDA"]
 # No `License ::` classifier: PEP 639 deprecates them outright and
 # setuptools >=77 refuses to combine one with the SPDX expression above.
@@ -304,7 +304,11 @@ dealias = []
 # The two previously-audited undeclared imports of the same class are
 # already declared where their features live: pyshp (task #65) in
 # [render] and scipy (task #78) in [obs]/[dealias].
-dev = ["pytest>=8.0", "pytest-xdist>=3.5", "psutil>=5.9"]
+# pyyaml: four contract tests read .github/workflows/publish.yml through
+# it, and publish.yml installs it by name for the same reason; a `[dev]`
+# venv without it reads two collection errors and two failures before
+# the contract set runs (proof/node-reds-276).
+dev = ["pytest>=8.0", "pytest-xdist>=3.5", "psutil>=5.9", "pyyaml>=6.0"]
 # Maintainer-only, and both entries are the same shape: a tool that
 # REGENERATES something the wheel ships, reachable by nobody else.
 #

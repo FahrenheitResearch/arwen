@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import os
 import re
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
@@ -448,3 +449,566 @@ def test_the_resolution_carries_both_halves_of_the_memory_mode_sentence(tmp_path
     assert resolve_resume_checkpoint(tmp_path, LATEST, config=config).checkpoint \
         == resolve_resume_checkpoint(tmp_path, LATEST).checkpoint
     assert len(resolve_resume_checkpoint(tmp_path, LATEST).notes) == 1
+
+
+# --- the experiment argument -------------------------------------------
+#
+# The reported invocation: a desktop terminal built the resume command
+# out of the run's NAME and ran it from the install folder, so the engine
+# resolved "<name>.child" against that folder and found nothing, while
+# the file beside it was "<name>.child.toml" and the run directory it had
+# just read a checkpoint out of held the config the run was made from.
+
+
+def _config(path, text="[grid]\n"):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
+def test_the_argument_as_typed_is_taken_first(tmp_path, monkeypatch):
+    """A working invocation resolves on rung one and touches nothing else."""
+    from gpuwm.resume import resolve_resume_experiment
+
+    run = tmp_path / "run"
+    _config(run / "child.toml")
+    typed = _config(tmp_path / "exp.toml")
+    monkeypatch.chdir(tmp_path)
+
+    resolution = resolve_resume_experiment("exp.toml", run)
+    assert resolution.path == Path("exp.toml")
+    assert resolution.tried == ()
+    assert resolution.note is None
+
+
+def test_the_hidden_toml_extension_is_the_second_rung(tmp_path, monkeypatch):
+    """THE REPORT: the file manager hid the extension the argument needs."""
+    from gpuwm.resume import resolve_resume_experiment
+
+    install = tmp_path / "install"
+    run = tmp_path / "run"
+    run.mkdir()
+    _config(install / "downscale-child.child.toml")
+    monkeypatch.chdir(install)
+
+    resolution = resolve_resume_experiment("downscale-child.child", run)
+    assert resolution.path == Path("downscale-child.child.toml")
+    assert resolution.tried == ("downscale-child.child: does not exist",)
+    assert ".toml extension" in resolution.note
+
+
+def test_the_argument_is_read_against_the_run_directory(tmp_path, monkeypatch):
+    """Rungs three and four: the same name, against --outdir."""
+    from gpuwm.resume import resolve_resume_experiment
+
+    run = tmp_path / "run"
+    _config(run / "case")
+    monkeypatch.chdir(tmp_path)
+    assert resolve_resume_experiment("case", run).path == run / "case"
+
+    plain = tmp_path / "run2"
+    _config(plain / "case.toml")
+    resolution = resolve_resume_experiment("case", plain)
+    assert resolution.path == plain / "case.toml"
+    assert "--outdir" in resolution.note
+
+
+def test_the_run_directory_answers_with_what_it_ran(tmp_path, monkeypatch):
+    """Rung five, once for each document a run route writes."""
+    from gpuwm.resume import resolve_resume_experiment
+
+    monkeypatch.chdir(tmp_path)
+    child = tmp_path / "child-run"
+    _config(child / "child.toml")
+    assert resolve_resume_experiment("absent", child).path == (
+        child / "child.toml")
+
+    prepared = tmp_path / "prepared-run"
+    _config(prepared / "experiment.toml")
+    assert resolve_resume_experiment("absent", prepared).path == (
+        prepared / "experiment.toml")
+
+    supervised = tmp_path / "supervised-run"
+    _config(supervised / "captured-config-0001.toml")
+    resolution = resolve_resume_experiment("absent", supervised)
+    assert resolution.path == supervised / "captured-config-0001.toml"
+    assert "recorded for itself" in resolution.note
+
+
+def test_the_newest_capture_is_the_one_a_resume_reads(tmp_path, monkeypatch):
+    """A directory resumed twice holds two captures; the last run's wins."""
+    import os
+
+    from gpuwm.resume import resolve_resume_experiment
+
+    monkeypatch.chdir(tmp_path)
+    run = tmp_path / "run"
+    first = _config(run / "captured-config-aaa.toml")
+    second = _config(run / "captured-config-bbb.toml")
+    os.utime(first, ns=(1_000_000_000_000, 1_000_000_000_000))
+    os.utime(second, ns=(2_000_000_000_000, 2_000_000_000_000))
+    assert resolve_resume_experiment("absent", run).path == second
+
+    os.utime(first, ns=(3_000_000_000_000, 3_000_000_000_000))
+    assert resolve_resume_experiment("absent", run).path == first
+
+
+def test_an_absolute_argument_is_not_tried_twice(tmp_path, monkeypatch):
+    """Rungs three and four ARE rungs one and two for an absolute path."""
+    from gpuwm.resume import resolve_resume_experiment
+
+    run = tmp_path / "run"
+    run.mkdir()
+    monkeypatch.chdir(tmp_path)
+    missing = tmp_path / "nowhere" / "case"
+    with pytest.raises(ValueError) as excinfo:
+        resolve_resume_experiment(missing, run)
+    message = str(excinfo.value)
+    assert message.count(str(missing) + ":") == 1
+    assert str(run / "child.toml") in message
+
+
+def test_the_refusal_names_every_path_it_tried(tmp_path, monkeypatch):
+    """Nothing to load, and the reader is told everywhere it looked."""
+    from gpuwm.resume import RUN_RECORD_NAMES, resolve_resume_experiment
+
+    run = tmp_path / "run"
+    run.mkdir()
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(ValueError) as excinfo:
+        resolve_resume_experiment("case.child", run)
+    message = str(excinfo.value)
+    for expected in ("case.child: does not exist",
+                     "case.child.toml: does not exist",
+                     str(run / "case.child"),
+                     str(run / "case.child.toml")):
+        assert expected in message
+    for name in RUN_RECORD_NAMES:
+        assert str(run / name) in message
+    assert "gpuwm domain" in message
+
+
+def test_a_rung_that_is_the_wrong_kind_says_which_kind(tmp_path, monkeypatch):
+    """The ladder and the loader use one vocabulary for "not a config"."""
+    from gpuwm.experiment import config_path_kind
+    from gpuwm.resume import resolve_resume_experiment
+
+    run = tmp_path / "run"
+    run.mkdir()
+    (tmp_path / "case.child").mkdir()
+    (run / "child.toml").write_text("", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    with pytest.raises(ValueError) as excinfo:
+        resolve_resume_experiment("case.child", run)
+    message = str(excinfo.value)
+    assert "case.child: is a directory" in message
+    assert f"{run / 'child.toml'}: is empty" in message
+    # The same two words the loader would have used on the same paths.
+    assert config_path_kind(tmp_path / "case.child") == "is a directory"
+    assert config_path_kind(run / "child.toml") == "is empty"
+
+
+def test_an_empty_config_is_still_refused_by_its_own_loader(tmp_path):
+    """The kind helper did not cost readable_config_path its two cases."""
+    from gpuwm.experiment import readable_config_path
+
+    empty = tmp_path / "empty.toml"
+    empty.write_text("", encoding="utf-8")
+    with pytest.raises(ValueError, match="is empty"):
+        readable_config_path(empty)
+    with pytest.raises(ValueError, match="is a directory"):
+        readable_config_path(tmp_path)
+    with pytest.raises(ValueError, match="does not exist"):
+        readable_config_path(tmp_path / "absent.toml")
+    good = tmp_path / "good.toml"
+    good.write_text("[grid]\n", encoding="utf-8")
+    assert readable_config_path(good) == good
+
+
+def test_a_path_whose_kind_cannot_be_decided_carries_a_remedy_too(
+        tmp_path, monkeypatch):
+    """The fourth kind was the one with nowhere to go.
+
+    A directory, a missing file and a zero-byte file each come back with
+    what to do next.  The fourth -- the one where ``is_file()`` ITSELF
+    failed, which is a symbolic-link loop, a permission wall or a mount
+    that is gone -- came back as the path, the errno and a full stop, so
+    the reader with the least to go on got the least.
+    """
+    import errno as errno_module
+    from pathlib import Path
+
+    from gpuwm.experiment import readable_config_path
+
+    target = tmp_path / "loop.toml"
+
+    def refuse(self):
+        if Path(self) == target:
+            raise OSError(errno_module.ELOOP,
+                          "Too many levels of symbolic links")
+        return False
+
+    monkeypatch.setattr(Path, "is_file", refuse)
+    with pytest.raises(ValueError) as excinfo:
+        readable_config_path(target)
+    message = str(excinfo.value)
+    # What it was instead, in the operating system's own words ...
+    assert "Too many levels of symbolic links" in message
+    # ... and the way out, in the shape the other three kinds carry.
+    assert "remedy:" in message
+    assert "gpuwm domain" in message
+
+
+# --- a downscaled child is a run nothing continues ---------------------
+
+
+def _child_run(outdir, *, finished, frames=2, result="PASS",
+               records_config=True):
+    """A child's run directory.
+
+    ``records_config`` is the difference between the two doors that
+    make one: the ``--point`` derivation writes the configuration it
+    derived into ``--out`` as ``child.toml``, and a
+    ``--child-config`` run is handed its configuration from outside
+    the run directory and records none.  The same run either way.
+    """
+    outdir.mkdir(parents=True, exist_ok=True)
+    if records_config:
+        (outdir / "child.toml").write_text("[grid]\n", encoding="utf-8")
+    (outdir / "downscale-plan.json").write_text("{}", encoding="utf-8")
+    for index in range(frames):
+        (outdir / f"wrfout_d02_1974-04-03_12_0{index}_00").write_bytes(b"x")
+    if finished:
+        (outdir / "report.json").write_text(
+            json.dumps({"result": result, "child_steps": 30,
+                        "final_restart": "gpuwmrst_d02.npz"}),
+            encoding="utf-8")
+    return outdir
+
+
+def test_a_child_run_directory_is_recognised_by_what_the_run_wrote(tmp_path):
+    """The configuration beside a run is a record, not the marker."""
+    from gpuwm.offline_child import CHILD_REPORT_PIPELINE
+    from gpuwm.resume import offline_child_run_at
+
+    assert offline_child_run_at(tmp_path / "absent") is None
+
+    # A file of that name is a file of that name wherever a reader keeps
+    # one, so it still names no route on its own.
+    bare = tmp_path / "bare"
+    bare.mkdir()
+    (bare / "child.toml").write_text("[grid]\n", encoding="utf-8")
+    assert offline_child_run_at(bare) is None
+
+    planned = _child_run(tmp_path / "planned", finished=False)
+    child = offline_child_run_at(planned)
+    assert child is not None and child.finished is False
+    assert child.result is None and len(child.frames) == 2
+    assert child.config == planned / "child.toml"
+
+    # The runner door writes no plan document; its report names the route.
+    runner = tmp_path / "runner"
+    runner.mkdir()
+    (runner / "report.json").write_text(
+        json.dumps({"result": "PASS", "child_steps": 4}), encoding="utf-8")
+    assert offline_child_run_at(runner) is not None
+
+    # And a report that names its own pipeline is enough by itself,
+    # which is the one key both of a child's outcomes write.
+    named = tmp_path / "named"
+    named.mkdir()
+    (named / "report.json").write_text(
+        json.dumps({"result": "PASS", "pipeline": CHILD_REPORT_PIPELINE}),
+        encoding="utf-8")
+    assert offline_child_run_at(named) is not None
+
+    # A report.json written by another route is not a child.  This one
+    # is the prepared-forecast failure document, key for key.
+    other = tmp_path / "other"
+    other.mkdir()
+    (other / "report.json").write_text(
+        json.dumps({"schema": "gpuwm.report.v1", "status": "FAIL",
+                    "error": "boom", "error_type": "ValueError"}),
+        encoding="utf-8")
+    assert offline_child_run_at(other) is None
+
+
+def test_a_finished_child_is_told_there_is_nothing_to_resume(tmp_path):
+    """The reported case: the child reached its last frame."""
+    from gpuwm.resume import (offline_child_resume_refusal,
+                              offline_child_run_at)
+    from gpuwm.explain import render
+
+    outdir = _child_run(tmp_path / "child-run", finished=True, frames=4)
+    child = offline_child_run_at(outdir)
+    assert child.finished and child.result == "PASS"
+
+    action = render(offline_child_resume_refusal(child), explain=False)
+    assert "nothing to resume" in action
+    assert "reached its last frame" in action
+    assert "draw the 4 frame(s)" in action
+    assert f"gpuwm render {outdir / 'wrfout_d*'} --series" in action
+    assert str(outdir / "render") in action
+
+
+def test_an_unfinished_child_is_re_run_not_continued(tmp_path):
+    """No report means it stopped inside the forecast; downscale is the door."""
+    from gpuwm.resume import (offline_child_resume_refusal,
+                              offline_child_run_at)
+    from gpuwm.explain import render
+
+    outdir = _child_run(tmp_path / "child-run", finished=False, frames=1)
+    action = render(
+        offline_child_resume_refusal(offline_child_run_at(outdir)),
+        explain=False)
+    assert "`gpuwm resume` cannot continue" in action
+    assert "run `gpuwm downscale` again" in action
+    assert "draw the 1 frame(s)" in action
+
+    # A child that wrote no frame at all is only re-run.
+    empty = tmp_path / "empty-run"
+    empty.mkdir()
+    (empty / "child.toml").write_text("[grid]\n", encoding="utf-8")
+    (empty / "downscale-plan.json").write_text("{}", encoding="utf-8")
+    bare = render(
+        offline_child_resume_refusal(offline_child_run_at(empty)),
+        explain=False)
+    assert "gpuwm downscale" in bare
+    assert "frame(s)" not in bare
+
+
+def _blown_up_report(outdir, *, pictures=0):
+    """``report.json`` for a child that went non-finite, from its writer.
+
+    Composed by the product code, not by this test: the invariant under
+    test is what ``gpuwm resume`` reads back out of whatever the failure
+    path actually writes, so a hand-built dict here would pin the test
+    to itself.
+    """
+    import numpy as np
+
+    from gpuwm.core.dycore import decode_stability_record
+    from gpuwm.offline_child_run import (_ChildProgress,
+                                         _publish_failure_report,
+                                         child_health_log_fields,
+                                         describe_nonfinite_child)
+
+    # The terminal row through the PRODUCT's own decoder, like the report
+    # around it: a hand-written ``{"w_max": None}`` is a row
+    # ``child_health_log_fields`` cannot produce, and a fixture that
+    # composes itself is pinned to itself.
+    gone = child_health_log_fields(decode_stability_record(
+        np.array([np.inf, np.nan, np.nan, 0.0, 0.0, np.nan, 0.0, 0.0],
+                 dtype=np.float64), cfg=None))
+    progress = _ChildProgress()
+    progress.outdir = outdir
+    capsule = describe_nonfinite_child(
+        step=6624, total_steps=69120, model_seconds=2760.0,
+        run_seconds=28800.0, cadence_seconds=60.0,
+        trend=[{"step": 6480, "model_seconds": 2700.0,
+                "w_max": 22.971, "w_max_state": "measured",
+                "cfl": 0.20854, "cfl_state": "measured"},
+               {"step": 6624, "model_seconds": 2760.0,
+                "w_max": gone["w_max"], "w_max_state": gone["w_max_state"],
+                "cfl": gone["cfl"], "cfl_state": gone["cfl_state"]}],
+        survey={"surveyed": ["W", "U", "V", "T"],
+                "fields": [{"field": "W", "carrier": "w",
+                            "shape": [50, 798, 798], "size": 31840200,
+                            "count": 1,
+                            "first_cell": {"k": 12, "j": 401, "i": 388},
+                            "bounding_box": {"k": [12, 12], "j": [401, 401],
+                                             "i": [388, 388]}}]})
+    # The dict `keep_early_render` hands the publisher, in its own
+    # shape: a count, whether the tree could be read, and the banner
+    # standing over whatever is in it.
+    return _publish_failure_report(
+        progress, capsule,
+        kept={"pictures": pictures, "pictures_error": None,
+              "render": str(Path(outdir) / "png"),
+              "banner": (None if not pictures
+                         else str(Path(outdir) / "png"
+                                  / "DID-NOT-FINISH.txt"))})
+
+
+def test_a_child_that_blew_up_is_re_run_and_told_why(tmp_path):
+    """THE INVARIANT: the verdict says whether a child finished.
+
+    A child that stops being finite publishes ``report.json`` as surely
+    as one that reaches its last frame, so reading the DOCUMENT as the
+    end-of-forecast marker tells a reader whose child died at model
+    second 2760 of 28800 that there is nothing left to integrate, and
+    withholds the one remedy they need.
+    """
+    from gpuwm.explain import render
+    from gpuwm.resume import (offline_child_resume_refusal,
+                              offline_child_run_at)
+
+    outdir = _child_run(tmp_path / "child-run", finished=False, frames=2)
+    _blown_up_report(outdir)
+
+    child = offline_child_run_at(outdir)
+    # The document is there, and it does not say the child finished.
+    assert child.report is not None and child.result == "FAIL"
+    assert child.finished is False
+
+    action = render(offline_child_resume_refusal(child), explain=False)
+    assert "run `gpuwm downscale` again" in action
+    assert "nothing to resume" not in action
+    assert "reached its last frame" not in action
+    assert "draw the 2 frame(s)" in action
+    # And the capsule the run already wrote is quoted back, so the
+    # reader learns why it stopped without opening the report.
+    assert "The child blew up:" in action
+    assert "cell (k=12, j=401, i=388)" in action
+
+
+def test_a_blown_up_child_is_recognised_without_a_plan_document(tmp_path):
+    """The runner door writes no plan, and a failure report has no steps."""
+    from gpuwm.resume import offline_child_run_at
+
+    outdir = tmp_path / "runner-child"
+    outdir.mkdir()
+    (outdir / "child.toml").write_text("[grid]\n", encoding="utf-8")
+    _blown_up_report(outdir)
+
+    child = offline_child_run_at(outdir)
+    assert child is not None and child.finished is False
+    assert child.failure.startswith("The child blew up:")
+
+
+def test_a_child_that_recorded_no_config_is_still_a_child(tmp_path):
+    """THE REPORTED SHAPE: the configuration was handed in from outside.
+
+    Only the ``--point`` derivation writes ``child.toml`` into
+    ``--out``.  A ``--child-config`` run -- which is every run a desktop
+    or a script composes the configuration for -- leaves the plan
+    document, its frames and its report, and read by the configuration
+    file it was not a child at all: the capsule under its own report
+    was never quoted, and the reader was sent to look for checkpoints
+    that a child never writes for this purpose.
+    """
+    from gpuwm.explain import render
+    from gpuwm.resume import (offline_child_resume_refusal,
+                              offline_child_run_at)
+
+    outdir = _child_run(tmp_path / "child-run", finished=False, frames=2,
+                        records_config=False)
+    _blown_up_report(outdir)
+    assert not (outdir / "child.toml").exists()
+
+    child = offline_child_run_at(outdir)
+    assert child is not None and child.config is None
+    assert child.result == "FAIL" and child.finished is False
+
+    action = render(offline_child_resume_refusal(child), explain=False)
+    assert "The child blew up:" in action
+    assert "run `gpuwm downscale` again" in action
+    assert "draw the 2 frame(s)" in action
+
+    # And with neither the plan document nor the configuration, which
+    # is that same run under the runner door: the capsule in the report
+    # is the whole of what says a child wrote this directory.
+    runner = tmp_path / "runner-child"
+    runner.mkdir()
+    _blown_up_report(runner)
+    named = offline_child_run_at(runner)
+    assert named is not None and named.config is None
+    assert named.failure.startswith("The child blew up:")
+
+
+def test_the_refusal_names_why_a_child_cannot_be_continued(tmp_path):
+    """The explain half carries the breakage, not just the remedy."""
+    from gpuwm.resume import (offline_child_resume_refusal,
+                              offline_child_run_at)
+    from gpuwm.explain import render
+
+    outdir = _child_run(tmp_path / "child-run", finished=True)
+    why = render(offline_child_resume_refusal(offline_child_run_at(outdir)),
+                 explain=True)
+    assert "parent history archive" in why
+    assert "lateral boundaries" in why
+    assert "no flag that continues a child" in why
+
+
+# --- the two doors, through the front door -----------------------------
+
+
+def test_cli_resume_loads_the_config_the_run_recorded(tmp_path, monkeypatch,
+                                                      capsys):
+    """THE REPORTED INVOCATION, end to end, to the (stubbed) run dispatch."""
+    _single(tmp_path, "1974-04-03_13_00_00")
+    install = tmp_path / "install"
+    install.mkdir()
+    (tmp_path / "captured-config-0001.toml").write_text(
+        "[experiment]\n", encoding="utf-8")
+
+    seen = {}
+
+    def fake_load(path, **kwargs):
+        seen["config"] = path
+        return SimpleNamespace(name="stub-exp"), object()
+
+    def fake_run(exp, data, outdir, *, restart=None, health_debug=False):
+        seen["restart"] = restart
+        return SimpleNamespace(wrfout_paths=[], completed_seconds=0.0,
+                               nan_free=True)
+
+    import gpuwm.case_data as case_data
+    import gpuwm.runtime as runtime
+    monkeypatch.setattr(case_data, "load_experiment_case", fake_load)
+    monkeypatch.setattr(runtime, "run_experiment", fake_run)
+    monkeypatch.setattr(cli, "is_experiment_toml", lambda path: True)
+    monkeypatch.chdir(install)
+
+    rc = cli.main(["resume", "somerun.child", "--outdir", str(tmp_path),
+                   "--no-supervise"])
+    assert rc == 0
+    assert Path(seen["config"]) == tmp_path / "captured-config-0001.toml"
+    out = capsys.readouterr().out
+    assert "is not a readable configuration file" in out
+    assert "recorded for itself" in out
+    assert "continuing from" in out
+
+
+def test_cli_resume_refuses_a_child_run_directory(tmp_path, monkeypatch,
+                                                  capsys):
+    """And the run directory is asked before the argument is judged."""
+    outdir = _child_run(tmp_path / "child-run", finished=True, frames=3)
+    _single(outdir, "1974-04-03_13_00_00")
+
+    monkeypatch.chdir(tmp_path)
+    rc = cli.main(["resume", "somerun.child", "--outdir", str(outdir),
+                   "--no-supervise"])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "nothing to resume" in err
+    assert "gpuwm render" in err
+    # The argument was never the subject: no ladder, no loader refusal.
+    assert "does not exist; pass the experiment .toml" not in err
+
+
+def test_cli_resume_refuses_a_blown_up_child_that_recorded_no_config(
+        tmp_path, monkeypatch, capsys):
+    """The door itself, on the directory the reported run left behind.
+
+    A child that blew up and recorded no configuration used to reach
+    the checkpoint resolution, which answered "no gpuwmrst_d*.npz
+    checkpoint files" -- true, and not what happened to the run.
+    """
+    outdir = _child_run(tmp_path / "child-run", finished=False, frames=1,
+                        records_config=False)
+    _blown_up_report(outdir)
+
+    monkeypatch.chdir(tmp_path)
+    rc = cli.main(["resume", "child-settings.toml", "--outdir", str(outdir),
+                   "--no-supervise"])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "The child blew up:" in err
+    assert "run `gpuwm downscale` again" in err
+    assert "cell (k=12, j=401, i=388)" in err
+    # The directory answered before the argument was judged, so neither
+    # the checkpoint ladder nor the experiment ladder ran.
+    assert "checkpoint files" not in err
+    assert "is not a readable configuration file" not in err

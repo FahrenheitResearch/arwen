@@ -37,7 +37,12 @@ from gpuwm.obs.target_grid import TargetGrid
 from gpuwm.static.lambert import LambertGrid
 
 FIXTURES = Path(__file__).parent / "fixtures" / "asos_surface_real"
-RECORD = FIXTURES / "surface_subset.v1.json"
+#: The real writer's own v2 output over the committed CSV: every report
+#: carries the archive instant it was taken at beside the slot it serves.
+RECORD = FIXTURES / "surface_subset.v2.json"
+#: The same writer's v1 output, kept as the shape of every record written
+#: before observation_time existed.
+RECORD_V1 = FIXTURES / "surface_subset.v1.json"
 
 #: The fixture's own valid times (UTC); the record is the authority, these
 #: are just spellings for the tests.
@@ -103,6 +108,90 @@ def test_fixture_is_the_real_seam():
             assert 233.15 < values["temperature_2m"] < 328.15
         if "wind_speed_10m" in values:
             assert 0.0 <= values["wind_speed_10m"] < 75.0
+    # v2: every report says when it was taken, within the record's own
+    # match window of the slot it serves, and no observation serves two
+    # slots.
+    served = set()
+    for report in record["reports"]:
+        taken = datetime.fromisoformat(report["observation_time"])
+        slot = datetime.fromisoformat(report["valid_time"])
+        assert abs((taken - slot).total_seconds()) <= record["match_seconds"]
+        key = (report["station_id"], report["observation_time"])
+        assert key not in served, f"{key} serves two slots"
+        served.add(key)
+    assert any(r["observation_time"] != r["valid_time"]
+               for r in record["reports"]), (
+        "the real archive reports off the hour; a record whose every "
+        "observation sits on its slot is not carrying the instant")
+
+
+def test_a_v1_record_is_read_with_its_slot_as_the_only_instant():
+    """Records written before observation_time existed still assimilate,
+    and the receipt says their ages came from the matched slot."""
+
+    with open(RECORD_V1, "r", encoding="utf-8") as handle:
+        record = json.load(handle)
+    assert record["schema"] == "gpuwm-obs.asos-surface.v1"
+    assert all("observation_time" not in r for r in record["reports"])
+    grid = _grid()
+    t2, u10, v10 = _members(grid)
+    batches, provenance = surface_to_gridded_obs(
+        record, target_grid=grid, analysis_time=T12, config=_config(),
+        simulated_t2=t2, simulated_u10=u10, simulated_v10=v10)
+    assert provenance["obs_schema"] == "gpuwm-obs.asos-surface.v1"
+    assert provenance["counts"]["reports_without_observation_time"] \
+        == len(record["reports"])
+    assert provenance["cadence"]["innovation_time_source"].startswith(
+        "valid_time")
+    assert int(np.asarray(batches[0].mask).sum()) > 0
+
+
+def test_the_age_and_routing_come_from_the_instant_the_report_was_taken():
+    """A 12:52 report served under 13:00 is 480 s old at 13:00, not 0 s,
+    and is routed to the analysis nearest 12:52, never to two."""
+
+    record = _record()
+    # Pick a real report whose archive instant sits off its slot.
+    off_slot = [r for r in record["reports"]
+                if r["valid_time"] == "2024-05-21T13:00:00"
+                and r["observation_time"] != r["valid_time"]]
+    assert off_slot, "the fixture carries no off-slot 13:00 report"
+    report = off_slot[0]
+    taken = datetime.fromisoformat(report["observation_time"]).replace(
+        tzinfo=timezone.utc)
+    expected_age = (T13 - taken).total_seconds()
+    assert expected_age != 0.0
+
+    grid = _grid()
+    t2, u10, v10 = _members(grid)
+    schedule = [T13 - timedelta(minutes=15), T13,
+                T13 + timedelta(minutes=15)]
+    _, provenance = surface_to_gridded_obs(
+        record, target_grid=grid, analysis_time=T13,
+        analysis_times=schedule, config=_config(max_age_seconds=1200.0),
+        simulated_t2=t2, simulated_u10=u10, simulated_v10=v10)
+    assert provenance["cadence"]["innovation_time_source"] \
+        == "observation_time"
+    assert provenance["counts"]["reports_without_observation_time"] == 0
+    qc = provenance["station_qc"][report["station_id"]]
+    assert qc["outcome"] == "accepted"
+    # Signed seconds from the instant it was taken, which a report served
+    # under the 13:00 slot but read at 12:52 or 13:02 makes nonzero.
+    assert qc["age_s"] == expected_age
+    ages = provenance["cadence"]["report_ages_at_assimilation_s"]
+    assert ages["min"] <= expected_age <= ages["max"]
+
+    # The same report enters no other analysis of the schedule.
+    entered = 0
+    for analysis_time in schedule:
+        _, other = surface_to_gridded_obs(
+            record, target_grid=grid, analysis_time=analysis_time,
+            analysis_times=schedule,
+            config=_config(max_age_seconds=1200.0),
+            simulated_t2=t2, simulated_u10=u10, simulated_v10=v10)
+        outcome = other["station_qc"].get(report["station_id"], {})
+        entered += outcome.get("outcome") == "accepted"
+    assert entered == 1
 
 
 def test_adapter_places_real_reports_on_a_real_grid():

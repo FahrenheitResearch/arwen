@@ -1,4 +1,4 @@
-"""The catalog row contract: a machine code, a verdict, a fileless answer.
+"""The catalog row contract: a machine code and a verdict.
 
 Every case here stubs the renderer's output rather than running one, which
 is what lets them run on a box with no build (``find_renderer()`` is None
@@ -26,6 +26,15 @@ _LISTING = "\n".join([
     "CATALOG total=4 blocked=1 excluded=1 missing-fields=1 renderable=1",
 ])
 
+#: The same listing from a build whose generic catalog enumerated the
+#: store.  One ``var:`` row is all it takes to make "no row" a reading
+#: of the store rather than a silence.
+_LISTING_WITH_GENERICS = "\n".join([
+    _LISTING.rsplit("\n", 1)[0],
+    "PRODUCT\tvar:sst\tgeneric\trenderable\tstored 2-D variable 'SST' [K]\trenderable",
+    "CATALOG total=5 blocked=1 excluded=1 missing-fields=1 renderable=2",
+])
+
 
 def _stub_listing(monkeypatch, stdout=_LISTING, returncode=0):
     class Result:
@@ -48,7 +57,14 @@ def test_a_catalog_row_carries_a_machine_code(tmp_path, monkeypatch):
 
 
 def test_the_window_skip_survives_a_reworded_reason(tmp_path, monkeypatch):
-    """The prose is what a reader sees; the code is what a door decides on."""
+    """The prose is what a reader sees; the STATUS is what a door decides on.
+
+    The accessor that matched these rows by their English text is gone
+    with the defect it could not catch: the catalog has five windowed
+    outcomes and two of them were spelled here.  The door reads the
+    row's status through :func:`catalog_verdict`, which is why a
+    reworded reason changes nothing but the sentence the reader gets.
+    """
     reworded = _LISTING.replace(
         "exact-time ordinal axis; fixed-hour windows are undefined on it",
         "this run's frames sit on an exact-time axis, so a fixed-hour window "
@@ -56,20 +72,22 @@ def test_the_window_skip_survives_a_reworded_reason(tmp_path, monkeypatch):
     _stub_listing(monkeypatch, reworded)
     rows, _summary = rustwx.catalog_rows(
         Path("rw_wrfbatch"), [tmp_path / "wrfout_d01"], store_root=tmp_path)
-    unavailable = rustwx.window_axis_unavailable(rows, "qpf_1h,2m_temperature")
-    assert set(unavailable) == {"qpf_1h"}
-    assert "fixed-hour window" in unavailable["qpf_1h"]
+    spec, excluded = rustwx.catalog_verdict(rows, "qpf_1h,2m_temperature")
+    assert spec == "2m_temperature"
+    assert [slug for slug, _reason in excluded] == ["qpf_1h"]
+    assert "fixed-hour window" in dict(excluded)["qpf_1h"]
 
 
 def test_a_build_with_no_code_column_is_still_read(tmp_path, monkeypatch):
-    """The prose match stays, for a renderer built before the code."""
+    """A renderer built before the code column still gets its skip."""
     old = "\n".join(line.rsplit("\t", 1)[0] if line.startswith("PRODUCT") else line
                     for line in _LISTING.splitlines())
     _stub_listing(monkeypatch, old)
     rows, _summary = rustwx.catalog_rows(
         Path("rw_wrfbatch"), [tmp_path / "wrfout_d01"], store_root=tmp_path)
     assert rustwx.catalog_code(rows[0]) == ""
-    assert set(rustwx.window_axis_unavailable(rows, "qpf_1h")) == {"qpf_1h"}
+    spec, excluded = rustwx.catalog_verdict(rows, "qpf_1h")
+    assert spec == "" and [slug for slug, _ in excluded] == ["qpf_1h"]
 
 
 def test_the_four_tuple_listing_is_unchanged(tmp_path, monkeypatch):
@@ -106,12 +124,86 @@ def test_a_request_nothing_can_draw_comes_back_empty(tmp_path, monkeypatch):
     assert len(excluded) == 2
 
 
-def test_a_group_keyword_or_generic_family_is_never_eaten(tmp_path, monkeypatch):
+def test_a_group_keyword_or_undecidable_family_is_never_eaten(tmp_path, monkeypatch):
+    """A group keyword, a section and a mesh term all pass through: the
+    engine expands the first and the other two are not store products, so
+    a store listing cannot decide them and must not try."""
+
     _stub_listing(monkeypatch)
     rows, _summary = rustwx.catalog_rows(
         Path("rw_wrfbatch"), [tmp_path / "wrfout_d01"], store_root=tmp_path)
-    spec, excluded = rustwx.catalog_verdict(rows, "all,var:wrf_olr,xsec:QICE")
-    assert spec == "all,var:wrf_olr,xsec:QICE" and excluded == []
+    spec, excluded = rustwx.catalog_verdict(rows, "all,xsec:QICE,mesh:cell_area")
+    assert spec == "all,xsec:QICE,mesh:cell_area" and excluded == []
+
+
+def test_an_absent_var_family_term_IS_eaten(tmp_path, monkeypatch):
+    """The ``var:`` family is the one exception, and it is a measurement
+    rather than a preference.
+
+    This case asserted that ``var:wrf_olr`` passed through untouched,
+    on the rule that the engine is the authority on an unknown slug.
+    Measured on the shipped 2.7.5 wheel, forwarding an absent one is
+    never right: the generic catalog enumerates the store's 2-D
+    variables, so a missing row is proof, and the renderer answers
+    ``var:SNOWH stored 2-D variable "SNOWH" does not exist`` and exits
+    nonzero -- taking a 13-frame series' other 143 pictures with it.
+    A present-but-DEDUPED variable still passes through
+    (``tests/test_render_series_catalog_verdict.py``), which is what
+    keeps this from refusing a spelling the build accepts.
+    """
+
+    _stub_listing(monkeypatch, _LISTING_WITH_GENERICS)
+    rows, _summary = rustwx.catalog_rows(
+        Path("rw_wrfbatch"), [tmp_path / "wrfout_d01"], store_root=tmp_path)
+    spec, excluded = rustwx.catalog_verdict(rows, "2m_temperature,var:wrf_olr")
+    assert spec == "2m_temperature"
+    assert dict(excluded)["var:wrf_olr"].startswith(
+        "no stored 2-D variable 'wrf_olr'")
+
+
+def test_a_listing_with_no_generic_rows_proves_nothing_absent(
+        tmp_path, monkeypatch):
+    """The measurement above rests on the enumeration having RUN.
+
+    "there is no row for this variable" is proof of absence only because
+    the generic catalog lists every stored 2-D variable.  A listing that
+    carries no generic row at all has not made that statement -- a build
+    without the generic enumeration is one way to get one -- and reading
+    its silence as proof would drop every ``var:`` request a user made,
+    by guess, with the engine never asked.  So the term is forwarded and
+    the renderer decides, which is what :func:`catalog_rows` already
+    does for a build whose rows carry no machine code.
+    """
+
+    _stub_listing(monkeypatch)
+    rows, _summary = rustwx.catalog_rows(
+        Path("rw_wrfbatch"), [tmp_path / "wrfout_d01"], store_root=tmp_path)
+    assert not any(row[1] == "generic" for row in rows)
+    spec, excluded = rustwx.catalog_verdict(rows, "2m_temperature,var:wrf_olr")
+    assert spec == "2m_temperature,var:wrf_olr"
+    assert excluded == []
+
+
+def test_a_deduped_generic_row_is_enough_to_prove_the_enumeration_ran(
+        tmp_path, monkeypatch):
+    """A deduped variable is reported on stderr rather than as a row.
+
+    It is still the generic catalog speaking, so it still proves the
+    store was enumerated, and an absent ``var:`` term is still dropped.
+    """
+
+    class Result:
+        returncode = 0
+        stdout = _LISTING
+        stderr = ("GENERIC_EXCLUDED\torography\talready drawn by a "
+                  "named product")
+
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: Result())
+    rows, _summary = rustwx.catalog_rows(
+        Path("rw_wrfbatch"), [tmp_path / "wrfout_d01"], store_root=tmp_path)
+    spec, excluded = rustwx.catalog_verdict(rows, "2m_temperature,var:wrf_olr")
+    assert spec == "2m_temperature"
+    assert [slug for slug, _reason in excluded] == ["var:wrf_olr"]
 
 
 def test_an_opt_in_family_row_parses_and_keeps_the_status_vocabulary(tmp_path, monkeypatch):
@@ -146,8 +238,20 @@ def test_the_generic_families_are_read_out_of_the_pinned_marker():
     ("all", False),
     ("2m_temperature,composite_reflectivity", False),
 ])
-def test_section_required_reads_the_engines_own_level_list_rule(spec, needed):
-    assert rustwx.section_required(spec) is needed
+def test_the_level_list_rule_decides_which_terms_need_a_line(spec, needed):
+    """The engine's own level-list rule, read on the live path.
+
+    It used to be pinned through a predicate no door called any more.
+    Asked of :func:`gpuwm.rustwx.drop_storeless_terms` instead, the same
+    rule is measured where it is used: a term that needs a line is
+    dropped by a door that composes none, and kept by one that does.
+    """
+
+    _spec, dropped = rustwx.drop_storeless_terms(spec)
+    assert bool(dropped) is needed
+    kept, none_dropped = rustwx.drop_storeless_terms(
+        spec, section="39,-95,40,-94")
+    assert (kept, none_dropped) == (spec, [])
 
 
 def test_the_level_list_continuation_is_not_read_as_a_product():
@@ -156,75 +260,57 @@ def test_the_level_list_continuation_is_not_read_as_a_product():
     assert sections == ["xsec:wa=1,2,5@5"]
 
 
-def test_a_section_request_with_a_line_is_admitted():
-    assert rustwx.section_spec_problem("xsec:wa", section="39,-95,40,-94") is None
-    assert rustwx.section_spec_problem("2m_temperature") is None
+def test_the_storeless_grammar_is_the_only_refusal_builder_left():
+    """The two whole-request refusals are retired, not orphaned.
+
+    They said the renderer "would refuse this render and every other
+    product in it", and both doors now drop the term per product and
+    draw the rest, so the breakage they named cannot be reached from
+    either.  Their grammar lives on in
+    :func:`gpuwm.rustwx.drop_storeless_terms`, which is where both doors
+    ask; `tests/test_render_storeless_families.py` measures both.
+    """
+
+    for gone in ("mesh_spec_problem", "section_spec_problem",
+                 "section_required"):
+        assert not hasattr(rustwx, gone), gone
+    assert "mesh:cell_area" in rustwx.drop_storeless_terms(
+        "composite_reflectivity,mesh:cell_area")[1][0][0]
 
 
-def test_a_section_request_without_a_line_names_the_breakage_and_the_way_out():
-    problem = rustwx.section_spec_problem("xsec:wa")
-    assert problem is not None
-    assert "--section" in problem and "gpuwm render" in problem
+def test_the_downscale_door_does_not_price_products_against_a_plan(monkeypatch):
+    """The plan is not the run.
+
+    Measured on a real child with the shipped snow preset: the
+    renderer build's FILELESS requirement pair called sixteen of its
+    twenty-one products undrawable, 2m_temperature and
+    500mb_height_winds among them, and that same run drew 143
+    pictures of exactly those products.  The pair is gone from this
+    module along with its last caller.
+
+    The door still asks the renderer ONE question, its product
+    vocabulary, so an unknown slug is refused by name; that question
+    is stubbed here.  With it answered, nothing else is launched: no
+    second probe for what the build's import plan writes.
+    """
+
+    from gpuwm import downscale, go_cli
+
+    monkeypatch.setattr(go_cli, "unknown_render_products", lambda spec: [])
+    monkeypatch.setattr(
+        subprocess, "run",
+        lambda *a, **k: pytest.fail("the door probed the renderer build"))
+    downscale._admit_render_products(
+        "2m_temperature,composite_reflectivity", dry_run=True)
+    for gone in ("catalog_requirements", "undrawable",
+                 "parse_catalog_requirements", "window_axis_unavailable"):
+        assert not hasattr(rustwx, gone), gone
 
 
-def test_the_downscale_door_refuses_a_section_request_it_cannot_compose():
-    from gpuwm.downscale import OfflineChildContractError, _admit_render_products
+# ------------------------------------------- the engine's row grammar
 
-    with pytest.raises(OfflineChildContractError) as excinfo:
-        _admit_render_products("xsec:wa", dry_run=True)
-    assert "--section" in str(excinfo.value)
-    assert "after the forecast" in str(excinfo.value)
-
-
-# ------------------------------------------- the fileless requirement pair
-
-_FILELESS = "\n".join([
-    "group keywords: all, direct, derived, heavy, windowed",
-    "  2m_temperature",
-    "  10m_wind_gusts",
-    "NEEDS\t2m_temperature\ttemperature_2m_agl",
-    "NEEDS\t10m_wind_gusts\twind_gust_10m_agl",
-    "PLANNED\ttemperature_2m_agl",
-    "PLANNED\tmslp",
-    "selectable_slugs=2",
-])
-
-
-def test_the_fileless_pair_answers_availability_before_a_wrfout_exists():
-    answer = rustwx.parse_catalog_requirements(_FILELESS)
-    assert answer.needs["10m_wind_gusts"] == ("wind_gust_10m_agl",)
-    assert "temperature_2m_agl" in answer.planned
-    missing = rustwx.undrawable(
-        ["2m_temperature", "10m_wind_gusts"], requirements=answer)
-    assert set(missing) == {"10m_wind_gusts"}
-    assert "wind_gust_10m_agl" in missing["10m_wind_gusts"]
-    assert answer.basis in missing["10m_wind_gusts"]
-
-
-def test_a_slug_the_build_records_no_requirement_for_is_not_claimed():
-    answer = rustwx.parse_catalog_requirements(_FILELESS)
-    assert rustwx.undrawable(["a_slug_nothing_records"], requirements=answer) == {}
-
-
-def test_no_resolver_reports_nothing_rather_than_refusing_everything():
-    """Unmeasured is not impossible (lane rule 1)."""
-    assert rustwx.undrawable(["10m_wind_gusts"], requirements=None) == {}
-
-
-def test_a_build_too_old_to_answer_the_pair_answers_none(monkeypatch, tmp_path):
-    binary = tmp_path / "rw_wrfbatch"
-    binary.write_bytes(b"")
-
-    class Result:
-        returncode = 0
-        stdout = "group keywords: all\n  2m_temperature\nselectable_slugs=1\n"
-        stderr = ""
-
-    monkeypatch.setattr(subprocess, "run", lambda *a, **k: Result())
-    assert rustwx.catalog_requirements(binary) is None
-
-
-def test_the_abi_marker_pins_the_row_grammar_the_parser_reads():
+def test_the_abi_marker_pins_the_row_grammar_the_engine_publishes():
+    """The marker is the engine's own statement of its row shapes."""
     assert "\tdetail\tcode\t" in rustwx.RENDERER_ABI_MARKER
     assert "requirements-v1\tNEEDS\t" in rustwx.RENDERER_ABI_MARKER
     assert "\tPLANNED\tstore_field\t" in rustwx.RENDERER_ABI_MARKER

@@ -99,39 +99,54 @@ def lane_capabilities(path: Path | None = None) -> dict:
     return {**document, "sha256": hashlib.sha256(payload).hexdigest()}
 
 
-def preset_availability(capabilities=None, requirements=None) -> dict:
+#: How the preset block describes itself, so a reader can price it.
+#: It is the packaged lane record and nothing else: the authority on
+#: what one RUN can draw is that run's own store catalog, read at render
+#: time against the frames the invocation will draw.
+PRESET_AVAILABILITY_BASIS = (
+    "the packaged lane record only. What a given run can draw is decided "
+    "by that run's own store catalog at render time; a product it cannot "
+    "draw is dropped before the renderer is launched and named, with the "
+    "engine's own reason, in that render's summary")
+
+
+def preset_availability(capabilities=None) -> dict:
     """Per preset, the products this lane will not draw, and why.
 
-    Two sources, one statement.  The packaged record names the products
-    the wrfout lane cannot serve AND the concrete reason, in the words a
-    reader needs; the renderer's own fileless requirement rows name the
-    store selector the import does not write, for this build.  Whichever
-    has something to say says it, and when both do the reader gets both
-    sentences rather than a choice between them.
+    ONE source: the packaged record, which names the products the wrfout
+    lane cannot serve AND the concrete reason, in the words a reader
+    needs.
 
-    It states, never refuses.  A preset is a curated request, not a
-    promise about one install, and narrowing the curated list to what
-    this box happens to draw would hide the finding instead of reporting
-    it.  When the renderer cannot be asked at all, the block still comes
-    back, carrying what the record knows and saying so.
+    The renderer's FILELESS requirement rows used to be folded in beside
+    it and are not any more, for a measured reason.  That pair reads the
+    build's requirement table and its wrfout import PLAN with no file
+    open, and measured on the shipped wheel against a real child it
+    called sixteen of the shipped ``snow`` preset's twenty-one products
+    undrawable -- ``2m_temperature`` and ``500mb_height_winds`` among
+    them -- on the very run that then drew 143 pictures of exactly those
+    products.  A picker that tells a reader a product will not draw,
+    about products every run draws, teaches that reader to skip the
+    lines that are true.  The same reading retired the same pair at the
+    ``gpuwm downscale`` door; this was its last caller.
+
+    The measurement that holds is the store's own catalog, asked about
+    the frames one invocation is about to render
+    (:func:`gpuwm.render._available_window_request`), and that is where
+    a product is dropped and named.
+
+    This block STATES, never refuses.  A preset is a curated request,
+    not a promise about one install, and narrowing the curated list to
+    what this box happens to draw would hide the finding instead of
+    reporting it.
     """
 
     capabilities = lane_capabilities() if capabilities is None else capabilities
     recorded = dict(capabilities.get("unavailable") or {})
     document = {}
     for preset in presets()["presets"]:
-        rows = {}
-        for slug in preset["products"]:
-            reason = recorded.get(slug)
-            if requirements is not None:
-                from gpuwm.rustwx import undrawable
-
-                measured = undrawable([slug], requirements=requirements).get(slug)
-                if measured:
-                    reason = f"{reason} {measured}" if reason else measured
-            if reason:
-                rows[slug] = reason
-        document[preset["id"]] = rows
+        document[preset["id"]] = {
+            slug: recorded[slug] for slug in preset["products"]
+            if recorded.get(slug)}
     return document
 
 
@@ -142,11 +157,10 @@ def catalog_document() -> dict:
 
     with bridges.inspection_only():
         catalog = render_catalog()
-        requirements, basis = _requirements()
     capabilities = lane_capabilities()
     return {**catalog, "presets": presets(),
-            "preset_availability": preset_availability(capabilities, requirements),
-            "preset_availability_basis": basis,
+            "preset_availability": preset_availability(capabilities),
+            "preset_availability_basis": PRESET_AVAILABILITY_BASIS,
             "lane_record_sha256": capabilities["sha256"],
             "lanes": other_lanes()}
 
@@ -172,26 +186,6 @@ def other_lanes() -> dict:
             "engine": rustwx_lanes.OBSGRID_NAME,
         },
     }
-
-
-def _requirements():
-    """``(the renderer's requirement rows or None, the basis sentence)``."""
-
-    try:
-        from gpuwm.rustwx import REQUIREMENTS_BASIS, catalog_requirements
-
-        answer = catalog_requirements()
-    except Exception as error:  # the picker states this, it never dies of it
-        return None, ("the installed renderer could not be asked which "
-                      f"products it can draw ({error}); what follows is the "
-                      "packaged lane record only, so a product this install "
-                      "cannot draw for another reason is not named here")
-    if answer is None:
-        return None, ("no renderer was resolvable to ask which products it "
-                      "can draw; what follows is the packaged lane record "
-                      "only, so a product this install cannot draw for "
-                      "another reason is not named here")
-    return answer, (f"the packaged lane record, plus {REQUIREMENTS_BASIS}")
 
 
 def main(argv=None) -> int:

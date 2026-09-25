@@ -7,6 +7,8 @@ from pathlib import Path
 import subprocess
 import sys
 
+import pytest
+
 from gpuwm import tui_products
 
 
@@ -126,43 +128,50 @@ def test_the_catalog_document_carries_the_statement_and_its_basis(monkeypatch):
     assert document["presets"] == tui_products.presets()
 
 
-def test_the_renderers_own_requirement_rows_name_the_missing_selector(monkeypatch):
-    from gpuwm import runplan, rustwx
+def test_the_picker_does_not_price_a_preset_against_a_fileless_plan(monkeypatch):
+    """The plan is not the run.
 
-    requirements = rustwx.parse_catalog_requirements("\n".join([
-        "NEEDS\t2m_temperature\ttemperature_2m_agl",
-        "NEEDS\t10m_wind_gusts\twind_gust_10m_agl",
-        "PLANNED\ttemperature_2m_agl",
-    ]))
+    The renderer build's fileless requirement pair used to be folded
+    in beside the packaged record here.  Measured on the shipped
+    wheel against a real child, it called sixteen of the shipped snow
+    preset's twenty-one products undrawable, 2m_temperature and
+    500mb_height_winds among them, on the run that then drew 143
+    pictures of exactly those products.  The same reading retired the
+    same pair at the downscale door; this was its last caller, so the
+    picker asks the renderer nothing but its catalog and the block
+    says which measurement it rests on.
+    """
+    from gpuwm import runplan
+
     monkeypatch.setattr(runplan, "render_catalog",
-                        lambda: {"engine": "rust", "products": [{"name": "2m_temperature"}]})
-    monkeypatch.setattr(rustwx, "catalog_requirements", lambda *a, **k: requirements)
+                        lambda: {"engine": "rust",
+                                 "products": [{"name": "2m_temperature"}]})
+    monkeypatch.setattr(
+        subprocess, "run",
+        lambda *a, **k: pytest.fail("the picker launched the renderer"))
     document = tui_products.catalog_document()
     general = document["preset_availability"]["general"]
-    assert "wind_gust_10m_agl" in general["10m_wind_gusts"]
-    assert rustwx.REQUIREMENTS_BASIS in general["10m_wind_gusts"]
+    record = tui_products.lane_capabilities()
+    assert general == {
+        slug: record["unavailable"][slug]
+        for slug in ("10m_wind_gusts", "precipitation_type", "cloud_cover")}
     assert "2m_temperature" not in general
-    assert rustwx.REQUIREMENTS_BASIS in document["preset_availability_basis"]
+    basis = document["preset_availability_basis"]
+    assert basis == tui_products.PRESET_AVAILABILITY_BASIS
+    assert "store catalog at render time" in basis
 
 
-def test_a_renderer_that_cannot_be_asked_states_its_basis_and_does_not_refuse(monkeypatch):
-    """Unmeasured is not impossible: the block stays, saying what it knows."""
-    from gpuwm import runplan, rustwx
-
-    def raising(*args, **kwargs):
-        raise RuntimeError("the renderer could not be launched")
+def test_the_block_never_narrows_the_curated_preset(monkeypatch):
+    """A preset is a curated request, not a promise about one install."""
+    from gpuwm import runplan
 
     monkeypatch.setattr(runplan, "render_catalog",
-                        lambda: {"engine": "rust", "products": [{"name": "2m_temperature"}]})
-    monkeypatch.setattr(rustwx, "catalog_requirements", raising)
+                        lambda: {"engine": "rust",
+                                 "products": [{"name": "2m_temperature"}]})
     document = tui_products.catalog_document()
-    assert "preset_availability" in document
-    assert document["preset_availability"]["general"] == {
-        slug: tui_products.lane_capabilities()["unavailable"][slug]
-        for slug in ("10m_wind_gusts", "precipitation_type", "cloud_cover")}
-    basis = document["preset_availability_basis"]
-    assert "could not be asked" in basis and "packaged lane record only" in basis
     assert document["presets"] == tui_products.presets()
+    assert set(document["preset_availability"]) == {
+        row["id"] for row in tui_products.presets()["presets"]}
 
 
 def test_the_catalog_lists_the_observation_grid_lane_as_its_own(monkeypatch):

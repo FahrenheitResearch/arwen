@@ -570,20 +570,19 @@ def start_setup(*, setup_path, cycle, hours, forecast_start_hour, name, out):
     wps = _wps_text(exp, saved_wps if saved_wps.is_file() else None, wps_output,
                     raw, len(exp.domains),
                     original_domain_ids=[domain.grid_id for domain in exp.domains])
-    companions = [(wps_output, wps), *carried]
     from gpuwm.runplan import prepared_chain_for_source
-    if "case_data" not in raw and prepared_chain_for_source(source) == "prepared:hrrr":
-        # The native route reads four dated companions. They are rendered
-        # again from the re-timed experiment rather than copied, because a
-        # copied one would carry the saved forecast's dates.
-        from gpuwm.hrrr_route_inputs import write_hrrr_route_inputs
-        with tempfile.TemporaryDirectory(prefix="arwen-setup-start-") as directory:
-            staged = Path(directory) / out.name
-            written = write_hrrr_route_inputs(
-                staged, published, wps_text=wps,
-                writer=lambda path, content: path.write_text(content, encoding="utf-8"))
-            companions = [(out.parent / path.name, path.read_text(encoding="utf-8"))
-                          for path in written] + carried
+    if "case_data" not in raw:
+        # Unchanged refusal: a saved setup whose source no chain can
+        # drive is named here rather than after the start.
+        prepared_chain_for_source(source)
+    # The route's companions are rendered again from the RE-TIMED
+    # experiment rather than copied, because a copied one would carry the
+    # saved forecast's dates. One helper for every candidate-writing
+    # door, so a fifth one cannot omit them.
+    from gpuwm.hrrr_route_inputs import candidate_companions
+    companions = [*candidate_companions(
+        out, published, wps_text=wps,
+        source=(raw.get("fetch") or {}).get("source")), *carried]
     for path, _content in companions:
         if os.path.lexists(path):
             raise ValueError(exists_refusal)
@@ -601,6 +600,7 @@ def start_setup(*, setup_path, cycle, hours, forecast_start_hour, name, out):
         "forecast_started": False, "acquisition_started": False,
         "config_path": str(out), "config_sha256": config_sha,
         "wps_path": str(wps_output), "receipt_path": str(receipt_output),
+        "route_companions": [str(path) for path, _text in companions],
         "setup_path": str(authority.source), "setup_sha256": authority.sha256,
         "setup_name": document.get("name"), "timing": timing,
         "changes": timed, "configuration": configuration,

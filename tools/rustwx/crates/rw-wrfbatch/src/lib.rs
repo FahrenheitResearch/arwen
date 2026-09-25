@@ -36,3 +36,4 @@ pub mod section;
 pub mod process_request;
 pub mod viewer_profile;
 mod wrf_chart_planes;
+mod wrf_column_planes;

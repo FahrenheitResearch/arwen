@@ -15,15 +15,23 @@ use crate::refusal::{frame_invalid, Result};
 pub const SCHEMA: &str = "gpuwm-mapped-atmospheric-window-v1";
 pub const FRAMESET_SCHEMA: &str = "gpuwm-mapped-windowed-frameset-v1";
 
-// The same six source operands consumed by the Python regular-join window ABI.
+// The eleven source operands consumed by the Python regular-join window ABI.
 // Having vertical/y/x axes alone does not authorize publication of a diagnostic
 // or a prognostic field through a consumer that cannot read that representation.
+// `gpuwm.ingest.atmospheric_window.CANONICAL_ATMOSPHERIC_FIELDS`: the six
+// thermodynamic and wind fields plus the five hydrometeor masses, which the
+// regular join expects at the window's shape under their legacy names.
 const CANONICAL_ATMOSPHERIC_FIELDS: &[&str] = &[
     "air_pressure",
     "air_temperature",
+    "cloud_ice_mixing_ratio",
+    "cloud_water_mixing_ratio",
     "eastward_wind",
     "geopotential_height",
+    "graupel_or_hail_mixing_ratio",
     "northward_wind",
+    "rain_water_mixing_ratio",
+    "snow_mixing_ratio",
     "specific_humidity",
 ];
 

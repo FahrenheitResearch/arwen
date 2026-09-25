@@ -9,6 +9,13 @@ else entirely.
 
 The source run is opened read-only. Nothing is written into it, ever.
 
+Neither door continues a **downscaled child**. A child is integrated by
+`gpuwm downscale` from an archived parent -- its initial state, its lateral
+boundaries and its surface seed all come out of that preparation -- so
+`gpuwm resume` refuses a child's run directory by name and says what to run
+instead. The child's checkpoints are still evidence: they are what the next
+`gpuwm downscale` reads as its parent.
+
 ```
 gpuwm branch myrun.toml --from-run out/myrun --outdir out/myrun-wider --set relocation.follow.radius_km=80
 ```

@@ -4,11 +4,11 @@ Same bar as tests/test_gf_shallow_parity.py: bitwise identity with the WRF
 v4.6.1 per-case capture (gf-shallow-levels.csv / gf-shallow-surface.csv, 18
 cases) with fzu PINNED from that capture, exactly as the CPU suite pins it.
 
-WHY IT IS PINNED, AND WHAT CHANGED AT 2.7.0.  Through 2.6.5 gfk_tgamma was a
-transcription of glibc 2.39's LGPL e_gammaf_r.c, so the kernel returned
-glibc's own words and this gate could run the chain unpinned -- the notch
-past the CPU suite.  The transcription is gone (an Apache-2.0 distribution
-cannot carry it) and gfk_tgamma is now ArWen's own CORRECTLY ROUNDED gamma,
+WHY IT IS PINNED, AND WHAT CHANGED AT 2.7.0.  Through 2.6.5 gfk_tgamma was
+ArWen's earlier gamma, which returned glibc 2.39's tgammaf words, so the
+kernel and this gate could run the chain unpinned, the notch past the CPU
+suite.  That gamma is replaced, and gfk_tgamma is now ArWen's own
+CORRECTLY ROUNDED gamma,
 which glibc's is not on 39.44 per cent of [0.25, 36].  The shallow arm is
 the worst-exposed one: beta = 2.5 makes all three gamma calls live, and the
 xkshal = (xaa0-aa1)/mbdt cancellation turns a last-bit fzu change into
@@ -184,7 +184,7 @@ def test_the_sh_fzu_pin_was_honoured(stage, want):
 
     This replaces ``test_sh_fzu_needed_no_pin``, which asserted that the
     device COMPUTED glibc's own sh_fzu with no override.  That was true only
-    while gfk_tgamma was a transcription of glibc's LGPL e_gammaf_r.c; it is
+    while the earlier gfk_tgamma returned glibc's tgammaf words; it is
     false now, deliberately, and docs/gf_gamma_known_delta.md is the record.
     What is asserted instead is that the kernel reports back the word it was
     handed, which is what makes the 18-case bitwise result above mean
@@ -203,7 +203,7 @@ def test_the_unpinned_shallow_fzu_is_the_documented_divergence(module,
     moves it away from WRF, which is the known delta, not a fault.
 
     If this ever stops firing, gamma has gone back to reproducing glibc's
-    tgammaf and the licence position has silently changed -- read
+    tgammaf and has silently lost its correct rounding; read
     docs/gf_gamma_known_delta.md before believing it.  The bound is asserted
     too: the shallow arm's alpha and beta stay inside the interval gamma is
     proven correctly rounded over, so no case may move by more than the

@@ -343,3 +343,50 @@ def test_actual_cuda_scalar_stage_consumes_aerosol_tables_and_preserves_number_f
         expected=value*(1.+.25/60.)
         np.testing.assert_allclose(cp.asnumpy(getattr(state,name))[:,:,0],expected,rtol=3e-7)
     np.testing.assert_array_equal(cp.asnumpy(state.nc)[:,:,0],0.)
+
+
+@pytest.mark.gpu
+def test_specified_finalizer_forces_supplied_aerosol_back_to_its_boundary_table():
+    """spec_bdy_final covers every SUPPLIED scalar, not just water vapour.
+
+    A specified mp=28 domain supplies nwfa/nifa as boundary scalars (WRF
+    v4.6.1 solve_em.F:2904-2930).  Their spec zone integrates a boundary
+    TENDENCY through the RK stages and is only brought back onto the
+    boundary VALUE here; when this finalizer skipped them the spec row and
+    the relax zone beside it fed each other and the aerosol number at the
+    outermost corner ran away geometrically, 74x in the first forecast
+    hour, while qv in that same cell moved 1.2 percent over that hour.
+    """
+    cp = pytest.importorskip('cupy')
+    from gpuwm.core.grid import make_base_state, make_vertical_coord
+    from gpuwm.core.state import init_at_rest
+    from gpuwm.ingest.lateral_bc import (apply_state_boundary_values,
+                                         attach_lateral_boundaries,
+                                         build_lateral_boundaries,
+                                         domain_boundary_snapshot)
+    cfg = _cfg(nz=6, dt=1.)
+    coord = make_vertical_coord(cfg.nz)
+    base = make_base_state(coord, lambda z: np.full_like(z, 300.),
+                           cfg.p_surf, cfg.ztop)
+    state = init_at_rest(cfg, coord, base)
+    settled = (('qv', .01), ('nwfa', 2e8), ('nifa', 2e5))
+    for name, value in settled:
+        getattr(state, name)[:] = value
+    state.mup0[:] = state.mup
+    assert state._external_scalar_boundary_fields == ('qv', 'nwfa', 'nifa')
+    table = domain_boundary_snapshot(state)
+    assert {'nwfa', 'nifa'} <= set(table)
+    bc = build_lateral_boundaries([table, table], [0., 60.])
+    attach_lateral_boundaries(state, bc)
+    # A drift only this finalizer can undo, planted on every supplied
+    # scalar at once so a per-field omission is what the assertion reads.
+    for name, _ in settled:
+        getattr(state, name)[:] *= 4.
+    apply_state_boundary_values(state, cfg, elapsed_seconds=0.)
+    frame = np.zeros((cfg.ny, cfg.nx), dtype=bool)
+    frame[:cfg.spec_zone, :] = frame[cfg.ny - cfg.spec_zone:, :] = True
+    frame[:, :cfg.spec_zone] = frame[:, cfg.nx - cfg.spec_zone:] = True
+    for name, value in settled:
+        got = cp.asnumpy(getattr(state, name))
+        np.testing.assert_allclose(got[:, frame], value, rtol=3e-6)
+        np.testing.assert_allclose(got[:, ~frame], 4. * value, rtol=3e-6)

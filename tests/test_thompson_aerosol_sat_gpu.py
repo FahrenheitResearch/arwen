@@ -1249,6 +1249,69 @@ def test_rain_evaporation_honours_the_condensation_gate():
         cp.asnumpy(ungated[0])[~condensing])
 
 
+def test_cloud_presence_is_the_l_qc_the_cloud_fallout_reads(
+        tnccn_act, tnc_wev):
+    """module_mp_thompson.F:3215-3223 and :3485, read by :3645.
+
+    WRF's cloud fallout runs only in a column where ANY(L_qc) holds, and the
+    L_qc it reads is the post-source flag with one later edit: the
+    condensation loop CLEARS it where the adjusted cloud is at R1 (:3485).
+    It never sets it, so cloud that condenses onto a level whose post-source
+    L_qc was false does not open the gate.  The adapter used to take the
+    gate from the post-source cloud water alone and sedimented cloud WRF
+    leaves where it formed (31 cells of one saved real-data analysis frame
+    against WRF v4.6.1's own Fortran, tools/thompson_real_column_parity).
+
+    One launch, one level per case:
+
+    0. cloud in subsaturated air, all of it evaporated   -> cleared, 0
+    1. plenty of cloud, slightly subsaturated, some left  -> kept, 1
+    2. no cloud, supersaturated: condensation makes some  -> never set, 0
+    3. no cloud, subsaturated: the branch does not run    -> 0
+    4. cloud in supersaturated air, grows                 -> kept, 1
+    5. cloud at R1 or below after the sources, saturated  -> 0
+    """
+    import cupy as cp
+
+    from gpuwm.core.thompson_aerosol_sat import (
+        launch_aerosol_saturation_adjust)
+
+    temperature = np.full(6, 283.0, dtype=F32)
+    pressure = np.full(6, 85000.0, dtype=F32)
+    qvs = _rslf(pressure, temperature)
+    ratio = np.array([0.80, 0.999, 1.02, 0.90, 1.02, 1.0], dtype=F32)
+    qv = (ratio * qvs).astype(F32)
+    qc = np.array([1.0e-7, 3.0e-3, 0.0, 0.0, 1.0e-4, 1.0e-12], dtype=F32)
+    nc = np.where(qc > 0, F32(1.0e8), F32(0.0)).astype(F32)
+    nwfa = np.full(6, 3.0e8, dtype=F32)
+    w = np.full(6, 0.5, dtype=F32)
+
+    dev = [cp.asarray(a.copy()) for a in
+           (temperature, pressure, qv, qc, nc, nwfa, w)]
+    ncten = cp.zeros(6, dtype=cp.float32)
+    nwfaten = cp.zeros(6, dtype=cp.float32)
+    condensation = cp.zeros(6, dtype=cp.float32)
+    presence = cp.full(6, -7.0, dtype=cp.float32)
+    launch_aerosol_saturation_adjust(
+        dev[0], dev[1], dev[2], dev[3], dev[4], ncten, nwfaten, dev[5],
+        dev[6], tnccn_act, tnc_wev, 10.0,
+        condensation_rate=condensation, cloud_presence=presence)
+    cp.cuda.Stream.null.synchronize()
+
+    got = cp.asnumpy(presence)
+    prw = cp.asnumpy(condensation)
+    qc_after = cp.asnumpy(dev[3])
+    # The cases are what they say they are.
+    assert prw[0] < 0 and qc_after[0] * _rho(pressure, temperature, qv)[0] \
+        <= F32(1.0e-12), (prw[0], qc_after[0])
+    assert prw[1] < 0 and qc_after[1] > F32(1.0e-6)
+    assert prw[2] > 0 and qc_after[2] > F32(1.0e-12)
+    assert prw[3] == 0 and qc_after[3] == 0
+    assert prw[4] > 0 and qc_after[4] > qc[4]
+    np.testing.assert_array_equal(
+        got, np.array([0.0, 1.0, 0.0, 0.0, 1.0, 0.0], dtype=F32))
+
+
 def test_rain_evaporation_exports_the_sedimentation_density_wrf_actually_used():
     """module_mp_thompson.F:3237-3238 vs :3568-3570, level by level.
 
@@ -1266,7 +1329,11 @@ def test_rain_evaporation_exports_the_sedimentation_density_wrf_actually_used():
     unconditionally, at every level, before its own gates -- so every level
     got the :3568 answer including the ones WRF never rewrote.  It now writes
     the :3237 density by default and overwrites it with the :3568 one only
-    after all three gates pass.
+    after all three gates pass, NEGATED, because :3568 floors the rebuilt
+    pair at R1 / R2 where :3237 did not.  Where L_qr itself failed (:3236)
+    WRF formed no working pair at all -- rr = R1, nr = R2 at :3252-3253 --
+    and the export is ZERO.  The rain fallout's _with_presence entry points
+    read all three cases (thompson.cu).
 
     THE TEST DRIVES BOTH SIDES OF THE GATE IN ONE LAUNCH.  ``condensation_rate``
     is set positive on the odd levels, which is :3502's veto, so the same
@@ -1316,18 +1383,26 @@ def test_rain_evaporation_exports_the_sedimentation_density_wrf_actually_used():
     # the marker a real discriminator rather than decoration.
     assert not fired[1::2].any()
 
-    # 1. GATE DID NOT FIRE -> WRF never reached :3568, so sedimentation must
-    #    see the :3237 pair, i.e. the entry density, bit for bit.
-    np.testing.assert_array_equal(got[~fired], want_entry[~fired])
+    # 1. GATE DID NOT FIRE on a level with L_qr -> WRF never reached :3568,
+    #    so sedimentation must see the :3237 pair, i.e. the entry density,
+    #    bit for bit.
+    lqr = qr0 > np.float32(1.0e-12)
+    kept = ~fired & lqr
+    assert kept.any() and (~lqr).any(), (kept.tolist(), lqr.tolist())
+    np.testing.assert_array_equal(got[kept], want_entry[kept])
     # ...and that is not vacuous: the entry density really is different from
     # the local one at every level of this column.
-    assert np.all(got[~fired] != local_rho[~fired])
+    assert np.all(got[kept] != local_rho[kept])
+    # 1b. L_QR FAILED -> no working pair; the export is the zero marker.
+    np.testing.assert_array_equal(got[~lqr], np.float32(0.0))
 
     # 2. GATE FIRED -> :3568 rebuilt rr/nr from the :3490 density, so the
-    #    export must be the local post-condensation rho.  Checked against an
-    #    independent host transcription, not against the kernel.
-    np.testing.assert_array_equal(got[fired], local_rho[fired])
-    assert np.all(got[fired] != want_entry[fired])
+    #    export must be the local post-condensation rho, NEGATED: the sign
+    #    tells the fallout that :3568 floored the rebuilt pair at R1 / R2.
+    #    Checked against an independent host transcription, not against the
+    #    kernel.
+    np.testing.assert_array_equal(got[fired], -local_rho[fired])
+    assert np.all(-got[fired] != want_entry[fired])
 
 
 # ---------------------------------------------------------------------------

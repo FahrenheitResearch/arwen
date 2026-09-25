@@ -512,8 +512,11 @@ def test_the_receipt_travels_whole(monkeypatch, tmp_path):
     receipt = entry["initialization_receipt"]
     assert receipt["awaiting_profile_fill"] is True
     assert "module_mp_thompson.F" in receipt["microphysics_citation"]
+    # The number moments left this receipt when the cold-start closure
+    # began setting them from the analyzed mass; only the aerosol fields
+    # are source-absent zeros awaiting the init hook.
     assert set(receipt["source_absent_state_fields"]) == {
-        "nc", "nr", "ni", "nwfa", "nifa", "nwfa2d", "nifa2d"}
+        "nwfa", "nifa", "nwfa2d", "nifa2d"}
     assert isinstance(
         receipt["source_absent_state_fields"]["nwfa"]["sha256"], str)
 

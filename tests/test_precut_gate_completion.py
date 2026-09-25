@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import types
 import xml.etree.ElementTree as ET
 
 import pytest
@@ -317,3 +318,143 @@ def test_real_expected_subtest_failure_is_recorded_as_skipped(tmp_path):
     checked = gate.completed_result((tmp_path / "completed.xml").read_text(), 0, ["test_subtests.py"])
     assert checked["subtest_cases"] == 3
     assert checked["counts"] == dict(tests=4, failures=0, errors=0, skipped=1, passed=3)
+
+
+#: The shipped-tree scan lives with the snapshot builder, which
+#: RELEASE-EXCLUDE keeps out of a published tree.
+BUILDER = ROOT / "work" / "build_release_snapshot.py"
+requires_builder = pytest.mark.skipif(
+    not BUILDER.is_file(),
+    reason="work/build_release_snapshot.py is not in this tree "
+           "(published snapshot: the builder is publisher scaffolding)")
+
+
+@requires_builder
+def test_the_receipt_it_writes_carries_no_machine_path(tmp_path, monkeypatch):
+    """THE BREAKAGE THIS PREVENTS: this receipt is committed beside the tests
+    it backs, and the release snapshot refuses to build over a
+    developer-absolute path in a shipped file.
+
+    Both shapes are assembled rather than written out, for the reason
+    tests/test_release_snapshot_machine_paths.py gives about its own
+    fixtures: the scan reads this file too. The verdict is the scan's own.
+    """
+
+    spec = importlib.util.spec_from_file_location("snapshot_scan", BUILDER)
+    scan = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(scan)
+    back = chr(92)
+    scratch = "/ho" + "me/account/agent-scratch/contract-stage"
+    tree_shape = "C:" + back + "Users" + back + "account" + back + "work"
+
+    rc, receipt, _ = drive(tmp_path, monkeypatch, remote=scratch)
+    assert rc == 0 and receipt["status"] == "PASS"
+    written = tmp_path / "evidence" / ("precut-gate-" + HEAD[:9] + ".json")
+    assert scan.machine_path_violations(
+        written.read_text(encoding="utf-8")) == []
+    assert receipt["remote_directory"].startswith("run-")
+    assert receipt["structured_report"].startswith("contract-")
+    assert "/" not in receipt["remote_directory"]
+    assert "/" not in receipt["structured_report"]
+    assert scratch not in json.dumps(receipt)
+
+    spec = importlib.util.spec_from_file_location("precut_writer", SOURCE)
+    gate = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(gate)
+    target = tmp_path / "evidence" / "written-directly.json"
+    gate.save_evidence(target, {
+        "tree": tree_shape,
+        "output_tail": "Traceback" + back + "n  File " + scratch + "/repo/t.py",
+        "files": [scratch + "/repo/tests/test_doctor.py"],
+    })
+    assert scan.machine_path_violations(
+        target.read_text(encoding="utf-8")) == []
+def _fresh_gate():
+    """A copy of the gate module with its own empty rule cache."""
+    spec = importlib.util.spec_from_file_location("precut_writer_shadowed", SOURCE)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _stand_in(where, rule=None):
+    """A module under the product's name that is not the product: what the
+    bare name binds when another distribution is installed."""
+    module = types.ModuleType("gpuwm.report_bundle")
+    module.__file__ = str(where)
+    if rule is not None:
+        module.redact_home_directories = rule
+    return module
+
+
+def _home_shaped_record():
+    back = chr(92)
+    scratch = "/ho" + "me/account/agent-scratch/contract-stage"
+    return scratch, {
+        "tree": "C:" + back + "Users" + back + "account" + back + "work",
+        "output_tail": "Traceback" + back + "n  File " + scratch + "/repo/t.py",
+        "files": [scratch + "/repo/tests/test_doctor.py"],
+    }
+
+
+@requires_builder
+@pytest.mark.parametrize("carries_a_rule", [False, True])
+def test_the_record_writer_survives_another_tree_binding_the_name(
+        tmp_path, monkeypatch, carries_a_rule):
+    """THE BREAKAGE THIS PREVENTS: the gates run as scripts, whose first path
+    entry is the script's own directory, so the bare name binds whichever
+    distribution the interpreter has installed rather than this tree.
+
+    Reproduced on a controller with an older editable install: importing the
+    rule by name raised, the failure came out of the record writer, and a
+    completed remote run wrote no receipt at all. The second case is the
+    quieter one: a distribution that DOES carry the name would have scrubbed
+    this tree's record by another tree's rule.
+    """
+
+    spec = importlib.util.spec_from_file_location("snapshot_scan", BUILDER)
+    scan = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(scan)
+
+    gate = _fresh_gate()
+    elsewhere = tmp_path / "another-tree" / "gpuwm" / "report_bundle.py"
+    monkeypatch.setitem(
+        sys.modules, "gpuwm.report_bundle",
+        _stand_in(elsewhere, rule=(lambda text, **_: text) if carries_a_rule else None))
+
+    scratch, record = _home_shaped_record()
+    target = tmp_path / "evidence" / "under-a-shadow.json"
+    gate.save_evidence(target, record)
+
+    written = target.read_text(encoding="utf-8")
+    assert scan.machine_path_violations(written) == []
+    assert scratch not in written
+    assert json.loads(written)["files"] and "Traceback" in json.loads(written)["output_tail"]
+
+
+@requires_builder
+def test_a_record_that_cannot_be_scrubbed_is_a_verdict_and_not_a_traceback(tmp_path, monkeypatch):
+    """THE BREAKAGE THIS PREVENTS: finish() runs outside main()'s own guard,
+    so a writer that raises ends the process in a traceback after a completed
+    remote run. A receipt that cannot be scrubbed is refused like one that
+    cannot be stored: no file, exit 2, and a line saying why."""
+
+    gate = _fresh_gate()
+    monkeypatch.setattr(gate, "home_directory_redaction",
+                        lambda: (_ for _ in ()).throw(gate.GateError("no rule here")))
+    target = tmp_path / "evidence" / "never-written.json"
+    rc = gate.finish({"status": "PASS", "scope": "control", "summary": "x"},
+                     target, 0.0, 0, "control gate")
+    assert rc == 2
+    assert not target.exists()
+
+
+def test_the_rule_comes_from_this_tree(tmp_path):
+    """The gate writes records under the rule its OWN tree spells, which is
+    the tree the release snapshot is built from."""
+
+    gate = _fresh_gate()
+    from gpuwm.report_bundle import redact_home_directories
+
+    assert gate.home_directory_redaction() is redact_home_directories
+    assert gate.own_tree() == ROOT

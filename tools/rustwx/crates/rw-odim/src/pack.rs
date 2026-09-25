@@ -373,6 +373,12 @@ fn build_sweep(
         // Omitted deliberately: see NYQUIST_GRANULARITY.
         nyquist_by_radial_array: None,
         nyquist_granularity: Some(NYQUIST_GRANULARITY.to_string()),
+        // ODIM dates a cut in `/datasetN/what/{startdate,starttime,enddate,
+        // endtime}`, which this reader does not lift yet; absent rather
+        // than copied from the volume's nominal time, which would date every
+        // cut to the same instant and defeat the field's purpose.
+        start_time: None,
+        end_time: None,
         moments,
     }))
 }
@@ -438,6 +444,15 @@ fn volume_entry(
         valid_time: nominal.to_rfc3339(),
         volume_date: u16::try_from(epoch_day).unwrap_or(0),
         volume_time_ms: u32::try_from(second_of_day * 1000).unwrap_or(0),
+        // The per-radial collection clock is a Message-31 fact; ODIM's
+        // per-cut times are not lifted yet, so the keys stay absent rather
+        // than carry the nominal time twice.
+        key_time: None,
+        start_time: None,
+        end_time: None,
+        complete: None,
+        sweeps_in_volume: None,
+        sweeps_incomplete: None,
         // No Archive-II framing exists for an HDF5 container; the key is
         // absent rather than invented.
         framing: None,

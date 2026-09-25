@@ -371,6 +371,7 @@ __device__ __forceinline__ void thompson_aa_saturation_adjust_impl(
     float* __restrict__ reference_density,
     float* __restrict__ reference_temperature,
     float* __restrict__ condensation_rate,
+    float* __restrict__ cloud_presence,
     float dt, int idx)
 {
     const float temp0 = temperature[idx];
@@ -389,6 +390,10 @@ __device__ __forceinline__ void thompson_aa_saturation_adjust_impl(
     // the FROZEN entry value plus the accumulator, never read back from a
     // mutated state array.
     const bool l_qc = qc0 > THOMPSON_AA_R1;
+    // The L_qc(k) the cloud fallout's ANY(L_qc) gate reads (:3645): this
+    // post-source value, cleared below where :3485 finds the adjusted
+    // cloud at R1.  Written at every level, as 1 or 0.
+    if (cloud_presence != nullptr) cloud_presence[idx] = l_qc ? 1.0f : 0.0f;
     const float rho = e.rho;
     const float orho = thompson_aa_div(1.0f, rho);
     const float odt = thompson_aa_div(1.0f, dt);
@@ -478,9 +483,21 @@ __device__ __forceinline__ void thompson_aa_saturation_adjust_impl(
     const float tten = (float)(
         (double)thompson_aa_mul(e.lvap, e.ocp) * prw_vcd);
 
-    qv[idx] = fmaxf(1.0e-10f,
-                    thompson_aa_sub(qv0, thompson_aa_mul(prw, dt)));
+    // :3479 and :3488.  The running vapour qv1d + DT*qvten is unfloored;
+    // :3488's MAX(1.E-10, ...) is the WORKING value the next block reads,
+    // and every reader re-forms it.  WRF floors the vapour it returns once,
+    // at :3974 (thompson_aa_state_finalize_with_columns).
+    qv[idx] = thompson_aa_sub(qv[idx], thompson_aa_mul(prw, dt));
     qc[idx] = thompson_aa_add(qc0, thompson_aa_mul(prw, dt));
+    // :3484-3485.  rc(k) = MAX(R1, (qc1d + DT*qcten)*rho(k)) on the density
+    // before :3490 refreshes it, and L_qc(k) goes false where that is R1.
+    // Only ever cleared: condensation onto a level whose post-source L_qc
+    // was false does not set it, so a column whose only cloud this step made
+    // does not sediment it.
+    if (cloud_presence != nullptr
+            && !(thompson_aa_mul(qc[idx], rho) > THOMPSON_AA_R1)) {
+        cloud_presence[idx] = 0.0f;
+    }
     temperature[idx] = thompson_aa_add(temp0, thompson_aa_mul(tten, dt));
     ncten[idx] = (float)((double)ncten[idx] + pnc_wcd);
     // THE aerosol return path (:3482): activation consumes one CCN per
@@ -505,6 +522,7 @@ extern "C" __global__ void thompson_aa_saturation_adjust(
     float* __restrict__ reference_density,
     float* __restrict__ reference_temperature,
     float* __restrict__ condensation_rate,
+    float* __restrict__ cloud_presence,
     float dt, int size)
 {
     const int idx = blockDim.x * blockIdx.x + threadIdx.x;
@@ -512,7 +530,7 @@ extern "C" __global__ void thompson_aa_saturation_adjust(
     thompson_aa_saturation_adjust_impl(
         temperature, pressure, qv, qc, nc_entry, ncten, nwfaten,
         nwfa_work_m3, w, tnccn_act, tnc_wev, reference_density,
-        reference_temperature, condensation_rate, dt, idx);
+        reference_temperature, condensation_rate, cloud_presence, dt, idx);
 }
 
 
@@ -774,8 +792,20 @@ __device__ __forceinline__ void thompson_aa_rain_evaporation_impl(
     if (prv_rev_out != nullptr) prv_rev_out[idx] = 0.0;
     if (pnr_rev_out != nullptr) pnr_rev_out[idx] = 0.0;
     if (nr_bound_out != nullptr) nr_bound_out[idx] = 0.0f;
-    // :3241, L_qr.
-    if (qr[idx] <= THOMPSON_AA_R1) return;
+    // :3241, L_qr.  Where it fails, WRF formed no working rain pair at all:
+    // rr(k) = R1 and nr(k) = R2 (:3252-3253), whatever rounding residue of
+    // rain number the level still holds (freezing and collection leave one).
+    // A ZERO reference density tells the rain fallout exactly that, so it
+    // sends the sentinels; a level that loses its rain HERE keeps L_qr and
+    // its density, and :3570's surviving number falls.  Without the
+    // distinction the fallout could only guess from the post-evaporation
+    // mixing ratio, which is wrong one way or the other (wp08-freeze level 0
+    // moved to 1.3e-5 against WRF with one guess, real-column rain reflectivity
+    // by up to 3.9 dB with the other).
+    if (qr[idx] <= THOMPSON_AA_R1) {
+        if (reference_density != nullptr) reference_density[idx] = 0.0f;
+        return;
+    }
     // :3502.
     if (condensation_rate != nullptr && condensation_rate[idx] > 0.0f) return;
 
@@ -789,7 +819,10 @@ __device__ __forceinline__ void thompson_aa_rain_evaporation_impl(
     // this level and the working rain mass/number sedimentation sees are
     // rebuilt from the :3490 post-condensation density.  This is the ONLY
     // place WRF replaces the :3237 pair.
-    if (reference_density != nullptr) reference_density[idx] = rho;
+    // NEGATIVE marks the rewrite: :3568-3570 FLOOR the rebuilt pair at R1 /
+    // R2 (rr = MAX(R1, ...)), where :3237-3238 did not, and the fallout has
+    // to know which one it is reading.  Its magnitude is the density.
+    if (reference_density != nullptr) reference_density[idx] = -rho;
 
     const float orho = thompson_aa_div(1.0f, rho);
     const float odt = thompson_aa_div(1.0f, dt);
@@ -949,8 +982,9 @@ __device__ __forceinline__ void thompson_aa_rain_evaporation_impl(
         -(double)thompson_aa_mul(lvap, ocp) * prv_rev);
 
     qr[idx] = thompson_aa_add(qr[idx], thompson_aa_mul(qr_tendency, dt));
-    qv[idx] = fmaxf(1.0e-10f,
-                    thompson_aa_add(qv0, thompson_aa_mul(qv_tendency, dt)));
+    // :3563 and :3569, the same running / working split as the
+    // adjustment: unfloored here, floored by every reader and at :3974.
+    qv[idx] = thompson_aa_add(qv[idx], thompson_aa_mul(qv_tendency, dt));
     nr[idx] = thompson_aa_add(nr[idx], thompson_aa_mul(nr_tendency, dt));
     temperature[idx] = thompson_aa_add(
         temp0, thompson_aa_mul(temperature_tendency, dt));

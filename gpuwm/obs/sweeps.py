@@ -205,6 +205,16 @@ class Sweep:
     #: its own radial would have rejected, but it cannot express a cut whose
     #: radials sit on different lattices and must not be asked to.
     nyquist_velocity_ms_by_radial: np.ndarray | None = None
+    #: The earliest and latest collection instant among this cut's radials,
+    #: from the Message-31 header's own clock, spelled
+    #: ``2026-09-19T12:02:36.123Z``.  A cut is scanned over ten to forty
+    #: seconds and sits anywhere inside a volume that takes four to ten
+    #: minutes, so these are the only times at which this cut's gates were
+    #: actually measured; the volume's ``valid_time`` is the start of the
+    #: whole volume.  ``None`` on a pack written before the keys existed
+    #: and on an ODIM pack.
+    start_time: str | None = None
+    end_time: str | None = None
 
     @property
     def radial_count(self) -> int:
@@ -239,6 +249,25 @@ class RadarVolume:
     #: Which of :data:`SWEEPS_SCHEMAS` the pack declared.  Defaulted so a
     #: volume assembled by hand still reads as the baseline contract.
     pack_schema: str = SWEEPS_SCHEMA
+    #: When the volume was scanned, from the radials' own clocks:
+    #: ``start_time`` is the earliest radial collection instant in the file
+    #: and ``end_time`` the latest, the moment the volume was complete and
+    #: the earliest it could have been published.  ``valid_time`` above is
+    #: the volume's START from the Archive-II header, to the second, and
+    #: ``key_time`` is what the archive's file name says, which is the same
+    #: start as the archive spelled it.  Three statements, kept apart: a
+    #: volume admitted into a window that ends before ``end_time`` was
+    #: admitted before it existed.  ``None`` on a pack written before the
+    #: keys existed.
+    start_time: str | None = None
+    end_time: str | None = None
+    key_time: str | None = None
+    #: Whether the file is one whole volume by its radial statuses, with
+    #: the cut counts behind that judgement.  ``None`` when the pack did not
+    #: say.
+    complete: bool | None = None
+    sweeps_in_volume: int | None = None
+    sweeps_incomplete: int | None = None
 
     def provenance(self) -> dict:
         """The record that travels into the gridded product's provenance."""
@@ -252,6 +281,12 @@ class RadarVolume:
             "pack_schema": self.pack_schema,
             "station_id": self.station_id,
             "valid_time": self.valid_time,
+            "start_time": self.start_time,
+            "end_time": self.end_time,
+            "key_time": self.key_time,
+            "complete": self.complete,
+            "sweeps_in_volume": self.sweeps_in_volume,
+            "sweeps_incomplete": self.sweeps_incomplete,
             "decode_params": dict(self.params),
             "archive2_framing": dict(self.framing),
         }
@@ -455,6 +490,8 @@ def _decode(raw: bytes, path: Path) -> RadarVolume:
             complete=bool(entry["complete"]),
             azimuth_deg=azimuth,
             elevation_deg=elevation,
+            start_time=_optional_str(entry.get("start_time")),
+            end_time=_optional_str(entry.get("end_time")),
             moments=moments))
 
     if not sweeps:
@@ -478,4 +515,19 @@ def _decode(raw: bytes, path: Path) -> RadarVolume:
         params=dict(meta.get("params") or {}),
         framing=dict(volume.get("framing") or {}),
         sweeps=tuple(sweeps),
-        pack_schema=str(schema))
+        pack_schema=str(schema),
+        start_time=_optional_str(volume.get("start_time")),
+        end_time=_optional_str(volume.get("end_time")),
+        key_time=_optional_str(volume.get("key_time")),
+        complete=(None if volume.get("complete") is None
+                  else bool(volume["complete"])),
+        sweeps_in_volume=(None if volume.get("sweeps_in_volume") is None
+                          else int(volume["sweeps_in_volume"])),
+        sweeps_incomplete=(None if volume.get("sweeps_incomplete") is None
+                           else int(volume["sweeps_incomplete"])))
+
+
+def _optional_str(value) -> str | None:
+    """A metadata string the pack may or may not carry; ``None`` when not."""
+
+    return None if value is None else str(value)

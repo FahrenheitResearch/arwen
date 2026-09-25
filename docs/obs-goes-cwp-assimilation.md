@@ -178,7 +178,22 @@ class its CWP was derived under.
 
 ### Placement -- and what it does not claim
 
-CWP is a column integral. It has no height. The LETKF localises in metres
+**Horizontally**, a pixel's `lat`/`lon` in the pack is the ground point the
+satellite's line of sight reaches, not the ground beneath the cloud it saw.
+A cloud top on that line sits nearer the satellite than the ground does, so
+it is over a point displaced toward the sub-satellite point by close to
+`height * tan(view zenith)`: for a mid-latitude cloud several kilometres, a
+cell or more of a storm-scale grid.  `grid_cwp` therefore moves every cloudy
+pixel whose joined cloud top is known to the ground beneath that top
+(`parallax_displacement`, using the pack's own geostationary navigation), a
+clear pixel stays where the ground is, and a cloudy pixel without a
+retrieved top stays at the ground and is counted in the receipt
+(`pixels_cloudy_without_height_at_ground`) rather than moved by a height
+nobody measured.  The receipt's `placement.horizontal` block carries the
+count of pixels moved and the median, 95th-percentile and maximum
+displacement in metres.
+
+**Vertically**, CWP is a column integral. It has no height. The LETKF localises in metres
 about an observation's gridpoint, so a column observation has to be
 *centred* somewhere: at the retrieved cloud top where the join served one,
 otherwise `fallback_placement_agl_m` (default 3000 m) above the cell's own

@@ -58,12 +58,78 @@ fn time(file: &netcrust::File) -> Result<String, String> {
     String::from_utf8(super::character_bytes(file, &variable)?).map_err(|e|e.to_string())
 }
 
-fn field_shape(array: &Array, label: &str) -> Result<(usize,usize,usize),String> {
-    if array.shape.len() != 4 || array.shape[0] != 1 || array.dimensions[0] != "Time"
-        || array.dimensions[2] != "south_north" || array.dimensions[3] != "west_east" {
-        return Err(format!("{label}: expected [Time=1, soil layer, south_north, west_east]"));
+fn geometry(array: &Array) -> String {
+    array.dimensions.iter().zip(&array.shape)
+        .map(|(name,size)| format!("{name}={size}")).collect::<Vec<_>>().join(", ")
+}
+
+/// [Time=1, soil layer, south_north, west_east], and for a SOURCE plane
+/// also WRF's staggered spelling of the two horizontal names. Whether
+/// such a file really carries the mass values in its leading block is
+/// settled by its own coordinates in `recover`, never by a dimension
+/// name; the target's soil field is a mass field by construction, so
+/// `staggered` is false for it.
+fn field_shape(array: &Array, label: &str, staggered: bool) -> Result<(usize,usize,usize),String> {
+    let named = array.shape.len() == 4 && array.dimensions.len() == 4
+        && array.shape[0] == 1 && array.dimensions[0] == "Time"
+        && ["south_north","west_east"].iter().zip(&array.dimensions[2..]).all(|(plain,actual)|
+            actual == plain || (staggered && *actual == format!("{plain}_stag")));
+    if !named {
+        return Err(format!("{label}: expected [Time=1, soil layer, south_north, west_east], found [{}]", geometry(array)));
     }
     Ok((array.shape[1], array.shape[2], array.shape[3]))
+}
+
+/// The leading `ny` by `nx` block of every layer of a `sy` by `sx` plane.
+fn leading_block(values: &[f64], layers: usize, (sy,sx): (usize,usize), (ny,nx): (usize,usize)) -> Vec<f64> {
+    if (sy,sx) == (ny,nx) { return values.to_vec(); }
+    let mut kept = Vec::with_capacity(layers*ny*nx);
+    for layer in 0..layers {
+        for row in 0..ny {
+            let start = layer*sy*sx + row*sx;
+            kept.extend_from_slice(&values[start..start+nx]);
+        }
+    }
+    kept
+}
+
+fn depth_list(values: &[f64]) -> String {
+    values.iter().map(|value| format!("{value}")).collect::<Vec<_>>().join(", ")
+}
+
+fn bounds_list(bounds: &[[f64;2]]) -> String {
+    bounds.iter().map(|[top,bottom]| format!("[{top}, {bottom}]")).collect::<Vec<_>>().join(", ")
+}
+
+/// Which authority layer declares each stacked source depth, in order.
+///
+/// A producing table lists every soil layer its source can carry and
+/// metgrid stacks the ones that cycle actually contained, so the
+/// authority is allowed to name more layers than the file holds. Layer
+/// bounds are ordered and do not overlap (`validate_geometry`), so a
+/// depth falls inside at most one of them: the pairing is read off the
+/// file instead of being assumed to be position for position, and a
+/// depth that no declared layer contains, or one that would pair out of
+/// order, is refused with both lists rather than converted on the wrong
+/// layer thickness.
+fn declared_layers(depths_cm: &[f64], bounds: &[[f64;2]]) -> Result<Vec<usize>,String> {
+    let mut mapping: Vec<usize> = Vec::with_capacity(depths_cm.len());
+    for &centimeters in depths_cm {
+        let depth = centimeters * 0.01;
+        let found = bounds.iter().position(|[top,bottom]| depth >= top-1e-10 && depth <= bottom+1e-10);
+        let ordered = match (found, mapping.last()) {
+            (Some(index), None) => Some(index),
+            (Some(index), Some(&previous)) if index > previous => Some(index),
+            _ => None,
+        };
+        match ordered {
+            Some(index) => mapping.push(index),
+            None => return Err(format!(
+                "the source stacks {} soil layer(s) at depths (cm) [{}] and the authority declares {} layer(s) with bounds (m) [{}]; every source depth must fall inside one declared layer, and a later depth inside a later layer",
+                depths_cm.len(), depth_list(depths_cm), bounds.len(), bounds_list(bounds))),
+        }
+    }
+    Ok(mapping)
 }
 
 fn close(got: f64, expected: f64) -> bool {
@@ -101,13 +167,22 @@ fn validate_geometry(source: &Source) -> Result<(), String> {
     Ok(())
 }
 
-struct Prepared { raw: Vec<f64>, normalized: Vec<f64>, depths: Vec<f32>, layers: usize }
+struct Prepared { raw: Vec<f64>, normalized: Vec<f64>, depths: Vec<f32>, layers: usize, declared: Vec<usize> }
 
-fn prepare(file: &netcrust::File, authority: &Source, ny: usize, nx: usize, land: &[bool]) -> Result<Prepared,String> {
+fn prepare(file: &netcrust::File, authority: &Source, (ny,nx): (usize,usize), pad: (usize,usize), land: &[bool]) -> Result<Prepared,String> {
     validate_geometry(authority)?;
     let source = read(file, &authority.source_variable)?;
-    let (layers, sy, sx) = field_shape(&source, &authority.source_variable)?;
-    if (sy,sx) != (ny,nx) || layers != authority.source_layer_bounds_m.len() { return Err("source moisture shape does not match the target domain or authority layers".into()); }
+    let (layers, sy, sx) = field_shape(&source, &authority.source_variable, true)?;
+    let extent = (ny+pad.0, nx+pad.1);
+    if (sy,sx) != extent {
+        return Err(format!("{}: the source soil plane covers {sy} by {sx} points while this file's own horizontal coordinates cover {} by {} for the {ny} by {nx} target domain",
+            authority.source_variable, extent.0, extent.1));
+    }
+    let bounds = &authority.source_layer_bounds_m;
+    if layers > bounds.len() {
+        return Err(format!("{}: the source stacks {layers} soil layer(s) and the authority declares only {} layer(s) with bounds (m) [{}]",
+            authority.source_variable, bounds.len(), bounds_list(bounds)));
+    }
     let axis = read(file, &authority.source_depth_variable)?;
     // WRF's flagged SOIL_LEVELS input is in integer centimetres. Its empty
     // metgrid units attribute does not change that documented producer contract.
@@ -116,38 +191,50 @@ fn prepare(file: &netcrust::File, authority: &Source, ny: usize, nx: usize, land
     let cells = ny*nx;
     let broadcast_axis = axis.values.len() == layers && matches!(axis.shape.as_slice(), [_] | [1,_]);
     if !broadcast_axis && axis.shape != source.shape { return Err("source depth axis must be a layer vector or match the source moisture grid".into()); }
+    let source_values = leading_block(&source.values, layers, (sy,sx), (ny,nx));
+    let axis_values = if broadcast_axis { axis.values.clone() }
+                      else { leading_block(&axis.values, layers, (sy,sx), (ny,nx)) };
     let first = land.iter().position(|v|*v).ok_or("no land columns to recover")?;
     let mut order = (0..layers).collect::<Vec<_>>();
-    let level = |layer:usize, cell:usize| if broadcast_axis { axis.values[layer] } else { axis.values[layer*cells+cell] };
+    let level = |layer:usize, cell:usize| if broadcast_axis { axis_values[layer] } else { axis_values[layer*cells+cell] };
     order.sort_by(|&a,&b| level(a,first).total_cmp(&level(b,first)));
+    let stacked = order.iter().map(|&original| level(original, first)).collect::<Vec<_>>();
+    let declared = declared_layers(&stacked, bounds)?;
     let scale = quantity_scale(authority)?;
-    let mut raw = vec![f64::NAN; source.values.len()];
+    let mut raw = vec![f64::NAN; layers*cells];
     let mut normalized = raw.clone();
     let mut depths = Vec::new();
     for (sorted, &original) in order.iter().enumerate() {
         let centimeters = level(original, first);
         let actual_depth = centimeters * 0.01;
-        let [top,bottom] = authority.source_layer_bounds_m[sorted];
+        let [top,bottom] = bounds[declared[sorted]];
         if !centimeters.is_finite() || centimeters <= 0.0 || (centimeters-centimeters.round()).abs() > 1e-4
             || actual_depth < top-1e-10 || actual_depth > bottom+1e-10
-            || authority.source_layer_depths_m.as_ref().is_some_and(|values|(actual_depth-values[sorted]).abs() > 1e-6)
+            || authority.source_layer_depths_m.as_ref().is_some_and(|values|(actual_depth-values[declared[sorted]]).abs() > 1e-6)
             || depths.last().is_some_and(|previous| centimeters as f32 / 100.0 <= *previous) {
-            return Err(format!("{}: source depth does not match the explicit authority at layer {sorted}", authority.source_depth_variable));
+            return Err(format!("{}: the stacked source depth {centimeters} cm does not match declared layer {} with bounds (m) [{top}, {bottom}]",
+                authority.source_depth_variable, declared[sorted]));
         }
         depths.push(centimeters as f32 / 100.0);
-        let thickness = authority.source_layer_bounds_m[sorted][1]-authority.source_layer_bounds_m[sorted][0];
+        let thickness = bottom-top;
         for (cell,&is_land) in land.iter().enumerate() {
             if !is_land { continue; }
             if !close(level(original,cell), centimeters) { return Err("source soil depths vary across the land domain".into()); }
-            let value = source.values[original*cells+cell];
+            let value = source_values[original*cells+cell];
             if !value.is_finite() || value < 0.0 { return Err(format!("{}: missing or negative source water on land", authority.source_variable)); }
             let volume = scale.map_or(value, |scale| value*scale/thickness);
-            if !volume.is_finite() || !(0.0..=1.0+1e-7).contains(&volume) { return Err(format!("{}: source-layer conversion produces an invalid volume fraction", authority.source_variable)); }
+            // Naming the value, the layer and the thickness is the whole
+            // of the diagnosis: the conversion is value*scale/thickness, so
+            // a fraction outside [0,1] is either a source value that is not
+            // the declared quantity or a declared layer whose bounds are
+            // the wrong thickness for it, and those two are told apart by
+            // the three numbers below and nothing else.
+            if !volume.is_finite() || !(0.0..=1.0+1e-7).contains(&volume) { return Err(format!("{}: source-layer conversion produces an invalid volume fraction {volume} at authority layer index {} of bounds (m) [{top}, {bottom}], thickness {thickness} m, from source value {value}", authority.source_variable, declared[sorted])); }
             raw[sorted*cells+cell] = value;
             normalized[sorted*cells+cell] = volume;
         }
     }
-    Ok(Prepared { raw, normalized, depths, layers })
+    Ok(Prepared { raw, normalized, depths, layers, declared })
 }
 
 fn interpolate(values: &[f64], depths: &[f32], target: f32, cell: usize, cells: usize, floor_zero: bool) -> Result<f64,String> {
@@ -201,7 +288,7 @@ pub(crate) fn recover(wrf_path: &Path, met_path: &Path, authority_path: &Path, o
     let physics = wrf.attribute("SF_SURFACE_PHYSICS").and_then(|a|a.as_f64()).ok_or("missing target land-surface physics identity")?;
     if physics != 2.0 && physics != 4.0 { return Err("source soil recovery currently implements the witnessed Noah/Noah-MP REAL interpolation owner".into()); }
     let moisture = read(&wrf,"SMOIS")?;
-    let (target_layers,ny,nx) = field_shape(&moisture,"SMOIS")?;
+    let (target_layers,ny,nx) = field_shape(&moisture,"SMOIS",false)?;
     let cells = nx.checked_mul(ny).ok_or("soil domain shape overflow")?;
     let mask = read(&wrf,"LANDMASK")?;
     if mask.shape != [1,ny,nx] || mask.values.iter().any(|v|!v.is_finite() || (*v != 0.0 && *v != 1.0)) { return Err("target land mask is missing or does not match the soil domain".into()); }
@@ -209,27 +296,50 @@ pub(crate) fn recover(wrf_path: &Path, met_path: &Path, authority_path: &Path, o
     if !moisture.values.iter().enumerate().any(|(index,value)|land[index%cells] && *value > 1.0) {
         return Err("land soil moisture does not exceed volume-fraction bounds; source recovery is unnecessary and would risk converting already-normalized WPS data twice".into());
     }
+    // The source extent the file itself declares, and the proof that
+    // its leading block is this domain. A plane written straight out of
+    // WRF's own arrays carries the extra staggered row and column past
+    // the mass points; one row or column of slack is admitted, and only
+    // when the leading block of BOTH coordinates is this domain to the
+    // bit. Anything else is named with both extents instead of being
+    // cropped on a guess.
+    let mut pad: Option<(usize,usize)> = None;
     for (target_name, source_name) in [("XLAT","XLAT_M"),("XLONG","XLONG_M")] {
         let left = read(&wrf,target_name)?; let right = read(&met,source_name)?;
-        if left.shape != [1,ny,nx] || right.shape != left.shape
-            || left.values.iter().zip(&right.values).any(|(a,b)| !a.is_finite() || !b.is_finite() || (*a as f32).to_bits() != (*b as f32).to_bits()) {
-            return Err(format!("source and target horizontal coordinates differ: {source_name}/{target_name}"));
+        if left.shape != [1,ny,nx] {
+            return Err(format!("target {target_name} is [{}] and the soil domain is [Time=1, {ny}, {nx}]", geometry(&left)));
         }
+        let [sy,sx] = match right.shape.as_slice() { [1,y,x] => [*y,*x],
+            _ => return Err(format!("{source_name} is [{}] and the target domain is [Time=1, {ny}, {nx}]", geometry(&right))) };
+        if sy < ny || sx < nx || sy-ny > 1 || sx-nx > 1 {
+            return Err(format!("{source_name} covers {sy} by {sx} points and the target {target_name} covers {ny} by {nx}; a source may carry WRF's one extra staggered row and column past the mass points, nothing else"));
+        }
+        let extra = (sy-ny, sx-nx);
+        if pad.is_some_and(|already| already != extra) {
+            return Err("XLAT_M and XLONG_M do not agree on the source horizontal extent".into());
+        }
+        pad = Some(extra);
+        let same = (0..ny).all(|row| (0..nx).all(|column| {
+            let (a,b) = (left.values[row*nx+column], right.values[row*sx+column]);
+            a.is_finite() && b.is_finite() && (a as f32).to_bits() == (b as f32).to_bits()
+        }));
+        if !same { return Err(format!("source and target horizontal coordinates differ: {source_name}/{target_name}")); }
     }
+    let pad = pad.unwrap_or((0,0));
     let centers = read(&wrf,"ZS")?;
     if centers.values.len() != target_layers || !matches!(centers.shape.as_slice(),[_] | [1,_])
         || centers.values.iter().any(|v|!v.is_finite() || *v <= 0.0)
         || centers.values.windows(2).any(|z|z[0] >= z[1]) { return Err("target ZS must be a finite ordered soil-centre vector".into()); }
     if units(&wrf,"ZS").trim() != "m" { return Err("target ZS must declare metre depths".into()); }
     let centers = centers.values.iter().map(|v|*v as f32).collect::<Vec<_>>();
-    let prepared = prepare(&met,&authority.source,ny,nx,&land)?;
+    let prepared = prepare(&met,&authority.source,(ny,nx),pad,&land)?;
     let (corrected,max_error) = recover_field(&prepared,&moisture,&centers,&land,physics == 4.0)?;
     let mut liquid_values = None;
     let liquid_action;
     if let Some(liquid_source) = &authority.liquid {
         let liquid = read(&wrf,"SH2O")?;
         if liquid.shape != moisture.shape { return Err("SH2O shape differs from SMOIS".into()); }
-        let source = prepare(&met,liquid_source,ny,nx,&land)?;
+        let source = prepare(&met,liquid_source,(ny,nx),pad,&land)?;
         let (values,_) = recover_field(&source,&liquid,&centers,&land,false)?;
         liquid_values = Some(values);
         liquid_action = "recovered_from_separate_source_authority";
@@ -259,6 +369,8 @@ pub(crate) fn recover(wrf_path: &Path, met_path: &Path, authority_path: &Path, o
         "target_layers":target_layers,"land_columns":land.iter().filter(|v|**v).count(),
         "raw_forward_reconstruction_max_abs_error":max_error,"liquid_action":liquid_action,
         "source_interpolation_depths_m":prepared.depths,
+        "authority_layers_used":prepared.declared,
+        "source_grid_extra_row_and_column":[pad.0,pad.1],
         "authority":authority_json,"original_files_modified":false,
         "source_wrfinput":wrf_path,"source_met_em":met_path,
         "water_columns_preserved":land.iter().filter(|v|!**v).count()});
@@ -288,7 +400,7 @@ mod tests {
     }
     #[test]
     fn reconstruction_and_domain_depth_coverage_are_required() {
-        let source = Prepared {raw:vec![10.,20.],normalized:vec![0.1,0.2],depths:vec![0.1,0.3],layers:2};
+        let source = Prepared {raw:vec![10.,20.],normalized:vec![0.1,0.2],depths:vec![0.1,0.3],layers:2,declared:vec![0,1]};
         let target = Array {values:vec![17.],shape:vec![1,1,1,1],dimensions:Vec::new()};
         assert!(recover_field(&source,&target,&[0.2],&[true],false).is_err());
         assert!(interpolate(&source.raw,&source.depths,0.4,0,1,false).is_err());
@@ -303,5 +415,37 @@ mod tests {
         assert!(validate_geometry(&source).is_err());
         source.source_depths_from_metgrid = false;
         validate_geometry(&source).unwrap();
+    }
+
+    #[test]
+    fn a_table_that_names_more_layers_than_the_file_stacks_pairs_by_depth() {
+        // Nine declared layers, four stacked: the pairing is read off the
+        // depths, so each layer converts on its own declared thickness.
+        let bounds = [[0.,0.01],[0.01,0.04],[0.04,0.1],[0.1,0.3],[0.3,0.6],
+                      [0.6,1.0],[1.0,1.6],[1.6,3.0],[3.0,10.0]];
+        assert_eq!(declared_layers(&[1.,4.,30.,100.], &bounds).unwrap(), vec![0,1,3,5]);
+        assert_eq!(declared_layers(&[1.,4.,10.,30.], &bounds[..4]).unwrap(), vec![0,1,2,3]);
+    }
+
+    #[test]
+    fn a_depth_no_declared_layer_holds_is_refused_with_both_lists() {
+        let bounds = [[0.,0.01],[0.01,0.04]];
+        let refusal = declared_layers(&[1.,9.], &bounds).unwrap_err();
+        assert!(refusal.contains("depths (cm) [1, 9]"), "{refusal}");
+        assert!(refusal.contains("bounds (m) [[0, 0.01], [0.01, 0.04]]"), "{refusal}");
+        // Two depths inside one declared layer would pair out of order.
+        assert!(declared_layers(&[0.5,1.], &bounds).is_err());
+        // A stack deeper than the declaration cannot pair at all.
+        assert!(declared_layers(&[1.,4.,10.], &bounds).is_err());
+    }
+
+    #[test]
+    fn a_staggered_source_plane_keeps_its_leading_mass_block() {
+        // Two layers on a 3x3 staggered extent; the 2x2 mass block is
+        // the leading row and column of each layer.
+        let values: Vec<f64> = (0..18).map(f64::from).collect();
+        assert_eq!(leading_block(&values, 2, (3,3), (2,2)),
+                   vec![0.,1.,3.,4.,9.,10.,12.,13.]);
+        assert_eq!(leading_block(&values, 2, (3,3), (3,3)), values);
     }
 }

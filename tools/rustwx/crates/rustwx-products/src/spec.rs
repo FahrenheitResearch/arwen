@@ -870,6 +870,9 @@ fn render_style_name(style: RenderStyle) -> &'static str {
         RenderStyle::WeatherScp => "weather_scp",
         RenderStyle::WeatherEhi => "weather_ehi",
         RenderStyle::WeatherTerrain => "weather_terrain",
+        RenderStyle::WeatherIsothermHeight => "weather_isotherm_height",
+        RenderStyle::WeatherSupercooledWaterPath => "weather_supercooled_water_path",
+        RenderStyle::WeatherHydrometeorMixingRatio => "weather_hydrometeor_mixing_ratio",
     }
 }
 

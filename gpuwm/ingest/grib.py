@@ -267,9 +267,15 @@ class Era5Snapshot:
                 and value.shape[1:] == horizontal
             )
             if value.shape not in allowed_shapes and not mapped_soil_shape:
+                # Name the shape THIS field is held to: a windowed snapshot
+                # expects its atmospheric fields at the window, and a
+                # refusal that printed the full source axes read as
+                # "expected exactly what you gave me".
                 raise ValueError(
-                    f"{name} has shape {value.shape}; expected {horizontal} "
-                    f"or {(nlev, *horizontal)}"
+                    f"{name} has shape {value.shape}; expected "
+                    f"{field_horizontal} or {(nlev, *field_horizontal)}"
+                    + (f" (the source axes are {horizontal})"
+                       if field_horizontal != horizontal else "")
                 )
             copied = value.copy()
             copied.setflags(write=False)
@@ -470,7 +476,12 @@ def build_rust_bridge(*, release: bool = True) -> Path:
     crate = _repo_root() / "tools" / "grib1_bridge"
     manifest = crate / "Cargo.toml"
     if manifest.is_file():
-        command = ["cargo", "build", "--locked", "--offline"]
+        # The toolchain this machine has, not the bare word: rustup's
+        # profile edit does nothing for a non-login shell, so on a node
+        # with a working rustup this refused to build and told its owner
+        # to install Rust.  See gpuwm.bridges.cargo_executable.
+        command = [bridges.cargo_executable() or "cargo",
+                   "build", "--locked", "--offline"]
         if release:
             command.append("--release")
         try:

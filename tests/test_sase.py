@@ -955,9 +955,43 @@ def test_sase_workspace_joins_the_domain_estimate_as_step_transient():
     sase_bytes = sum(math.prod(shape) * size for shape, size in
                      pf.sase_workspace_shapes(cfg).values())
     assert est.category_bytes("sase") == sase_bytes
-    # e_sgs is the ONLY resident addition; the workspace is a step
-    # transient (freed within the step), never resident.
-    assert est.resident_bytes == ref.resident_bytes + 4 * ncell
+    # The workspace is a step transient, freed within the step and never
+    # residency: that claim is the transient_bytes assertion at the end.
+    #
+    # What the closure adds to RESIDENCY is read off the estimate's own
+    # itemization, NAMED, and then checked against the inventory that
+    # prices each item -- not written here as one number.  A number here
+    # is what went stale: this test used to say e_sgs was the only
+    # resident addition, which stopped being true when the z-face
+    # vertical-momentum tendency became an allocation the driver makes
+    # at construction rather than on first use (gpuwm/core/physics.py,
+    # PhysicsDriver.__init__ passing optional component "rw" to
+    # PhysicsTendencies.zeros, which allocates it (nz + 1, ny, nx)
+    # float32 and holds it across steps).  Naming both items means
+    # gaining or losing one fails with a name in it instead of a
+    # residual to re-fit, and a re-fit is how an estimate silently stops
+    # pricing what a run allocates.
+    def resident_items(estimate):
+        return {item.name: item.nbytes for item in estimate.items
+                if item.category not in ("transient", "sase")}
+
+    resident, resident_base = resident_items(est), resident_items(ref)
+    assert set(resident) - set(resident_base) == {"e_sgs",
+                                                  "pbl_tendencies/rw"}
+    assert set(resident_base) - set(resident) == set()
+    assert all(resident[name] == nbytes
+               for name, nbytes in resident_base.items())
+    # e_sgs: the prognostic closure energy, mass grid, float32.
+    assert resident["e_sgs"] == 4 * math.prod(
+        pf.state_array_shapes(cfg)["e_sgs"]) == 4 * ncell
+    # pbl_tendencies/rw: the held z-face vertical-momentum tendency, and
+    # SASE's alone -- no other PBL selector prices it.
+    assert resident["pbl_tendencies/rw"] == 4 * math.prod(
+        pf.physics_array_shapes(cfg)["pbl_tendencies/rw"])
+    assert resident["pbl_tendencies/rw"] == 4 * (cfg.nz + 1) * cfg.ny * cfg.nx
+    assert "pbl_tendencies/rw" not in pf.physics_array_shapes(base)
+    assert est.resident_bytes == ref.resident_bytes + sum(
+        resident[name] for name in set(resident) - set(resident_base))
     assert est.transient_bytes == ref.transient_bytes + sase_bytes
 
 
@@ -1024,6 +1058,43 @@ def test_additive_dissipation_accepts_both_values_off_sase():
     # Type discipline stays: a non-bool still refuses.
     with pytest.raises(ValueError, match="boolean"):
         validate_run_config(_min_cfg(sase_additive_dissipation=1))
+
+
+def test_sase_driver_switches_fall_back_to_the_shipped_default():
+    """A configuration without the key keeps the default that SHIPS.
+
+    The driver used to read ``sase_additive_dissipation`` with a literal
+    ``False`` fallback while the shipped default is ``True``
+    (gpuwm/config.py).  RunConfig always carries the field, so nothing
+    reachable through a RunConfig ever hit that fallback -- but any
+    other configuration object handed to the driver would have lost a
+    channel that ships ON, without saying so, which is the opposite of
+    what a default-on remedy means.  The fallback now comes off the
+    dataclass, so the driver cannot disagree with the one place the
+    default is declared.
+
+    The other two switches in the same driver block are pinned here for
+    the same reason and not because they moved: both already resolved to
+    their own shipped default, and this holds them there through any
+    later flip.
+    """
+    import types
+
+    from gpuwm.core.physics import sase_switch_value
+
+    bare = types.SimpleNamespace()
+    shipped = {"sase_additive_dissipation": True,
+               "sase_moist_n2": True,
+               "sase_stable_dissipation": False}
+    for name, value in shipped.items():
+        assert getattr(RunConfig, name) is value, name
+        assert sase_switch_value(bare, name) is value, name
+    # A configuration that DOES carry the key is read from it, in both
+    # positions, for every one of the three.
+    for name in shipped:
+        for value in (False, True):
+            cfg = _sase_cfg(**{name: value})
+            assert sase_switch_value(cfg, name) is value, (name, value)
 
 
 def test_sase_flux_diag_is_a_per_domain_override():
@@ -6377,7 +6448,7 @@ def test_surface_scalar_flux_deposit_closed_form_and_rejections():
 
 
 def test_surface_scalar_flux_deposit_zero_flux_identity():
-    """THE SEAM-OFF CONTRACT (brief section 2): hfx and qfx DEFAULT to
+    """THE SEAM-OFF CONTRACT (spec section 2): hfx and qfx DEFAULT to
     0.0, and the zero-flux deposit is BITWISE the identity -- the
     bottom row gains literally +0.0 (x + 0.0 == x for every finite x
     except -0.0; physical theta > 0 and qv >= +0.0), so composing the
@@ -6492,7 +6563,7 @@ def test_s3_11a_scalar_ledger_boundary_consistent():
 
 
 def test_warm_sector_qfx_moistens_at_closed_form_rate():
-    """FIXTURE (b) (brief section 5): the moisture face of the seam.
+    """FIXTURE (b) (spec section 5): the moisture face of the seam.
     QFX value derivation: warm-sector latent heat flux LH ~ 250 W/m^2
     (the P2 sector class whose Td2 the run under-ran once the
     deepening PBL diluted qv with no surface resupply) over
@@ -6635,7 +6706,7 @@ def _run_lake_flux_column(monkeypatch, hfx, minutes=10.0, dt=15.0):
 
 def test_lake_flux_deposit_forms_stable_layer_and_collapses_kv(
         monkeypatch):
-    """FIXTURE (a) (brief section 5) + zero-flux RED companion: the
+    """FIXTURE (a) (spec section 5) + zero-flux RED companion: the
     seam is what forms the marine stable layer.  GREEN (deposit at
     the observed -180.2 W/m^2): the bottom deposit cools theta_1
     ~0.14 K/step (2.66 K by 10 min), N^2(k0) crosses 1.0e-3 s^-2

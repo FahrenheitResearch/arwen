@@ -91,6 +91,20 @@ def _cpu_preparation(monkeypatch, exp):
     monkeypatch.setattr(gfs_direct, "resolve_preprocess_backend",
                         lambda *_a, **_k: SimpleNamespace(receipt=lambda: {"backend": "cpu"}))
     monkeypatch.setattr(gfs_direct, "release_backend_memory", lambda *_a: None)
+    # The static-catalog survey (5c2cc1524) binds every geog tile index
+    # under the geog root; this fixture's geog directory carries no tiles,
+    # and the survey's result only reaches the hierarchy writer, which is
+    # substituted below.  It is expensive source work of exactly the kind
+    # this helper stands in for (proof/node-reds-276).
+    monkeypatch.setattr(gfs_direct, "_survey_static_catalog",
+                        lambda *_a, **_k: None)
+    # And the coordinate derived from that survey (5c2cc1524): for a
+    # domain tree it insists on the catalog's terrain, and the
+    # receipt it feeds (vertical_coordinate_receipt) states
+    # NOT_APPLICABLE for a run that derived nothing, which is this
+    # fixture's truth.
+    monkeypatch.setattr(gfs_direct, "adapt_experiment_for_statics",
+                        lambda exp, grids, **_k: (exp, None))
     statics = {name: np.ones((3, 3)) for name in (
         "LANDMASK", "LU_INDEX", "HGT_M", "SCT_DOM", "TMN", "MAPFAC_M",
         "MAPFAC_U", "MAPFAC_V", "F", "E", "SINALPHA", "COSALPHA")}
@@ -176,7 +190,10 @@ def _cpu_preparation(monkeypatch, exp):
             static_catalog_receipt={}, source_coverage_receipt={}, topology_receipt={},
             statics_corridor_receipt=None,
             hierarchy=SimpleNamespace(artifacts=SimpleNamespace(receipt={"fixture": True}),
-                                      wrf_manifest={"status": "NOT_REQUESTED"}, timings_seconds={}))
+                                      wrf_manifest={"status": "NOT_REQUESTED"}, timings_seconds={},
+                                      # the per-domain vapour-floor answer the proof
+                                      # states unconditionally since 6886f3d20
+                                      moisture_floor_receipts={}))
 
     monkeypatch.setattr(gfs_direct, "initialize_and_export_regular_source_hierarchy", hierarchy)
     return captures

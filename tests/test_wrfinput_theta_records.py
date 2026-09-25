@@ -1,5 +1,10 @@
 """File-backed dry and moist temperature boundary contracts."""
 
+import ast
+import inspect
+from pathlib import Path
+from types import SimpleNamespace
+
 import netCDF4
 import numpy as np
 import pytest
@@ -84,3 +89,116 @@ def test_single_interval_character_end_time_reaches_the_boundary_reader(tmp_path
                             forcing_interval_seconds=60, cfg=cfg)
     assert len(result.intervals) == 1
     assert result.intervals[0].end_seconds == 60
+
+
+# ---------------------------------------------------------------------------
+# Stock real.exe pairs.  tests/data/real_em_461_theta_seam_west_strip.npz is
+# a west strip cut from two WRF 4.6.1 real.exe runs of one met_em set that
+# differ only in use_theta_m; the README beside it states the provenance.
+# WRF's own files: T is dry theta-300 under both settings, THM is the
+# prognostic (moist under use_theta_m=1), and T_BXS couples THM.
+# ---------------------------------------------------------------------------
+_STRIP = Path(__file__).parent / "data" / "real_em_461_theta_seam_west_strip.npz"
+_WIDTH = 5
+_INPUT_NAMES = ("T", "QVAPOR", "MU", "MUB", "C1H", "C2H", "C1F", "C2F",
+                "MAPFAC_M", "MAPFAC_U", "MAPFAC_V")
+
+
+def _stock_strip(moist):
+    """The reader's seam inputs for one arm of the stock pair, west side only."""
+    data = np.load(_STRIP)
+    arm = "moist" if moist else "dry"
+    # WRF writes side tables as (width, z, y); the reader's tables are (z, y, width).
+    side = lambda name: np.ascontiguousarray(np.transpose(data[name], (1, 2, 0)))
+    mu_side = lambda name: np.ascontiguousarray(np.transpose(data[name], (1, 0))[None])
+    tables = {"theta": {"west": (side(f"T_BXS_{arm}"), side(f"T_BTXS_{arm}"))},
+              "qv": {"west": (side("QVAPOR_BXS"), side("QVAPOR_BTXS"))},
+              "mu": {"west": (mu_side("MU_BXS"), mu_side("MU_BTXS"))}}
+    restored = SimpleNamespace(
+        path=Path("wrfinput_d01"), raw={name: data[name] for name in _INPUT_NAMES},
+        global_attributes={"USE_THETA_M": int(moist)})
+    layouts = {key: wi._WRFBDY_FIELDS[key] for key in ("theta", "mu", "qv")}
+    return restored, tables, layouts, data
+
+
+def _stock_coupling(data, field):
+    """real_em.F:872 couple(): field * (C1H*MU + (C1H*MUB + C2H)), FP32."""
+    c1h = data["C1H"][:, None, None]
+    c2h = data["C2H"][:, None, None]
+    weight = np.asarray(c1h * data["MU"][None] + (c1h * data["MUB"][None] + c2h), np.float32)
+    return np.asarray(field * weight, np.float32)
+
+
+def test_stock_real_exe_writes_dry_T_and_moist_THM_under_use_theta_m_1():
+    data = np.load(_STRIP)
+    ratio = np.float32(461.6) / np.float32(287.0)
+    moist = np.asarray((np.float32(1.) + ratio * data["QVAPOR"])
+                       * (data["T"] + np.float32(300.)) - np.float32(300.), np.float32)
+    assert np.array_equal(data["THM_moist"], moist)
+    assert np.abs(data["THM_moist"] - data["T"]).max() > 1.0
+    # The boundary the same run wrote couples THM, bit for bit.
+    assert np.array_equal(data["T_BXS_moist"],
+                          np.transpose(_stock_coupling(data, data["THM_moist"]), (2, 0, 1)))
+    assert np.array_equal(data["T_BXS_dry"],
+                          np.transpose(_stock_coupling(data, data["T"]), (2, 0, 1)))
+
+
+@pytest.mark.parametrize("moist", [False, True])
+def test_stock_real_exe_pair_passes_the_seam_at_both_settings(moist):
+    restored, tables, layouts, _ = _stock_strip(moist)
+    wi._check_initial_boundary_pair(restored, tables, _WIDTH, layouts=layouts)
+
+
+def test_comparing_the_stock_moist_boundary_with_dry_T_fails_and_says_so():
+    # The suggested change ("compare the boundary directly against T") is
+    # what USE_THETA_M=0 does; on a stock use_theta_m=1 pair it refuses.
+    restored, tables, layouts, _ = _stock_strip(True)
+    restored.global_attributes["USE_THETA_M"] = 0
+    with pytest.raises(ValueError, match="does not match initial") as refusal:
+        wi._check_initial_boundary_pair(restored, tables, _WIDTH, layouts=layouts)
+    text = str(refusal.value)
+    assert "USE_THETA_M=0 on both files" in text
+    assert "3920 of 3920 points differ" in text
+    assert "equals the MOIST coupling of this wrfinput T at every point" in text
+
+
+def test_a_dry_boundary_under_the_moist_flag_names_the_writers_that_produce_it():
+    restored, tables, layouts, _ = _stock_strip(False)
+    restored.global_attributes["USE_THETA_M"] = 1
+    with pytest.raises(ValueError, match="does not match initial") as refusal:
+        wi._check_initial_boundary_pair(restored, tables, _WIDTH, layouts=layouts)
+    text = str(refusal.value)
+    assert "USE_THETA_M=1 on both files" in text
+    assert "converted to moist theta with wrfinput QVAPOR" in text
+    assert "equals the DRY coupling of this wrfinput T at every point" in text
+    assert "WRF 3.7 to 3.9.1.1 real.exe always does" in text
+
+
+def test_a_boundary_from_another_real_exe_run_reports_the_size_of_the_mismatch():
+    restored, tables, layouts, _ = _stock_strip(True)
+    value, tendency = tables["theta"]["west"]
+    tables["theta"]["west"] = (np.asarray(value * np.float32(1.002), np.float32), tendency)
+    with pytest.raises(ValueError, match="does not match initial") as refusal:
+        wi._check_initial_boundary_pair(restored, tables, _WIDTH, layouts=layouts)
+    text = str(refusal.value)
+    assert "3920 of 3920 points differ" in text
+    assert "0.002 of the largest value" in text
+    assert "not the DRY coupling of this T either" in text
+    assert "use the pair produced by the same real.exe run" in text
+
+
+def test_the_wrf_input_doors_carry_every_field_the_tree_runner_reads():
+    """run_prepared_tree serves the prepared, wrfinput and met_em doors, so
+    every ``inputs.<name>`` it reads must be a field of the WRF-input inputs
+    class too: a stock real.exe pair completed its simulation and then died
+    on ``physics_profile_assertion`` before the report was written."""
+    import dataclasses
+    from gpuwm import prepared_domain_tree_forecast as tree
+    from gpuwm.wrfinput_forecast import WrfTreeInputs
+    function = next(node for node in ast.walk(ast.parse(inspect.getsource(tree)))
+                    if isinstance(node, ast.FunctionDef) and node.name == "run_prepared_tree")
+    read = {node.attr for node in ast.walk(function)
+            if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name)
+            and node.value.id == "inputs"}
+    fields = {field.name for field in dataclasses.fields(WrfTreeInputs)}
+    assert read <= fields, sorted(read - fields)

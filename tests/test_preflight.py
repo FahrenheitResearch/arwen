@@ -34,6 +34,27 @@ ROOT = Path(__file__).resolve().parents[1]
 CONFIG_4DOM = ROOT / "configs" / "real74_4dom.toml"
 CONFIG_D01 = ROOT / "configs" / "real74_d01.toml"
 
+# The four-domain configs below declare their inputs from the 1974
+# reference bundle under the case-data root: `source_orography` from its
+# met_em files, the forcing from its ERA5 GRIB.  A test that loads one of
+# them with the inputs required reads those files, and on a box that has
+# not staged the bundle (the Linux release node: proof/node-reds-276) the
+# loader refuses with "... declared in [case_data] of ... does not exist"
+# before the test's subject is reached.  The same root the configs
+# resolve ${GPUWM_CASE_DATA_ROOT} against, so bundle and config relocate
+# together; the idiom is tests/test_case_data.py's.
+from gpuwm.case_data import case_data_root  # noqa: E402
+
+BUNDLE = case_data_root() / "WRF_1974_MP55_reference_bundle"
+_BUNDLE_INPUTS = (BUNDLE / "met_em" / "met_em.d01.1974-04-03_12_00_00.nc",
+                  BUNDLE / "era5_grib" / "era5_19740403.grb")
+requires_reference_bundle = pytest.mark.skipif(
+    not all(path.is_file() for path in _BUNDLE_INPUTS),
+    reason=("the 1974 reference bundle is not staged under the case-data "
+            f"root: {BUNDLE} must carry met_em/met_em.d01.1974-04-03_12_00_00.nc "
+            "and era5_grib/era5_19740403.grb, which the four-domain configs "
+            "this test loads declare as their inputs"))
+
 GIB = pf.GIB
 
 _TINY = dict(nx=8, ny=6, nz=4, dx=1000.0, dy=1000.0, ztop=10000.0,
@@ -1035,6 +1056,8 @@ def test_experimental_thompson_scratch_registry_is_complete():
         "mp_thompson_graupel_melt_marker": mass,
         "mp_thompson_snow_velocity_boost": mass,
         "mp_thompson_graupel_number_shadow": mass,
+        # WRF's per-column no_micro flag (:1646, :2020), repair G.
+        "mp_thompson_micro_columns": surface,
         "mp_rainnc": surface,
         "mp_rainncv": surface,
         "mp_snownc": surface,
@@ -1053,7 +1076,8 @@ def test_experimental_thompson_scratch_registry_is_complete():
             "mp_thompson_snow_melt_marker",
             "mp_thompson_graupel_melt_marker",
             "mp_thompson_snow_velocity_boost",
-            "mp_thompson_graupel_number_shadow"):
+            "mp_thompson_graupel_number_shadow",
+            "mp_thompson_micro_columns"):
         assert pf.scratch_slot_uses_arena(slot)
 
 
@@ -1171,6 +1195,8 @@ def test_mp28_scratch_registry_is_complete():
         "mp_thompson_graupel_melt_marker": mass,
         "mp_thompson_snow_velocity_boost": mass,
         "mp_thompson_graupel_number_shadow": mass,
+        # WRF's per-column no_micro flag (:1646, :2020), repair G.
+        "mp_thompson_micro_columns": surface,
         "mp_rainnc": surface,
         "mp_rainncv": surface,
         "mp_snownc": surface,
@@ -2956,9 +2982,22 @@ def test_tier_projection_algebra_is_consistent(exp1):
     assert est.held_projection_bytes == (
         est.alloc_estimate_bytes + est.retention_residual_bytes)
     assert est.footprint_projection_bytes == (
-        est.held_projection_bytes + pf.PROBE_DEVICE_OVERHEAD_BYTES)
-    assert est.retention_residual_bytes == \
-        pf.pool_retention_residual_bytes()
+        est.held_projection_bytes + est.device_overhead_bytes)
+    # The two constants are the PLATFORM's: the Windows pool residual and
+    # the 5090 zero-step probe overhead where the envelope family is
+    # windows, zero on Linux, where neither showed up in any instrumented
+    # run (platform_projection_constants).  Asserting the Windows numbers
+    # by name made this identity a statement about the box it was written
+    # on, and it was red on the Linux release node for that reason alone
+    # (proof/node-reds-276).
+    assert (est.retention_residual_bytes, est.device_overhead_bytes) == (
+        pf.platform_projection_constants())
+    if pf.envelope_platform() == "windows":
+        assert est.device_overhead_bytes == pf.PROBE_DEVICE_OVERHEAD_BYTES
+        assert est.retention_residual_bytes == \
+            pf.pool_retention_residual_bytes()
+    else:
+        assert (est.retention_residual_bytes, est.device_overhead_bytes) == (0, 0)
 
 
 # ---------------------------------------------------------------------------
@@ -3208,7 +3247,12 @@ def test_check_cli_over_budget_fails_and_names_the_lever(capsys):
     rc = _run_check(["check", str(CONFIG_4DOM), "--budget-gib", "19.5"])
     out = capsys.readouterr().out
     assert rc == 1
-    assert "alloc_estimate_le_wddm_budget: FAIL" in out
+    # The key is the key; the row is printed in the platform's spelling
+    # (gate_display_name writes `_vram_` on Linux), and asserting the
+    # Windows spelling made this test red on the Linux release node
+    # (proof/node-reds-276).
+    assert (pf.gate_display_name("alloc_estimate_le_wddm_budget")
+            + ": FAIL") in out
     assert "OVER BUDGET" in out
     # Per-domain acoustic ownership costs another115,230,230 B including
     # headroom.3125 is now20,973,395,848 B, above the20,937,965,568 B budget;
@@ -3226,7 +3270,7 @@ def test_check_over_budget_envelope_exits_nonzero(capsys, monkeypatch):
     green.  The prose and the exit code cannot disagree; the prose is the
     accurate one.  4, not 1: no gate failed, and the levers differ.
     """
-    monkeypatch.setattr(pf.sys, "platform", "win32")
+    monkeypatch.setattr(pf, "host_platform", lambda: "win32")
     rc = _run_check(["check", str(CONFIG_4DOM), "--budget-gib", "100",
                      "--json"])
     payload = json.loads(capsys.readouterr().out)
@@ -3334,7 +3378,7 @@ def test_check_cli_reports_observed_peak_envelope(capsys, monkeypatch):
     read this command's rc 0 out of a report whose own text said the
     configuration might not fit.
     """
-    monkeypatch.setattr(pf.sys, "platform", "win32")
+    monkeypatch.setattr(pf, "host_platform", lambda: "win32")
     rc = _run_check(["check", str(CONFIG_4DOM), "--budget-gib", "100",
                      "--json"])
     payload = json.loads(capsys.readouterr().out)
@@ -4003,6 +4047,7 @@ def test_a_frame_inside_the_default_stack_reserves_nothing():
     assert pf.KERNEL_MAX_LOCAL_SIZE_BYTES["mynn_surface"] == 0
 
 
+@requires_reference_bundle
 def test_the_reservation_does_not_grow_with_domain_count():
     """The fingerprint that identified this term: it is a maximum over
     launched kernels, so three domains and four reserve the same bytes.
@@ -4025,6 +4070,7 @@ def test_the_reservation_does_not_grow_with_domain_count():
     assert pf.kernel_local_frame_bytes(exp4)["kf"] == 512
 
 
+@requires_reference_bundle
 def test_the_kf_reservation_stopped_growing_with_the_level_count():
     """`kf` left the level-specialized table, and this is what that means.
 
@@ -4396,6 +4442,7 @@ def test_the_six_tornado_les_configs_are_the_ones_this_moves():
     assert totals[72] - totals[64] == 467927040     # +446.2 MiB
 
 
+@requires_reference_bundle
 def test_the_widest_frame_is_no_longer_the_cumulus_kernel():
     """The cumulus kernel used to set this configuration's whole
     local-memory reservation, and now it sets none of it.
@@ -4420,6 +4467,7 @@ def test_the_widest_frame_is_no_longer_the_cumulus_kernel():
     assert max(f for m, f in frames.items() if m.startswith("mynn")) == 0
 
 
+@requires_reference_bundle
 def test_physics_kernel_modules_fails_closed_on_an_unpriced_selector():
     exp = load_experiment_case(CONFIG_4DOM_MYNN_KF)[0]
     d01 = exp.domains[0]
@@ -4469,6 +4517,7 @@ def test_noahmp_on_an_unread_card_is_priced_from_the_ceiling_and_says_so(monkeyp
     assert "measure_noahmp_frames.py measure" in basis
 
 
+@requires_reference_bundle
 def test_the_reflectivity_diagnostic_is_priced_only_when_it_can_fire():
     """``refl10cm_*`` is launched from the microphysics drivers'
     history-cadence branch alone.  The 60 s probes behind this model wrote
@@ -4482,6 +4531,7 @@ def test_the_reflectivity_diagnostic_is_priced_only_when_it_can_fire():
     assert "refl" in pf.physics_kernel_modules(production)
 
 
+@requires_reference_bundle
 def test_the_reflectivity_time_bomb_no_longer_moves_the_reservation():
     """FAILING FORM FIRST.
 
@@ -4539,6 +4589,7 @@ def _rail_gate(config, *, rail_mib, other_mib, overhead_bytes=None):
         measured_free_bytes=free, reserve=reserve)
 
 
+@requires_reference_bundle
 def test_the_old_overhead_constant_passes_the_run_that_breached_the_rail():
     """FAILING FORM FIRST.
 
@@ -4578,6 +4629,7 @@ def _as_built_overhead(config):
             + pf.MEASURED_LOCAL_MEMORY_PROFILE.reservation_bytes(widest))
 
 
+@requires_reference_bundle
 def test_the_measured_overhead_refuses_the_run_that_breached_the_rail():
     """The as-built binary, priced with the measured local-memory law: the
     run that went 1,630 MiB over is refused before it starts."""
@@ -4586,6 +4638,7 @@ def test_the_measured_overhead_refuses_the_run_that_breached_the_rail():
     assert legs["alloc_estimate_le_wddm_budget"] is False
 
 
+@requires_reference_bundle
 def test_taking_kf_off_the_stack_is_what_lets_the_cumulus_config_through():
     """The same configuration, the same rail, the same desktop occupancy --
     what changed is where `kf.cu` keeps its column arrays.
@@ -4624,6 +4677,7 @@ def test_taking_kf_off_the_stack_is_what_lets_the_cumulus_config_through():
     assert round(saved / 1024 ** 2) == 4294
 
 
+@requires_reference_bundle
 def test_the_rail_gate_passes_the_four_domain_run_that_measured_under_it():
     """``configs/real74_4dom_mynn_norad_nocu.toml`` was RUN: 25,498 MiB
     device-wide, 4,002 MiB under the rail, same four domains, same
@@ -4632,6 +4686,7 @@ def test_the_rail_gate_passes_the_four_domain_run_that_measured_under_it():
     assert legs["alloc_estimate_le_wddm_budget"] is True
 
 
+@requires_reference_bundle
 def test_the_rail_never_widens_the_budget():
     """A rail is an ADDITIONAL ceiling.  A rail below what the card would
     hand out must bind; it can never hand out more."""
@@ -4646,6 +4701,7 @@ def test_the_rail_never_widens_the_budget():
     assert reserve.budget_bytes(rail_free) < reserve.budget_bytes(card_free)
 
 
+@requires_reference_bundle
 def test_the_non_pool_projection_brackets_both_measured_runs():
     """Estimate + non-pool residency, against the two device-wide peaks the
     runs actually reached (process share = device peak - desktop baseline).
@@ -5432,14 +5488,14 @@ def test_the_budget_word_follows_the_platform(capsys, monkeypatch):
     """"WDDM budget" on a Linux box, in the same report that has just
     finished explaining there is no WDDM here."""
 
-    monkeypatch.setattr(pf.sys, "platform", "linux")
+    monkeypatch.setattr(pf, "host_platform", lambda: "linux")
     _run_check(["check", str(CONFIG_4DOM), "--budget-gib", "1",
                 "--vram-gib", "32"])
     out = capsys.readouterr().out
     assert "WARNING: observed peak envelope" in out
     assert "exceeds the WDDM budget" not in out
 
-    monkeypatch.setattr(pf.sys, "platform", "win32")
+    monkeypatch.setattr(pf, "host_platform", lambda: "win32")
     _run_check(["check", str(CONFIG_4DOM), "--budget-gib", "1",
                 "--vram-gib", "32"])
     out = capsys.readouterr().out
