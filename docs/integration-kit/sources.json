@@ -1,6 +1,6 @@
 {
   "certification_rule": "certified_stock_wrf requires implemented field/level/cadence policies plus acceptance by unchanged stock wrf.exe within the declared source/domain envelope",
-  "gpuwm_version": "2.7.6",
+  "gpuwm_version": "2.7.7",
   "readiness_rule": "runnable means the strict implementation route exists; stock-WRF certification is a separate exact evidence status",
   "registry_schema": "gpuwm-native-source-adapters-v1",
   "routes": {

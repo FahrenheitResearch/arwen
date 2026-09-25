@@ -43,7 +43,20 @@ pub const MIN_RELATIVE_TOLERANCE: f64 = 1.0e-6;
 /// resolve the bound in the first place, and the bridge would rather
 /// refuse than accept a wide excursion on the encoder's word.  This one
 /// is range-anchored because it only ever narrows.
-pub const MAX_RELATIVE_TOLERANCE: f64 = 1.0e-4;
+///
+/// 1e-3, not 1e-4: NCEP's operational GFS 0.25-degree product packs
+/// SOILW at decimal scale 3, binary scale 0 (one step 0.001) with a
+/// non-integer reference value, so on some records 1.0 is not on the
+/// grid at all and a saturated (land-ice) cell decodes to the nearest
+/// step above it.  The 2026-06-14 12Z cycle's 10-40 cm record has
+/// reference 23.3813: its steps near the bound are 0.9993813 and
+/// 1.0003813, and the encoder's round-to-nearest put 1.0 on the second,
+/// 0.00038 past the bound and inside one step.  A 1e-4 ceiling refused
+/// that operational record on every f000..f010 object, which is the
+/// breakage this value removes.  What the ceiling still prevents is
+/// unchanged in kind: an integer-packed unit field (one step = the
+/// whole range) buys 0.001, never a wide gate.
+pub const MAX_RELATIVE_TOLERANCE: f64 = 1.0e-3;
 
 /// What kind of limit a bound is.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -374,6 +387,30 @@ mod tests {
         });
         assert_eq!(total.clamps, 4);
         assert_eq!(total.max_excursion, 9.0e-9);
+    }
+
+    #[test]
+    fn operational_gfs_soilw_packing_clamps_a_saturated_cell() {
+        // gfs.t12z.pgrb2.0p25 of 2026-06-14, SOILW 10-40 cm: template
+        // 5.3, E = 0, D = 3, R = 23.3813.  The grid near the bound is
+        // (23.3813 + X) / 1000, so 1.0 encodes as X = 977 and decodes to
+        // 1.0003813 -- the refusal that stopped every GFS start.
+        let bounds = unit_fraction();
+        let quantum = decode_quantum(3, 0, 3);
+        assert_eq!(quantum, 1.0e-3);
+        let decoded = (23.3813f64 + 977.0) / 1000.0;
+        match bounds.check(decoded, quantum) {
+            BoundVerdict::Clamped { value, excursion } => {
+                assert_eq!(value, 1.0);
+                assert!(excursion < quantum / 2.0, "{excursion}");
+            }
+            other => panic!("a saturated GFS cell must clamp, got {other:?}"),
+        }
+        // Two steps past the bound is not packing, and still refuses.
+        assert!(matches!(
+            bounds.check(1.0 + 2.0 * quantum, quantum),
+            BoundVerdict::Refuse { .. }
+        ));
     }
 
     #[test]

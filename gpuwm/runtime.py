@@ -185,6 +185,13 @@ class RealCaseRunSummary:
     #: during finalization and handed on so the supervisor's success
     #: capsule does not re-read the same bytes a second time.
     frame_records: tuple[Mapping[str, object], ...] = ()
+    #: The floors the run route's own capsule recorded, handed to the
+    #: supervisor exactly as :class:`ExperimentRunSummary` hands them.  The
+    #: single-domain route of ``run_experiment`` sets it through
+    #: ``dataclass_replace``; without the field that call raised TypeError
+    #: after the forecast had finished, so a single-domain config-driven run
+    #: wrote every frame and then failed before rendering.
+    moisture_floor_receipts: Mapping[str, object] | None = None
 
 
 @dataclass(frozen=True)

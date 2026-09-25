@@ -316,6 +316,27 @@ def test_stable_native_sst_bitmap_hole_far_from_coast_is_rejected(
                for issue in failures)
 
 
+def test_stable_native_sst_hole_on_a_small_island_is_coastal(synthetic_case):
+    # ERA5 leaves SST missing on cells of land fraction ~0.2 and up; an
+    # island cell at 0.38 with open water all round is coastal, not open
+    # water, and must not be refused (reproduced on typhoon and cyclone
+    # boxes from the ARCO store).
+    case = synthetic_case
+    start = case.exp.start_time
+    landsea = np.zeros((20, 20), dtype=np.float64)
+    landsea[0, 0] = 1.0
+    landsea[15, 15] = 0.38
+    case.install(
+        (start, start + timedelta(minutes=90)),
+        sst_bitmap_holes=((15, 15), (15, 15)),
+        landsea=landsea,
+    )
+
+    report = preflight_report(case.exp, case.data)
+    assert not [issue for issue in report.failures
+                if issue.code == "nonfinite" and issue.variable == "SST"]
+
+
 @pytest.mark.parametrize("support", ["land", "coastal", "unproven"])
 def test_repeated_era5_sst_holes_require_source_mask_support(
         synthetic_case, support):

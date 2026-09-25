@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.7.7 (2026-09-25)
+
+Fixed:
+
+- A single-domain run from a configuration file wrote every forecast frame and then stopped with `RealCaseRunSummary.__init__() got an unexpected keyword argument 'moisture_floor_receipts'` before drawing a picture, whichever door started it, the desktop GUI included. It finishes and renders again. Nested runs were not affected. The defect was in 2.7.5 and 2.7.6.
+- A GFS 0.25 degree start refused every object of a cycle whose soil moisture decoded 0.00038 above 1.0 on a saturated cell. NCEP packs that field in steps of 0.001 from a reference that can leave 1.0 off the grid, and the bound check accepted a tenth of a step. One packing step past the bound is now clamped to 1.0; a wider excursion still refuses.
+- `gpuwm domain`'s check refused typhoon and cyclone boxes from ERA5 that the preparation runs, because ERA5 leaves SST missing on every cell about one fifth land or more and small islands with open water all round were read as open-water holes. A missing SST on a cell with any land fraction is coastal; a hole over open water still refuses.
+
 ## 2.7.6 (2026-09-22)
 
 New:

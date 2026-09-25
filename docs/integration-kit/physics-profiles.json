@@ -41,7 +41,7 @@
       "rule": "vertical-level-bounds"
     }
   ],
-  "gpuwm_version": "2.7.6",
+  "gpuwm_version": "2.7.7",
   "physics_registry_sha256": "18998c26362833f9b9cf147a03ad946c2ab2ce839379c1f2e431ff0aaf7667f1",
   "profile_count": 25,
   "profiles": [

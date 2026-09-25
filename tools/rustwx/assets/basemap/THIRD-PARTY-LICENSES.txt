@@ -12459,8 +12459,8 @@ All LICENSE, LICENCE, COPYING, COPYRIGHT and NOTICE files at each
 resolved vendored package root are reproduced, deduplicated by raw SHA-256.
 The TUI itself uses the repository Apache-2.0 licence.
 
-tools/arwen-tui/Cargo.toml sha256 eb0523799a95903b93c9942f3ddea710a0d44d9d1fef296b41dc9ee6161b56ed
-tools/arwen-tui/Cargo.lock sha256 985887ef364b4e0b3a8710048210fe12848863b2faff4c837a346986d48febbf
+tools/arwen-tui/Cargo.toml sha256 19b9960ffb5794b92443d673b0ff72144909dfc0e485a7177f2f3381c510ba16
+tools/arwen-tui/Cargo.lock sha256 c95a694a4d5d2c8c86bd59abf03eaccb5a788d968ca16f7b61995c482a936b5c
 x86_64-unknown-linux-gnu: 70 external packages
 x86_64-pc-windows-msvc: 67 external packages
 

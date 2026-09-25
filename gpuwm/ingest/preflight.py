@@ -1002,8 +1002,17 @@ def _scan_forcing(catalog: InputCatalog) -> tuple[list[PreflightIssue], list[str
         land = snapshot.fields.get("LANDSEA")
         land_mask = (np.isfinite(land) & (land >= 0.5)
                      if land is not None else None)
+        # A cell with any land fraction is coastal by definition, whether or
+        # not a >= 0.5 neighbour lies inside the search radius.  ERA5 leaves
+        # SST missing on every cell whose land fraction is about 0.2 or more
+        # (measured on 14 ARCO boxes on five continents: the smallest land
+        # fraction of a missing SST cell was 0.196 to 0.335), so a small
+        # island at 0.38 to 0.48 with open water all round has a native SST
+        # hole that the >= 0.5 support alone called open water, and the
+        # check refused typhoon and cyclone boxes the preparation runs.
         tolerated_water_missing = (
             _land_or_coastal_support(land_mask)
+            | (np.isfinite(land) & (land > 0.0))
             if land_mask is not None else None
         )
         for name, value in snapshot.fields.items():
